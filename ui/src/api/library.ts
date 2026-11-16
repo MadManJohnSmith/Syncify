@@ -7,6 +7,7 @@
 import { invokeCommand } from './tauri';
 import { asArray, asNumber, asString, asBoolean, asRecord, pick, pickArray, pickNumber, optionalNumber } from './normalize';
 import type { LibraryTrack, LibraryPage, LibraryStats, Playlist, SearchResult, AlbumDetail, ArtistDetail, TopArtist, TopGenre, QualityBucket, TrackSourceAvailability, TrackPreflightResult } from './types';
+import type { LibraryQuery, LibraryQueryCounts, LibraryQueryResult } from './types';
 
 // ==============================================
 // SCAN TYPES
@@ -88,8 +89,44 @@ export async function setTrackFavorite(trackId: number, isFavorite: boolean): Pr
 /**
  * Get duplicate tracks (by Title + Primary Artist) (paginated)
  */
-export async function getDuplicateTracks(offset?: number, limit?: number): Promise<LibraryPage> {
-    return normalizeLibraryPage(await invokeCommand<unknown>('get_duplicate_tracks', { offset, limit }), offset, limit);
+/**
+ * Consulta de biblioteca v2 (L01, issue #98): una fila por pista, filtros
+ * AND/OR, contadores y orden EN SERVIDOR, paginación offset/limit. Los
+ * contadores solo vienen en la primera página (`offset == 0`); al paginar
+ * la vista conserva los de la primera.
+ */
+export async function queryLibrary(query: LibraryQuery): Promise<LibraryQueryResult> {
+    const raw = asRecord(await invokeCommand<unknown>('query_library', { query }));
+    const counts = asRecord(raw?.counts);
+    const normalizedCounts: LibraryQueryCounts | null = counts
+        ? {
+              total: asNumber(counts.total),
+              favorites: asNumber(counts.favorites),
+              downloaded: asNumber(counts.downloaded),
+              inPlaylists: asNumber(counts.inPlaylists, asNumber(counts.in_playlists)),
+              byService: asArray(counts.byService ?? counts.by_service).map((s) => {
+                  const rec = asRecord(s) ?? {};
+                  return {
+                      serviceId: asNumber(rec.serviceId ?? rec.service_id),
+                      serviceName: asString(rec.serviceName ?? rec.service_name, ''),
+                      count: asNumber(rec.count),
+                  };
+              }),
+              byAccount: asArray(counts.byAccount ?? counts.by_account).map((a) => {
+                  const rec = asRecord(a) ?? {};
+                  return {
+                      accountId: asNumber(rec.accountId ?? rec.account_id),
+                      displayName: (rec.displayName ?? rec.display_name) === null || (rec.displayName ?? rec.display_name) === undefined ? null : asString(rec.displayName ?? rec.display_name, ''),
+                      serviceName: asString(rec.serviceName ?? rec.service_name, ''),
+                      count: asNumber(rec.count),
+                  };
+              }),
+          }
+        : null;
+    return {
+        ...normalizeLibraryPage(raw, query.offset, query.limit ?? undefined),
+        counts: normalizedCounts,
+    };
 }
 
 /**
@@ -1397,7 +1434,7 @@ export async function reconcileDownloadsFromStorage(musicDirOverride?: string): 
 // Export as namespace
 export const libraryApi = {
     getLibrary,
-    getDuplicateTracks,
+    queryLibrary,
     getFavoriteTracks,
     getFavoritesTracks,
     getFavoritesAlbums,

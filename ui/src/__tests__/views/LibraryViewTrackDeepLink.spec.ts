@@ -73,7 +73,7 @@ describe('LibraryView deep-link ?track=<id> (ítem 45)', () => {
 
     it('hace scroll a la fila, la resalta y limpia el query', async () => {
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return makePage([createTestTrack(42, 'Target Track'), createTestTrack(43, 'Other')], false);
+            if (cmd === 'query_library') return makePage([createTestTrack(42, 'Target Track'), createTestTrack(43, 'Other')], false);
             return null;
         })
 
@@ -94,8 +94,8 @@ describe('LibraryView deep-link ?track=<id> (ítem 45)', () => {
         const page1 = [createTestTrack(1, 'First'), createTestTrack(2, 'Second')];
         const page2 = [createTestTrack(77, 'Deep Track')];
         mockInvoke((cmd, args) => {
-            if (cmd === 'get_library') {
-                return (args?.offset ?? 0) === 0
+            if (cmd === 'query_library') {
+                return ((args?.query as { offset?: number } | undefined)?.offset ?? 0) === 0
                     ? { ...makePage(page1, true), offset: 0 }
                     : { ...makePage(page2, false), offset: 2 };
             }
@@ -115,7 +115,7 @@ describe('LibraryView deep-link ?track=<id> (ítem 45)', () => {
         scrollSpy.mockClear()
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return makePage([createTestTrack(1, 'Only')], false);
+            if (cmd === 'query_library') return makePage([createTestTrack(1, 'Only')], false);
             return null;
         })
 
@@ -134,7 +134,7 @@ describe('LibraryView deep-link ?track=<id> (ítem 45)', () => {
         scrollSpy.mockClear()
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return makePage([createTestTrack(1, 'Only')], false);
+            if (cmd === 'query_library') return makePage([createTestTrack(1, 'Only')], false);
             return null;
         })
 

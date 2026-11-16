@@ -48,7 +48,7 @@ describe('LibraryView', () => {
 
     it('renders library header', async () => {
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: [], total: 0, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: [], total: 0, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -65,7 +65,7 @@ describe('LibraryView', () => {
         ];
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -77,7 +77,7 @@ describe('LibraryView', () => {
     });
 
     it('shows known service origins without claiming account or collection provenance', async () => {
-        mockInvoke((cmd) => cmd === 'get_library'
+        mockInvoke((cmd) => cmd === 'query_library'
             ? { tracks: [createTestTrack({ id: 7, title: 'Overlap', services: 'Spotify, Qobuz', imported_from: 'Spotify', downloaded_from: 'Qobuz' })], total: 1, offset: 0, limit: 50, has_more: false }
             : null);
         const wrapper = mount(LibraryView);
@@ -97,7 +97,7 @@ describe('LibraryView', () => {
         const commands: string[] = [];
         mockInvoke((cmd) => {
             commands.push(cmd);
-            if (cmd === 'get_library') return { tracks: [createTestTrack({ id: ids[0] })], total: ids.length, offset: 0, limit: 50, has_more: true };
+            if (cmd === 'query_library') return { tracks: [createTestTrack({ id: ids[0] })], total: ids.length, offset: 0, limit: 50, has_more: true };
             return null;
         });
         const wrapper = mount(LibraryView);
@@ -111,7 +111,7 @@ describe('LibraryView', () => {
 
     it('shows empty state when no tracks', async () => {
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: [], total: 0, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: [], total: 0, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -130,7 +130,7 @@ describe('LibraryView', () => {
         ];
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 3, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 3, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -143,7 +143,7 @@ describe('LibraryView', () => {
 
     it('handles API error gracefully', async () => {
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') {
+            if (cmd === 'query_library') {
                 throw new Error('Database error');
             }
             return null;
@@ -162,7 +162,7 @@ describe('LibraryView', () => {
         ];
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -188,7 +188,7 @@ describe('LibraryView', () => {
         ];
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -210,7 +210,7 @@ describe('LibraryView', () => {
         ];
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -234,7 +234,7 @@ describe('LibraryView', () => {
         ];
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -254,7 +254,7 @@ describe('LibraryView', () => {
 
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             if (cmd === 'add_to_queue') return 1;
             return null;
         });
@@ -293,7 +293,7 @@ describe('LibraryView', () => {
 
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             if (cmd === 'get_effective_download_preferences') {
                 return {
                     maxQuality: 'lossless',
@@ -328,7 +328,7 @@ describe('LibraryView', () => {
 
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             if (cmd === 'get_effective_download_preferences') {
                 return {
                     maxQuality: 'hires',
@@ -379,7 +379,7 @@ describe('LibraryView', () => {
         ];
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 3, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 3, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -397,7 +397,7 @@ describe('LibraryView', () => {
         ];
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             if (cmd === 'add_to_queue') {
                 throw new Error('SourceIdentityMissing: track 102 has no streaming source');
             }
@@ -424,7 +424,7 @@ describe('LibraryView', () => {
 
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             if (cmd === 'add_batch_to_queue') return { added: 1, skipped: 0 };
             return null;
         });
@@ -457,7 +457,7 @@ describe('LibraryView', () => {
         ];
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 3, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 3, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -477,7 +477,7 @@ describe('LibraryView', () => {
     it('S132A: reactively reloads library when sync_service emits sync-complete', async () => {
         let loadCount = 0;
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') {
+            if (cmd === 'query_library') {
                 loadCount++;
                 return { tracks: [createTestTrack({ id: 1, title: `Track version ${loadCount}` })], total: 1, offset: 0, limit: 50, has_more: false };
             }
@@ -504,7 +504,7 @@ describe('LibraryView', () => {
     it('S141: renders default columns in exact required order', async () => {
         const mockTracks = [createTestTrack({ id: 1, title: 'Column Test Track' })];
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -518,7 +518,7 @@ describe('LibraryView', () => {
     it('S141: persists column reordering to localStorage', async () => {
         const mockTracks = [createTestTrack({ id: 1, title: 'Reorder Test Track' })];
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -558,7 +558,7 @@ describe('LibraryView', () => {
         ];
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -583,7 +583,7 @@ describe('LibraryView', () => {
         ];
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 3, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 3, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -609,7 +609,7 @@ describe('LibraryView', () => {
     it('S141: clamps context menu position within viewport bounds', async () => {
         const mockTracks = [createTestTrack({ id: 1, title: 'Menu Track' })];
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -667,7 +667,7 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
         ];
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             if (cmd === 'player_load_track') return { seq: 1, duration_sec: 180, stream: null };
             if (cmd === 'add_to_queue') return 1;
             return null;
@@ -698,7 +698,7 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
         ];
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             if (cmd === 'player_load_track') return { seq: 1, duration_sec: 180, stream: null };
             return null;
         });
@@ -822,6 +822,28 @@ describe('LibraryView context menu playback & shortcuts (FE-9)', () => {
     });
 });
 
+// L01: el filtro de calidad vive en el servidor. El mock simula la consulta:
+// responde según `query.qualityBuckets` para verificar que el deep-link
+// llega a la consulta y no a un filtro de renderer.
+const QUALITY_LABELS: Record<string, string> = {
+    hi_res: 'Hi-Res (24-bit+)',
+    cd_quality: 'CD Quality',
+    lossy: 'Lossy',
+};
+function mockQueryLibraryServer(all: LibraryTrack[]) {
+    return (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd !== 'query_library') return null;
+        const q = (args?.query ?? {}) as { offset?: number; qualityBuckets?: string[] };
+        let tracks = all;
+        if (q.qualityBuckets?.length) {
+            tracks = tracks.filter((t) =>
+                q.qualityBuckets!.some((b) => t.quality_bucket === QUALITY_LABELS[b])
+            );
+        }
+        return { tracks, total: tracks.length, offset: q.offset ?? 0, limit: 100, has_more: false };
+    };
+}
+
 describe('LibraryView quality deep-link (FE-10)', () => {
     beforeEach(() => {
         resetMocks();
@@ -834,10 +856,7 @@ describe('LibraryView quality deep-link (FE-10)', () => {
             createTestTrack({ id: 2, title: 'CD Song', download_status: 'downloaded', quality: 'FLAC', quality_bucket: 'CD Quality' }),
             createTestTrack({ id: 3, title: 'Lossy Song', download_status: 'downloaded', quality: 'MP3', quality_bucket: 'Lossy' }),
         ];
-        mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 3, offset: 0, limit: 50, has_more: false };
-            return null;
-        });
+        mockInvoke(mockQueryLibraryServer(mockTracks));
 
         const router = createRouter({
             history: createMemoryHistory(),
@@ -860,10 +879,7 @@ describe('LibraryView quality deep-link (FE-10)', () => {
             createTestTrack({ id: 1, title: 'Hi-Res Song', download_status: 'downloaded', quality: 'FLAC', quality_bucket: 'Hi-Res (24-bit+)' }),
             createTestTrack({ id: 2, title: 'CD Song', download_status: 'downloaded', quality: 'FLAC', quality_bucket: 'CD Quality' }),
         ];
-        mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 50, has_more: false };
-            return null;
-        });
+        mockInvoke(mockQueryLibraryServer(mockTracks));
 
         const router = createRouter({
             history: createMemoryHistory(),
@@ -886,7 +902,7 @@ describe('LibraryView quality deep-link (FE-10)', () => {
             createTestTrack({ id: 2, title: 'Lossy Song', download_status: 'downloaded', quality: 'MP3', quality_bucket: 'Lossy' }),
         ];
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -920,10 +936,7 @@ describe('LibraryView quality deep-link (FE-10)', () => {
             createTestTrack({ id: 1, title: 'Hi-Res Song', download_status: 'downloaded', quality: 'FLAC', quality_bucket: 'Hi-Res (24-bit+)' }),
             createTestTrack({ id: 2, title: 'Lossy Song', download_status: 'downloaded', quality: 'MP3', quality_bucket: 'Lossy' }),
         ];
-        mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 50, has_more: false };
-            return null;
-        });
+        mockInvoke(mockQueryLibraryServer(mockTracks));
 
         const router = createRouter({
             history: createMemoryHistory(),
@@ -950,7 +963,7 @@ describe('LibraryView quality deep-link (FE-10)', () => {
             createTestTrack({ id: 1, title: 'Any Song', quality_bucket: 'Lossy' }),
         ];
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 50, has_more: false };
             return null;
         });
 
@@ -981,7 +994,7 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         );
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 60, offset: 0, limit: 100, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 60, offset: 0, limit: 100, has_more: false };
             return null;
         });
 
@@ -1012,10 +1025,18 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         ];
         const calls: number[] = [];
         mockInvoke((cmd, args) => {
-            if (cmd === 'get_library') {
-                const offset = Number(args?.offset ?? 0);
+            if (cmd === 'query_library') {
+                const q = (args?.query ?? {}) as { offset?: number; sort?: string; direction?: string };
+                const offset = Number(q.offset ?? 0);
                 calls.push(offset);
-                return { tracks: pages[offset === 0 ? 0 : 1], total: 4, offset, limit: 100, has_more: offset === 0 };
+                // L01: el orden lo calcula el servidor; con title/asc la página
+                // 0 ya viene reordenada y la 1 continúa ese orden global.
+                const page = offset !== 0
+                    ? pages[1]
+                    : (q.sort === 'title' && q.direction === 'asc')
+                    ? [pages[0][1], pages[0][0]]
+                    : pages[0];
+                return { tracks: page, total: 4, offset, limit: 100, has_more: offset === 0 };
             }
             return null;
         });
@@ -1037,8 +1058,13 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         await scroller.trigger('scroll');
         await flushPromises();
 
-        expect(calls).toEqual([0, 0, 2]);
-        expect(wrapper.findAll('.track-row').map(row => Number(row.attributes('data-track-id')))).toEqual([2, 3, 4, 1]);
+        // Cargas offset 0: carga inicial (setup) + onMounted + recarga por el
+        // cambio de orden (L01: el orden es parte de la consulta). Luego el
+        // append en offset 2.
+        expect(calls).toEqual([0, 0, 0, 2]);
+        // L01: el orden lo fija el servidor — concatenar páginas conserva el
+        // orden devuelto y no duplica ni pierde filas con datos estáticos.
+        expect(wrapper.findAll('.track-row').map(row => Number(row.attributes('data-track-id')))).toEqual([2, 1, 3, 4]);
         wrapper.unmount();
     });
 
@@ -1047,8 +1073,8 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         const second = createTestTrack({ id: 2, title: 'Bravo' });
         const third = createTestTrack({ id: 3, title: 'Charlie' });
         mockInvoke((cmd, args) => {
-            if (cmd === 'get_library') {
-                const offset = Number(args?.offset ?? 0);
+            if (cmd === 'query_library') {
+                const offset = Number((args?.query as { offset?: number } | undefined)?.offset ?? 0);
                 return {
                     tracks: offset === 0 ? [first, second] : [third],
                     total: 3,
@@ -1089,7 +1115,7 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
 
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 100, offset: 0, limit: 100, has_more: true };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 100, offset: 0, limit: 100, has_more: true };
             return null;
         });
 
@@ -1115,7 +1141,7 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
             }
             await flushPromises();
 
-            const getLibraryCalls = invokeCalls.filter(c => c.cmd === 'get_library');
+            const getLibraryCalls = invokeCalls.filter(c => c.cmd === 'query_library');
             // mount (first), plus at most one leading and one trailing load.
             expect(getLibraryCalls.length).toBeLessThanOrEqual(3);
         } finally {
@@ -1131,7 +1157,7 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         ];
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 100, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 2, offset: 0, limit: 100, has_more: false };
             return null;
         });
 
@@ -1169,7 +1195,7 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         let calls = 0;
 
         mockInvoke((cmd) => {
-            if (cmd === 'get_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 100, has_more: false };
+            if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 100, has_more: false };
             if (cmd === 'enqueue_tracks') {
                 calls += 1;
                 return new Promise((res) => { resolveEnqueue = res; });
@@ -1214,7 +1240,7 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         const invokeCalls: { cmd: string; args: any }[] = [];
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
-            if (cmd === 'get_library') return { tracks: [], total: 0, offset: 0, limit: 100, has_more: false };
+            if (cmd === 'query_library') return { tracks: [], total: 0, offset: 0, limit: 100, has_more: false };
             if (cmd === 'get_queue_stats') return { total: 10, queued: 4, downloading: 2, completed: 3, failed: 1, paused: 0 };
             if (cmd === 'get_worker_status') return { running: true, paused: false, active_downloads: 2, max_concurrent: 4 };
             if (cmd === 'set_max_concurrent_downloads') return 6;

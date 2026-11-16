@@ -6,13 +6,14 @@
  * El composable NO conoce los comandos IPC: cada vista declara su fuente
  *
  *   - paginada (LibraryView): recibe `(offset, limit)` y devuelve la página
- *     con `total` y `has_more`; la triple fuente `get_library` /
- *     `get_favorite_tracks` / `get_duplicate_tracks` queda en la vista.
+ *     con `total` y `has_more`; desde L01 (#98) la vista pide `query_library`
+ *     (filtros, orden y contadores en servidor) y ya no sustituye la lista
+ *     por una búsqueda.
  *   - de página fija (MetadataView): una tanda por carga, sin `has_more`.
  *
- * y opcionalmente una fuente FTS (LibraryView) con paginador propio; la
- * normalización de la consulta (un `*` por palabra) vive aquí para que el
- * ritmo de la búsqueda sea caracterizable.
+ * y opcionalmente una fuente FTS con paginador propio (sin consumidor de
+ * vista desde L01; la normalización de la consulta, un `*` por palabra, vive
+ * aquí para que el ritmo de la búsqueda sea caracterizable).
  *
  * El mapeo es inyectado: las filas son tipos de la vista (`mapRow`). La
  * selección es por ids con la semántica exacta que tenía MetadataView:

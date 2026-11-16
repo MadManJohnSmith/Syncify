@@ -48,7 +48,7 @@ function stubBackend() {
         lyrics: { total_tracks: 1, with_lyrics: 0, synced_lyrics: 0, embedded_lyrics: 0 },
       }
     if (cmd === 'get_service_statuses' || cmd === 'get_accounts') return []
-    if (cmd === 'get_library') return { tracks: [], total: 0 }
+    if (cmd === 'query_library') return { tracks: [], total: 0 }
     return []
   })
 }
@@ -109,7 +109,7 @@ describe('KeepAlive acotado — volver no remonta (FE-PERF-01)', () => {
     const { wrapper, router } = await mountAppWithRouter()
 
     await navigate(router, '/library')
-    const libraryCallsOnFirstVisit = countCalls('get_library')
+    const libraryCallsOnFirstVisit = countCalls('query_library')
     expect(libraryCallsOnFirstVisit).toBeGreaterThan(0)
 
     await navigate(router, '/downloads')
@@ -117,7 +117,7 @@ describe('KeepAlive acotado — volver no remonta (FE-PERF-01)', () => {
     await flushPromises()
 
     // Reactivación desde cache: ni un `get_library` más.
-    expect(countCalls('get_library')).toBe(libraryCallsOnFirstVisit)
+    expect(countCalls('query_library')).toBe(libraryCallsOnFirstVisit)
     wrapper.unmount()
   })
 
