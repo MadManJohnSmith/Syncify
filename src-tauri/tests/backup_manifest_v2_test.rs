@@ -410,3 +410,346 @@ async fn v2_export_is_idempotent_across_runs() {
         );
     }
 }
+
+/// Semilla compartida de los tests de import v2: biblioteca mínima, ajustes
+/// no default en cada patrón de almacenamiento y una cuenta con credenciales
+/// que jamás deben viajar ni sobrevivir a la restauración.
+async fn seed_source_for_v2_import(db: &SqlitePool) {
+    let album_id: i64 = sqlx::query_scalar(
+        "INSERT INTO albums (title, favorite_at) VALUES ('Remain in Light', '2026-10-02T00:00:00Z') RETURNING id",
+    )
+    .fetch_one(db)
+    .await
+    .unwrap();
+    let artist_id: i64 = sqlx::query_scalar(
+        "INSERT INTO artists (name, favorite_at) VALUES ('Talking Heads', '2026-10-01T00:00:00Z') RETURNING id",
+    )
+    .fetch_one(db)
+    .await
+    .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id, isrc, favorite_at) VALUES ('Once in a Lifetime', ?, 'GBAAA8001234', '2026-10-03T00:00:00Z') RETURNING id",
+    )
+    .bind(album_id)
+    .fetch_one(db)
+    .await
+    .unwrap();
+    let _ = sqlx::query(
+        "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+    )
+    .bind(track_id)
+    .bind(artist_id)
+    .execute(db)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "UPDATE sync_settings SET auto_sync_enabled = 1, max_concurrent_downloads = 5 WHERE id = 1",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE quality_preferences SET max_quality = 'hires' WHERE service_name = 'spotify'",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE metadata_preferences SET multi_value_separator = ';' WHERE id = 1")
+        .execute(db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE folder_settings SET folder_template = '{artist}/{album}' WHERE id = 1")
+        .execute(db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('dl_concurrent_downloads', '7', datetime('now'))")
+        .execute(db)
+        .await
+        .unwrap();
+
+    sqlx::query(
+        "INSERT INTO accounts (id, service_id, display_name, email, external_user_id, is_active, credentials_json)
+         VALUES (7, 3, 'Tidal Main', 'main@example.com', 'ext-usr-4242', 1, '{\"access_token\":\"tok-should-not-survive\"}')",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn v2_import_restores_settings_and_accounts_await_reauth() {
+    let source_db = create_test_db().await;
+    seed_source_for_v2_import(&source_db).await;
+
+    let source_app = create_test_app(source_db);
+    let backup = get_test_backup_path("manifest_v2_import");
+    let manifest = export_to(&source_app, &backup).await;
+    assert_eq!(manifest["version"], "2.0.0");
+
+    let target_db = create_test_db().await;
+    let target_app = create_test_app(target_db.clone());
+    // export_to ya volcó el manifest en disco: import_library_with_bases
+    // consume la ruta del fichero.
+    let res = {
+        let state = target_app.state::<AppState>();
+        import_library_with_bases(state, backup.path.clone(), None, &backup.allowed_bases)
+            .await
+            .expect("a v2 manifest must import into a clean database")
+    };
+
+    assert_eq!(res.tracks_imported, 1);
+    assert!(res.settings_rows_restored > 0, "v2 import must restore settings");
+    assert_eq!(res.accounts_restored, 1);
+    assert_eq!(
+        res.accounts_awaiting_reauth,
+        vec!["tidal".to_string()],
+        "a fresh account without credentials must await re-authentication"
+    );
+
+    // Ajustes restaurados por superficie, en cada patrón de almacenamiento.
+    let (auto_sync, max_conc): (i64, i64) = sqlx::query_as(
+        "SELECT auto_sync_enabled, max_concurrent_downloads FROM sync_settings WHERE id = 1",
+    )
+    .fetch_one(&target_db)
+    .await
+    .unwrap();
+    assert_eq!((auto_sync, max_conc), (1, 5));
+    let max_quality: String = sqlx::query_scalar(
+        "SELECT max_quality FROM quality_preferences WHERE service_name = 'spotify'",
+    )
+    .fetch_one(&target_db)
+    .await
+    .unwrap();
+    assert_eq!(max_quality, "hires");
+    let separator: String =
+        sqlx::query_scalar("SELECT multi_value_separator FROM metadata_preferences WHERE id = 1")
+            .fetch_one(&target_db)
+            .await
+            .unwrap();
+    assert_eq!(separator, ";");
+    let template: String =
+        sqlx::query_scalar("SELECT folder_template FROM folder_settings WHERE id = 1")
+            .fetch_one(&target_db)
+            .await
+            .unwrap();
+    assert_eq!(template, "{artist}/{album}");
+    let kv: String =
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
+            .fetch_one(&target_db)
+            .await
+            .unwrap();
+    assert_eq!(kv, "7");
+
+    // Cuenta: metadatos aplicados, sesión jamás fabricada.
+    let (credentials, display, email, is_active): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT credentials_json, display_name, email, is_active FROM accounts WHERE external_user_id = 'ext-usr-4242'",
+    )
+    .fetch_one(&target_db)
+    .await
+    .unwrap();
+    assert_eq!(credentials, None, "restoration must never fabricate credentials");
+    assert_eq!(display, Some("Tidal Main".to_string()));
+    assert_eq!(email, Some("main@example.com".to_string()));
+    assert_eq!(is_active, 1);
+
+    // Idempotencia: reimportar actualiza en el sitio y no duplica nada.
+    let res2 = {
+        let state = target_app.state::<AppState>();
+        import_library_with_bases(state, backup.path.clone(), None, &backup.allowed_bases)
+            .await
+            .expect("reimporting a v2 manifest must be idempotent")
+    };
+    assert_eq!(
+        res2.accounts_awaiting_reauth,
+        Vec::<String>::new(),
+        "second import finds the account and updates it in place"
+    );
+    let account_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM accounts WHERE external_user_id = 'ext-usr-4242'",
+    )
+    .fetch_one(&target_db)
+    .await
+    .unwrap();
+    assert_eq!(account_count, 1);
+    let track_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE isrc = 'GBAAA8001234'")
+            .fetch_one(&target_db)
+            .await
+            .unwrap();
+    assert_eq!(track_count, 1);
+    let max_conc_after: i64 =
+        sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
+            .fetch_one(&target_db)
+            .await
+            .unwrap();
+    assert_eq!(max_conc_after, 5, "settings must be stable across reimports");
+}
+
+#[tokio::test]
+async fn future_manifest_fails_safely_without_partial_writes() {
+    let source_db = create_test_db().await;
+    seed_source_for_v2_import(&source_db).await;
+
+    let source_app = create_test_app(source_db);
+    let backup = get_test_backup_path("manifest_v2_future");
+    let mut manifest = export_to(&source_app, &backup).await;
+    manifest["checksum_sha256"] = serde_json::Value::Null;
+
+    // Destino con un valor centinela: si el import falla seguro, nada cambia.
+    let target_db = create_test_db().await;
+    sqlx::query("UPDATE sync_settings SET max_concurrent_downloads = 9 WHERE id = 1")
+        .execute(&target_db)
+        .await
+        .unwrap();
+    let target_app = create_test_app(target_db.clone());
+
+    // Caso 1: major futuro (3.0.0).
+    manifest["version"] = "3.0.0".into();
+    let future_path = backup.path.replace(".json", "_v3.json");
+    std::fs::write(&future_path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+    let err = {
+        let state = target_app.state::<AppState>();
+        import_library_with_bases(state, future_path.clone(), None, &backup.allowed_bases)
+            .await
+            .expect_err("a future-major manifest must be rejected")
+    };
+    assert!(
+        err.contains("versión futura") && err.contains("3.0.0"),
+        "diagnostic must name the future version: {err}"
+    );
+
+    // Caso 2: manifest de una versión soportada pero derivado de un esquema
+    // más nuevo que la BD destino.
+    let applied: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
+        .fetch_one(&target_db)
+        .await
+        .unwrap();
+    manifest["version"] = "2.0.0".into();
+    manifest["schema_version"] = (applied + 1).into();
+    let future_schema_path = backup.path.replace(".json", "_future_schema.json");
+    std::fs::write(&future_schema_path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+    let err = {
+        let state = target_app.state::<AppState>();
+        import_library_with_bases(state, future_schema_path.clone(), None, &backup.allowed_bases)
+            .await
+            .expect_err("a manifest from a newer schema must be rejected")
+    };
+    assert!(
+        err.contains("esquema más nuevo"),
+        "diagnostic must name the schema gap: {err}"
+    );
+
+    // Sin escrituras a medias: ni biblioteca, ni ajustes, ni cuentas.
+    let track_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&target_db)
+        .await
+        .unwrap();
+    assert_eq!(track_count, 0);
+    let account_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
+        .fetch_one(&target_db)
+        .await
+        .unwrap();
+    assert_eq!(account_count, 0);
+    let sentinel: i64 =
+        sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
+            .fetch_one(&target_db)
+            .await
+            .unwrap();
+    assert_eq!(
+        sentinel, 9,
+        "settings must remain untouched after a rejected manifest"
+    );
+}
+
+/// Contrato sin secretos, lado restauración (ADR-0020): ni los secretos de la
+/// BD de origen ni los que un manifest hostil intenta colar por la KV, por
+/// una superficie tipada o por `accounts` sobreviven a la restauración.
+#[tokio::test]
+async fn restored_database_never_contains_secrets() {
+    let source_db = create_test_db().await;
+    seed_source_for_v2_import(&source_db).await;
+    // Secretos plantados en la KV de origen, como en el test de export.
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('session_token', 'tok-source-1234', datetime('now'))")
+        .execute(&source_db).await.unwrap();
+    sqlx::query("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('lastfm_api_key', 'lastfm-key-7777', datetime('now'))")
+        .execute(&source_db).await.unwrap();
+
+    let source_app = create_test_app(source_db);
+    let backup = get_test_backup_path("manifest_v2_secrets_import");
+    let mut manifest = export_to(&source_app, &backup).await;
+    manifest["checksum_sha256"] = serde_json::Value::Null;
+
+    // Inyección hostil por las tres puertas.
+    let kv = manifest["settings"]["kv"].as_object_mut().unwrap();
+    kv.insert(
+        "session_token".to_string(),
+        serde_json::Value::String("tok-evil-1".to_string()),
+    );
+    kv.insert(
+        "spotify_client_secret".to_string(),
+        serde_json::Value::String("sec-evil-2".to_string()),
+    );
+    manifest["settings"]["sync_settings"][0]["credentials_json"] = "evil-3".into();
+    manifest["accounts"][0]["credentials_json"] = "evil-4".into();
+    manifest["accounts"][0]["access_token"] = "evil-5".into();
+
+    let hostile_path = backup.path.replace(".json", "_hostile.json");
+    std::fs::write(&hostile_path, serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+
+    let target_db = create_test_db().await;
+    let target_app = create_test_app(target_db.clone());
+    let res = {
+        let state = target_app.state::<AppState>();
+        import_library_with_bases(state, hostile_path.clone(), None, &backup.allowed_bases)
+            .await
+            .expect("the hostile manifest still imports: its secrets are simply dropped")
+    };
+
+    // Ningún secreto en la KV restaurada, por clave ni por valor.
+    let leaked_kv: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM settings WHERE key LIKE '%token%' OR key LIKE '%secret%' \
+         OR key LIKE '%api_key%' OR value LIKE '%evil%' OR value LIKE '%tok-source-1234%' \
+         OR value LIKE '%lastfm-key-7777%'",
+    )
+    .fetch_one(&target_db)
+    .await
+    .unwrap();
+    assert_eq!(
+        leaked_kv, 0,
+        "no token, api key or secret may survive restoration"
+    );
+
+    // Ninguna credencial en las cuentas restauradas.
+    let accounts_with_credentials: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE credentials_json IS NOT NULL")
+            .fetch_one(&target_db)
+            .await
+            .unwrap();
+    assert_eq!(
+        accounts_with_credentials, 0,
+        "credentials_json must never be fabricated by restoration"
+    );
+
+    // Y la restauración no fue un no-op: lo legítimo sí aterrizó.
+    assert!(res.settings_rows_restored > 0);
+    assert_eq!(res.accounts_restored, 1);
+    let max_conc: i64 =
+        sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
+            .fetch_one(&target_db)
+            .await
+            .unwrap();
+    assert_eq!(max_conc, 5);
+    let display: Option<String> = sqlx::query_scalar(
+        "SELECT display_name FROM accounts WHERE external_user_id = 'ext-usr-4242'",
+    )
+    .fetch_one(&target_db)
+    .await
+    .unwrap();
+    assert_eq!(display, Some("Tidal Main".to_string()));
+}
