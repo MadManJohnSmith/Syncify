@@ -368,8 +368,24 @@
         style="padding-bottom: calc(var(--status-bar-h, 48px) + 8px)"
       >
         <router-view v-slot="{ Component }">
+          <!-- FE-PERF-01 (#49): KeepAlive ACOTADO, nunca global.
+               El conjunto incluido es la lista fija KEEP_ALIVE_INCLUDE
+               (ui/src/keepAliveViews.ts, con la justificación de cada vista)
+               y `:max` fija el techo duro de instancias retenidas. Los
+               nombres del include son `name`s de componente declarados con
+               defineOptions en cada vista incluida (verificados por test).
+               DECISIÓN de transición: `mode="out-in"` se MANTIENE también en
+               las vistas cacheadas. Coste fijo (~2x150 ms de fade) a cambio
+               de no solapar dos vistas de altura completa en el mismo
+               contenedor flex durante el modo concurrente; el ahorro real lo
+               da el cacheo (sin remontaje ni repetición de llamadas IPC), y
+               la sonda de navegación mide ambos regímenes.
+               El detalle de param por vista (AlbumDetail/ArtistDetail) queda
+               excluido del include en keepAliveViews.ts. -->
           <transition name="fade" mode="out-in">
-            <component :is="Component" />
+            <KeepAlive :include="KEEP_ALIVE_INCLUDE" :max="KEEP_ALIVE_MAX">
+              <component :is="Component" />
+            </KeepAlive>
           </transition>
         </router-view>
       </div>
@@ -412,6 +428,7 @@ import { useNotificationListener, NAVIGATE_EVENT } from './composables/useNotifi
 import { useLogs } from './composables/useLogs'
 import { usePlayer } from './composables/usePlayer'
 import { applyTintFromCover, resetTint } from './composables/useTint'
+import { KEEP_ALIVE_INCLUDE, KEEP_ALIVE_MAX } from './keepAliveViews'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { TauriEvents } from './api/tauri'
 import { accountsApi } from './api/accounts'

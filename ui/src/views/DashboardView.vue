@@ -385,9 +385,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+// FE-PERF-01: nombre explícito — el `include` de <KeepAlive> (App.vue /
+// keepAliveViews.ts) filtra por `name`, y debe coincidir exactamente.
+defineOptions({ name: 'DashboardView' })
+import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
+import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { getVersion } from '@tauri-apps/api/app'
 // R13: unified confirm (previously the native plugin-dialog, outside the window).
 import { confirm } from '@/composables/useToast'
@@ -826,7 +830,63 @@ async function fetchMissingLyrics() {
   }
 }
 
+// FE-PERF-01: con Dashboard cacheado por <KeepAlive> ya no se relee en cada
+// visita, y sin esto las cifras quedarian congeladas. Un cambio de biblioteca
+// o de cola marca la vista como "stale" y las cifras se releen UNA vez por
+// rafaga de cambios: al vuelo si la vista esta activa, o al volver a ella si
+// estaba oculta. Navegar sin que nada cambie NO repite llamadas (criterio de
+// #49). No altera QUE se lee (los agregados son carril de #51): solo cuando.
+const eventBus = useEventBus()
+const isDashboardActive = ref(true)
+const dashboardStale = ref(false)
+let staleRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let dashboardRefreshing = false
+
+async function refreshDashboardData() {
+  if (!isDashboardActive.value || dashboardRefreshing || !dashboardStale.value) return
+  dashboardRefreshing = true
+  dashboardStale.value = false
+  try {
+    await fetchData()
+  } finally {
+    dashboardRefreshing = false
+  }
+}
+
+function markDashboardStale() {
+  dashboardStale.value = true
+  // Purga de cambios mientras la vista esta oculta: se relee al reactivarla.
+  if (isDashboardActive.value && !staleRefreshTimer) {
+    staleRefreshTimer = setTimeout(() => {
+      staleRefreshTimer = null
+      void refreshDashboardData()
+    }, 1500)
+  }
+}
+
+onActivated(() => {
+  isDashboardActive.value = true
+  if (staleRefreshTimer) {
+    clearTimeout(staleRefreshTimer)
+    staleRefreshTimer = null
+  }
+  void refreshDashboardData()
+})
+
+onDeactivated(() => {
+  isDashboardActive.value = false
+})
+
+onUnmounted(() => {
+  if (staleRefreshTimer) clearTimeout(staleRefreshTimer)
+})
+
 onMounted(async () => {
+  void eventBus.on(TauriEvents.LIBRARY_UPDATED, markDashboardStale)
+  void eventBus.on(TauriEvents.SYNC_COMPLETE, markDashboardStale)
+  void eventBus.on(TauriEvents.IMPORT_COMPLETE, markDashboardStale)
+  void eventBus.on(TauriEvents.DOWNLOAD_PROGRESS, markDashboardStale)
+
   await dashboardApi.createLibrarySnapshot().catch(() => null)
   await fetchData()
 

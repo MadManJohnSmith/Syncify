@@ -1158,7 +1158,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+// FE-PERF-01: nombre explícito — el `include` de <KeepAlive> (App.vue /
+// keepAliveViews.ts) filtra por `name`, y debe coincidir exactamente.
+defineOptions({ name: 'LibraryView' })
+import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRouter, useRoute, type LocationQueryValue } from 'vue-router'
 import { libraryApi, searchTracks, enqueueTracks, reconcileQueue, importMbDump, getMbDumpImportState, type MbDumpImportState, type MbDumpProgress }  from '@/api/library'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch, queueApi } from '@/api/queue'
@@ -2764,7 +2767,8 @@ onMounted(async () => {
   // Item 45: after the initial load, handle the ?track=<id> deep-link.
   await focusTrackFromQuery()
 
-  queueStatsInterval = setInterval(fetchQueueStats, 4000)
+  // FE-PERF-01: startQueueStatsInterval hace de guard (véase su comentario).
+  startQueueStatsInterval()
 
   eventBus.on(TauriEvents.LIBRARY_UPDATED, async () => {
     debouncedReloadLibrary()
@@ -2797,13 +2801,37 @@ watch(() => [route?.query?.filter, route?.query?.quality], () => {
   applyRouteFilters()
 })
 
-onUnmounted(() => {
-  document.removeEventListener('click', closeContextMenu)
-  window.removeEventListener('keydown', handleKeydown)
+// FE-PERF-01: con LibraryView cacheada por <KeepAlive>, el sondeo de 4s de la
+// cola no debe seguir latiendo mientras la vista está oculta. onActivated/
+// onDeactivated SOLO disparan en instancias dentro de un KeepAlive, así que
+// una vista fuera del include conserva el comportamiento de siempre (start en
+// onMounted, stop en onUnmounted). El guard evita el doble intervalo: con
+// KeepAlive, onActivated llega justo tras el mount y antes de que acaben los
+// `await` de onMounted, que ya arrancan el sondeo.
+function startQueueStatsInterval() {
+  if (queueStatsInterval) return
+  queueStatsInterval = setInterval(fetchQueueStats, 4000)
+}
+
+function stopQueueStatsInterval() {
   if (queueStatsInterval) {
     clearInterval(queueStatsInterval)
     queueStatsInterval = null
   }
+}
+
+onActivated(() => {
+  startQueueStatsInterval()
+})
+
+onDeactivated(() => {
+  stopQueueStatsInterval()
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', closeContextMenu)
+  window.removeEventListener('keydown', handleKeydown)
+  stopQueueStatsInterval()
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
   }

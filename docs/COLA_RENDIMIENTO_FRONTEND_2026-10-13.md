@@ -1,7 +1,7 @@
 # Cola técnica: rendimiento de la interfaz al navegar y hacer scroll
 
-**Estado:** actualizado el 2026-10-25: **FE-PERF-02 aplicado en código** (parcial: la clonación está corregida; ver su sección), el resto `registrado`, sin cambio de código. Las evidencias originales se verificaron el 2026-10-13 contra el árbol de trabajo y sobre una copia de solo lectura de la base real (~390 MB, 30.527 pistas); el estado canónico por ítem está en `docs/auditoria/matriz-ajustes.md`.
-**Fecha de origen:** 2026-10-13. **Última revisión:** 2026-10-25 (FE-PERF-02 aplicado). **Motivo:** el usuario observa retardos superiores a un segundo al cambiar de pantalla o pestaña, y scroll que tarda y da tirones, en toda la aplicación.
+**Estado:** actualizado el 2026-11-16: **FE-PERF-01 aplicado en código** (KeepAlive acotado con medición; ver su sección), **FE-PERF-02 aplicado en código** (parcial: la clonación está corregida; ver su sección), el resto `registrado`, sin cambio de código. Las evidencias originales se verificaron el 2026-10-13 contra el árbol de trabajo y sobre una copia de solo lectura de la base real (~390 MB, 30.527 pistas); el estado canónico por ítem está en `docs/auditoria/matriz-ajustes.md`.
+**Fecha de origen:** 2026-10-13. **Última revisión:** 2026-11-16 (FE-PERF-01 aplicado). **Motivo:** el usuario observa retardos superiores a un segundo al cambiar de pantalla o pestaña, y scroll que tarda y da tirones, en toda la aplicación.
 **Frontera de trabajo:** este fichero es propio y no toca `docs/historico/Errores-Pruebas-2026-10-11.md`, `docs/historico/Errores-Pruebas-2026-10-13.md` ni `docs/auditoria/matriz-ajustes.md`, reservados por el flujo de descargas concurrente. Integrar los ítems en la cola canónica cuando se libere, igual que se acordó con `docs/COLA_WEBKIT_COMPOSICION_ACELERADA.md`.
 
 ## Qué se descartó con medición (para no invertir esfuerzo donde no está el problema)
@@ -21,14 +21,24 @@ Medido sobre `/tmp/perf-hard/db-copy.db` (copia de solo lectura de la base real)
 
 **Conclusión:** ni SQLite, ni los agregados, ni el filtrado/ordenado en JS explican retardos de más de un segundo. La paginación por `OFFSET` tampoco (1,55 ms en el offset 30.500): migrar a paginación por cursor no arreglaría el retraso percibido. El coste está en la capa de vistas y en la repetición de trabajo que sí quedó registrada: en 4 minutos de navegación real el log mostró **319 llamadas a `get_library`, una cada 0,8 s de media**, mientras el usuario hacía scroll infinito.
 
-## FE-PERF-01 · `registrado` · Sin `<KeepAlive>`, cada cambio de pantalla destruye y reconstruye la vista.
+## FE-PERF-01 · `aplicado en código (2026-11-16)` · `<KeepAlive>` acotado por `include`, con medición en la ventana real.
 
 **Issue**: [#49](https://github.com/MadManJohnSmith/Syncify/issues/49) (spec [#34](https://github.com/MadManJohnSmith/Syncify/issues/34)).
 
-`ui/src/App.vue:370-373` envuelve el `<router-view>` en `<transition name="fade" mode="out-in">` y **no existe ningún `<KeepAlive>` en `ui/src/App.vue` ni en `ui/src/main.ts`** (verificado por búsqueda de la cadena). Consecuencia concreta: al entrar y salir de una vista se vuelve a montar el componente completo y a ejecutar su `onMounted`. El `Dashboard` lanza en `onMounted` una llamada a `createLibrarySnapshot()` más 11 llamadas de API en `Promise.all` (`ui/src/views/DashboardView.vue:830-831` y `:628-636`), de modo que entrar y salir de Dashboard repite las 12.
-**Por qué importa:** `mode="out-in"` obliga además a que la vista saliente termine su animación antes de empezar a montar la entrante, así que el retraso percibido se suma.
-**Diseño obligatorio del arreglo:** `<KeepAlive>` con `include`/`exclude` acotado, no global, para no retener todas las vistas en memoria (el caso contrario también degrada). Decidir explícitamente si `mode="out-in"` debe mantenerse en las vistas que se cachean. Nombres de componente consistentes: `include` filtra por el `name` del componente, y conviene confirmar que las vistas lo declaran.
-**Qué no se ha demostrado:** que esto sea la causa única del retraso; se verificó el mecanismo y el coste repetido, no la latencia de navegación medida en la ventana real.
+**Aplicado:** `ui/src/keepAliveViews.ts` define el conjunto acotado (`include` fijo de 4 vistas: Dashboard, Library, Downloads, Settings, con la justificación de cada una y las exclusiones argumentadas) y `ui/src/App.vue` envuelve el router-view con `<KeepAlive :include="KEEP_ALIVE_INCLUDE" :max="KEEP_ALIVE_MAX">` — nunca global, con techo duro de retención (LRU). Las vistas incluidas declaran su `name` con `defineOptions` para que el `include` sea consistente. **Decisión de transición:** `mode="out-in"` se mantiene también en las vistas cacheadas (coste fijo ~2x150 ms a cambio de no solapar dos vistas de altura completa en el mismo contenedor flex durante el modo concurrente). Comportamiento asociado al cacheo: LibraryView detiene su sondeo de 4 s mientras está desactivada (`onActivated`/`onDeactivated`) y Dashboard se relee una vez por ráfaga de cambios de biblioteca/cola en vez de quedarse congelado cacheado. El análisis original que motivó el arreglo queda abajo como contexto.
+
+`ui/src/App.vue` envuelve el `<router-view>` en `<transition name="fade" mode="out-in">` y no existía ningún `<KeepAlive>` (verificado por búsqueda de la cadena). Consecuencia concreta: al entrar y salir de una vista se vuelve a montar el componente completo y a ejecutar su `onMounted`. El `Dashboard` lanza en `onMounted` una llamada a `createLibrarySnapshot()` más 11 llamadas de API en `Promise.all`, de modo que entrar y salir de Dashboard repetía las 12.
+
+**Medición en la ventana real** (Tauri dev / WebKitGTK, sonda dev-only `ui/src/perf/navigationProbe.ts` + harness `tools/nav-perf.sh`, perfil de datos desechable vía `XDG_DATA_HOME`; definición: confirmación de navegación → primer frame con la vista destino pintada, transición incluida; ~10 muestras por par tras 2 vueltas de calentamiento; BD desechable vacía, así que el coste de montaje medido es el suelo, no el de una biblioteca real de 30k pistas; sin Chromium headless):
+
+| Par | antes p50/p95 (ms) | después p50/p95 (ms) |
+|---|---|---|
+| Dashboard→Library | 279 / 299 | 285 / 303 |
+| Library→Downloads | 328 / 345 | 313 / 353 |
+| Downloads→Settings | 288 / 353 | 286 / 359 |
+| Settings→Dashboard | 287 / 302 | 286 / 301 |
+
+**Lectura honesta:** en esta máquina la BD real está vacía (0 pistas), así que el coste de montaje que el cacheo elimina (render + 13 IPC del Dashboard) es pequeño y el p95 queda dominado por la transición `out-in` conservada (~300 ms fijos): el tiempo pared no baja de forma perceptible con esta fixture. Lo que la medición sí verifica por mecanismo es que las 39 muestras «después» salieron todas con `kind=cached` (KeepAlive reutiliza los mismos nodos DOM; ninguna visita remonta) frente a las 47 «antes» todas `kind=mount`, y que las llamadas del Dashboard dejan de repetirse por visita (verificado además por tests de comportamiento). Con biblioteca real crecida, el coste que desaparece es el de montaje + IPC de cada revisita; el sobrecoste de la transición conservada queda documentado como decisión (user story 6 de #34).
 
 ## FE-PERF-02 · `aplicado en código (2026-10-25, parcial)` · `loadMore` clona el array entero y `filteredTracks` reordena todo en cada invalidación.
 
@@ -58,7 +68,7 @@ Medido sobre el build real (`ui/dist`): `index-*.js` = 429 kB raw / 133 kB gz, `
 ## Orden recomendado y verificación
 
 1. ~~**FE-PERF-02** (sin clonar, sin reordenar en falso)~~ **aplicado (parcial)**: atacaba directamente los tirones de scroll y era acotado a `LibraryView.vue`.
-2. **FE-PERF-01** (`KeepAlive` acotado): ataca el retraso al cambiar de pantalla y evita repetir las 12 llamadas del Dashboard.
+2. ~~**FE-PERF-01** (`KeepAlive` acotado)~~ **aplicado**: ataca el retraso al cambiar de pantalla y evita repetir las llamadas del Dashboard.
 3. **FE-PERF-03** (división del bundle) solo con medición de arranque.
 4. **FE-PERF-04** al tocar el Dashboard por otra razón.
 
