@@ -118,3 +118,38 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   Deuda. La mitad de verificación de red (brazos SoundCloud y Apple
   Music) sigue condicionada a credenciales del propietario (D-01).
   Fuente: PR #291, `docs/Deuda_Tecnica_y_UX.md` §D-04.
+- **2026-11-14/15**: SB04 (#200) fusionado por squash en PR #292
+  (`ea9dcb6` en `dev`); también fusionados D-06a (#37, PR #293
+  `52fdd44`) y D-08a (#40, PR #294 `261a640`). Fuente: `git log dev`.
+- **2026-11-16**: D-06b (#38) fusionado por squash en PR #295
+  (`b8b949c` en `dev`, checks Rust ubuntu 30m15s / windows 33m20s
+  verdes); issue #38 cerrado manualmente citando el SHA. El programa
+  #32 queda con sub-issues 3/5 (pendientes D-06c #39 y D-08b #41).
+  Fuente: PR #295, tracker.
+- **2026-11-16, decisión de rescate de WIP**: los tres reintentos de
+  SB05 del 2026-11-15 murieron sin commits (cuota y rechazos de
+  modelo), pero el worktree del primer delegado conservaba ~848
+  líneas sin commit de implementación de #201. La decisión anterior
+  («reintento limpio, sin reutilizar el WIP») quedó sin efecto al
+  morir también sus reintentos: el WIP se audita y reutiliza como
+  punto de partida (commits + rebase sobre `b8b949c`, con conflicto
+  seguro porque D-06b tocó `commands/backup.rs`). Lección: antes de
+  descartar WIP de un delegado muerto, medir su tamaño y calidad; la
+  regla «sin reutilizar» era para un reintento inmediato, no para un
+  carril tras tres muertes seguidas. Fuente: diff del worktree
+  t3-4a866099, `git log dev`.
+- **2026-11-16, decisión del propietario sobre el modelo de delegación**:
+  los delegados usan el mismo modelo de la sesión principal
+  (`builtin:zai-start-plan\GLM-5.3-Flash`) con esfuerzo `high` en vez de
+  `max`; suplanta la mitigación del 2026-11-15/16 (Codex `gpt-6.1-sol`)
+  como política vigente. El primer lanzamiento del día con Codex se
+  canceló por esta orden. El proveedor aceptó el id `builtin:` sin el
+  rechazo del 15/16. Fuente: orden del propietario en la sesión del
+  2026-11-16.
+- **2026-11-16**: sesión con dos carriles en paralelo por orden del
+  propietario (máx. 2 subagentes simultáneos, paralelización
+  prioritaria): SB05 #201 (retomando el WIP en
+  `feat/sb05-manifest-v2-import`) y D-06c #39 (worktree privado
+  nuevo). Ambos con el modelo fijado ese día y target privado por
+  carril (`/tmp/syncify-target-sb05`, `/tmp/syncify-target-d06c`).
+  Fuente: orden del propietario en la sesión del 2026-11-16.
