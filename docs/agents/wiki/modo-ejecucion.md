@@ -330,3 +330,16 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   incidentes); agentvm1 como máximo un carril del mismo módulo a la
   vez. Fuente: lecturas de hilos d06-retry-2 y d05-relanzado en la
   sesión del 2026-11-17.
+- **2026-11-17**: L03 (#100, cabecera/URL/pestañas de biblioteca)
+  fusionado por squash en PR #311 (`916f811` en `dev`, CI 8/8, 140
+  ficheros / 1200 tests UI); issue cerrado citando el SHA; carril
+  limpiado. Programa #96: 3/14. A86 entregó PR #312 (head
+  `4a2ddd7`, 6 commits, rebase sobre P00+PL00 con claims a 336
+  objetivos medidos; clippy destapó 4 errores del WIP rescatado y
+  se arreglaron en commit nuevo; `#[expect(dead_code)]` NO funciona
+  para API pendiente de consumo futura: el lint no dispara en el
+  objetivo lib — quedó `allow(dead_code)` documentado, no comando).
+  El WIP entrelazado de D05/D06 se exporta a ramas wip/* con
+  clasificación solo por ficheros (sin hunks) para retomarlo en
+  carriles locales aislados. Fuente: informes de l03-retry-3 y
+  a86-retry-3, `gh pr merge 311` en la sesión del 2026-11-17.
