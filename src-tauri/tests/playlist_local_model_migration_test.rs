@@ -1,17 +1,17 @@
-//! PL00 (#153) — upgrade real del modelo de playlist local (migración 0108).
+//! PL00 (#153) — upgrade real del modelo de playlist local (migración 0110).
 //!
 //! Mina de AGENTS: una BD `:memory:` recién migrada **no** demuestra que el
 //! upgrade funcione. Molde de `sync_run_schema_migration_test` (FE-SYNC-01,
 //! PR #304): el fixture ejecuta los ficheros REALES de migración 0001–0106
 //! sobre una BD limpia, siembra playlists del esquema vigente (remota con
 //! cuenta, locales `local_%` en cuenta 1, pistas y fuente remota) y después
-//! aplica 0108, comprobando que el modelo nuevo queda operativo y que nada
+//! aplica 0110, comprobando que el modelo nuevo queda operativo y que nada
 //! previo se pierde. Las migraciones aplicadas nunca se editan ni se
 //! reutilizan números.
 //!
-//! Número de migración: 0108. El PR original usó 0107 (siguiente libre en su
+//! Número de migración: 0110. El PR original usó 0107 (siguiente libre en su
 //! base); L02 (#306) fusionó antes su 0107_library_fts_v2.sql y esta se
-//! renumeró a 0108 en el rebase, sin editar migraciones aplicadas.
+//! renumeró a 0110 en el rebase, sin editar migraciones aplicadas.
 
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -19,7 +19,7 @@ use sqlx::{Pool, Sqlite};
 
 const MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
-const NEW_VERSION: i64 = 108;
+const NEW_VERSION: i64 = 110;
 
 /// Aplica las migraciones reales hasta `max_version` (incluida), en orden.
 async fn apply_migrations_through(pool: &Pool<Sqlite>, max_version: i64) {
@@ -141,7 +141,7 @@ async fn assert_unique_playlist_position_index(pool: &Pool<Sqlite>) {
 }
 
 #[tokio::test]
-async fn el_upgrade_a_0108_sobre_base_0107_deja_el_modelo_de_playlist_operativo() {
+async fn el_upgrade_a_0110_sobre_base_0107_deja_el_modelo_de_playlist_operativo() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -157,15 +157,15 @@ async fn el_upgrade_a_0108_sobre_base_0107_deja_el_modelo_de_playlist_operativo(
     let new_migration = MIGRATOR
         .iter()
         .find(|m| m.version == NEW_VERSION)
-        .expect("la migración 0108 está en el árbol");
+        .expect("la migración 0110 está en el árbol");
     assert_eq!(
         new_migration.description, "pl00 local playlist model",
-        "el número 0108 es nuevo y describe el modelo local de playlists"
+        "el número 0110 es nuevo y describe el modelo local de playlists"
     );
     sqlx::raw_sql(&new_migration.sql)
         .execute(&pool)
         .await
-        .expect("el upgrade a 0108 aplica sobre la base 0107");
+        .expect("el upgrade a 0110 aplica sobre la base 0107");
 
     // 3. Nada previo se pierde: la cuenta, la remota y su fuente siguen ahí.
     let remote_row: (Option<i64>, Option<String>, Option<String>, Option<String>) =
@@ -386,7 +386,7 @@ async fn el_upgrade_a_0108_sobre_base_0107_deja_el_modelo_de_playlist_operativo(
     MIGRATOR
         .run(&fresh)
         .await
-        .expect("migración completa desde cero con 0108 incluida");
+        .expect("migración completa desde cero con 0110 incluida");
 }
 
 /// PL00: consultas del modelo nuevo sobre una BD `:memory:` completamente
