@@ -17,6 +17,7 @@ mod logs_history;
 mod models;
 mod services;
 mod settings_defaults;
+mod sync;
 mod sync_scheduler;
 mod system_conditions;
 mod tray;
@@ -1003,6 +1004,11 @@ fn main() {
             commands::get_favorites_albums,
             commands::get_favorites_artists,
             commands::sync_favorites,
+            // SyncRun: contrato de sincronización con estado (issue #65, ADR-0006)
+            commands::start_sync_run,
+            commands::cancel_sync_run,
+            commands::get_sync_run,
+            commands::list_sync_runs,
             commands::toggle_album_favorite,
             commands::toggle_artist_favorite,
             commands::push_favorite_to_service,

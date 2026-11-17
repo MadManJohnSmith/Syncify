@@ -1213,7 +1213,7 @@ pub async fn enrich_qobuz_album_metadata(
 /// Persist a provider pagination snapshot without conflating account occurrences with
 /// globally deduplicated library rows. A failed write fails the sync rather than
 /// silently presenting a stale 'complete' snapshot.
-async fn record_account_import_count(
+pub(crate) async fn record_account_import_count(
     db: &sqlx::SqlitePool,
     account_id: i64,
     collection: &str,
@@ -3071,7 +3071,7 @@ fn is_soundcloud_auth_error(err: &str) -> bool {
 /// from the client's structured error prefix, never from an arbitrary
 /// substring: provider item IDs can contain "401", and matching those used to
 /// mark healthy accounts as needing re-authentication.
-fn is_qobuz_auth_error(error: &str) -> bool {
+pub(crate) fn is_qobuz_auth_error(error: &str) -> bool {
     if error == "Authentication required" || error.contains("User authentication is required") {
         return true;
     }
@@ -3081,7 +3081,7 @@ fn is_qobuz_auth_error(error: &str) -> bool {
     qobuz_error_status(error) == Some("401")
 }
 
-fn qobuz_error_status(error: &str) -> Option<&str> {
+pub(crate) fn qobuz_error_status(error: &str) -> Option<&str> {
     let rest = error.strip_prefix("Qobuz API error (")?;
     rest.split([' ', ')']).next()
 }
@@ -3308,41 +3308,41 @@ fn soundcloud_credentials(creds: &serde_json::Value) -> Result<(String, i64), St
 /// brazo corre por sincronización (el `match` elige por servicio), así que
 /// sus campos le pertenecen en exclusiva mientras tanto.
 #[derive(Default)]
-struct SyncOutcome {
-    tracks_processed: u64,
-    tracks_expanded: u64,
-    tracks_new_global: u64,
-    sources_new_for_service: u64,
-    library_entries_new_for_account: u64,
-    tracks_already_present: u64,
-    tracks_changed_unique: u64,
-    imported_tracks_total: u64,
-    skipped_tracks_total: u64,
-    purchases_total: u64,
-    favorite_tracks_total: u64,
-    favorites_seen: u64,
-    metadata_enriched: u64,
-    metadata_partial: u64,
-    playlists_seen: u64,
-    playlists_total: u64,
-    api_fetch_ms: u64,
-    enrichment_ms: u64,
-    albums_seen: u64,
-    availability_checked: u64,
-    albums_unavailable: u64,
-    tracks_unavailable: u64,
-    tracks_expansion_deferred: u64,
-    tracks_expansion_failed: u64,
-    entity_expansion_ms: u64,
-    persistence_ms: u64,
-    favorite_albums_total: u64,
-    favorite_artists_total: u64,
-    reported_favorites: Option<i64>,
-    reported_albums: Option<i64>,
-    reported_playlists: Option<i64>,
-    album_expansion_metrics: crate::commands::types::AlbumSyncExpansionMetrics,
-    errors: Vec<String>,
-    warnings: Vec<String>,
+pub(crate) struct SyncOutcome {
+    pub(crate) tracks_processed: u64,
+    pub(crate) tracks_expanded: u64,
+    pub(crate) tracks_new_global: u64,
+    pub(crate) sources_new_for_service: u64,
+    pub(crate) library_entries_new_for_account: u64,
+    pub(crate) tracks_already_present: u64,
+    pub(crate) tracks_changed_unique: u64,
+    pub(crate) imported_tracks_total: u64,
+    pub(crate) skipped_tracks_total: u64,
+    pub(crate) purchases_total: u64,
+    pub(crate) favorite_tracks_total: u64,
+    pub(crate) favorites_seen: u64,
+    pub(crate) metadata_enriched: u64,
+    pub(crate) metadata_partial: u64,
+    pub(crate) playlists_seen: u64,
+    pub(crate) playlists_total: u64,
+    pub(crate) api_fetch_ms: u64,
+    pub(crate) enrichment_ms: u64,
+    pub(crate) albums_seen: u64,
+    pub(crate) availability_checked: u64,
+    pub(crate) albums_unavailable: u64,
+    pub(crate) tracks_unavailable: u64,
+    pub(crate) tracks_expansion_deferred: u64,
+    pub(crate) tracks_expansion_failed: u64,
+    pub(crate) entity_expansion_ms: u64,
+    pub(crate) persistence_ms: u64,
+    pub(crate) favorite_albums_total: u64,
+    pub(crate) favorite_artists_total: u64,
+    pub(crate) reported_favorites: Option<i64>,
+    pub(crate) reported_albums: Option<i64>,
+    pub(crate) reported_playlists: Option<i64>,
+    pub(crate) album_expansion_metrics: crate::commands::types::AlbumSyncExpansionMetrics,
+    pub(crate) errors: Vec<String>,
+    pub(crate) warnings: Vec<String>,
 }
 
 impl SyncOutcome {
@@ -6115,120 +6115,124 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
     Ok(())
 }
 
-/// Brazo Qobuz del sync: el más grande y el que más expansiones de entidad abre
-/// (álbumes, artistas, compras y playlists) sobre el motor compartido.
-#[allow(clippy::too_many_arguments)]
-async fn sync_qobuz_arm<E: SyncProgressEmitter>(
+/// Resultado de la fase de favoritos del brazo Qobuz (issue #65).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum QobuzFavoritesOutcome {
+    /// Recorrido completo, con o sin huecos ya registrados en `arm.errors`.
+    Completed,
+    /// Cancelación atendida en el límite de página: lo importado se conserva.
+    Cancelled,
+    /// 401/403: la credencial quedó marcada inválida y la cuenta falla sola
+    /// (decisión 20 del ADR-0006). El mensaje viaja para el estado de la fila.
+    AuthFailed(String),
+}
+
+/// Fase de favoritos del brazo Qobuz, extraída del orquestador (issue #65).
+///
+/// El recorrido pasa por la interfaz `LibrarySource` (seam 2 del contrato
+/// ADR-0006): la paginación la declara el adaptador y aquí solo se decide el
+/// recorrido. El brazo del orquestador la llama con `cancel: None` —
+/// comportamiento idéntico al anterior, vigilado por la caracterización de
+/// PR #298 (`qobuz_sync_arm_simulated_provider_test`)— y el job de `SyncRun`
+/// la llama con la bandera de cancelación, que se atiende en el límite de
+/// página: la página en curso se completa y la siguiente no se pide.
+pub(crate) async fn sync_qobuz_favorites_phase<S, E>(
     db: &sqlx::SqlitePool,
     service_normalized: &str,
     account_id: i64,
-    creds: &serde_json::Value,
+    qobuz_service_id: i64,
+    source: &S,
     prefs: &ImportPreferences,
     emitter: Option<&E>,
     enrichment_engine: &crate::services::enrichment::EnrichmentEngine,
     arm: &mut SyncOutcome,
-) -> Result<(), String> {
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<QobuzFavoritesOutcome, String>
+where
+    S: crate::sync::LibrarySource,
+    E: SyncProgressEmitter,
+{
     let emit = |event: SyncProgressEvent| {
         if let Some(e) = emitter {
             e.emit_sync_progress(&event);
         }
     };
-    let app_id = std::env::var("QOBUZ_APP_ID")
-        .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
-    let app_secret = std::env::var("QOBUZ_APP_SECRET")
-        .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
 
-    // S186: resolve the token exactly like the download pipeline — stored token
-    // first, then username/password auto-login with the result persisted back.
-    let user_auth_token = match resolve_qobuz_user_auth_token(db, account_id, &creds).await {
-        Ok(tok) => tok,
-        Err(err_msg) => {
-            emit(SyncProgressEvent::requires_auth(
-                &service_normalized,
-                Some(account_id),
-                &err_msg,
-            ));
-            return Err(err_msg);
+    emit(SyncProgressEvent::running(
+        service_normalized,
+        Some(account_id),
+        "fetching_favorite_tracks",
+        0,
+        None,
+        "Importing favorite tracks...",
+        arm.imported_tracks_total,
+        arm.favorite_tracks_total,
+    ));
+
+    let mut offset = 0i64;
+    let limit = source.favorites_page_size();
+    loop {
+        // Cancelación en el límite de página: la página anterior quedó
+        // completa y la siguiente no se pide (regla derivada del ADR-0006).
+        if let Some(flag) = cancel {
+            if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                return Ok(QobuzFavoritesOutcome::Cancelled);
+            }
         }
-    };
-
-    let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
-    let qobuz_service_id = match client.get_service_id(db, "qobuz").await {
-        Ok(id) => id,
-        Err(e) => {
-            let err_msg = format!("Failed to get Qobuz service id: {}", e);
-            emit(SyncProgressEvent::failed(
-                &service_normalized,
-                Some(account_id),
-                "authenticating",
-                &err_msg,
-                0,
-                0,
-            ));
-            return Err(err_msg);
-        }
-    };
-
-    // Phase 1: Favorite Tracks
-    if prefs.favorite_tracks {
-        emit(SyncProgressEvent::running(
-            &service_normalized,
-            Some(account_id),
-            "fetching_favorite_tracks",
-            0,
-            None,
-            "Importing favorite tracks...",
-            arm.imported_tracks_total,
-            arm.favorite_tracks_total,
-        ));
-
-        let mut offset = 0;
-        let limit = 50;
-        loop {
-            let t_api = std::time::Instant::now();
-            match qobuz_sync_with_retry(|| client.get_favorites(offset, limit)).await {
-                Ok(page) => {
-                    arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                    let page_total = page.tracks.total as u64;
-                    arm.reported_favorites = Some(page_total as i64);
-                    record_account_import_count(
-                        db,
-                        account_id,
-                        "favorites",
-                        Some(page_total as i64),
-                        arm.favorite_tracks_total as i64,
-                        "partial",
-                    )
-                    .await?;
-                    if page.tracks.items.is_empty() {
-                        break;
-                    }
-                    for track in &page.tracks.items {
-                        let artist_name = track
-                            .performer
+        let t_api = std::time::Instant::now();
+        match crate::sync::source::retry_source_page(|| source.fetch_favorites_page(offset)).await {
+            Ok(page) => {
+                arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                let page_total = page.reported_total.map(|t| t as u64);
+                arm.reported_favorites = page.reported_total;
+                record_account_import_count(
+                    db,
+                    account_id,
+                    "favorites",
+                    page.reported_total,
+                    arm.favorite_tracks_total as i64,
+                    "partial",
+                )
+                .await?;
+                if page.items.is_empty() {
+                    break;
+                }
+                for item in &page.items {
+                    let track: crate::services::qobuz::QobuzTrack =
+                        match serde_json::from_value(item.clone()) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                arm.errors
+                                    .push(format!("Qobuz favorites item decode error: {}", e));
+                                continue;
+                            }
+                        };
+                    let artist_name = track
+                        .performer
+                        .as_ref()
+                        .and_then(|a| a.name.clone())
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    let album_title = track.album.as_ref().and_then(|a| a.title.clone());
+                    let album_cover = track.album.as_ref().and_then(|a| {
+                        a.image
                             .as_ref()
-                            .and_then(|a| a.name.clone())
-                            .unwrap_or_else(|| "Unknown".to_string());
-                        let album_title = track.album.as_ref().and_then(|a| a.title.clone());
-                        let album_cover = track.album.as_ref().and_then(|a| {
-                            a.image
-                                .as_ref()
-                                .and_then(|img| img.large.clone().or_else(|| img.small.clone()))
-                        });
-                        let (release_date_val, release_year_val) =
-                            match track.album.as_ref().and_then(|a| a.released_at) {
-                                Some(ts) => {
-                                    let date_str = chrono::DateTime::from_timestamp(ts, 0)
-                                        .map(|dt| dt.format("%Y-%m-%d").to_string());
-                                    let year_str = chrono::DateTime::from_timestamp(ts, 0)
-                                        .map(|dt| dt.format("%Y").to_string());
-                                    (date_str, year_str)
-                                }
-                                None => (None, None),
-                            };
-                        let quality_score = client.compute_quality_score(track);
+                            .and_then(|img| img.large.clone().or_else(|| img.small.clone()))
+                    });
+                    let (release_date_val, release_year_val) =
+                        match track.album.as_ref().and_then(|a| a.released_at) {
+                            Some(ts) => {
+                                let date_str = chrono::DateTime::from_timestamp(ts, 0)
+                                    .map(|dt| dt.format("%Y-%m-%d").to_string());
+                                let year_str = chrono::DateTime::from_timestamp(ts, 0)
+                                    .map(|dt| dt.format("%Y").to_string());
+                                (date_str, year_str)
+                            }
+                            None => (None, None),
+                        };
+                    let quality_score = crate::services::qobuz::compute_track_quality_score(&track);
 
-                        let sync_input = crate::services::enrichment::SyncTrackInput {
+                    let sync_input =
+                        crate::services::enrichment::SyncTrackInput {
                             origin_meta: crate::services::enrichment::OriginTrackMetadata {
                                 title: track.title.clone(),
                                 artist: Some(artist_name),
@@ -6289,94 +6293,180 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                             album_provider_track_id: None,
                         };
 
-                        let t_enrich = std::time::Instant::now();
-                        match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input)
-                            .await
-                        {
-                            Ok(res) => {
-                                arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
-                                arm.tracks_processed += 1;
-                                if res.is_new_global_track {
-                                    arm.tracks_new_global += 1;
-                                }
-                                if res.is_new_source_for_service {
-                                    arm.sources_new_for_service += 1;
-                                }
-                                if res.is_new_library_entry_for_account {
-                                    arm.library_entries_new_for_account += 1;
-                                }
-                                if res.is_already_present {
-                                    arm.tracks_already_present += 1;
-                                }
-                                if res.is_new_import {
-                                    arm.tracks_changed_unique += 1;
-                                    arm.imported_tracks_total += 1;
-                                } else {
-                                    arm.skipped_tracks_total += 1;
-                                }
-                                arm.favorite_tracks_total += 1;
-                                arm.availability_checked += 1;
-                                arm.record_metadata(res.completeness);
+                    let t_enrich = std::time::Instant::now();
+                    match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await
+                    {
+                        Ok(res) => {
+                            arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                            arm.tracks_processed += 1;
+                            if res.is_new_global_track {
+                                arm.tracks_new_global += 1;
                             }
-                            Err(e) => {
-                                arm.errors
-                                    .push(format!("Qobuz track error for {}: {}", track.id, e));
+                            if res.is_new_source_for_service {
+                                arm.sources_new_for_service += 1;
                             }
+                            if res.is_new_library_entry_for_account {
+                                arm.library_entries_new_for_account += 1;
+                            }
+                            if res.is_already_present {
+                                arm.tracks_already_present += 1;
+                            }
+                            if res.is_new_import {
+                                arm.tracks_changed_unique += 1;
+                                arm.imported_tracks_total += 1;
+                            } else {
+                                arm.skipped_tracks_total += 1;
+                            }
+                            arm.favorite_tracks_total += 1;
+                            arm.availability_checked += 1;
+                            arm.record_metadata(res.completeness);
                         }
+                        Err(e) => {
+                            arm.errors
+                                .push(format!("Qobuz track error for {}: {}", track.id, e));
+                        }
+                    }
 
-                        emit(SyncProgressEvent::running(
-                            &service_normalized,
-                            Some(account_id),
-                            "importing_favorite_tracks",
+                    emit(SyncProgressEvent::running(
+                        service_normalized,
+                        Some(account_id),
+                        "importing_favorite_tracks",
+                        arm.favorite_tracks_total,
+                        page_total,
+                        format!(
+                            "Importing favorite tracks ({}/{})",
                             arm.favorite_tracks_total,
-                            Some(page_total),
-                            format!(
-                                "Importing favorite tracks ({}/{})",
-                                arm.favorite_tracks_total, page_total
-                            ),
-                            arm.imported_tracks_total,
-                            arm.favorite_tracks_total,
-                        ));
-                    }
-                    offset += limit;
-                    if page.tracks.items.len() < limit as usize {
-                        break;
-                    }
+                            page_total.unwrap_or(0)
+                        ),
+                        arm.imported_tracks_total,
+                        arm.favorite_tracks_total,
+                    ));
                 }
-                Err(e) => {
-                    record_account_import_count(
-                        db,
-                        account_id,
-                        "favorites",
-                        arm.reported_favorites,
-                        arm.favorite_tracks_total as i64,
-                        "error",
-                    )
-                    .await?;
-                    if is_qobuz_auth_error(&e) {
-                        tracing::warn!("[perform_sync_service/qobuz] 401 on favorites — marking credentials invalid");
-                        let _ = mark_account_credentials_invalid(
-                            db,
-                            "qobuz",
-                            "HTTP 401: User authentication required",
-                            Some(account_id),
-                        )
-                        .await;
-                        let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorites: {}", e);
-                        emit(SyncProgressEvent::requires_auth(
-                            &service_normalized,
-                            Some(account_id),
-                            &err_msg,
-                        ));
-                        return Err(err_msg);
-                    }
-                    arm.errors.push(format!("Qobuz favorites error: {}", e));
+                offset += limit;
+                if page.items.len() < limit as usize {
                     break;
                 }
+            }
+            Err(e) => {
+                record_account_import_count(
+                    db,
+                    account_id,
+                    "favorites",
+                    arm.reported_favorites,
+                    arm.favorite_tracks_total as i64,
+                    "error",
+                )
+                .await?;
+                if e.kind == crate::sync::SourceErrorKind::AuthExpired {
+                    tracing::warn!("[perform_sync_service/qobuz] 401 on favorites — marking credentials invalid");
+                    let _ = mark_account_credentials_invalid(
+                        db,
+                        "qobuz",
+                        "HTTP 401: User authentication required",
+                        Some(account_id),
+                    )
+                    .await;
+                    let err_msg = format!(
+                        "RequiresAuth: Qobuz session rejected (401) while fetching favorites: {}",
+                        e
+                    );
+                    emit(SyncProgressEvent::requires_auth(
+                        service_normalized,
+                        Some(account_id),
+                        &err_msg,
+                    ));
+                    return Ok(QobuzFavoritesOutcome::AuthFailed(err_msg));
+                }
+                arm.errors.push(format!("Qobuz favorites error: {}", e));
+                break;
             }
         }
     }
 
+    Ok(QobuzFavoritesOutcome::Completed)
+}
+
+/// Brazo Qobuz del sync: el más grande y el que más expansiones de entidad abre
+/// (álbumes, artistas, compras y playlists) sobre el motor compartido.
+#[allow(clippy::too_many_arguments)]
+async fn sync_qobuz_arm<E: SyncProgressEmitter>(
+    db: &sqlx::SqlitePool,
+    service_normalized: &str,
+    account_id: i64,
+    creds: &serde_json::Value,
+    prefs: &ImportPreferences,
+    emitter: Option<&E>,
+    enrichment_engine: &crate::services::enrichment::EnrichmentEngine,
+    arm: &mut SyncOutcome,
+) -> Result<(), String> {
+    let emit = |event: SyncProgressEvent| {
+        if let Some(e) = emitter {
+            e.emit_sync_progress(&event);
+        }
+    };
+    let app_id = std::env::var("QOBUZ_APP_ID")
+        .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_ID.to_string());
+    let app_secret = std::env::var("QOBUZ_APP_SECRET")
+        .unwrap_or_else(|_| crate::services::qobuz::QOBUZ_APP_SECRET.to_string());
+
+    // S186: resolve the token exactly like the download pipeline — stored token
+    // first, then username/password auto-login with the result persisted back.
+    let user_auth_token = match resolve_qobuz_user_auth_token(db, account_id, &creds).await {
+        Ok(tok) => tok,
+        Err(err_msg) => {
+            emit(SyncProgressEvent::requires_auth(
+                &service_normalized,
+                Some(account_id),
+                &err_msg,
+            ));
+            return Err(err_msg);
+        }
+    };
+
+    let client = crate::services::QobuzClient::new_with_token(app_id, app_secret, user_auth_token);
+    let qobuz_service_id = match client.get_service_id(db, "qobuz").await {
+        Ok(id) => id,
+        Err(e) => {
+            let err_msg = format!("Failed to get Qobuz service id: {}", e);
+            emit(SyncProgressEvent::failed(
+                &service_normalized,
+                Some(account_id),
+                "authenticating",
+                &err_msg,
+                0,
+                0,
+            ));
+            return Err(err_msg);
+        }
+    };
+
+    // Phase 1: Favorite Tracks — ahora por la interfaz LibrarySource
+    // (seam 2 del contrato ADR-0006). El comportamiento sin cancelación es
+    // idéntico al del recorrido anterior, vigilado por la caracterización de
+    // PR #298 (`qobuz_sync_arm_simulated_provider_test`).
+    if prefs.favorite_tracks {
+        let favorites_source = crate::sync::QobuzLibrarySource::new(&client);
+        match sync_qobuz_favorites_phase(
+            db,
+            service_normalized,
+            account_id,
+            qobuz_service_id,
+            &favorites_source,
+            prefs,
+            emitter,
+            enrichment_engine,
+            arm,
+            None,
+        )
+        .await?
+        {
+            QobuzFavoritesOutcome::Completed => {}
+            // Sin bandera de cancelación esta fase no puede devolver
+            // Cancelled; por simetría de tipos se trata como cierre normal.
+            QobuzFavoritesOutcome::Cancelled => {}
+            QobuzFavoritesOutcome::AuthFailed(err_msg) => return Err(err_msg),
+        }
+    }
     // Phase 2: Favorite Albums
     if prefs.favorite_albums {
         emit(SyncProgressEvent::running(

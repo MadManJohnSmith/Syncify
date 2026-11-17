@@ -266,6 +266,24 @@ where
     }
 }
 
+/// Puntuación de calidad de un track de Qobuz (FLAC base + profundidad de
+/// bits + tasa de muestreo). Función libre para que la fase de favoritos del
+/// contrato de sincronización (issue #65) la use sin instancia de cliente;
+/// `QobuzClient::compute_quality_score` delega aquí.
+pub fn compute_track_quality_score(track: &QobuzTrack) -> i32 {
+    let mut score = 1000; // FLAC base
+
+    if let Some(depth) = track.maximum_bit_depth {
+        score += depth * 10;
+    }
+
+    if let Some(rate) = track.maximum_sampling_rate {
+        score += (rate as i32).min(200);
+    }
+
+    score
+}
+
 /// Qobuz track from API
 #[derive(Debug, Clone, Deserialize)]
 pub struct QobuzTrack {
@@ -587,7 +605,7 @@ impl QobuzClient {
         params.push(("request_sig", sig));
     }
 
-    async fn api_request<T: for<'de> Deserialize<'de>>(
+    pub(crate) async fn api_request<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
         params: Vec<(&str, String)>,
@@ -1432,17 +1450,7 @@ impl QobuzClient {
     }
 
     pub fn compute_quality_score(&self, track: &QobuzTrack) -> i32 {
-        let mut score = 1000; // FLAC base
-
-        if let Some(depth) = track.maximum_bit_depth {
-            score += depth * 10;
-        }
-
-        if let Some(rate) = track.maximum_sampling_rate {
-            score += (rate as i32).min(200);
-        }
-
-        score
+        compute_track_quality_score(track)
     }
 
     pub async fn get_service_id(&self, db: &SqlitePool, name: &str) -> Result<i64, String> {
