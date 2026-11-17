@@ -571,6 +571,18 @@ pub async fn enqueue_candidates(
 
     let mut tx = db.begin().await?;
 
+    // D07: si el job fue cancelado mientras el encolado corría, no inserta
+    // nada. La comprobación comparte transacción con el INSERT, así que una
+    // cancelación posterior o anterior queda serializada con este encolado.
+    let job_status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM download_jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if job_status.as_deref() == Some("cancelled") {
+        return Ok(EnqueueOutcome::default());
+    }
+
     let mut existing = HashSet::new();
     for chunk in ids.chunks(ENQUEUE_BATCH_SIZE) {
         let placeholders = vec!["?"; chunk.len()].join(",");
@@ -732,6 +744,308 @@ pub async fn mark_job_failed(db: &SqlitePool, job_id: i64, error: &str) -> Resul
     .execute(db)
     .await?;
     Ok(())
+}
+
+// ===== D07 (spec #111 / issue #119): estado del job, snapshot y ciclo =====
+//
+// La cola (`download_queue`) sigue siendo la fuente de verdad: el estado y los
+// contadores del job se recalculan desde ella, nunca al revés. El worker no
+// llama aquí (módulo de jobs, no worker.rs); el watcher de `job_events` sondea
+// y los comandos de ciclo refrescan al actuar.
+
+/// Estados terminales del vocabulario de `download_jobs` (migración 0102).
+pub const JOB_TERMINAL_STATUSES: [&str; 4] = ["completed", "partial", "cancelled", "failed"];
+
+/// Payload del evento `syncify:download_job_progress`. Los nombres de campo
+/// son el contrato que consume D08: snake_case, tal cual emite serde.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DownloadJobProgressEvent {
+    pub job_id: i64,
+    pub label: Option<String>,
+    pub status: String,
+    pub total: i64,
+    pub queued: i64,
+    pub downloading: i64,
+    pub completed: i64,
+    pub failed: i64,
+    pub cancelled: i64,
+    pub skipped: i64,
+    pub percent: f64,
+    pub terminal: bool,
+}
+
+/// Contadores vivos de la cola para un job, por estado de fila.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct JobQueueCounts {
+    pub queued: i64,
+    pub downloading: i64,
+    /// Filas `complete` en `download_queue` (vocabulario de la cola).
+    pub completed: i64,
+    pub failed: i64,
+    pub cancelled: i64,
+}
+
+impl JobQueueCounts {
+    pub fn active(&self) -> i64 {
+        self.queued + self.downloading
+    }
+
+    pub fn total_rows(&self) -> i64 {
+        self.queued + self.downloading + self.completed + self.failed + self.cancelled
+    }
+}
+
+async fn queue_counts(db: &SqlitePool, job_id: i64) -> Result<JobQueueCounts, JobError> {
+    let rows = sqlx::query(
+        "SELECT status, COUNT(*) AS c FROM download_queue WHERE job_id = ? GROUP BY status",
+    )
+    .bind(job_id)
+    .fetch_all(db)
+    .await?;
+    let mut counts = JobQueueCounts::default();
+    for row in rows {
+        let status: String = row.try_get("status")?;
+        let c: i64 = row.try_get("c")?;
+        match status.as_str() {
+            "queued" => counts.queued = c,
+            "downloading" => counts.downloading = c,
+            "complete" => counts.completed = c,
+            "failed" => counts.failed = c,
+            "cancelled" => counts.cancelled = c,
+            other => tracing::warn!(
+                job_id = job_id,
+                status = %other,
+                "[download_jobs] unknown queue status in job counters"
+            ),
+        }
+    }
+    Ok(counts)
+}
+
+/// Estado terminal derivado de los contadores finales de la cola. Un job sin
+/// ninguna fila de resultado (todo `skipped`, nada que hacer) cuenta como
+/// `completed`: no hay trabajo pendiente que el job pudiera hacer.
+fn derive_terminal_status(completed: i64, failed: i64, cancelled: i64) -> &'static str {
+    if completed > 0 && (failed > 0 || cancelled > 0) {
+        "partial"
+    } else if completed > 0 {
+        "completed"
+    } else if failed > 0 {
+        "failed"
+    } else if cancelled > 0 {
+        "cancelled"
+    } else {
+        "completed"
+    }
+}
+
+/// Recalcula estado y contadores del job desde la cola y los persiste.
+///
+/// `enqueue_done`: `Some(true)` cuando el llamador sabe que el encolado terminó
+/// (`run_job`); `None` lo infiere de `requested_count > 0`. Un job ya terminal
+/// no se recalcula aquí: abrirlo de nuevo es cosa de `retry_job_failed`.
+/// Lee un job sin fallar si no existe: los caminos de refresco y de ciclo
+/// distinguen «job borrado» de «error de BD».
+async fn find_job(db: &SqlitePool, job_id: i64) -> Result<Option<DownloadJobRow>, JobError> {
+    let sql = format!("SELECT {JOB_COLUMNS} FROM download_jobs WHERE id = ?");
+    Ok(sqlx::query_as::<_, DownloadJobRow>(&sql)
+        .bind(job_id)
+        .fetch_optional(db)
+        .await?)
+}
+
+pub async fn refresh_job_status(
+    db: &SqlitePool,
+    job_id: i64,
+    enqueue_done: Option<bool>,
+) -> Result<Option<DownloadJobRow>, JobError> {
+    let Some(job) = find_job(db, job_id).await? else {
+        return Ok(None);
+    };
+    let counts = queue_counts(db, job_id).await?;
+    let enqueue_done = enqueue_done.unwrap_or(job.requested_count > 0);
+
+    let status = if JOB_TERMINAL_STATUSES.contains(&job.status.as_str()) {
+        job.status.clone()
+    } else if counts.active() > 0 || !enqueue_done {
+        "running".to_string()
+    } else {
+        derive_terminal_status(counts.completed, counts.failed, counts.cancelled).to_string()
+    };
+
+    sqlx::query(
+        "UPDATE download_jobs SET status = ?, completed_count = ?, failed_count = ?, \
+         updated_at = CURRENT_TIMESTAMP, \
+         completed_at = CASE \
+           WHEN ? IN ('completed', 'partial', 'cancelled', 'failed') AND completed_at IS NULL \
+             THEN CURRENT_TIMESTAMP \
+           WHEN ? = 'running' THEN NULL \
+           ELSE completed_at END \
+         WHERE id = ?",
+    )
+    .bind(&status)
+    .bind(counts.completed)
+    .bind(counts.failed)
+    .bind(&status)
+    .bind(&status)
+    .bind(job_id)
+    .execute(db)
+    .await?;
+
+    find_job(db, job_id).await
+}
+
+/// Snapshot del payload del evento de job. Lee la cola directamente para que
+/// los contadores sean vivos aunque la fila del job vaya con retraso.
+pub async fn progress_snapshot(
+    db: &SqlitePool,
+    job_id: i64,
+) -> Result<Option<DownloadJobProgressEvent>, JobError> {
+    let Some(job) = find_job(db, job_id).await? else {
+        return Ok(None);
+    };
+    let counts = queue_counts(db, job_id).await?;
+
+    let total = if job.requested_count > 0 {
+        job.requested_count
+    } else {
+        counts.total_rows()
+    };
+    let done = counts.completed + counts.failed + counts.cancelled + job.skipped_count;
+    let percent = if total > 0 {
+        ((done as f64 / total as f64) * 100.0).min(100.0)
+    } else {
+        0.0
+    };
+
+    Ok(Some(DownloadJobProgressEvent {
+        job_id,
+        label: job.label.clone(),
+        status: job.status.clone(),
+        total,
+        queued: counts.queued,
+        downloading: counts.downloading,
+        completed: counts.completed,
+        failed: counts.failed,
+        cancelled: counts.cancelled,
+        skipped: job.skipped_count,
+        percent,
+        terminal: JOB_TERMINAL_STATUSES.contains(&job.status.as_str()),
+    }))
+}
+
+/// Resultado de cancelar un job: filas pendientes canceladas y job refrescado.
+#[derive(Debug, Clone)]
+pub struct CancelJobOutcome {
+    pub cancelled_rows: i64,
+    pub job: DownloadJobRow,
+}
+
+/// Cancela un job: solo filas pendientes (`queued`), como fija D03; la
+/// descarga activa termina. El estado del job se recalcula desde la cola.
+///
+/// Si el encolado en segundo plano aún corre, `enqueue_candidates` comprueba
+/// el estado del job dentro de su transacción y no inserta nada.
+pub async fn cancel_job(
+    db: &SqlitePool,
+    job_id: i64,
+) -> Result<Option<CancelJobOutcome>, JobError> {
+    let cancelled_rows = sqlx::query(
+        "UPDATE download_queue SET status = 'cancelled' \
+         WHERE job_id = ? AND status = 'queued'",
+    )
+    .bind(job_id)
+    .execute(db)
+    .await?
+    .rows_affected() as i64;
+
+    let Some(job) = find_job(db, job_id).await? else {
+        return Ok(None);
+    };
+    let counts = queue_counts(db, job_id).await?;
+
+    let job = if counts.downloading > 0 {
+        // Descarga en vuelo: sigue hasta terminar (sin cancelación
+        // cooperativa en beta) y el refresco derivará entonces.
+        refresh_job_status(db, job_id, None).await?.unwrap_or(job)
+    } else if counts.total_rows() == 0 && job.status == "running" && job.requested_count == 0 {
+        // Cancelación antes del encolado: sin filas todavía y el encolado en
+        // curso no insertará nada (guardia en `enqueue_candidates`). El job
+        // termina `cancelled` ahora, no «completado vacío».
+        sqlx::query(
+            "UPDATE download_jobs SET status = 'cancelled', error = NULL, \
+             completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        )
+        .bind(job_id)
+        .execute(db)
+        .await?;
+        find_job(db, job_id).await?.unwrap_or(job)
+    } else {
+        refresh_job_status(db, job_id, Some(true))
+            .await?
+            .unwrap_or(job)
+    };
+
+    Ok(Some(CancelJobOutcome {
+        cancelled_rows,
+        job,
+    }))
+}
+
+/// Reencola las filas `failed` de un job y reabre el job si estaba terminal.
+/// Es el mismo ManualRetry por fila de `commands/queue.rs`, acotado al job y
+/// sin tope de intentos. Devuelve el job actualizado; sin filas que reencolar
+/// no toca el job.
+pub async fn retry_job_failed(
+    db: &SqlitePool,
+    job_id: i64,
+) -> Result<Option<DownloadJobRow>, JobError> {
+    let requeued = sqlx::query(
+        "UPDATE download_queue SET status = 'queued', error_message = NULL, last_error = NULL, \
+         decision_reason = NULL, progress_percent = 0, started_at = NULL, retry_count = 0, \
+         next_attempt_at = NULL WHERE job_id = ? AND status = 'failed'",
+    )
+    .bind(job_id)
+    .execute(db)
+    .await?
+    .rows_affected();
+
+    if requeued == 0 {
+        return find_job(db, job_id).await;
+    }
+
+    sqlx::query(
+        "UPDATE download_jobs SET status = 'running', error = NULL, completed_at = NULL, \
+         updated_at = CURRENT_TIMESTAMP WHERE id = ? \
+         AND status IN ('completed', 'partial', 'cancelled', 'failed')",
+    )
+    .bind(job_id)
+    .execute(db)
+    .await?;
+
+    refresh_job_status(db, job_id, None).await
+}
+
+/// Borra los jobs terminales del historial y devuelve cuántos cayeron y los
+/// ids borrados (para que la capa de comandos pode el registro queue→job).
+pub async fn clear_terminal_jobs(db: &SqlitePool) -> Result<(u64, Vec<i64>), JobError> {
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM download_jobs \
+         WHERE status IN ('completed', 'partial', 'cancelled', 'failed')",
+    )
+    .fetch_all(db)
+    .await?;
+    if ids.is_empty() {
+        return Ok((0, Vec::new()));
+    }
+    let deleted = sqlx::query(
+        "DELETE FROM download_jobs \
+         WHERE status IN ('completed', 'partial', 'cancelled', 'failed')",
+    )
+    .execute(db)
+    .await?
+    .rows_affected();
+    Ok((deleted, ids))
 }
 
 const JOB_COLUMNS: &str = "id, kind, label, status, source_service, destination_service, \
