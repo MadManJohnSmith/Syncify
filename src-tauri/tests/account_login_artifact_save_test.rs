@@ -27,7 +27,10 @@ async fn setup_test_db() -> sqlx::SqlitePool {
     pool
 }
 
-async fn account_rows(pool: &sqlx::SqlitePool, service: &str) -> Vec<(i64, String, Option<String>)> {
+async fn account_rows(
+    pool: &sqlx::SqlitePool,
+    service: &str,
+) -> Vec<(i64, String, Option<String>)> {
     sqlx::query_as(
         r#"SELECT accounts.id, accounts.display_name, accounts.email
            FROM accounts JOIN services ON accounts.service_id = services.id
@@ -40,12 +43,11 @@ async fn account_rows(pool: &sqlx::SqlitePool, service: &str) -> Vec<(i64, Strin
 }
 
 async fn decrypted_credentials(pool: &sqlx::SqlitePool, service: &str) -> String {
-    let service_id: i64 =
-        sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
-            .bind(service)
-            .fetch_one(pool)
-            .await
-            .expect("service id");
+    let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
+        .bind(service)
+        .fetch_one(pool)
+        .await
+        .expect("service id");
     let encrypted: String =
         sqlx::query_scalar("SELECT credentials_json FROM accounts WHERE service_id = ?")
             .bind(service_id)
@@ -77,11 +79,16 @@ async fn artefacto_falso_deezer_guarda_una_cuenta_por_el_camino_existente() {
     assert_eq!(rows.len(), 1, "una cuenta creada por el intento");
 
     let creds = decrypted_credentials(&pool, "deezer").await;
-    assert!(creds.contains(&format!("\"arl\":\"{arl}\"")), "el ARL viaja cifrado");
+    assert!(
+        creds.contains(&format!("\"arl\":\"{arl}\"")),
+        "el ARL viaja cifrado"
+    );
 
     // Re-login con el mismo artefacto NO duplica la cuenta (ADR-0007, decisión 6).
     let payload = serde_json::json!({ "arl": arl, "access_token": arl });
-    save_auth_result("deezer", payload, &pool).await.expect("re-login");
+    save_auth_result("deezer", payload, &pool)
+        .await
+        .expect("re-login");
     let rows = account_rows(&pool, "deezer").await;
     assert_eq!(rows.len(), 1, "el re-login reutiliza la fila");
 }
@@ -112,7 +119,10 @@ async fn artefacto_falso_qobuz_guarda_solo_el_token_sin_correo_ni_contrasena() {
 
     let rows = account_rows(&pool, "qobuz").await;
     assert_eq!(rows.len(), 1);
-    assert!(rows[0].2.is_none(), "sin email capturado, la fila no lleva email");
+    assert!(
+        rows[0].2.is_none(),
+        "sin email capturado, la fila no lleva email"
+    );
 }
 
 #[tokio::test]
@@ -128,7 +138,9 @@ async fn artefacto_de_tidal_del_puente_lleva_expiry_inyectado() {
         "user_id": "424242",
     });
 
-    let result = save_auth_result("tidal", payload, &pool).await.expect("saved");
+    let result = save_auth_result("tidal", payload, &pool)
+        .await
+        .expect("saved");
     assert!(result.success);
 
     let creds = decrypted_credentials(&pool, "tidal").await;
@@ -148,7 +160,9 @@ async fn artefacto_falso_soundcloud_y_apple_music_persisten() {
         "oauth_token": format!("OAuth {}", "c".repeat(30)),
         "access_token": "c".repeat(30),
     });
-    let result = save_auth_result("soundcloud", sc, &pool).await.expect("saved");
+    let result = save_auth_result("soundcloud", sc, &pool)
+        .await
+        .expect("saved");
     assert!(result.success);
     assert_eq!(account_rows(&pool, "soundcloud").await.len(), 1);
 
@@ -157,7 +171,9 @@ async fn artefacto_falso_soundcloud_y_apple_music_persisten() {
         "music_user_token": "m".repeat(25),
         "developer_token": format!("eyJ{}", "d".repeat(60)),
     });
-    let result = save_auth_result("apple_music", apple, &pool).await.expect("saved");
+    let result = save_auth_result("apple_music", apple, &pool)
+        .await
+        .expect("saved");
     assert!(result.success);
     assert_eq!(account_rows(&pool, "apple_music").await.len(), 1);
 

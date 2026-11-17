@@ -457,8 +457,7 @@ fn finalize_attempt(
         if let Some(err) = error {
             // Redactado por la misma regla que el resto del auth: el error puede
             // citar la salida del puente y no debe llevar tokens.
-            payload["error"] =
-                Value::String(crate::commands::auth::redact_auth_payload(err));
+            payload["error"] = Value::String(crate::commands::auth::redact_auth_payload(err));
         }
         let event = match outcome {
             AttemptOutcome::Completed => "account-login-completed",
@@ -609,14 +608,9 @@ async fn run_web_artifact_attempt(
                 );
                 return;
             };
-            capture_cookie(
-                &app,
-                &window_label,
-                scope,
-                name,
-                *min_len,
-                |v| valid_artifact_value(service, v),
-            )
+            capture_cookie(&app, &window_label, scope, name, *min_len, |v| {
+                valid_artifact_value(service, v)
+            })
             .await
             .map(|value| {
                 let mut artifact = serde_json::Map::new();
@@ -733,10 +727,8 @@ async fn capture_cookie_with_js(
                         let mut artifact = serde_json::Map::new();
                         artifact.insert(cookie_name.to_string(), Value::String(value.to_string()));
                         if let Some(dev) = &developer_token {
-                            artifact.insert(
-                                "developer_token".to_string(),
-                                Value::String(dev.clone()),
-                            );
+                            artifact
+                                .insert("developer_token".to_string(), Value::String(dev.clone()));
                         }
                         return Some(Value::Object(artifact));
                     }
@@ -806,11 +798,23 @@ async fn run_tidal_device_code_attempt(
             &profile_key,
             AttemptOutcome::Failed,
             None,
-            Some(&format!("invalid Tidal verification URL: {}", verification_url)),
+            Some(&format!(
+                "invalid Tidal verification URL: {}",
+                verification_url
+            )),
         );
         return;
     };
-    if build_login_window(&app, &window_label, "Connect Tidal", &url, &profile_dir, None).is_err() {
+    if build_login_window(
+        &app,
+        &window_label,
+        "Connect Tidal",
+        &url,
+        &profile_dir,
+        None,
+    )
+    .is_err()
+    {
         finalize_attempt(
             &profile_key,
             AttemptOutcome::Failed,
@@ -1091,7 +1095,11 @@ mod tests {
             let d = login_descriptor(service)
                 .unwrap_or_else(|| panic!("falta descriptor para {}", service));
             assert_eq!(d.service, service);
-            assert!(d.entry_url.starts_with("https://"), "{}: URL https", service);
+            assert!(
+                d.entry_url.starts_with("https://"),
+                "{}: URL https",
+                service
+            );
             assert!(!d.window_title.is_empty());
         }
     }
@@ -1239,11 +1247,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(payload["music_user_token"], fake);
-        assert!(payload["developer_token"].as_str().unwrap().starts_with("eyJ"));
+        assert!(payload["developer_token"]
+            .as_str()
+            .unwrap()
+            .starts_with("eyJ"));
         // Sin developer token el payload sigue siendo válido.
-        let payload =
-            artifact_payload("apple_music", &serde_json::json!({ "music_user_token": fake }))
-                .unwrap();
+        let payload = artifact_payload(
+            "apple_music",
+            &serde_json::json!({ "music_user_token": fake }),
+        )
+        .unwrap();
         assert!(payload.get("developer_token").is_none());
     }
 
@@ -1251,7 +1264,10 @@ mod tests {
     fn ningun_payload_lleva_password_ni_correo() {
         for (service, artifact) in [
             ("deezer", serde_json::json!({ "arl": "x".repeat(150) })),
-            ("qobuz", serde_json::json!({ "user_auth_token": "q".repeat(20) })),
+            (
+                "qobuz",
+                serde_json::json!({ "user_auth_token": "q".repeat(20) }),
+            ),
             (
                 "soundcloud",
                 serde_json::json!({ "oauth_token": "c".repeat(30) }),
@@ -1293,15 +1309,17 @@ mod tests {
     #[test]
     fn el_prefijo_del_eco_no_es_confundible_con_un_titulo_de_pagina() {
         // Un título del proveedor jamás empieza por el centinela.
-        assert!("Qobuz — Music".strip_prefix(ARTIFACT_TITLE_PREFIX).is_none());
+        assert!("Qobuz — Music"
+            .strip_prefix(ARTIFACT_TITLE_PREFIX)
+            .is_none());
         // Y el eco del centinela se parsea como JSON de artefacto.
         let title = format!(
             "{}{{\"user_auth_token\":\"{}\"}}",
             ARTIFACT_TITLE_PREFIX,
             "q".repeat(20)
         );
-        let value: Value = serde_json::from_str(title.strip_prefix(ARTIFACT_TITLE_PREFIX).unwrap())
-            .unwrap();
+        let value: Value =
+            serde_json::from_str(title.strip_prefix(ARTIFACT_TITLE_PREFIX).unwrap()).unwrap();
         assert_eq!(value["user_auth_token"], "q".repeat(20));
     }
 }

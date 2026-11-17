@@ -942,8 +942,7 @@ pub async fn save_auth_result(
     let mut credentials_payload = data.clone();
 
     if service.eq_ignore_ascii_case("qobuz") {
-        let (cache_token, cache_username, cache_password) =
-            load_qobuz_db_fallback_auth(db).await;
+        let (cache_token, cache_username, cache_password) = load_qobuz_db_fallback_auth(db).await;
         // A single existing row is not proof of identity. Never attach its
         // token or password to a newly authenticated bridge username.
         let bridge_username = data
