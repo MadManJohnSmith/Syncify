@@ -425,6 +425,19 @@ pub async fn remove_account(
     state: State<'_, AppState>,
     account_id: i64,
 ) -> Result<(), String> {
+    // Eliminar borra también el perfil cifrado del webview (issue #86): el
+    // archivo en disco se borra explícito, antes de que la FK CASCADE quite
+    // la fila que lo señala.
+    if let Err(e) =
+        crate::commands::account_profiles::delete_profiles_for_account(&state.db, account_id).await
+    {
+        tracing::warn!(
+            "remove_account: profile of account {} no se pudo borrar: {}",
+            account_id,
+            e
+        );
+    }
+
     sqlx::query("DELETE FROM accounts WHERE id = ?")
         .bind(account_id)
         .execute(&state.db)
@@ -1662,7 +1675,8 @@ pub struct AccountDeletionSummary {
 /// (library_entries, playlists, playlist_sources, favorites,
 /// account_import_counts, sync_runs), pero el borrado es explícito por tabla:
 /// no depende del orden de cascada y deja el efecto legible en el resumen.
-/// El perfil de webview se borra con el ticket de login (#84), no aquí.
+/// El perfil cifrado del webview (issue #86) se borra aquí abajo ANTES de
+/// la fila: eliminar borra el archivo; desactivar y archivar lo conservan.
 pub async fn perform_delete_account(
     db: &sqlx::SqlitePool,
     account_id: i64,
@@ -1740,6 +1754,20 @@ pub async fn perform_delete_account(
             .execute(&mut *tx)
             .await
             .map_err(|e| e.to_string())?;
+    }
+
+    // El perfil cifrado del webview se borra ANTES de la fila de cuenta:
+    // después de la FK CASCADE no habría fila que señale el archivo en disco
+    // (issue #86: eliminar borra el archivo; el borrado del fichero es
+    // explícito, nunca por cascada).
+    if let Err(e) =
+        crate::commands::account_profiles::delete_profiles_for_account(db, account_id).await
+    {
+        tracing::warn!(
+            "delete_account: profile of account {} no se pudo borrar: {}",
+            account_id,
+            e
+        );
     }
 
     sqlx::query("DELETE FROM accounts WHERE id = ?")

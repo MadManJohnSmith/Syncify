@@ -491,6 +491,20 @@ pub async fn logout_service(
         .await
         .map_err(|e| format!("Failed to commit logout for {}: {}", service, e))?;
 
+    // Cerrar sesión borra el perfil cifrado del webview (issue #86, ADR-0007
+    // decisión 9): archivo y fila, conservando la cuenta y su biblioteca. El
+    // logout ya dejó la fila «sin sesión»; sin perfil no hay webview que
+    // reutilizar y la reautenticación abre uno nuevo.
+    if let Err(e) =
+        crate::commands::account_profiles::delete_profiles_for_account(&state.db, target_id).await
+    {
+        tracing::warn!(
+            "Failed to delete webview profile of account {}: {}",
+            target_id,
+            e
+        );
+    }
+
     crate::commands::emit_auth_state_updated_for_account(&service, "logout", Some(target_id), None);
 
     if remaining > 0 {
