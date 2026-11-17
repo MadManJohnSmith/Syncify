@@ -240,3 +240,19 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   Lección: el rebase mecánico de un carril terminado es gestión de
   carril, no implementación — no requiere delegado si el conflicto es
   de una línea. Fuente: git log de la rama rebasada.
+- **2026-11-17**: SyncRun (#65) fusionado por squash en PR #304
+  (`3774eae` en `dev`, CI 8/8 tras el rebase de claims del 16);
+  issue cerrado citando el SHA. Programa #64: 1/18.
+- **2026-11-17, cuota GLM agotada de nuevo**: los dos carriles en
+  vuelo (L02 #99 y A84 #84) murieron con `1005 exceed quota limit`
+  el mismo turno — el patrón del 15/16 (dos fallos seguidos apuntan
+  a la cuenta del proveedor, no al modelo). Mitigación aplicada otra
+  vez: relanzados con Codex `gpt-6.1-sol`, esfuerzo alto, RETOMANDO
+  la inspección pagada — L02 con su WIP sin commit (migración
+  0107_library_fts_v2.sql + integración) y A84 con su implementación
+  ya commiteada (2 commits, 2.088 líneas; murió solo en claims,
+  puertas y PR). La orden del propietario de usar el modelo de la
+  sesión (2026-11-16) queda suplantada mientras la cuota siga
+  agotada; volver a GLM cuando el propietario lo indique o la cuota
+  se recupere. Fuente: fallos 1005 de los delegados en la sesión del
+  2026-11-17.
