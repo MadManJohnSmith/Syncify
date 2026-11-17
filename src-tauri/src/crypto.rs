@@ -529,23 +529,11 @@ pub fn decrypt_bytes_with_key(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8
         .map_err(|e| format!("Decryption error: {}", e))
 }
 
-/// Encrypt raw bytes with the active OnceLock key.
-pub fn encrypt_bytes(plaintext: &[u8]) -> Result<Vec<u8>, String> {
-    let key = get_key()?;
-    encrypt_bytes_with_key(plaintext, key)
-}
-
 /// La clave activa del OnceLock. Solo para módulos que necesitan ejecutar el
 /// pipeline completo (compresión + cifrado del contenedor del perfil, #86)
 /// con la MISMA clave que las credenciales: no se persiste ni se registra.
 pub fn key() -> Result<&'static [u8; 32], String> {
     get_key()
-}
-
-/// Decrypt raw bytes with the active OnceLock key.
-pub fn decrypt_bytes(encrypted: &[u8]) -> Result<Vec<u8>, String> {
-    let key = get_key()?;
-    decrypt_bytes_with_key(encrypted, key)
 }
 
 /// Huella legible de la clave: primeros 16 bytes de SHA-256 en hex. Se guarda

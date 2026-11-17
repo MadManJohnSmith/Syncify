@@ -169,8 +169,13 @@ pub fn restore_directory(archive: &[u8], dest: &Path, key: &[u8; 32]) -> Result<
         ));
     }
 
-    std::fs::create_dir_all(dest)
-        .map_err(|e| format!("Failed to create restore directory {}: {}", dest.display(), e))?;
+    std::fs::create_dir_all(dest).map_err(|e| {
+        format!(
+            "Failed to create restore directory {}: {}",
+            dest.display(),
+            e
+        )
+    })?;
     harden_dir_permissions(dest);
 
     let mut offset: usize = 0;
@@ -184,9 +189,8 @@ pub fn restore_directory(archive: &[u8], dest: &Path, key: &[u8; 32]) -> Result<
         }
         let target = safe_join(dest, &file.path)?;
         if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!("Failed to create directory {}: {}", parent.display(), e)
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory {}: {}", parent.display(), e))?;
             harden_dir_permissions(parent);
         }
         std::fs::write(&target, &blobs[offset..end])
@@ -204,7 +208,10 @@ pub fn restore_directory(archive: &[u8], dest: &Path, key: &[u8; 32]) -> Result<
 fn safe_join(dest: &Path, relative: &str) -> Result<PathBuf, String> {
     let relative_path = Path::new(relative);
     if relative_path.is_absolute() {
-        return Err(format!("profile manifest carries an absolute path '{}'", relative));
+        return Err(format!(
+            "profile manifest carries an absolute path '{}'",
+            relative
+        ));
     }
     for component in relative_path.components() {
         if matches!(component, std::path::Component::ParentDir) {
@@ -247,16 +254,26 @@ pub fn archive_profile_dir_to_file(
 ) -> Result<(), String> {
     let bytes = archive_directory(dir, key)?;
     if let Some(parent) = out_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create archive directory {}: {}", parent.display(), e))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create archive directory {}: {}",
+                parent.display(),
+                e
+            )
+        })?;
         harden_dir_permissions(parent);
     }
     let tmp = out_path.with_extension(format!("{}.tmp", PROFILE_ARCHIVE_EXT));
     std::fs::write(&tmp, &bytes)
         .map_err(|e| format!("Failed to write profile archive {}: {}", tmp.display(), e))?;
     harden_file_permissions(&tmp);
-    std::fs::rename(&tmp, out_path)
-        .map_err(|e| format!("Failed to finalize profile archive {}: {}", out_path.display(), e))?;
+    std::fs::rename(&tmp, out_path).map_err(|e| {
+        format!(
+            "Failed to finalize profile archive {}: {}",
+            out_path.display(),
+            e
+        )
+    })?;
     Ok(())
 }
 
@@ -266,8 +283,13 @@ pub fn restore_profile_dir_from_file(
     dest_dir: &Path,
     key: &[u8; 32],
 ) -> Result<usize, String> {
-    let bytes = std::fs::read(archive_path)
-        .map_err(|e| format!("Failed to read profile archive {}: {}", archive_path.display(), e))?;
+    let bytes = std::fs::read(archive_path).map_err(|e| {
+        format!(
+            "Failed to read profile archive {}: {}",
+            archive_path.display(),
+            e
+        )
+    })?;
     restore_directory(&bytes, dest_dir, key)
 }
 
@@ -275,8 +297,13 @@ pub fn restore_profile_dir_from_file(
 /// arranque la usa para detectar perfiles ilegibles (criterio del issue #86)
 /// sin materializar texto plano.
 fn decrypt_check(archive_path: &Path, key: &[u8; 32]) -> Result<(), String> {
-    let bytes = std::fs::read(archive_path)
-        .map_err(|e| format!("Failed to read profile archive {}: {}", archive_path.display(), e))?;
+    let bytes = std::fs::read(archive_path).map_err(|e| {
+        format!(
+            "Failed to read profile archive {}: {}",
+            archive_path.display(),
+            e
+        )
+    })?;
     restore_directory_probe(&bytes, key)
 }
 
@@ -356,12 +383,14 @@ pub async fn record_login_attempt(
     service_id: i64,
     profile_key: &str,
 ) -> Result<(), String> {
-    sqlx::query("INSERT INTO login_attempts (service_id, profile_key, status) VALUES (?, ?, 'pending')")
-        .bind(service_id)
-        .bind(profile_key)
-        .execute(db)
-        .await
-        .map_err(|e| format!("Failed to record login attempt: {}", e))?;
+    sqlx::query(
+        "INSERT INTO login_attempts (service_id, profile_key, status) VALUES (?, ?, 'pending')",
+    )
+    .bind(service_id)
+    .bind(profile_key)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to record login attempt: {}", e))?;
     Ok(())
 }
 
@@ -429,12 +458,22 @@ pub async fn archive_attempt_profile(
             .bind(account_id)
             .fetch_all(&mut *tx)
             .await
-            .map_err(|e| format!("Failed to read previous profile of account {}: {}", account_id, e))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to read previous profile of account {}: {}",
+                    account_id, e
+                )
+            })?;
     sqlx::query("DELETE FROM account_profiles WHERE account_id = ?")
         .bind(account_id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| format!("Failed to clear previous profiles of account {}: {}", account_id, e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to clear previous profiles of account {}: {}",
+                account_id, e
+            )
+        })?;
 
     let profile_id: i64 = sqlx::query_scalar(
         "INSERT INTO account_profiles (account_id, service_id, profile_key, archive_path, key_id, status)
@@ -562,11 +601,20 @@ pub async fn startup_profile_hygiene(
     let mut report = ProfileHygieneReport::default();
 
     // 1. Huérfanos de texto plano.
-    std::fs::create_dir_all(temp_base)
-        .map_err(|e| format!("Failed to create login profiles base {}: {}", temp_base.display(), e))?;
-    for entry in std::fs::read_dir(temp_base)
-        .map_err(|e| format!("Failed to read login profiles base {}: {}", temp_base.display(), e))?
-    {
+    std::fs::create_dir_all(temp_base).map_err(|e| {
+        format!(
+            "Failed to create login profiles base {}: {}",
+            temp_base.display(),
+            e
+        )
+    })?;
+    for entry in std::fs::read_dir(temp_base).map_err(|e| {
+        format!(
+            "Failed to read login profiles base {}: {}",
+            temp_base.display(),
+            e
+        )
+    })? {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
         if path.is_dir() {
@@ -589,17 +637,20 @@ pub async fn startup_profile_hygiene(
             e
         )
     })?;
-    let referenced: Vec<(String,)> =
-        sqlx::query_as("SELECT archive_path FROM account_profiles")
-            .fetch_all(db)
-            .await
-            .map_err(|e| format!("Failed to read archived profiles: {}", e))?;
+    let referenced: Vec<(String,)> = sqlx::query_as("SELECT archive_path FROM account_profiles")
+        .fetch_all(db)
+        .await
+        .map_err(|e| format!("Failed to read archived profiles: {}", e))?;
     let referenced_set: std::collections::HashSet<String> =
         referenced.into_iter().map(|(p,)| p).collect();
 
-    for entry in std::fs::read_dir(archives_base)
-        .map_err(|e| format!("Failed to read profile archives base {}: {}", archives_base.display(), e))?
-    {
+    for entry in std::fs::read_dir(archives_base).map_err(|e| {
+        format!(
+            "Failed to read profile archives base {}: {}",
+            archives_base.display(),
+            e
+        )
+    })? {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
         if !path.is_file() {
@@ -680,7 +731,11 @@ mod tests {
             format!("leveldb {}", marker),
         )
         .unwrap();
-        std::fs::write(dir.join("Preferences"), format!("{{\"user\":\"{}\"}}", marker)).unwrap();
+        std::fs::write(
+            dir.join("Preferences"),
+            format!("{{\"user\":\"{}\"}}", marker),
+        )
+        .unwrap();
         dir
     }
 
@@ -771,7 +826,8 @@ mod tests {
         body.extend_from_slice(&(manifest_json.len() as u32).to_le_bytes());
         body.extend_from_slice(&manifest_json);
         body.extend_from_slice(b"hello");
-        let mut compressed = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut compressed =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         compressed.write_all(&body).unwrap();
         let gz = compressed.finish().unwrap();
         let mut archive = PROFILE_ARCHIVE_MAGIC.to_vec();
