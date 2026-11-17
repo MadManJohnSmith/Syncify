@@ -15,7 +15,7 @@ use sqlx::{Pool, Sqlite};
 
 const MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
-const NEW_VERSION: i64 = 107;
+const NEW_VERSION: i64 = 108;
 
 /// Aplica las migraciones reales hasta `max_version` (incluida), en orden.
 async fn apply_migrations_through(pool: &Pool<Sqlite>, max_version: i64) {
@@ -64,7 +64,7 @@ async fn el_upgrade_a_0108_deja_la_cuenta_activa_como_habilitada() {
         .await
         .expect("BD en memoria");
 
-    // 1. Base vigente: migraciones reales 0001–0106, sin columna `state`.
+    // 1. Base vigente: migraciones reales 0001–0107, sin columna `state`.
     apply_migrations_through(&pool, NEW_VERSION - 1).await;
     let (active_id, inactive_id) = seed_accounts(&pool).await;
     let column_before: i64 = sqlx::query_scalar(
