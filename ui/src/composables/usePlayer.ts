@@ -11,15 +11,20 @@
  * media engine cannot consume custom-scheme audio (see
  * `docs/auditoria/playback-fase0-evidencia-2026-10-17.md`).
  *
+ * Since #131 (P00) the queue, history, current track, position, modes and
+ * volume live in SQLite on the backend (`api/playbackQueue.ts`); this
+ * composable is a view over those commands. The old localStorage key
+ * `syncify.playerState.v1` is discarded without migration.
+ *
  * Phase rules:
  * - Restoring after a restart ALWAYS resolves again with
- *   `player_load_track`: localStorage never stores `file_path`, the full
- *   track DTO, or engine state. The engine loads the track paused at the
- *   saved position.
+ *   `player_load_track`: the persisted state never stores `file_path`, the
+ *   full track DTO, or engine state. The engine loads the track paused at
+ *   the saved position.
  * - Listen crediting uses 30 s of real playback accumulated per
  *   tick; never `position >= 30`. The restored position does not credit
  *   previous time.
- * - Importing this module fires no invokes and no playback: restoration
+ * - Importing this module fires no playback: restoration
  *   is lazy (`restoreFromPersistence`) and the status bar player invokes it on mount.
  * - Engine events carry the load `seq`: everything from an already replaced
  *   track is discarded.
@@ -42,6 +47,19 @@ import {
     type PlayerEngineState,
     type PlayerStreamQuality,
 } from '../api/player'
+import {
+    getPlaybackQueueSnapshot,
+    playbackHistoryClear,
+    playbackQueueClear,
+    playbackQueueEnqueue,
+    playbackQueueRemove,
+    playbackQueueReorder,
+    playbackQueueSetCurrent,
+    playbackStateReset,
+    playbackStateSetModes,
+    playbackStateSetPosition,
+    playbackStateSetVolume,
+} from '../api/playbackQueue'
 
 /**
  * Outcome of queueing a track: 'started' means playback began right away
@@ -86,8 +104,11 @@ const LISTEN_MAX_ATTEMPTS = 5;
 const LISTEN_BACKOFF_BASE_MS = 1000;
 const LISTEN_BACKOFF_CAP_MS = 16000;
 const HISTORY_LIMIT = 100;
-const STORAGE_KEY = 'syncify.playerState.v1';
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/**
+ * Esquema antiguo de localStorage de reproducción (#131): se descarta sin
+ * migración en cada restauración; la UI ya no escribe nunca esta clave.
+ */
+const LEGACY_STORAGE_KEY = 'syncify.playerState.v1';
 
 function clampVolume(v: number): number {
     if (!Number.isFinite(v)) return 1;
@@ -108,10 +129,6 @@ function uuidV4(): string {
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
-function isCanonicalUuid(v: unknown): v is string {
-    return typeof v === 'string' && UUID_RE.test(v);
 }
 
 function messageOf(err: unknown): string {
@@ -274,127 +291,36 @@ const upNext = computed<PlayerTrack[]>(() =>
 );
 
 // ---------------------------------------------------------------------------
-// Persistence (localStorage, single versioned key)
+// Persistence (backend, SQLite — api/playbackQueue.ts; #131)
 // ---------------------------------------------------------------------------
 
-interface PersistedQueueEntry { entryId: string; trackId: number }
+/** Referencia mínima de una entrada para las llamadas de persistencia. */
+interface QueueEntryRef { entryId: string; trackId: number }
 
-interface PersistedPlayerState {
-    version: 1;
-    queue: PersistedQueueEntry[];
-    baseOrder: string[];
-    history: PersistedQueueEntry[];
-    currentTrackId: number | null;
-    positionSec: number;
-    shuffle: boolean;
-    repeat: RepeatMode;
-    volume: number;
-    muted: boolean;
-    pendingListens: PendingListen[];
+function isValidRepeat(v: string): v is RepeatMode {
+    return v === 'off' || v === 'all' || v === 'one';
 }
 
-function persistState(): void {
+/**
+ * Cada mutación del agregado se refleja en el backend con SU comando (la
+ * cola, el historial, la pista actual, la posición, los modos y el volumen
+ * viven en SQLite desde #131). Un fallo de persistencia jamás corta la
+ * reproducción: se registra y el estado en memoria sigue mandando hasta la
+ * siguiente mutación que lo reconcilie.
+ */
+function persistQueueWrite(what: string, op: () => Promise<void>): void {
     try {
-        const state: PersistedPlayerState = {
-            version: 1,
-            queue: queue.value.map(({ entryId, trackId }) => ({ entryId, trackId })),
-            baseOrder: [...baseOrder],
-            history: history.value.map(({ entryId, trackId }) => ({ entryId, trackId })),
-            currentTrackId: current.value?.id ?? null,
-            positionSec: Number.isFinite(positionSec.value) && positionSec.value >= 0 ? positionSec.value : 0,
-            shuffle: shuffle.value,
-            repeat: repeat.value,
-            volume: clampVolume(volume.value),
-            muted: muted.value,
-            pendingListens: pendingListens.value.map(p => ({ ...p })),
-        };
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {
-        // Quota/storage unavailable: playback continues without persistence.
+        // Promise.resolve: nunca debe romper la reproducción, ni siquiera si
+        // la capa IPC devolviera algo que no es promesa.
+        Promise.resolve(op()).catch((err: unknown) => {
+            console.warn(`[player] persisting queue failed (${what}): ${messageOf(err)}`);
+        });
+    } catch (err) {
+        console.warn(`[player] persisting queue failed (${what}): ${messageOf(err)}`);
     }
 }
 
-function validatePersisted(v: unknown): PersistedPlayerState | null {
-    if (typeof v !== 'object' || v === null) return null;
-    const rec = v as Record<string, unknown>;
-    // Unknown version or invalid structure → discard everything, start clean.
-    if (rec.version !== 1) return null;
-
-    const parseEntry = (e: unknown): PersistedQueueEntry | null => {
-        if (typeof e !== 'object' || e === null) return null;
-        const r = e as Record<string, unknown>;
-        if (typeof r.entryId !== 'string' || r.entryId.length === 0) return null;
-        if (typeof r.trackId !== 'number' || !Number.isInteger(r.trackId) || r.trackId <= 0) return null;
-        return { entryId: r.entryId, trackId: r.trackId };
-    };
-    const parseEntries = (x: unknown): PersistedQueueEntry[] | null => {
-        if (!Array.isArray(x)) return null;
-        const out: PersistedQueueEntry[] = [];
-        for (const e of x) {
-            const q = parseEntry(e);
-            if (!q) return null;
-            out.push(q);
-        }
-        return out;
-    };
-
-    const persistedQueue = parseEntries(rec.queue);
-    if (!persistedQueue) return null;
-    const persistedHistory = parseEntries(rec.history);
-    if (!persistedHistory) return null;
-    if (!Array.isArray(rec.baseOrder) || !rec.baseOrder.every(id => typeof id === 'string' && id.length > 0)) return null;
-
-    let currentTrackId: number | null = null;
-    if (rec.currentTrackId !== null && rec.currentTrackId !== undefined) {
-        if (typeof rec.currentTrackId !== 'number' || !Number.isInteger(rec.currentTrackId) || rec.currentTrackId <= 0) return null;
-        currentTrackId = rec.currentTrackId;
-    }
-    if (typeof rec.positionSec !== 'number' || !Number.isFinite(rec.positionSec) || rec.positionSec < 0) return null;
-    if (typeof rec.shuffle !== 'boolean') return null;
-    if (rec.repeat !== 'off' && rec.repeat !== 'all' && rec.repeat !== 'one') return null;
-    if (typeof rec.volume !== 'number' || !Number.isFinite(rec.volume) || rec.volume < 0 || rec.volume > 1) return null;
-    if (typeof rec.muted !== 'boolean') return null;
-    if (!Array.isArray(rec.pendingListens)) return null;
-
-    // Pending listens: each corrupt row (non-UUID / invalid trackId) is
-    // discarded individually; the rest of the state is kept.
-    const listens: PendingListen[] = [];
-    for (const item of rec.pendingListens) {
-        if (typeof item !== 'object' || item === null) continue;
-        const r = item as Record<string, unknown>;
-        const sessionId = typeof r.listenSessionId === 'string' ? r.listenSessionId.toLowerCase() : null;
-        if (!isCanonicalUuid(sessionId)) continue;
-        if (typeof r.trackId !== 'number' || !Number.isInteger(r.trackId) || r.trackId <= 0) continue;
-        const attempts = typeof r.attempts === 'number' && Number.isInteger(r.attempts) && r.attempts >= 0 ? r.attempts : 0;
-        listens.push({ trackId: r.trackId, listenSessionId: sessionId, attempts });
-    }
-
-    return {
-        version: 1,
-        queue: persistedQueue,
-        baseOrder: rec.baseOrder as string[],
-        history: persistedHistory,
-        currentTrackId,
-        positionSec: rec.positionSec,
-        shuffle: rec.shuffle,
-        repeat: rec.repeat,
-        volume: rec.volume,
-        muted: rec.muted,
-        pendingListens: listens,
-    };
-}
-
-function loadPersistedState(): PersistedPlayerState | null {
-    try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return null;
-        return validatePersisted(JSON.parse(raw));
-    } catch {
-        return null;
-    }
-}
-
-function stripEntry(e: PlaybackQueueEntry): PersistedQueueEntry {
+function stripEntry(e: PlaybackQueueEntry): QueueEntryRef {
     return { entryId: e.entryId, trackId: e.trackId };
 }
 
@@ -466,7 +392,6 @@ let listenRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
 function discardListen(p: PendingListen): void {
     pendingListens.value = pendingListens.value.filter(x => x.listenSessionId !== p.listenSessionId);
-    persistState();
 }
 
 function scheduleRetry(): void {
@@ -483,7 +408,6 @@ function scheduleRetry(): void {
 
 function scheduleListen(trackId: number, sessionId: string): void {
     pendingListens.value = [...pendingListens.value, { trackId, listenSessionId: sessionId, attempts: 0 }];
-    persistState();
     void flushPendingListens();
 }
 
@@ -498,11 +422,9 @@ async function flushPendingListens(): Promise<void> {
         }
         listenInFlight.add(p.listenSessionId);
         p.attempts += 1;
-        persistState();
         try {
             await recordLocalPlay(p.trackId, p.listenSessionId);
             pendingListens.value = pendingListens.value.filter(x => x.listenSessionId !== p.listenSessionId);
-            persistState();
         } catch (err) {
             const msg = messageOf(err);
             console.warn(`[player] record_local_play failed (attempt ${p.attempts}) for track ${p.trackId}: ${msg}`);
@@ -851,7 +773,9 @@ async function advanceFromHead(transition: Transition): Promise<AdvanceResult> {
         removePending(entry.entryId);
         if (currentEntry.value) pushHistory(currentEntry.value);
         currentEntry.value = { ...entry, track: proj };
-        persistState();
+        // El agregado del backend hace la transición completa de una vez:
+        // cabeza consumida, current anterior → historial y posición a 0.
+        persistQueueWrite('set-current', () => playbackQueueSetCurrent(entry.entryId, entry.trackId));
         return 'played';
     }
     return 'empty';
@@ -911,8 +835,9 @@ async function playTrack(track: PlayerTrack): Promise<void> {
     }
     if (outcome === 'played') {
         if (currentEntry.value) pushHistory(currentEntry.value);
-        currentEntry.value = { entryId: uuidV4(), trackId: track.id, track };
-        persistState();
+        const entry: PlaybackQueueEntry = { entryId: uuidV4(), trackId: track.id, track };
+        currentEntry.value = entry;
+        persistQueueWrite('set-current', () => playbackQueueSetCurrent(entry.entryId, track.id));
     }
 }
 
@@ -974,15 +899,30 @@ async function play(track?: PlayerTrack): Promise<void> {
 // Public API
 // ---------------------------------------------------------------------------
 
+/**
+ * Encola un track y devuelve la identidad de la entrada: el backend la
+ * genera al persistir (#131); si la persistencia falla, la entrada vive solo
+ * en memoria con identidad local (degradación, nunca bloquea la cola).
+ */
+async function enqueueEntry(track: PlayerTrack, atFront: boolean): Promise<PlaybackQueueEntry> {
+    let entryId = uuidV4();
+    try {
+        const ids = await playbackQueueEnqueue([track.id], atFront);
+        if (ids.length > 0 && ids[0]) entryId = ids[0];
+    } catch (err) {
+        console.warn(`[player] enqueue not persisted: ${messageOf(err)}`);
+    }
+    return { entryId, trackId: track.id, track };
+}
+
 async function playNext(track: PlayerTrack): Promise<QueueOutcome> {
     if (loadedPath === null) {
         await playTrack(track);
         return 'started';
     }
-    const entry: PlaybackQueueEntry = { entryId: uuidV4(), trackId: track.id, track };
+    const entry = await enqueueEntry(track, true);
     queue.value = [entry, ...queue.value];
     baseOrder = [entry.entryId, ...baseOrder];
-    persistState();
     return 'queued';
 }
 
@@ -991,10 +931,9 @@ async function enqueue(track: PlayerTrack): Promise<QueueOutcome> {
         await playTrack(track);
         return 'started';
     }
-    const entry: PlaybackQueueEntry = { entryId: uuidV4(), trackId: track.id, track };
+    const entry = await enqueueEntry(track, false);
     queue.value = [...queue.value, entry];
     baseOrder = [...baseOrder, entry.entryId];
-    persistState();
     return 'queued';
 }
 
@@ -1016,25 +955,53 @@ async function replaceQueueAndPlay(tracks: PlayerTrack[]): Promise<void> {
         throw new Error(error.value ?? 'Could not play the track');
     }
     if (outcome !== 'played') return;
-    const entries: PlaybackQueueEntry[] = tracks.map(t => ({ entryId: uuidV4(), trackId: t.id, track: t }));
-    const rest = entries.slice(1);
+    // Ciclo nuevo: se piden las identidades de las pendientes AL BACKEND para
+    // que las entradas locales y las persistidas compartan entry_id. El
+    // orden en el backend importa: primero el current nuevo (archiva el
+    // current anterior en el historial), después se vacían pendientes e
+    // historial y se encola el resto. Un fallo de persistencia degrada a
+    // identidades locales (la cola suena igual; solo se pierde la copia en
+    // SQLite de esta reconstrucción).
+    const currentEntryId = uuidV4();
+    let ids: string[] | null = null;
+    try {
+        await playbackQueueSetCurrent(currentEntryId, tracks[0].id);
+        await playbackQueueClear();
+        await playbackHistoryClear();
+        ids = await playbackQueueEnqueue(
+            tracks.slice(1).map(t => t.id),
+            false,
+        );
+    } catch (err) {
+        console.warn(`[player] queue replacement not persisted: ${messageOf(err)}`);
+    }
+    const rest: PlaybackQueueEntry[] = tracks.slice(1).map((t, i) => ({
+        entryId: ids && ids[i] ? ids[i] : uuidV4(),
+        trackId: t.id,
+        track: t,
+    }));
+    const ordered = shuffle.value ? shuffled(rest) : rest;
     history.value = [];
-    queue.value = shuffle.value ? shuffled(rest) : rest;
+    queue.value = ordered;
+    // El orden base es el PRE-permutación (apagar shuffle lo restaura); la
+    // permutación vigente es la que se persiste en el backend.
     baseOrder = rest.map(e => e.entryId);
-    currentEntry.value = entries[0];
-    persistState();
+    currentEntry.value = { entryId: currentEntryId, trackId: tracks[0].id, track: tracks[0] };
+    if (ids !== null && shuffle.value) {
+        persistQueueWrite('reorder-shuffle', () => playbackQueueReorder(ordered.map(e => e.entryId)));
+    }
 }
 
 function clearQueue(): void {
     // Pending entries only: the current track is never touched.
     queue.value = [];
     baseOrder = [];
-    persistState();
+    persistQueueWrite('clear', () => playbackQueueClear());
 }
 
 function removeEntry(entryId: string): void {
     removePending(entryId);
-    persistState();
+    persistQueueWrite('remove', () => playbackQueueRemove(entryId));
 }
 
 function moveEntry(entryId: string, toIndex: number): void {
@@ -1047,7 +1014,7 @@ function moveEntry(entryId: string, toIndex: number): void {
     queue.value = next;
     // Manual reordering sets the new base (turning shuffle off respects it).
     baseOrder = next.map(e => e.entryId);
-    persistState();
+    persistQueueWrite('reorder', () => playbackQueueReorder(next.map(e => e.entryId)));
 }
 
 function next(): void {
@@ -1084,7 +1051,7 @@ async function previous(): Promise<void> {
             baseOrder = [back.entryId, ...baseOrder.filter(id => id !== back.entryId)];
         }
         currentEntry.value = { ...entry, track: proj };
-        persistState();
+        persistQueueWrite('set-current', () => playbackQueueSetCurrent(entry.entryId, entry.trackId));
         return;
     }
     // No history: seek(0).
@@ -1109,7 +1076,7 @@ function pausePlayback(): void {
     setMediaSessionPlaybackState('paused');
     void playerPause()
         .then(() => {
-            persistState();
+            persistQueueWrite('position', () => playbackStateSetPosition(positionSec.value));
         })
         .catch((err: unknown) => {
             // A failed pause is corrected by the next tick (ticks self-heal state).
@@ -1143,7 +1110,7 @@ function stop(): void {
     clearMediaSession();
     syncMprisState();
     isLoadingSource.value = false;
-    persistState();
+    persistQueueWrite('reset', () => playbackStateReset());
 }
 
 function seek(sec: number): void {
@@ -1155,7 +1122,7 @@ function seek(sec: number): void {
     // Seek persistence is explicit here: the engine emits no 'seeked' event.
     void playerSeek(clamped)
         .then(() => {
-            persistState();
+            persistQueueWrite('position', () => playbackStateSetPosition(clamped));
         })
         .catch((err: unknown) => {
             reportEngineFailure(err);
@@ -1175,7 +1142,7 @@ function setVolume(v: number): void {
     void playerSetVolume(effectiveEngineVolume()).catch(() => {
         // Before the first load there is no engine yet; the load applies the volume.
     });
-    persistState();
+    persistQueueWrite('volume', () => playbackStateSetVolume(volume.value, muted.value));
 }
 
 function setMuted(m: boolean): void {
@@ -1183,7 +1150,7 @@ function setMuted(m: boolean): void {
     void playerSetVolume(effectiveEngineVolume()).catch(() => {
         // Before the first load there is no engine yet; the load applies the volume.
     });
-    persistState();
+    persistQueueWrite('volume', () => playbackStateSetVolume(volume.value, muted.value));
 }
 
 function toggleShuffle(): void {
@@ -1198,19 +1165,22 @@ function toggleShuffle(): void {
             if (e) restored.push(e);
         }
         queue.value = restored;
+        persistQueueWrite('reorder', () => playbackQueueReorder(restored.map(e => e.entryId)));
     } else {
         // Turning shuffle on permutes the pending entries; the pre-shuffle base order
-        // is kept so it can be restored and persisted alongside the permutation.
+        // is kept so it can be restored. The permuted order is what persists: the
+        // backend stores the queue as it plays now.
         shuffle.value = true;
         queue.value = shuffled(queue.value);
+        persistQueueWrite('reorder', () => playbackQueueReorder(queue.value.map(e => e.entryId)));
     }
-    persistState();
+    persistQueueWrite('modes', () => playbackStateSetModes(shuffle.value, repeat.value));
     syncMprisState();
 }
 
 function cycleRepeat(): void {
     repeat.value = repeat.value === 'off' ? 'all' : repeat.value === 'all' ? 'one' : 'off';
-    persistState();
+    persistQueueWrite('modes', () => playbackStateSetModes(shuffle.value, repeat.value));
     syncMprisState();
 }
 
@@ -1221,8 +1191,10 @@ function cycleRepeat(): void {
 let restoreStarted = false;
 
 /**
- * Restores the persisted state. It is only invoked explicitly (the status bar player
- * on mount); importing the module touches no localStorage and fires no invokes.
+ * Restores the persisted state from the BACKEND (SQLite, #131). It is only
+ * invoked explicitly (the status bar player on mount); importing the module
+ * fires no invokes and no playback. As part of the migration the old
+ * localStorage key `syncify.playerState.v1` is discarded without migration.
  * Resolves the source again with `player_load_track` (never reuses paths or
  * stream URLs) and loads it into the engine PAUSED at the saved position:
  * reading the saved state plays nothing and the restored position does not
@@ -1232,33 +1204,42 @@ async function restoreFromPersistence(): Promise<void> {
     if (restoreStarted) return;
     restoreStarted = true;
     bindEngineEvents();
-    const saved = loadPersistedState();
-    if (!saved) return;
-
-    shuffle.value = saved.shuffle;
-    repeat.value = saved.repeat;
-    volume.value = clampVolume(saved.volume);
-    muted.value = saved.muted;
-    pendingListens.value = saved.pendingListens;
-    queue.value = saved.queue.map(e => ({ ...e }));
-    baseOrder = [...saved.baseOrder];
-    history.value = saved.history.map(e => ({ ...e }));
-    if (pendingListens.value.length > 0) scheduleRetry();
-
-    if (saved.currentTrackId === null) {
-        persistState();
-        return;
+    // Descarte del esquema antiguo de reproducción en localStorage: no se
+    // migra nada, la fuente de verdad pasa a ser la BD del backend.
+    try {
+        localStorage.removeItem(LEGACY_STORAGE_KEY);
+    } catch {
+        // Storage unavailable: nothing to clean.
     }
+    const snap = await Promise.resolve(getPlaybackQueueSnapshot()).catch((err: unknown) => {
+        console.warn(`[player] queue restore failed: ${messageOf(err)}`);
+        return null;
+    });
+    if (!snap || typeof snap !== 'object') return;
+
+    // Una instantánea malformada (lista ausente) no revienta el arranque: se
+    // reponen las listas vacías y el resto de campos con defaults seguros.
+    const pending = Array.isArray(snap.pending) ? snap.pending : [];
+    const historyRows = Array.isArray(snap.history) ? snap.history : [];
+    shuffle.value = !!snap.shuffle;
+    repeat.value = isValidRepeat(snap.repeat) ? snap.repeat : 'off';
+    volume.value = clampVolume(snap.volume);
+    muted.value = !!snap.muted;
+    queue.value = pending.map(e => ({ entryId: e.entry_id, trackId: e.track_id }));
+    baseOrder = pending.map(e => e.entry_id);
+    history.value = historyRows.map(e => ({ entryId: e.entry_id, trackId: e.track_id }));
+
+    if (!snap.current) return;
 
     // Lazy N×1 validation: only the current track is resolved on restore;
     // pending entries are validated just before playing.
     const transition = beginTransition();
     isLoadingSource.value = true;
     try {
-        const meta = await getTrackMetadata(saved.currentTrackId);
+        const meta = await getTrackMetadata(snap.current.track_id);
         if (transition.aborted) return;
         const track = projectMetadata(meta);
-        const result = await playerLoadTrack(saved.currentTrackId, false, effectiveEngineVolume());
+        const result = await playerLoadTrack(snap.current.track_id, false, effectiveEngineVolume());
         if (transition.aborted) return;
         engineSeq = result.seq;
         loadedPath = result.stream ? `stream:${track.id}` : `track:${track.id}`;
@@ -1273,15 +1254,17 @@ async function restoreFromPersistence(): Promise<void> {
         streamError.value = null;
         isBuffering.value = false;
         engineState = 'paused';
-        const maxPos = result.durationSec !== null && result.durationSec > 0 ? result.durationSec : saved.positionSec;
-        const pos = Math.min(saved.positionSec, maxPos);
+        const savedPos = Number.isFinite(snap.position_sec) && snap.position_sec >= 0 ? snap.position_sec : 0;
+        const maxPos = result.durationSec !== null && result.durationSec > 0 ? result.durationSec : savedPos;
+        const pos = Math.min(savedPos, maxPos);
         if (pos > 0) {
             await playerSeek(pos);
             if (transition.aborted) return;
         }
         positionSec.value = pos;
         durationSec.value = result.durationSec ?? 0;
-        currentEntry.value = { entryId: uuidV4(), trackId: track.id, track };
+        // Se conserva la identidad persistida de la pista actual.
+        currentEntry.value = { entryId: snap.current.entry_id, trackId: track.id, track };
     } catch {
         if (transition.aborted) return;
         // Track gone or without a local file: start with no current; the
@@ -1289,15 +1272,16 @@ async function restoreFromPersistence(): Promise<void> {
         currentEntry.value = null;
     } finally {
         if (!transition.aborted) isLoadingSource.value = false;
-        persistState();
         syncMprisState();
     }
 }
 
-// Persistence when the window is hidden (not on every timeupdate).
+// Position persistence when the window is hidden (not on every timeupdate).
 if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'hidden') persistState();
+        if (document.visibilityState === 'hidden') {
+            persistQueueWrite('position', () => playbackStateSetPosition(positionSec.value));
+        }
     });
 }
 
