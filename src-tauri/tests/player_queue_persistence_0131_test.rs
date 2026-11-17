@@ -1,10 +1,10 @@
 //! #131 (P00, parte de #130) — cola de reproducción persistente en SQLite.
 //!
 //! Qué fija este archivo:
-//!   1. Upgrade REAL a 0109 sobre una base 0106 sembrada (molde de
+//!   1. Upgrade REAL a 0109 sobre la base vigente sembrada (molde de
 //!      `sync_run_schema_migration_test`, PR #304): una BD `:memory:` recién
 //!      migrada NO demuestra que el upgrade funcione; se ejecutan los ficheros
-//!      reales de migración 0001–0106, se siembran datos del esquema vigente y
+//!      reales de migraciones hasta la vigente, se siembran datos del esquema vigente y
 //!      después aplica 0109, comprobando que el esquema nuevo queda operativo
 //!      (defaults, CHECKs, índice único de `current`) y que nada previo se
 //!      pierde. La cola vieja de localStorage NO se migra — se descarta.
@@ -34,7 +34,7 @@ use syncify_tauri_lib::commands::playback_queue::{
 };
 
 const MIGRATOR: Migrator = sqlx::migrate!("./migrations");
-const NEW_VERSION: i64 = 107;
+const NEW_VERSION: i64 = 109;
 
 /// Aplica las migraciones reales hasta `max_version` (incluida), en orden.
 async fn apply_migrations_through(pool: &Pool<Sqlite>, max_version: i64) {
@@ -91,12 +91,12 @@ async fn seed_track(pool: &Pool<Sqlite>, title: &str) -> i64 {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn el_upgrade_a_0109_sobre_base_0106_deja_el_esquema_operativo() {
+async fn el_upgrade_a_0109_sobre_base_vigente_deja_el_esquema_operativo() {
     let pool = Pool::<Sqlite>::connect("sqlite::memory:")
         .await
         .expect("BD en memoria");
 
-    // 1. Base vigente: migraciones reales 0001–0106.
+    // 1. Base vigente: migraciones reales hasta la vigente (0107)
     apply_migrations_through(&pool, NEW_VERSION - 1).await;
     let track_id = seed_track(&pool, "Antes del upgrade").await;
 
@@ -113,7 +113,7 @@ async fn el_upgrade_a_0109_sobre_base_0106_deja_el_esquema_operativo() {
     sqlx::raw_sql(&new_migration.sql)
         .execute(&pool)
         .await
-        .expect("el upgrade a 0109 aplica sobre la base 0106");
+        .expect("el upgrade a 0109 aplica sobre la base vigente");
 
     // 3. Nada previo se pierde: el track sembrado sigue ahí.
     let title: String = sqlx::query_scalar("SELECT title FROM tracks WHERE id = ?")
