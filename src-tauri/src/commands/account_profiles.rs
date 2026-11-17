@@ -135,6 +135,12 @@ pub fn archive_directory(dir: &Path, key: &[u8; 32]) -> Result<Vec<u8>, String> 
 /// número de ficheros restaurados. Falla si la magia no coincide, la etiqueta
 /// GCM no valida (clave equivocada o manipulación) o el cuerpo no cuadra con
 /// el manifiesto.
+///
+/// Sin llamante en producción todavía: las issues #87 y #91 (bloqueadas por
+/// #86) materializan perfiles cifrados. `expect` no cabe aquí (en el objetivo
+/// lib el lint no dispara y la expectativa quedaría sin cumplir); el `allow`
+/// es inerte en lib y solo calla el bin.
+#[allow(dead_code)]
 pub fn restore_directory(archive: &[u8], dest: &Path, key: &[u8; 32]) -> Result<usize, String> {
     if archive.len() < PROFILE_ARCHIVE_MAGIC.len() + 12 {
         return Err("profile archive too short to be valid".into());
@@ -204,7 +210,8 @@ pub fn restore_directory(archive: &[u8], dest: &Path, key: &[u8; 32]) -> Result<
 
 /// Ruta bajo `dest` que rechaza rutas absolutas y componentes `..`: el
 /// manifiesto se restauró de bytes descifrados y no se le da poder de
-/// escribir fuera del directorio temporal.
+/// escribir fuera del directorio temporal. Ratchet: ver [`restore_directory`].
+#[allow(dead_code)]
 fn safe_join(dest: &Path, relative: &str) -> Result<PathBuf, String> {
     let relative_path = Path::new(relative);
     if relative_path.is_absolute() {
@@ -278,6 +285,8 @@ pub fn archive_profile_dir_to_file(
 }
 
 /// Restaura el contenedor de `archive_path` en `dest_dir`.
+/// Ratchet: ver [`restore_directory`].
+#[allow(dead_code)]
 pub fn restore_profile_dir_from_file(
     archive_path: &Path,
     dest_dir: &Path,
