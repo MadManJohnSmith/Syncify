@@ -48,6 +48,18 @@ aquí solo queda lo aprendido con fecha. Relacionadas:
   usar target privado por worktree cuando el padre puede gatear a la vez.
   Fuente: retro del 2026-11-13, actualización del mismo día.
 
+## OOM con dos suites cargo simultáneas
+
+- **2026-11-17, medido**: con dos carriles locales gateando a la vez
+  (cargo test de uno + clippy de otro), el kernel mató a un delegado con
+  «Killed: out of memory» a mitad de gate; el WIP quedó íntegro sin
+  commit y el carril se relanzó retomándolo. Contramedida estructural
+  desde entonces: toda puerta cargo de carril local va envuelta en
+  exclusión mutua — `flock -w 3600 /home/alan/.cache/syncify-gate.lock
+  <comando>` — y el brief prohíbe correr dos comandos cargo pesados en
+  paralelo dentro del mismo carril. Fuente: muerte del delegado A86
+  (2026-11-17) con el cargo test del carril L03 aún vivo.
+
 ## Symlinks de entorno y staging
 
 - **2026-11-13, casi-error capturado antes de empujar**: los patrones de

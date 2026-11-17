@@ -274,3 +274,22 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   puertas y PR). La mitigación cross-provider queda disponible pero
   NO se aplica sin orden explícita del propietario. Fuente: fallos
   1005 y orden del propietario en la sesión del 2026-11-17.
+- **2026-11-17, run «completed» sin informe y sin PR (D06 #118)**:
+  el delegado de D06 en agentvm1 terminó con estado `completed`
+  pero su última salida era un mensaje de progreso truncado
+  («Ahora el nuevo módulo de identidad de fichero en download/:») a
+  mitad de edición, 0 PRs y sin rama creada: el run cortó sin
+  entregarse.
+  Lección: `completed` del runner no es entrega — el informe final
+  con PR es el criterio; leer el contenido del hilo antes de tratar
+  una terminación como éxito. Rescate: relanzado retomando el WIP
+  sin commit del checkout compartido (mismo patrón que P00/L03: la
+  inspección pagada se recupera). Fuente: lectura del hilo del
+  delegado D06 (agentvm1) en la sesión del 2026-11-17.
+- **2026-11-17**: D07 (#119, contrato IPC de jobs) fusionado por
+  squash en PR #307 (`a6f4778` en `dev`, CI 8/8); issue cerrado
+  citando el SHA; unwatch y limpieza de carril (worktree, rama,
+  target privado). Su cuerpo documentó el patch de 3 líneas de
+  `worker.rs` que D08 (#120) debe aplicar al partir. Fuente:
+  `gh pr view 307` y `gh issue close 119` en la sesión del
+  2026-11-17.

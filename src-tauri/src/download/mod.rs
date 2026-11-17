@@ -8,6 +8,7 @@ pub mod breaker;
 pub mod http_client;
 pub mod identity;
 pub mod job;
+pub mod job_events;
 pub mod jobs;
 pub mod lyrics;
 pub mod orchestrator;

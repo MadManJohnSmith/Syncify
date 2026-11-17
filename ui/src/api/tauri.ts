@@ -222,6 +222,8 @@ export const TauriEvents = {
     DOWNLOAD_PROGRESS: 'syncify:download_progress',
     DOWNLOAD_COMPLETE: 'syncify:download_progress',
     DOWNLOAD_FAILED: 'syncify:download_progress',
+    // DownloadJob (D07, spec #111 / issue #119): ciclo y contadores del job.
+    DOWNLOAD_JOB_PROGRESS: 'syncify:download_job_progress',
 
     // Canonical progress channel (scans, organizer, tools, single-track pipeline)
     PROGRESS: 'syncify:progress',
@@ -243,6 +245,8 @@ export const TauriEvents = {
 
     // Auth events
     AUTH_STATE_UPDATED: 'auth-state-updated',
+    /** Ciclo de vida de cuenta cambió (issue #85): enabled|disabled|archived. */
+    ACCOUNT_STATE_CHANGED: 'account-state-changed',
     AUTH_SESSION_EXPIRED: 'auth-session-expired',
     SYNC_SETTINGS_UPDATED: 'sync-settings-updated',
 

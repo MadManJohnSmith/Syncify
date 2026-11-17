@@ -507,7 +507,9 @@ mod tests {
                 last_synced TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 streaming_entitled INTEGER NOT NULL DEFAULT -1,
-                entitlement_checked_at TEXT
+                entitlement_checked_at TEXT,
+                -- #85: ciclo de vida de cuenta; el fixture replica la migración 0107.
+                state TEXT NOT NULL DEFAULT 'enabled'
             );",
         )
         .execute(&pool)
