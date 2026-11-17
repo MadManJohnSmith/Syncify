@@ -481,6 +481,12 @@ export interface StoredCredentialState {
   auto_refreshable: boolean
 }
 
+/**
+ * Ciclo de vida explícito de cuenta (issue #85, ADR-0007 decisión 3).
+ * Eliminar no es un estado: la fila desaparece.
+ */
+export type AccountLifecycleState = 'enabled' | 'disabled' | 'archived';
+
 export interface Account {
     id: number;
     service_id: number;
@@ -488,6 +494,8 @@ export interface Account {
     display_name: string | null;
     email: string | null;
     is_active: boolean;
+    /** Ciclo de vida; ausente en payloads legacy previos a la migración 0107. */
+    state?: AccountLifecycleState;
     last_synced: string | null;
     created_at: string | null;
     credentials_invalid?: boolean;

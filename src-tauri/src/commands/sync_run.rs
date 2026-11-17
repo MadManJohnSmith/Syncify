@@ -57,6 +57,11 @@ pub async fn start_sync_run(
     let db = state.db.clone();
     let (service_name, service_id) = service_of_account(&db, account_id).await?;
 
+    // #85 ciclo de vida: una cuenta desactivada o archivada no sincroniza,
+    // tampoco por el contrato de corridas; el error nombra el estado para que
+    // la ficha pueda ofrecer reactivar.
+    crate::commands::accounts::ensure_account_can_sync(&db, account_id).await?;
+
     // Este ticket es el corte vertical de Qobuz + favoritos; el resto de
     // proveedores y colecciones siguen por el camino antiguo hasta sus tickets.
     if service_name != "qobuz" {

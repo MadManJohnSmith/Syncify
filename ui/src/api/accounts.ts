@@ -12,6 +12,7 @@ import { asArray, asNumber, asRecord } from './normalize';
 import type {
     Service,
     Account,
+    AccountLifecycleState,
     ServiceStatus,
     SessionStatus,
     AuthResult,
@@ -85,6 +86,52 @@ export async function addAccount(params: {
  */
 export async function removeAccount(id: number): Promise<void> {
     return invokeCommand<void>('remove_account', { accountId: id });
+}
+
+/** Result of a lifecycle transition (`set_account_state`). */
+export interface AccountLifecycleChange {
+    account_id: number;
+    service_id: number;
+    service: string;
+    old_state: string;
+    new_state: AccountLifecycleState;
+    is_active: boolean;
+    changed: boolean;
+}
+
+/**
+ * Set the lifecycle state of an account (issue #85, ADR-0007 decision 3).
+ * Disabling or archiving stops sync and downloads of that account; enabling
+ * restores them. Deleting is a separate command.
+ */
+export async function setAccountState(
+    id: number,
+    newState: AccountLifecycleState,
+): Promise<AccountLifecycleChange> {
+    return invokeCommand<AccountLifecycleChange>('set_account_state', {
+        accountId: id,
+        newState,
+    });
+}
+
+/** Result of `delete_account` (issue #85). */
+export interface AccountDeletionSummary {
+    account_id: number;
+    service: string;
+    delete_audio: boolean;
+    audio_files_deleted: number;
+}
+
+/**
+ * Delete an account and the rows it owns. Canonical tracks, track sources and
+ * downloaded files are preserved; audio files are only deleted when the
+ * explicit `deleteAudio` checkbox is set.
+ */
+export async function deleteAccount(id: number, deleteAudio: boolean): Promise<AccountDeletionSummary> {
+    return invokeCommand<AccountDeletionSummary>('delete_account', {
+        accountId: id,
+        deleteAudio,
+    });
 }
 
 /** Summary returned by `reset_account_sync_data`. */
@@ -508,6 +555,8 @@ export const accountsApi = {
     getAccounts,
     addAccount,
     removeAccount,
+    setAccountState,
+    deleteAccount,
     resetAccountSyncData,
     refreshAccountIdentities,
     setAccountDisplayName,

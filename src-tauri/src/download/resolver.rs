@@ -1228,6 +1228,9 @@ async fn build_candidates(
             FROM accounts a
             JOIN services s ON s.id = a.service_id
             WHERE LOWER(s.name) = LOWER(?)
+              -- #85 ciclo de vida: una cuenta desactivada o archivada deja de
+              -- recibir descargas; ni primaria ni como fallback de hermanas.
+              AND a.state = 'enabled'
             "#,
         )
         .bind(&row.service_name)
