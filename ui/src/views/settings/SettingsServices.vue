@@ -109,19 +109,20 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useSyncSettings } from '@/composables/useSyncSettings'
 import { useAccountsStatus, isValidEmail } from '@/composables/useAccountsStatus'
+import { TauriEvents } from '@/api/tauri'
 import {
   getServices,
   getAccounts,
   getServiceStatuses,
-  startAuthAndSave,
+  startAccountLogin,
   logoutService,
   removeAccount,
   toggleAccountActive,
   setActiveAccount,
-  spotifyAuthWebview,
   getSpotifyApiConfig,
 } from '@/api/accounts'
 import type { Service, Account, ServiceStatus } from '@/api/types'
@@ -130,6 +131,41 @@ import ServiceCard from '@/components/settings/ServiceCard.vue'
 import DraggableItem from '@/components/settings/DraggableItem.vue'
 
 const syncSettings = useSyncSettings()
+
+// ── Login en app por cuenta (issue #84) ────────────────────────────────────
+// El webview reporta el desenlace del intento por eventos; la cuenta guardada
+// llega por `auth-state-updated`. Los listeners viven mientras la vista viva.
+type LoginOutcome = 'completed' | 'failed' | 'cancelled'
+let loginOutcomeUnlisteners: UnlistenFn[] = []
+
+function unlistenLoginOutcome() {
+  loginOutcomeUnlisteners.forEach(u => u())
+  loginOutcomeUnlisteners = []
+}
+
+function awaitLoginOutcome(profileKey: string): Promise<LoginOutcome> {
+  return new Promise(resolve => {
+    let settled = false
+    const settle = (outcome: LoginOutcome) => async (event: { payload?: { profile_key?: string } }) => {
+      const payload = event?.payload
+      // Un intento vivo a la vez por diseño (backed): el profile_key filtra
+      // cuando el payload lo trae.
+      if (settled || (payload?.profile_key && payload.profile_key !== profileKey)) return
+      settled = true
+      unlistenLoginOutcome()
+      resolve(outcome)
+    }
+    listen<{ profile_key?: string }>(TauriEvents.ACCOUNT_LOGIN_COMPLETED, settle('completed'))
+      .then(u => loginOutcomeUnlisteners.push(u))
+    listen<{ profile_key?: string }>(TauriEvents.ACCOUNT_LOGIN_FAILED, settle('failed'))
+      .then(u => loginOutcomeUnlisteners.push(u))
+    listen<{ profile_key?: string }>(TauriEvents.ACCOUNT_LOGIN_CANCELLED, settle('cancelled'))
+      .then(u => loginOutcomeUnlisteners.push(u))
+  })
+}
+
+onBeforeUnmount(unlistenLoginOutcome)
+
 
 const showServiceModal = ref(false)
 const services = ref<Service[]>([])
@@ -307,10 +343,12 @@ async function handleConnect(serviceIdOrName?: string | number) {
         // ignore
       }
     }
-    const result = name === 'spotify'
-      ? await spotifyAuthWebview().catch(() => startAuthAndSave(name))
-      : await startAuthAndSave(name)
-    if (result.success) {
+    // Login dentro de la app (issue #84): la ventana de webview con perfil por
+    // intento es la única superficie; el puente ya no abre navegadores en este
+    // camino y el desenlace llega por los eventos `account-login-*`.
+    const started = await startAccountLogin(name)
+    const outcome = await awaitLoginOutcome(started.profile_key)
+    if (outcome === 'completed') {
       await loadServicesAndAccounts()
       // SP-02: Autoimport enabled by default when connecting
       const pref = syncSettings.servicePreferences.value.find(
@@ -377,8 +415,11 @@ async function handleReauth(serviceIdOrName?: string | number) {
   const name = resolveServiceName(serviceIdOrName)
   if (!name) return
   try {
-    const result = await startAuthAndSave(name)
-    if (result.success) {
+    // Reautenticar usa el mismo webview por intento (issue #84): el artefacto
+    // reemplaza las credenciales sin tocar la cuenta ni su biblioteca.
+    const started = await startAccountLogin(name)
+    const outcome = await awaitLoginOutcome(started.profile_key)
+    if (outcome === 'completed') {
       await loadServicesAndAccounts()
     } else {
       showServiceModal.value = true

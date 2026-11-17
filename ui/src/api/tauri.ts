@@ -246,6 +246,13 @@ export const TauriEvents = {
     AUTH_SESSION_EXPIRED: 'auth-session-expired',
     SYNC_SETTINGS_UPDATED: 'sync-settings-updated',
 
+    // In-app login per account (issue #84): the webview window reports the
+    // attempt lifecycle; the credentials themselves arrive via auth-state-updated.
+    ACCOUNT_LOGIN_STARTED: 'account-login-started',
+    ACCOUNT_LOGIN_COMPLETED: 'account-login-completed',
+    ACCOUNT_LOGIN_FAILED: 'account-login-failed',
+    ACCOUNT_LOGIN_CANCELLED: 'account-login-cancelled',
+
     // Enrichment events.
     ENRICHMENT_PROGRESS: 'enrichment-progress',
     ENRICHMENT_STATUS: 'background-enrichment-status',
