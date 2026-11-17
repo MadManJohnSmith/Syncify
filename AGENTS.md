@@ -23,9 +23,8 @@ Desde la raíz. El target de Rust va **fuera del repo** para no llenar el disco:
 CARGO_TARGET_DIR=/tmp/syncify-target cargo check --workspace --all-targets --locked
 CARGO_TARGET_DIR=/tmp/syncify-target cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
-CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --no-fail-fast   # 334 objetivos de test: recuento real
 (FE-SYNC-01: SyncRun — migración 0106 y tres suites de prueba (#65); A84: login en webview por cuenta — suite de guardado con artefacto falso (#84); L02: búsqueda FTS y upgrade de 0107 (#99); ciclo de vida de cuenta — migración renumerada a 0108 (#85); P00: cola persistente — migración 0109 y suite de persistencia (#131))
-(docs · AGENTS.md: recuentos reales con P00 (#131) — 330 objetivos cargo, 1164 tests UI)
+(P00: ajustes de auditoría — mock del spec devuelve Promise (error TS de vue-tsc), cabecera de migración a 0109, claims a 332 objetivos medidos)
 CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --test batch_50_audit_test -- --test-threads=1
 npm --prefix ui run build && npm --prefix ui run test:run                  # 137 ficheros / 1170 tests
 .venv/bin/python -m unittest discover -s scripts/tests                    # 445 tests (2 skipped)

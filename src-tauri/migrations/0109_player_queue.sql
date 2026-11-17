@@ -1,4 +1,4 @@
--- 0107_player_queue.sql — #131 (P00, parte de #130): el backend pasa a ser
+-- 0109_player_queue.sql — #131 (P00, parte de #130): el backend pasa a ser
 -- dueño de la cola, el historial, la pista actual, la posición y los modos de
 -- reproducción. Dos tablas nuevas (ninguna columna de tablas existentes):
 --

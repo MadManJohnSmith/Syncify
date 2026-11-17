@@ -102,7 +102,7 @@ function snapshot(overrides: Record<string, unknown> = {}): Record<string, unkno
 /** Instala un mock de invokeCommand que responde los comandos del agregado. */
 function backend(overrides: Record<string, (args?: Record<string, unknown>) => unknown> = {}): void {
     mockInvoke().mockImplementation((cmd: string, args?: Record<string, unknown>) => {
-        if (overrides[cmd]) return overrides[cmd](args);
+        if (overrides[cmd]) return Promise.resolve(overrides[cmd](args));
         if (cmd === 'playback_queue_get') return Promise.resolve(snapshot());
         if (cmd === 'playback_queue_enqueue') return Promise.resolve([] as string[]);
         if (cmd === 'get_track_metadata') {
