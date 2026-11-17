@@ -2,7 +2,7 @@
  * Cola de reproducción persistente en SQLite (#131, P00 — parte de #130).
  *
  * Única puerta IPC del agregado de cola: cola, historial, pista actual,
- * posición, modos y volumen viven en el backend (migración 0107) y la UI es
+ * posición, modos y volumen viven en el backend (migración 0109) y la UI es
  * una vista sobre estos comandos. El transporte del motor sigue en
  * `api/player.ts` y la cola de DESCARGAS está en `api/queue.ts` — dominios
  * distintos.

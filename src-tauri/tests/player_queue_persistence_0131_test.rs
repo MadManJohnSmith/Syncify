@@ -1,11 +1,11 @@
 //! #131 (P00, parte de #130) — cola de reproducción persistente en SQLite.
 //!
 //! Qué fija este archivo:
-//!   1. Upgrade REAL a 0107 sobre una base 0106 sembrada (molde de
+//!   1. Upgrade REAL a 0109 sobre una base 0106 sembrada (molde de
 //!      `sync_run_schema_migration_test`, PR #304): una BD `:memory:` recién
 //!      migrada NO demuestra que el upgrade funcione; se ejecutan los ficheros
 //!      reales de migración 0001–0106, se siembran datos del esquema vigente y
-//!      después aplica 0107, comprobando que el esquema nuevo queda operativo
+//!      después aplica 0109, comprobando que el esquema nuevo queda operativo
 //!      (defaults, CHECKs, índice único de `current`) y que nada previo se
 //!      pierde. La cola vieja de localStorage NO se migra — se descarta.
 //!   2. Persistencia al reinicio sobre BD en FICHERO desechable: se escribe el
@@ -87,11 +87,11 @@ async fn seed_track(pool: &Pool<Sqlite>, title: &str) -> i64 {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Upgrade real a 0107
+// 1. Upgrade real a 0109
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn el_upgrade_a_0107_sobre_base_0106_deja_el_esquema_operativo() {
+async fn el_upgrade_a_0109_sobre_base_0106_deja_el_esquema_operativo() {
     let pool = Pool::<Sqlite>::connect("sqlite::memory:")
         .await
         .expect("BD en memoria");
@@ -105,15 +105,15 @@ async fn el_upgrade_a_0107_sobre_base_0106_deja_el_esquema_operativo() {
     let new_migration = MIGRATOR
         .iter()
         .find(|m| m.version == NEW_VERSION)
-        .expect("la migración 0107 está en el árbol");
+        .expect("la migración 0109 está en el árbol");
     assert_eq!(
         new_migration.description, "player queue",
-        "el número 0107 es nuevo y describe la cola del reproductor"
+        "el número 0109 es nuevo y describe la cola del reproductor"
     );
     sqlx::raw_sql(&new_migration.sql)
         .execute(&pool)
         .await
-        .expect("el upgrade a 0107 aplica sobre la base 0106");
+        .expect("el upgrade a 0109 aplica sobre la base 0106");
 
     // 3. Nada previo se pierde: el track sembrado sigue ahí.
     let title: String = sqlx::query_scalar("SELECT title FROM tracks WHERE id = ?")

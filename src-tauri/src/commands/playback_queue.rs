@@ -2,7 +2,7 @@
 //!
 //! El backend es dueño de la cola, el historial, la pista actual, la posición,
 //! los modos y el volumen (`player_queue_entries` + `player_state`, migración
-//! 0107). La UI es una vista sobre estos comandos: dejó de escribir el estado
+//! 0109). La UI es una vista sobre estos comandos: dejó de escribir el estado
 //! de reproducción en localStorage y `syncify.playerState.v1` se descarta sin
 //! migración.
 //!
