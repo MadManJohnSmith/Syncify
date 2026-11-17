@@ -304,3 +304,15 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   blindado en 5 commits (`dc9af8e`), solo faltan gates, rebase y PR.
   Fuente: fallo del delegado a86-retry-2 y diagnóstico de carriles
   en la sesión del 2026-11-17.
+- **2026-11-17**: P00 (#131, cola persistente en SQLite) fusionado
+  por squash en PR #309 (`5707d00` en `dev`, CI 8/8 tras el
+  re-run del flaky de `completed_download_primes_at_eof`) y PL00
+  (#153, modelo de playlist local) en PR #310 (`6719409`, CI 8/8
+  tras rebase + resolución de claims: el fichero nuevo de suite de
+  migración sube los objetivos a 335, medidos por la puerta; el
+  flaky de red de lyrics lrclib re-corrido). Issues cerrados con
+  SHA; carriles limpiados (worktrees, ramas, targets privados).
+  Programas: #130 1/18, #152 1/11. La lección del claim mezclado
+  (334 de dev vs 335 del árbol combinado) confirma que la puerta
+  mide, no la aritmética manual. Fuente: `gh pr merge`/`gh issue
+  close` de #309 y #310 en la sesión del 2026-11-17.
