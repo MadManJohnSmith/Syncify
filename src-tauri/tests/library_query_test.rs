@@ -351,10 +351,13 @@ async fn texto_se_combina_con_los_filtros() {
     query.text = Some("a".into());
     query.genre = vec!["Jazz".into()];
     assert_eq!(ids(&pool, query).await, vec![2]);
-    // LIKE sin que % del usuario rompa el patrón.
+    // L02 (FTS): los caracteres especiales de FTS van escapados; un texto
+    // sin tokens de búsqueda ("%" solo de símbolos) se comporta como texto
+    // vacío: no filtra y se usa el orden elegido. La entrada del usuario no
+    // rompe la consulta.
     let mut query = q();
     query.text = Some("%".into());
-    assert!(ids(&pool, query).await.is_empty());
+    assert_eq!(ids(&pool, query).await, ids(&pool, q()).await);
 }
 
 // ==========================================================================

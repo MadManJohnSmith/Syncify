@@ -1161,7 +1161,7 @@ defineOptions({ name: 'LibraryView' })
 import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRouter, useRoute, type LocationQueryValue } from 'vue-router'
 import { libraryApi, queryLibrary, enqueueTracks, reconcileQueue, importMbDump, getMbDumpImportState, type MbDumpImportState, type MbDumpProgress }  from '@/api/library'
-import type { LibraryQuery, LibraryQueryCounts, LibrarySortKey, DownloadStatusFilter, QualityBucketFilter } from '@/api/types'
+import type { LibraryQuery, LibraryQueryCounts, LibraryQueryResult, LibrarySortKey, DownloadStatusFilter, QualityBucketFilter } from '@/api/types'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch, queueApi } from '@/api/queue'
 import { playlistsApi } from '@/api/playlists'
 import { metadataApi } from '@/api/metadata'
@@ -1600,12 +1600,37 @@ const SEARCH_PAGE_SIZE = 100;
 // L01 (#98): fuente ÚNICA. query_library resuelve en servidor filtros, orden,
 // búsqueda y contadores; el renderer deja de filtrar, ordenar o sustituir la
 // lista por una búsqueda.
-async function fetchLibraryPage(offset: number, limit: number) {
-  const result = await libraryApi.queryLibrary(buildLibraryQuery(offset, limit));
-  if (offset === 0 && result.counts) {
-    libraryCounts.value = result.counts;
+
+// L02 (#99): token de secuencia de la consulta. Cada carga fresca (offset 0)
+// incrementa el token; una respuesta que llega tarde se descarta y devuelve
+// la página de la carga vigente, para que nunca pise los resultados de la
+// última consulta (el debounce 250 ms espacia las peticiones, no las ordena).
+let libraryQuerySeq = 0
+let latestQuerySeq = 0
+let latestQueryPage: Promise<LibraryQueryResult> | null = null
+
+async function loadQueryPage(offset: number, limit: number): Promise<LibraryQueryResult> {
+  return await libraryApi.queryLibrary(buildLibraryQuery(offset, limit));
+}
+
+async function fetchLibraryPage(offset: number, limit: number): Promise<LibraryQueryResult> {
+  if (offset !== 0) {
+    return loadQueryPage(offset, limit);
   }
-  return result;
+  const seq = ++libraryQuerySeq;
+  latestQuerySeq = seq;
+  latestQueryPage = loadQueryPage(offset, limit).then((result) => {
+    if (seq !== latestQuerySeq) {
+      // Respuesta vieja: descartada. La carga vigente (último offset 0)
+      // decide lo que se pinta; si sigue en vuelo, se devuelve su página.
+      return latestQueryPage ?? result;
+    }
+    if (result.counts) {
+      libraryCounts.value = result.counts;
+    }
+    return result;
+  });
+  return latestQueryPage;
 }
 
 const libraryCounts = ref<LibraryQueryCounts | null>(null);
@@ -1747,16 +1772,18 @@ function maybeLoadMore(scrollBottom: number) {
 loadColumnsOrder();
 loadLibrary();
 
-// L01: la búsqueda ya no sustituye la lista — alimenta `query_library.text`
-// y se combina con los filtros EN SERVIDOR. El debounce del input es ritmo
-// de la vista y sigue aquí; L02 añadirá la relevancia FTS ponderada.
+// L02 (#99): la búsqueda alimenta `query_library.text` (FTS con relevancia
+// en servidor) y se combina con los filtros EN SERVIDOR. Espera 250 ms desde
+// la ÚLTIMA tecla (una sola consulta por pausa, ninguna por pulsación) y el
+// token de secuencia de fetchLibraryPage descarta la respuesta vieja.
+const SEARCH_DEBOUNCE_MS = 250
 watch(searchQuery, () => {
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
   }
   searchDebounceTimer = setTimeout(() => {
     loadLibrary()
-  }, 300)
+  }, SEARCH_DEBOUNCE_MS)
 })
 
 // Playlists
