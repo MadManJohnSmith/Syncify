@@ -23,11 +23,11 @@ Desde la raíz. El target de Rust va **fuera del repo** para no llenar el disco:
 CARGO_TARGET_DIR=/tmp/syncify-target cargo check --workspace --all-targets --locked
 CARGO_TARGET_DIR=/tmp/syncify-target cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
-CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --no-fail-fast   # 328 objetivos de test: recuento real
-(FE-SYNC-01: SyncRun — migración 0106 y tres suites de prueba (#65))
+CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --no-fail-fast   # 329 objetivos de test: recuento real
+(FE-SYNC-01: SyncRun — migración 0106 y tres suites de prueba (#65); A84: login en webview por cuenta — suite de guardado con artefacto falso (#84))
 CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --test batch_50_audit_test -- --test-threads=1
 npm --prefix ui run build && npm --prefix ui run test:run                  # 136 ficheros / 1162 tests
-.venv/bin/python -m unittest discover -s scripts/tests                    # 431 tests (2 skipped)
+.venv/bin/python -m unittest discover -s scripts/tests                    # 445 tests (2 skipped)
 ```
 
 Todo corre sin red salvo los 13 tests `#[ignore]`, que necesitan servicios reales.

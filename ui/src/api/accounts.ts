@@ -221,6 +221,35 @@ export async function spotifyAuthWebview(): Promise<AuthResult> {
 }
 
 // ==============================================
+// IN-APP LOGIN PER ACCOUNT (issue #84)
+// ==============================================
+
+/** Shape returned by `start_account_login` once the webview window is up. */
+export interface AccountLoginStart {
+    service: string;
+    /** Identifies the attempt's temporary webview profile and the window. */
+    profile_key: string;
+}
+
+/**
+ * Start the in-app login for a service: opens the webview window with a
+ * `profile_key` per attempt and captures ONLY the provider artifact (cookie or
+ * storage key). The result arrives through the `account-login-*` events; the
+ * saved account itself is announced via `auth-state-updated`.
+ */
+export async function startAccountLogin(service: string): Promise<AccountLoginStart> {
+    return invokeCommand<AccountLoginStart>('start_account_login', { service });
+}
+
+/**
+ * Cancel an in-app login attempt: closes the window, deletes the temporary
+ * profile and emits `account-login-cancelled`. No half-created account.
+ */
+export async function cancelAccountLogin(profileKey: string): Promise<{ cancelled: boolean; profile_key: string }> {
+    return invokeCommand('cancel_account_login', { profileKey });
+}
+
+// ==============================================
 // SPOTIFY API CREDENTIALS (Sprint S196)
 // ==============================================
 
@@ -496,6 +525,9 @@ export const accountsApi = {
     startSpotifyAuth,
     spotifyAuthCallback,
     spotifyAuthWebview,
+    // In-app login per account (issue #84)
+    startAccountLogin,
+    cancelAccountLogin,
     getSpotifyApiConfig,
     saveSpotifyApiConfig,
     // Import

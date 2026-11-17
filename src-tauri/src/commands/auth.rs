@@ -918,13 +918,31 @@ pub async fn start_auth_and_save(
     let data = auth_result
         .data
         .as_ref()
-        .ok_or("Auth succeeded but returned no data")?;
+        .ok_or("Auth succeeded but returned no data")?
+        .clone();
 
+    save_auth_result(&service, data, &state.db).await
+}
+
+/// Camino existente de guardado de un login (issue #84).
+///
+/// Todo lo que `start_auth_and_save` hacía DESPUÉS de obtener el payload del
+/// proveedor — merge de fallback Qobuz, expiry de Tidal, cifrado, upsert por
+/// identidad, re-encola de descargas y evento — vive aquí y es el destino
+/// único del artefacto capturado en el webview (`commands/account_login.rs`):
+/// el login dentro de la app no duplica ninguna de estas decisiones, solo
+/// produce el mismo payload que el puente. `service` es el nombre canónico
+/// del servicio en la tabla `services`; `data` es el JSON que el puente
+/// habría devuelto en `AuthResult.data`.
+pub async fn save_auth_result(
+    service: &str,
+    data: serde_json::Value,
+    db: &sqlx::SqlitePool,
+) -> Result<AuthResult, String> {
     let mut credentials_payload = data.clone();
 
     if service.eq_ignore_ascii_case("qobuz") {
-        let (cache_token, cache_username, cache_password) =
-            load_qobuz_db_fallback_auth(&state.db).await;
+        let (cache_token, cache_username, cache_password) = load_qobuz_db_fallback_auth(db).await;
         // A single existing row is not proof of identity. Never attach its
         // token or password to a newly authenticated bridge username.
         let bridge_username = data
@@ -1048,7 +1066,7 @@ pub async fn start_auth_and_save(
     // after login does not force an immediate OAuth refresh that could fail
     // transiently.
     if service.eq_ignore_ascii_case("tidal") {
-        let cached_expiry = load_tidal_db_cached_token_expiry(&state.db).await;
+        let cached_expiry = load_tidal_db_cached_token_expiry(db).await;
         inject_tidal_expiry(&mut credentials_payload, cached_expiry);
     }
 
@@ -1073,14 +1091,14 @@ pub async fn start_auth_and_save(
     // it could not discover a real user id. That is a shared placeholder, NOT
     // an identity: treating it as external_user_id would upsert every Qobuz
     // login into the same row, even when the captured usernames differ.
-    let external_user_id = login_external_user_id(&service, &data, user_id.as_deref());
+    let external_user_id = login_external_user_id(service, &data, user_id.as_deref());
 
     // Provider identity beyond the bridge payload (SoundCloud username, Tidal
     // profile, Deezer user data, Qobuz `user/get`). Best effort: a provider
     // hiccup must never fail a login that already succeeded, and the automatic
     // identity refresh retries later.
     let provider_identity =
-        match crate::commands::accounts::resolve_provider_identity(&service, &credentials_payload)
+        match crate::commands::accounts::resolve_provider_identity(service, &credentials_payload)
             .await
         {
             Ok(identity) => identity,
@@ -1094,8 +1112,8 @@ pub async fn start_auth_and_save(
 
     // Step 3: Look up service ID
     let service_row: Option<(i64,)> = sqlx::query_as("SELECT id FROM services WHERE name = ?")
-        .bind(&service)
-        .fetch_optional(&state.db)
+        .bind(service)
+        .fetch_optional(db)
         .await
         .map_err(|e| format!("Database error: {}", e))?;
 
@@ -1123,7 +1141,7 @@ pub async fn start_auth_and_save(
     });
 
     let account_id = upsert_service_account(
-        &state.db,
+        db,
         service_id,
         &final_display_name,
         email.as_deref(),
@@ -1164,8 +1182,8 @@ pub async fn start_auth_and_save(
           AND (LOWER(service_name) = LOWER(?) OR service_name IS NULL)
         "#,
     )
-    .bind(&service)
-    .execute(&state.db)
+    .bind(service)
+    .execute(db)
     .await
     .map(|r| r.rows_affected())
     .unwrap_or(0);
@@ -1854,11 +1872,71 @@ pub fn process_spotify_callback_request(
     (status, result, response)
 }
 
+/// Ventana del flujo PKCE de Spotify (issue #84).
+///
+/// `data_directory` es el perfil provisional del intento de login dentro de la
+/// app: un directorio por intento, creado antes de abrir la ventana y borrado
+/// al cerrarla. En el camino histórico (`spotify_auth_webview`) es `None` y la
+/// ventana usa el perfil por defecto de la app, sin cambio de comportamiento.
+pub struct SpotifyAuthWindowSpec {
+    pub label: String,
+    pub title: &'static str,
+    pub data_directory: Option<std::path::PathBuf>,
+}
+
 /// Authenticate Spotify using native Tauri WebView2 window and PKCE OAuth2 flow.
 #[tauri::command]
 pub async fn spotify_auth_webview(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
+) -> Result<AuthResult, String> {
+    run_spotify_pkce_login(
+        app,
+        state.db.clone(),
+        SpotifyAuthWindowSpec {
+            label: "spotify-auth".to_string(),
+            title: "Connect Spotify",
+            data_directory: None,
+        },
+    )
+    .await
+}
+
+/// Directorio a auditar y purgar tras cerrar la ventana PKCE: el perfil
+/// provisional del intento cuando existe; el perfil por defecto de la app en
+/// el camino histórico (comportamiento previo intacto).
+fn attempt_profile_dir(
+    app: &tauri::AppHandle,
+    window_spec: &SpotifyAuthWindowSpec,
+) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    window_spec
+        .data_directory
+        .clone()
+        .or_else(|| app.path().app_local_data_dir().ok())
+}
+
+/// Runner del login PKCE de Spotify, reutilizado por el login dentro de la app
+/// (`commands/account_login.rs`) con ventana y perfil por intento.
+pub async fn run_spotify_pkce_login(
+    app: tauri::AppHandle,
+    db: sqlx::SqlitePool,
+    window_spec: SpotifyAuthWindowSpec,
+) -> Result<AuthResult, String> {
+    let result = spotify_pkce_inner(app, db, &window_spec).await;
+    // El perfil provisional de un intento no sobrevive a la ventana: la sesión
+    // se recuerda mediante el artefacto cifrado en la BD (ADR-0007, decisión 5),
+    // nunca mediante cookies en texto plano en disco.
+    if let Some(dir) = &window_spec.data_directory {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    result
+}
+
+async fn spotify_pkce_inner(
+    app: tauri::AppHandle,
+    db: sqlx::SqlitePool,
+    window_spec: &SpotifyAuthWindowSpec,
 ) -> Result<AuthResult, String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use rand::{rngs::OsRng, RngCore};
@@ -1872,15 +1950,15 @@ pub async fn spotify_auth_webview(
     if !try_begin_spotify_auth(&AUTH_IN_PROGRESS) {
         tracing::warn!(
             stage = "ipc_concurrent",
-            window_present = app.get_webview_window("spotify-auth").is_some(),
-            "spotify_auth_webview rejected concurrent invocation"
+            window_present = app.get_webview_window(&window_spec.label).is_some(),
+            "spotify pkce login rejected concurrent invocation"
         );
         return Err("Auth already in progress".to_string());
     }
     let _guard = AuthGuard;
 
     // Close any existing auth window to avoid label collision
-    if let Some(existing) = app.get_webview_window("spotify-auth") {
+    if let Some(existing) = app.get_webview_window(&window_spec.label) {
         if let Err(err) = existing.close() {
             tracing::warn!(stage = "window_close", error_kind = %std::any::type_name_of_val(&err), "Spotify auth window close failed");
             return Err("Failed to close existing Spotify auth window".into());
@@ -1934,13 +2012,19 @@ pub async fn spotify_auth_webview(
     let parsed_url: tauri::Url = auth_url
         .parse()
         .map_err(|e| format!("Failed to build Spotify authorize URL: {}", e))?;
-    let auth_window = tauri::WebviewWindowBuilder::new(
+    let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
-        "spotify-auth",
+        window_spec.label.clone(),
         tauri::WebviewUrl::External(parsed_url),
     )
-    .title("Connect Spotify")
-    .inner_size(500.0, 700.0)
+    .title(window_spec.title)
+    .inner_size(500.0, 700.0);
+    // Perfil provisional del intento: cookies y almacenamiento aislados del
+    // resto de la app y del resto de intentos.
+    if let Some(dir) = &window_spec.data_directory {
+        builder = builder.data_directory(dir.clone());
+    }
+    let auth_window = builder
     .resizable(false)
     .closable(true)
     .build()
@@ -1995,7 +2079,7 @@ pub async fn spotify_auth_webview(
         Ok(Err(e)) => return Err(format!("Socket error: {}", e)),
         Err(_) => {
             let _ = auth_window.close();
-            if let Ok(profile_dir) = app.path().app_local_data_dir() {
+            if let Some(profile_dir) = attempt_profile_dir(&app, window_spec) {
                 let _ = crate::crypto::audit_and_purge_webview_localstorage(&profile_dir);
                 let _ = crate::crypto::ensure_secure_profile_permissions(&profile_dir);
             }
@@ -2007,7 +2091,7 @@ pub async fn spotify_auth_webview(
     let _ = auth_window.close();
 
     // Audit and purge residual OAuth webview localstorage (TASK-112)
-    if let Ok(profile_dir) = app.path().app_local_data_dir() {
+    if let Some(profile_dir) = attempt_profile_dir(&app, window_spec) {
         let _ = crate::crypto::audit_and_purge_webview_localstorage(&profile_dir);
         let _ = crate::crypto::ensure_secure_profile_permissions(&profile_dir);
     }
@@ -2111,7 +2195,7 @@ pub async fn spotify_auth_webview(
     // Save credentials to database
     let service_row: Option<(i64,)> =
         sqlx::query_as("SELECT id FROM services WHERE name = 'spotify'")
-            .fetch_optional(&state.db)
+            .fetch_optional(&db)
             .await
             .map_err(|e| format!("Database error: {}", e))?;
 
@@ -2135,7 +2219,7 @@ pub async fn spotify_auth_webview(
     let final_display_name = display_name;
 
     let account_id = upsert_service_account(
-        &state.db,
+        &db,
         service_id,
         &final_display_name,
         email.as_deref(),
@@ -2165,7 +2249,7 @@ pub async fn spotify_auth_webview(
           AND (LOWER(service_name) = 'spotify' OR service_name IS NULL)
         "#,
     )
-    .execute(&state.db)
+    .execute(&db)
     .await
     .map(|r| r.rows_affected())
     .unwrap_or(0);

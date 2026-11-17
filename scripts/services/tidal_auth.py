@@ -373,6 +373,98 @@ class TidalAuth:
 
 
 # Convenience functions for GUI bridge
+async def _async_tidal_login_start(auth: Optional[TidalAuth] = None) -> dict:
+    """Start of the device code flow WITHOUT opening any browser.
+
+    In-app webview login (issue #84): returns the device code and the FULL
+    verification URL so the app can open it in its own window; polling happens
+    separately in `_async_tidal_login_poll`. No `open_in_system_browser` here —
+    the bridge must not launch a browser on this path.
+    """
+    if auth is None:
+        auth = TidalAuth(verbose=True)
+    auth.session = aiohttp.ClientSession()
+    try:
+        device_code, verification_url = await auth._get_device_code()
+        # The device code is issued here; each subprocess owns its own session
+        # (start and poll are separate invocations from Rust), so no session
+        # survives this call.
+        if auth.session:
+            await auth.session.close()
+            auth.session = None
+        return {
+            "status": "success",
+            "message": "Device code created; waiting for user authorization",
+            "device_code": device_code,
+            "verification_url": verification_url,
+        }
+    except Exception as e:
+        if auth.session:
+            await auth.session.close()
+            auth.session = None
+        return {"status": "error", "message": f"Error: {str(e)}"}
+
+
+async def _async_tidal_login_poll(device_code: str, auth: Optional[TidalAuth] = None,
+                                  timeout_seconds: int = 300) -> dict:
+    """Poll for authorization of a device code started with login_start.
+
+    Same polling contract as `login_with_device_code` (status 0/1/2) but WITHOUT
+    opening a browser: the app's webview is the only surface the user sees.
+    Returns the token payload shape the auth bridge expects on success.
+    """
+    if auth is None:
+        auth = TidalAuth(verbose=False)
+    if not device_code or not str(device_code).strip():
+        return {"status": "error", "message": "No device code provided", "device_info": {}}
+
+    own_session = auth.session is None
+    if own_session:
+        auth.session = aiohttp.ClientSession()
+    try:
+        interval = 2  # seconds
+        elapsed = 0
+        while elapsed < timeout_seconds:
+            await asyncio.sleep(interval)
+            elapsed += interval
+            status, auth_info = await auth._get_auth_status(device_code)
+            if status == 0:
+                auth.save_tokens(auth_info)
+                device_info = {"device_code": device_code}
+                return {"status": "success", "message": "Successfully connected to Tidal",
+                        "device_info": device_info}
+            if status == 1:
+                return {"status": "error", "message": "Authorization failed", "device_info": {}}
+        return {"status": "error", "message": "Authorization timed out", "device_info": {}}
+    except Exception as e:
+        return {"status": "error", "message": f"Error: {str(e)}", "device_info": {}}
+    finally:
+        if own_session and auth.session:
+            await auth.session.close()
+            auth.session = None
+
+
+def tidal_login_start(auth: Optional[TidalAuth] = None) -> dict:
+    """Start device code login WITHOUT opening a browser (in-app webview login)."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_async_tidal_login_start(auth))
+    finally:
+        loop.close()
+
+
+def tidal_login_poll(device_code: str, auth: Optional[TidalAuth] = None,
+                     timeout_seconds: int = 300) -> dict:
+    """Poll device code authorization WITHOUT opening a browser (in-app webview login)."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_async_tidal_login_poll(device_code, auth, timeout_seconds))
+    finally:
+        loop.close()
+
+
 async def _async_tidal_login(auth: Optional[TidalAuth] = None) -> dict:
     """Async login helper."""
     if auth is None:

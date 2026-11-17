@@ -1092,6 +1092,9 @@ fn main() {
             commands::refresh_spotify_session,
             commands::validate_all_sessions,
             commands::spotify_auth_webview,
+            // Login dentro de la app por cuenta (issue #84)
+            commands::start_account_login,
+            commands::cancel_account_login,
             // Lyrics
             commands::resolve_track_lyrics,
             commands::get_lyrics,
