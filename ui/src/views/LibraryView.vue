@@ -129,12 +129,16 @@
       <button 
         v-for="filter in filterPills" 
         :key="filter.id"
+        :disabled="filter.disabled"
+        :title="filter.reason"
         @click="toggleFilter(filter.id)"
         :class="[
-          'filter-pill px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-2 whitespace-nowrap transition-all cursor-pointer',
-          activeFilters.includes(filter.id) 
-            ? 'bg-primary/15 border border-primary/40 text-primary font-bold shadow-xs' 
-            : 'bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-text-secondary hover:text-ink hover:border-gray-300 dark:hover:border-gray-600'
+          'filter-pill px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-2 whitespace-nowrap transition-all',
+          filter.disabled
+            ? 'opacity-40 cursor-not-allowed border border-gray-200 dark:border-border-dark text-text-secondary bg-white dark:bg-surface-dark'
+            : activeFilters.includes(filter.id)
+            ? 'bg-primary/15 border border-primary/40 text-primary font-bold shadow-xs cursor-pointer'
+            : 'bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-text-secondary hover:text-ink hover:border-gray-300 dark:hover:border-gray-600 cursor-pointer'
         ]"
       >
         <span v-if="activeFilters.includes(filter.id)" class="w-1.5 h-1.5 rounded-full bg-primary"></span>
@@ -640,20 +644,13 @@
       </div>
 
       <!-- EMPTY STATE: No Filter Results -->
-      <div v-else-if="filteredTracks.length === 0 && !isSearching" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
+      <div v-else-if="filteredTracks.length === 0 && !isLoading" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
         <span class="material-symbols-outlined text-[60px] text-gray-400 dark:text-gray-600 mb-6">filter_list_off</span>
         <h3 class="text-xl font-bold text-ink mb-2">No tracks match your filters</h3>
         <p class="text-text-secondary mb-6">Try adjusting your search or filters</p>
         <button @click="clearAllFilters" class="px-5 py-2.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight text-gray-700 dark:text-gray-300 rounded-xl font-medium transition-all cursor-pointer">
           Clear All Filters
         </button>
-      </div>
-
-      <!-- SEARCHING STATE -->
-      <div v-else-if="isSearching && searchQuery" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
-        <span class="material-symbols-outlined text-[60px] text-primary mb-6 animate-spin">progress_activity</span>
-        <h3 class="text-xl font-bold text-ink mb-2">Searching...</h3>
-        <p class="text-text-secondary">Searching your entire library for "{{ searchQuery }}"</p>
       </div>
 
       <!-- LIST VIEW (Customizable Columns with Drag & Drop) -->
@@ -1163,7 +1160,8 @@
 defineOptions({ name: 'LibraryView' })
 import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRouter, useRoute, type LocationQueryValue } from 'vue-router'
-import { libraryApi, searchTracks, enqueueTracks, reconcileQueue, importMbDump, getMbDumpImportState, type MbDumpImportState, type MbDumpProgress }  from '@/api/library'
+import { libraryApi, queryLibrary, enqueueTracks, reconcileQueue, importMbDump, getMbDumpImportState, type MbDumpImportState, type MbDumpProgress }  from '@/api/library'
+import type { LibraryQuery, LibraryQueryCounts, LibrarySortKey, DownloadStatusFilter, QualityBucketFilter } from '@/api/types'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch, queueApi } from '@/api/queue'
 import { playlistsApi } from '@/api/playlists'
 import { metadataApi } from '@/api/metadata'
@@ -1316,15 +1314,20 @@ const contextMenu = ref<{
 })
 
 // Filter pills (Consolidated single source of filters)
-const filterPills = [
+// L01 (#98): los pills se traducen a dimensiones de LibraryQuery. Las piezas
+// sin semántica en el contrato quedan expuestas DESHABILITADAS con su motivo,
+// no eliminadas ni inventadas: «Multi-Source» no es dimensión del contrato
+// (la cabecera con badges de servicio llega con L03) y «Duplicates» espera la
+// identidad ISRC/huella de L10 (#73).
+const filterPills: Array<{ id: string; label: string; disabled?: boolean; reason?: string }> = [
   { id: 'all', label: 'All Items' },
   { id: 'downloaded', label: 'Downloaded' },
   { id: 'notDownloaded', label: 'Not Downloaded' },
   { id: 'favorites', label: 'Favorites' },
   { id: 'flac', label: 'Hi-Res (FLAC)' },
   { id: 'mp3', label: 'Lossy (MP3)' },
-  { id: 'multiSource', label: 'Multi-Source' },
-  { id: 'duplicates', label: 'Duplicates' },
+  { id: 'multiSource', label: 'Multi-Source', disabled: true, reason: 'Not available: the server query (L01) has no multi-source dimension; service badges arrive with L03' },
+  { id: 'duplicates', label: 'Duplicates', disabled: true, reason: 'Not available: duplicates arrive with L10 (#73) over ISRC/fingerprint identity' },
 ]
 
 const activeFilters = ref(['all'])
@@ -1578,11 +1581,10 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
   };
 }
 
-// Route 2 (2026-10-18): the favorites list can show the same canonical track
-// once per favorited release; the row key must include the release identity or
-// Vue reuses DOM nodes across different releases.
+// L01: una fila por tracks.id — la expansión por release de favoritos
+// desapareció de la vista con get_favorite_tracks; el id basta de clave.
 function trackRowKey(track: Track): string {
-  return `${track.id}:${track.editionItemId ?? track.album}`
+  return String(track.id)
 }
 
 // ==============================================
@@ -1595,21 +1597,63 @@ function trackRowKey(track: Track): string {
 const PAGE_SIZE = 100;
 const SEARCH_PAGE_SIZE = 100;
 
-/** Triple fuente según filtros: duplicados > favoritos > biblioteca general. */
+// L01 (#98): fuente ÚNICA. query_library resuelve en servidor filtros, orden,
+// búsqueda y contadores; el renderer deja de filtrar, ordenar o sustituir la
+// lista por una búsqueda.
 async function fetchLibraryPage(offset: number, limit: number) {
-  return activeFilters.value.includes('duplicates')
-    ? await libraryApi.getDuplicateTracks(offset, limit)
-    : activeFilters.value.includes('favorites')
-    ? await libraryApi.getFavoriteTracks(offset, limit)
-    : await libraryApi.getLibrary(offset, limit);
+  const result = await libraryApi.queryLibrary(buildLibraryQuery(offset, limit));
+  if (offset === 0 && result.counts) {
+    libraryCounts.value = result.counts;
+  }
+  return result;
+}
+
+const libraryCounts = ref<LibraryQueryCounts | null>(null);
+
+/** Contrato LibraryQuery: los pills del renderer se traducen a dimensiones. */
+function buildLibraryQuery(offset: number, limit: number): LibraryQuery {
+  const filters = activeFilters.value;
+  // OR dentro de la dimensión de estado de descarga.
+  const downloadStatuses: DownloadStatusFilter[] = [];
+  if (filters.includes('downloaded')) downloadStatuses.push('downloaded');
+  if (filters.includes('notDownloaded')) downloadStatuses.push('queued', 'not_downloaded');
+  // OR dentro de la dimensión de calidad (buckets del servidor, mismas
+  // etiquetas que el deep-link FE-10 del dashboard).
+  const qualityBuckets: QualityBucketFilter[] = [];
+  if (filters.includes('flac')) qualityBuckets.push('hi_res', 'cd_quality');
+  if (filters.includes('mp3')) qualityBuckets.push('lossy');
+  if (filters.includes('quality') && qualityFilter.value) {
+    const deepLinkBucket: Record<string, QualityBucketFilter> = {
+      'Hi-Res (24-bit+)': 'hi_res',
+      'CD Quality': 'cd_quality',
+      'Lossy': 'lossy',
+    };
+    const bucket = deepLinkBucket[qualityFilter.value];
+    if (bucket && !qualityBuckets.includes(bucket)) qualityBuckets.push(bucket);
+  }
+  return {
+    text: searchQuery.value.trim() || null,
+    serviceIds: [],
+    accountIds: [],
+    collections: [],
+    favoritesOnly: filters.includes('favorites'),
+    downloadStatuses,
+    qualityBuckets,
+    inPlaylists: null,
+    duplicates: null,
+    quarantine: 'exclude',
+    genre: [],
+    sort: sortBy.value as LibrarySortKey,
+    direction: sortDirection.value,
+    offset,
+    limit,
+  };
 }
 
 const browser = useTrackBrowser<LibraryTrack, Track>({
   source: { kind: 'paged', load: fetchLibraryPage },
-  searchSource: { load: searchTracks },
   mapRow: mapToTrack,
   pageSize: PAGE_SIZE,
-  searchPageSize: SEARCH_PAGE_SIZE,
 });
 
 const selection = browser.selection;
@@ -1619,10 +1663,7 @@ const totalTracks = browser.total;
 const currentOffset = browser.currentOffset;
 const hasMore = browser.hasMore;
 const isLoadingMore = browser.isLoadingMore;
-const pageAppendCount = browser.pageAppendCount;
-const searchResults = browser.search.rows;
-const isSearching = browser.search.isSearching;
-const hasMoreSearch = browser.search.hasMore;
+
 
 /** Failure of the last load; distinguishes "empty library" from "could not read". */
 const isLoading = browser.isLoading;
@@ -1697,16 +1738,8 @@ async function fetchQueueStats() {
 // mide la distancia al fondo DENTRO del corte de throttle (PR-01/PR-02);
 // aquí solo se decide si toca pedir la página siguiente.
 function maybeLoadMore(scrollBottom: number) {
-  if (scrollBottom < 300) {
-    if (searchQuery.value.trim()) {
-      if (hasMoreSearch.value && !isSearching.value) {
-        loadMoreSearchResults();
-      }
-    } else {
-      if (hasMore.value && !isLoadingMore.value) {
-        loadMore();
-      }
-    }
+  if (scrollBottom < 300 && hasMore.value && !isLoadingMore.value) {
+    loadMore();
   }
 }
 
@@ -1714,25 +1747,15 @@ function maybeLoadMore(scrollBottom: number) {
 loadColumnsOrder();
 loadLibrary();
 
-// Database search: la mecánica (prefijo `*` por palabra, paginador propio de
-// 100 y guards) vive en el composable; aquí quedan los alias con los nombres
-// históricos. El debounce del input es ritmo de la vista y sigue aquí.
-const performDatabaseSearch = browser.search.run;
-const loadMoreSearchResults = browser.search.loadMore;
-
-watch(searchQuery, (newQuery) => {
+// L01: la búsqueda ya no sustituye la lista — alimenta `query_library.text`
+// y se combina con los filtros EN SERVIDOR. El debounce del input es ritmo
+// de la vista y sigue aquí; L02 añadirá la relevancia FTS ponderada.
+watch(searchQuery, () => {
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
   }
-
-  if (!newQuery.trim()) {
-    browser.search.reset()
-    return
-  }
-
-  isSearching.value = true
   searchDebounceTimer = setTimeout(() => {
-    performDatabaseSearch(newQuery)
+    loadLibrary()
   }, 300)
 })
 
@@ -2252,102 +2275,17 @@ function toggleSelectAll() {
   }
 }
 
-// Only page appends may reuse a sorted prefix; all other invalidations sort anew.
-// `pageAppendCount` lo incrementa el composable en cada append de página.
-let sortedPrefix: Track[] = []
-let previousSortKey = ''
-let previousFilterKey = ''
-let previousSource: Track[] | null = null
-let previousFilteredLength = 0
-let previousAppendCount = -1
+// L01 (#98): filtros, búsqueda y orden viven EN SERVIDOR (query_library:
+// orden con desempates NOCASE estables y nulos al final). El renderer solo
+// pagina; el nombre histórico queda como alias del template y de la ventana
+// virtual, y la optimización de prefijo ordenado (obsoleta) se retira.
+const filteredTracks = computed(() => tracks.value)
 
-function compareTracks(a: Track, b: Track): number {
-  let comparison = 0
-  switch (sortBy.value) {
-    case 'title': comparison = a.title.localeCompare(b.title); break
-    case 'artist': comparison = a.artist.localeCompare(b.artist); break
-    case 'album': comparison = a.album.localeCompare(b.album); break
-    case 'duration': comparison = a.duration.localeCompare(b.duration); break
-    case 'quality': comparison = a.quality.localeCompare(b.quality); break
-    case 'metadataScore': comparison = (a.metadataScore ?? 0) - (b.metadataScore ?? 0); break
-  }
-  return sortDirection.value === 'desc' ? -comparison : comparison
-}
-
-function mergeSorted(prefix: Track[], appended: Track[]): Track[] {
-  const merged: Track[] = []
-  let i = 0
-  let j = 0
-  while (i < prefix.length && j < appended.length) {
-    // Stable sort: earlier pages precede later ones on equal keys.
-    if (compareTracks(prefix[i], appended[j]) <= 0) merged.push(prefix[i++])
-    else merged.push(appended[j++])
-  }
-  while (i < prefix.length) merged.push(prefix[i++])
-  while (j < appended.length) merged.push(appended[j++])
-  return merged
-}
-
-const filteredTracks = computed(() => {
-  let trackList = searchQuery.value.trim() ? searchResults.value : tracks.value
-  
-  if (activeFilters.value.includes('flac')) {
-    trackList = trackList.filter(t => t.quality.includes('/') && !t.quality.includes('kbps'))
-  }
-  if (activeFilters.value.includes('mp3')) {
-    trackList = trackList.filter(t => t.quality.includes('kbps'))
-  }
-  if (activeFilters.value.includes('downloaded')) {
-    trackList = trackList.filter(t => t.downloadStatus === 'downloaded')
-  }
-  if (activeFilters.value.includes('notDownloaded')) {
-    trackList = trackList.filter(t => t.downloadStatus !== 'downloaded')
-  }
-  if (activeFilters.value.includes('multiSource')) {
-    trackList = trackList.filter(t => t.services.length >= 2)
-  }
-  if (activeFilters.value.includes('favorites')) {
-    trackList = trackList.filter(t => t.isFavorite)
-  }
-  if (activeFilters.value.includes('quality')) {
-    // FE-10: deep-link quality filter. Tracks carry the backend-computed
-    // bucket; tracks without one fall back to an exact quality-string match.
-    trackList = trackList.filter(t => {
-      if (!qualityFilter.value) return true
-      if (t.qualityBucket) return t.qualityBucket === qualityFilter.value
-      return !!t.quality && t.quality !== '—' && t.quality.toUpperCase() === qualityFilter.value.toUpperCase()
-    })
-  }
-  
-  const sortKey = `${sortBy.value}:${sortDirection.value}`
-  const filterKey = JSON.stringify(activeFilters.value) + '|' + qualityFilter.value
-
-  // The sorted prefix can only be reused when the sort key and filters are
-  // unchanged, the previous pass ran over the very same collection (same
-  // identities, same length), and exactly one page was appended since.
-  // Anything else re-sorts the whole list, exactly as before.
-  const isAppendOnly =
-    sortKey === previousSortKey &&
-    filterKey === previousFilterKey &&
-    previousSource === tracks.value &&
-    trackList === tracks.value &&
-    pageAppendCount.value > previousAppendCount &&
-    previousFilteredLength < trackList.length
-
-  previousSortKey = sortKey
-  previousFilterKey = filterKey
-  previousSource = trackList
-  previousFilteredLength = trackList.length
-  previousAppendCount = pageAppendCount.value
-
-  if (isAppendOnly) {
-    const appendedSorted = trackList.slice(sortedPrefix.length).sort(compareTracks)
-    sortedPrefix = mergeSorted(sortedPrefix, appendedSorted)
-    return sortedPrefix
-  }
-
-  sortedPrefix = [...trackList].sort(compareTracks)
-  return sortedPrefix
+// La dirección y la clave de orden son parte de la consulta: al cambiarlas
+// se pide la página de nuevo (la dirección afecta SOLO a la clave primaria
+// y los desempates los fija el servidor).
+watch([sortBy, sortDirection], () => {
+  loadLibrary()
 })
 
 // Ventana virtual: kernel compartido (useVirtualWindow, ADR-0025). Los
@@ -2532,6 +2470,8 @@ function getQualityBadgeStyle(quality: string): string {
 
 // Methods
 function toggleFilter(filterId: string) {
+  // Piezas deshabilitadas con su motivo: no activan un filtro sin semántica.
+  if (filterPills.find(f => f.id === filterId)?.disabled) return
   if (filterId === 'all') {
     activeFilters.value = ['all']
   } else {
@@ -2547,9 +2487,9 @@ function toggleFilter(filterId: string) {
     }
   }
 
-  if (filterId === 'duplicates' || filterId === 'favorites' || activeFilters.value.includes('all')) {
-    loadLibrary()
-  }
+  // Cualquier cambio de filtro cambia la consulta: se pide de nuevo al
+  // servidor (los contadores vienen con la primera página).
+  loadLibrary()
 }
 
 function removeFilter(filterId: string) {
@@ -2557,9 +2497,7 @@ function removeFilter(filterId: string) {
   if (activeFilters.value.length === 0) {
     activeFilters.value = ['all']
   }
-  if (filterId === 'duplicates' || filterId === 'favorites') {
-    loadLibrary()
-  }
+  loadLibrary()
 }
 
 function getFilterLabel(filterId: string) {
@@ -2650,6 +2588,12 @@ function applyRouteFilters() {
     if (qualityFilter.value) {
       activeFilters.value = ['quality']
     }
+    return
+  }
+
+  if (filterParam === 'duplicates' || filterParam === 'multiSource') {
+    // Pieza deshabilitada en la vista (duplicados: L10/#73; badges de
+    // servicio: L03): el deep-link no activa un filtro sin semántica.
     return
   }
 
@@ -2787,19 +2731,20 @@ onMounted(async () => {
   })
 })
 
-watch(() => [...activeFilters.value], async (newFilters, oldFilters) => {
-  const hasNow = newFilters.includes('duplicates');
-  const hadBefore = oldFilters ? oldFilters.includes('duplicates') : false;
-  if (hasNow !== hadBefore) {
-    await loadLibrary();
-  }
-})
-
 // FE-10: react to deep-link query changes on the same route (e.g. browser
 // back between two quality buckets) instead of keeping the mount-time filter.
-watch(() => [route?.query?.filter, route?.query?.quality], () => {
-  applyRouteFilters()
-})
+// Con la consulta en servidor, un cambio de deep-link pide la lista de nuevo.
+// La clave es el VALOR del query (no la identidad del objeto route) para no
+// recargar la biblioteca en cada navegación, y solo cuando la vista es la
+// activa: una instancia cacheada por KeepAlive no debe pedir en la sombra.
+watch(
+  () => `${route?.query?.filter ?? ''}|${route?.query?.quality ?? ''}`,
+  () => {
+    if (route.path !== '/library') return
+    applyRouteFilters()
+    loadLibrary()
+  }
+)
 
 // FE-PERF-01: con LibraryView cacheada por <KeepAlive>, el sondeo de 4s de la
 // cola no debe seguir latiendo mientras la vista está oculta. onActivated/

@@ -64,7 +64,7 @@ async function mountView(handler: (cmd: string, args?: Record<string, unknown>) 
 }
 
 function libraryInvoke(cmd: string) {
-    if (cmd === 'get_library') return libraryPage;
+    if (cmd === 'query_library') return libraryPage;
     return null;
 }
 
@@ -106,7 +106,7 @@ describe('LibraryView — estados de carga y error (auditoría 5)', () => {
 
     it('una biblioteca realmente vacía sí muestra el estado vacío', async () => {
         const wrapper = await mountView((cmd) => {
-            if (cmd === 'get_library') return { tracks: [], total: 0, offset: 0, limit: 100, has_more: false };
+            if (cmd === 'query_library') return { tracks: [], total: 0, offset: 0, limit: 100, has_more: false };
             return null;
         });
 

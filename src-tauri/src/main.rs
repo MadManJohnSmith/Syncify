@@ -975,7 +975,7 @@ fn main() {
             commands::get_dashboard_stats,
             commands::get_health_checks,
             commands::get_duplicate_stats,
-            commands::get_duplicate_tracks,
+            commands::query_library,
             commands::reset_database,
             commands::search_tracks,
             commands::search_library,

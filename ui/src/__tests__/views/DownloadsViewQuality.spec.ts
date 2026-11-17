@@ -285,7 +285,7 @@ describe('DownloadsView Quality Decision & Policy Transparency', () => {
     ]
 
     mockInvoke((command) => {
-      if (command === 'get_library') {
+      if (command === 'query_library') {
         return {
           tracks: mockLibraryTracks,
           total: 3,

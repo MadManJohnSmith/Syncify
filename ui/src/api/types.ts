@@ -86,6 +86,93 @@ export interface SearchResult {
     has_more: boolean;
 }
 
+// ==========================================================================
+// Consulta de biblioteca v2 (L01, issue #98): filtros, orden y contadores
+// se resuelven EN SERVIDOR. Tipos espejo de `commands/library_query.rs`.
+// ==========================================================================
+
+export type LibrarySortKey =
+    | 'dateAdded'
+    | 'title'
+    | 'artist'
+    | 'album'
+    | 'duration'
+    | 'quality'
+    | 'metadataScore';
+
+export type SortDirection = 'asc' | 'desc';
+
+export type QuarantineMode = 'exclude' | 'only' | 'include';
+
+export type CollectionFilter = 'favorite' | 'playlist' | 'album' | 'artist';
+
+export type DownloadStatusFilter = 'downloaded' | 'queued' | 'not_downloaded';
+
+/** Etiquetas del bucket de calidad, idénticas al deep-link FE-10 del dashboard. */
+export type QualityBucketFilter = 'hi_res' | 'cd_quality' | 'lossy';
+
+export type DuplicatesFilter = 'only' | 'exclude';
+
+/**
+ * Consulta de biblioteca: AND entre dimensiones, OR dentro de cada lista.
+ * Cuenta y servicio se evalúan sobre la misma pertenencia cuando ambos
+ * vienen. `album`/`artist` en `collections`, `duplicates` y cuarentena
+ * `only`/`include` son contrato pendiente (L00/#97, L10/#73, L09/#72): el
+ * servidor responde con error explícito, no con semántica inventada.
+ */
+export interface LibraryQuery {
+    /** Texto libre (título, artista, álbum). Se combina con los filtros. */
+    text: string | null;
+    serviceIds: number[];
+    accountIds: number[];
+    collections: CollectionFilter[];
+    favoritesOnly: boolean;
+    downloadStatuses: DownloadStatusFilter[];
+    qualityBuckets: QualityBucketFilter[];
+    inPlaylists: boolean | null;
+    duplicates: DuplicatesFilter | null;
+    quarantine: QuarantineMode;
+    genre: string[];
+    sort: LibrarySortKey;
+    direction: SortDirection;
+    offset: number;
+    /** Default 100, máximo 200 (recortado en servidor). */
+    limit: number | null;
+}
+
+export interface LibraryServiceCount {
+    serviceId: number;
+    serviceName: string;
+    count: number;
+}
+
+/** Pertenencias por cuenta: puede superar el total de pistas distintas. */
+export interface LibraryAccountCount {
+    accountId: number;
+    displayName: string | null;
+    serviceName: string;
+    count: number;
+}
+
+/**
+ * Contadores de cabecera. Cada contador se calcula sobre el filtro actual
+ * SIN su propia dimensión, para que el chip coincida con el total al
+ * aplicarlo. Solo en la primera página (`offset == 0`).
+ */
+export interface LibraryQueryCounts {
+    total: number;
+    favorites: number;
+    downloaded: number;
+    inPlaylists: number;
+    byService: LibraryServiceCount[];
+    byAccount: LibraryAccountCount[];
+}
+
+export interface LibraryQueryResult extends LibraryPage {
+    /** `null` al paginar: la vista conserva los de la primera página. */
+    counts: LibraryQueryCounts | null;
+}
+
 export interface LibraryStats {
     total_tracks: number;
     total_artists: number;
