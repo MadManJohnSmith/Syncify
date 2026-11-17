@@ -527,6 +527,119 @@ pub async fn query_library(
     library_query::query_library(&state.db, query).await
 }
 
+/// L04 (issue #101): panel lateral de detalle de pista — UNA llamada IPC con
+/// el Track canónico, sus TrackSource por servicio, sus LibraryItem por
+/// cuenta y colección, la descarga y las facetas de cuarentena/duplicados
+/// (contrato: `None` hasta #72/#73). Una pista inexistente es error tipado
+/// (`kind: "track_not_found"`), no una fila vacía. Wrapper fino: el cuerpo
+/// vive en `commands/library_query.rs` (la serie L0x extiende allí).
+#[tauri::command]
+pub async fn get_library_track_detail(
+    state: State<'_, AppState>,
+    track_id: i64,
+) -> Result<library_query::TrackDetail, library_query::TrackDetailError> {
+    library_query::get_track_detail(&state.db, track_id).await
+}
+
+/// Resumen del borrado de audio de una pista (L04, issue #101), seguro para IPC.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteTrackAudioResult {
+    /// Entradas de cola eliminadas (no debe seguir descargándose nada).
+    pub queue_entries_deleted: u64,
+    /// Si existía una fila `downloads` para esta pista.
+    pub download_deleted: bool,
+    /// Si el fichero de audio se eliminó realmente del disco.
+    pub audio_file_deleted: bool,
+}
+
+/// DB + disco del borrado de audio: el Download, sus entradas de cola y el
+/// fichero en disco. Nunca el Track, sus TrackSource ni su pertenencia
+/// (story 22 del spec #96: la evidencia de que la pista existe se conserva).
+/// Separado del comando para la suite de pruebas
+/// (`tests/library_track_detail_test.rs`), como la costura de `query_library`.
+pub async fn delete_track_audio_inner(
+    db: &sqlx::SqlitePool,
+    track_id: i64,
+) -> Result<DeleteTrackAudioResult, String> {
+    // Se lee ANTES de borrar la fila porque es la única referencia al fichero.
+    let audio_paths: Vec<(String,)> = sqlx::query_as(
+        "SELECT file_path FROM downloads WHERE track_id = ? AND file_path IS NOT NULL",
+    )
+    .bind(track_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Failed to read download for track {}: {}", track_id, e))?;
+
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to begin audio deletion: {}", e))?;
+
+    let queue_result = sqlx::query("DELETE FROM download_queue WHERE track_id = ?")
+        .bind(track_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to delete queue entries: {}", e))?;
+
+    let download_result = sqlx::query("DELETE FROM downloads WHERE track_id = ?")
+        .bind(track_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to delete download: {}", e))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit audio deletion: {}", e))?;
+
+    // El fichero se borra tras confirmar la transacción (mismo orden que
+    // perform_delete_account): un fallo de disco no deja una fila borrada
+    // apuntando a un fichero que sí existe. Un fallo aquí no revierte el
+    // borrado lógico; se registra y se reporta.
+    let mut audio_file_deleted = false;
+    for (path,) in &audio_paths {
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => audio_file_deleted = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tracing::warn!("Audio file already gone for track {}: {}", track_id, path);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "Could not delete audio file for track {}: {}",
+                    track_id,
+                    error
+                );
+            }
+        }
+    }
+
+    tracing::info!(
+        "delete_track_audio: track_id={} queue={} download={} file={}",
+        track_id,
+        queue_result.rows_affected(),
+        download_result.rows_affected(),
+        audio_file_deleted
+    );
+
+    Ok(DeleteTrackAudioResult {
+        queue_entries_deleted: queue_result.rows_affected(),
+        download_deleted: download_result.rows_affected() > 0,
+        audio_file_deleted,
+    })
+}
+
+/// Borra SOLO el audio de una pista (L04, issue #101), tras confirmación en
+/// la vista. Idempotente: una pista sin descarga devuelve el resumen con
+/// todo `false`.
+#[tauri::command]
+pub async fn delete_track_audio(
+    state: State<'_, AppState>,
+    track_id: i64,
+) -> Result<DeleteTrackAudioResult, String> {
+    tracing::info!("delete_track_audio called: track_id={}", track_id);
+    delete_track_audio_inner(&state.db, track_id).await
+}
+
 /// Get library statistics
 #[tauri::command]
 pub async fn get_library_stats(state: State<'_, AppState>) -> Result<LibraryStats, String> {

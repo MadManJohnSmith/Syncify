@@ -560,6 +560,11 @@
           <div class="menu-separator h-px bg-line my-1"></div>
           
           <!-- Metadata actions -->
+          <!-- L04 (#101): panel lateral de detalle (solo lectura); la edición vive en /metadata. -->
+          <button @click="openTrackDetail(contextMenu.track!.id)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors" data-testid="context-track-detail">
+            <span class="material-symbols-outlined text-[16px]">side_pane</span>
+            <span class="flex-1 text-left">Track Detail</span>
+          </button>
           <button @click="handleShowMetadata(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span class="material-symbols-outlined text-[16px]">info</span>
             <span class="flex-1 text-left">Show Metadata</span>
@@ -722,7 +727,7 @@
           </template>
 
           <!-- Actions Header spacer -->
-          <div class="w-20 shrink-0"></div>
+          <div class="w-24 shrink-0"></div>
         </div>
 
         <!-- Scrollable List (Virtual Scroller for 23,000+ Items - PR-02) -->
@@ -860,7 +865,8 @@
             <!-- Actions Cell -->
             <!-- S194: fixed row actions (always visible, dimmed when idle) —
                  the hover-only floating buttons rendered unreliably. -->
-            <div class="track-cell track-actions w-20 shrink-0 flex justify-end items-center gap-1">
+            <div class="track-cell track-actions w-24 shrink-0 flex justify-end items-center gap-1">
+              <button @click.stop="openTrackDetail(track.id)" class="p-1 text-gray-400 opacity-60 hover:text-primary hover:opacity-100 transition-all" title="Track detail" :data-testid="`track-detail-open-${track.id}`"><span class="material-symbols-outlined text-[18px]">side_pane</span></button>
               <button
                 @click.stop="handleToggleFavorite(track)"
                 :class="[
@@ -1182,10 +1188,133 @@
       </div>
 
       <!-- Download Favorites Modal -->
-      <DownloadFavoritesModal 
-        v-model="showDownloadFavoritesModal" 
-        @enqueued="handleFavoritesEnqueued" 
+      <DownloadFavoritesModal
+        v-model="showDownloadFavoritesModal"
+        @enqueued="handleFavoritesEnqueued"
       />
+
+      <!-- L04 (#101): panel lateral de detalle de pista. Solo lectura de
+           metadatos; una sola consulta al abrirse (get_library_track_detail).
+           Escape, el fondo o un cambio de ruta lo cierran. Las secciones de
+           cuarentena y duplicados van deshabilitadas con su motivo mientras
+           #72/#73 no existan: no se simulan. La edición de metadatos vive en
+           /metadata («Abrir ficha»). -->
+      <div v-if="detailTrackId !== null" role="dialog" aria-label="Track detail" class="fixed inset-0 z-50 bg-black/40" data-testid="track-detail-backdrop" @click.self="closeTrackDetail">
+        <aside class="absolute right-0 top-0 h-full w-[400px] max-w-full bg-white dark:bg-surface-dark border-l border-gray-200 dark:border-border-dark shadow-xl overflow-y-auto custom-scrollbar text-ink" data-testid="track-detail-panel">
+          <div class="sticky top-0 z-10 bg-white dark:bg-surface-dark border-b border-gray-200 dark:border-border-dark px-4 py-3 flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <h2 class="font-semibold text-sm truncate" data-testid="track-detail-title">{{ detailData?.track.display_title || detailData?.track.title || 'Track detail' }}</h2>
+              <p class="text-xs text-text-secondary truncate">{{ detailData?.track.artist_name || 'Unknown Artist' }} · {{ detailData?.track.album_name || 'Unknown Album' }}</p>
+            </div>
+            <button type="button" class="p-1 text-text-secondary hover:text-ink transition-colors" data-testid="track-detail-close" aria-label="Close track detail" @click="closeTrackDetail">
+              <span class="material-symbols-outlined text-[18px]">close</span>
+            </button>
+          </div>
+
+          <div v-if="detailLoading" class="px-4 py-8 flex items-center justify-center gap-2 text-text-secondary" data-testid="track-detail-loading">
+            <span class="material-symbols-outlined text-[20px] animate-spin">progress_activity</span>
+            <span class="text-sm">Loading detail…</span>
+          </div>
+
+          <!-- Pista inexistente: error tipado del backend, no una fila vacía. -->
+          <div v-else-if="detailError" class="px-4 py-6 space-y-1" data-testid="track-detail-error">
+            <p class="text-sm font-medium text-error">{{ detailError.kind === 'track_not_found' ? 'Track not found' : 'Could not load track detail' }}</p>
+            <p class="text-xs text-text-secondary">{{ detailError.kind === 'track_not_found' ? `No track with id ${detailError.trackId}.` : detailError.message }}</p>
+          </div>
+
+          <template v-else-if="detailData">
+            <!-- Fuentes por servicio: formato, profundidad, frecuencia, bitrate y disponibilidad -->
+            <section class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50" data-testid="track-detail-sources">
+              <h3 class="text-[11px] font-bold uppercase tracking-wider text-text-secondary mb-2">Sources</h3>
+              <p v-if="detailData.sources.length === 0" class="text-xs text-gray-400 italic">No service sources recorded.</p>
+              <ul v-else class="space-y-1.5">
+                <li v-for="source in detailData.sources" :key="source.serviceId" class="flex items-center justify-between gap-2 text-xs">
+                  <span class="flex items-center gap-1.5 min-w-0">
+                    <span :class="['w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold border shrink-0', getServiceStyle(source.serviceName)]">{{ getServiceIcon(source.serviceName) }}</span>
+                    <span class="font-medium truncate">{{ source.serviceName }}</span>
+                  </span>
+                  <span class="text-text-secondary text-right" :title="source.availabilityReason ?? undefined">
+                    {{ [source.format, source.bitDepth && source.sampleRate ? `${source.bitDepth}/${source.sampleRate}` : null, source.bitrate ? `${source.bitrate}kbps` : null].filter(Boolean).join(' · ') || '—' }}
+                    <span :class="source.available ? 'text-success' : 'text-warning'">{{ source.available ? 'available' : source.availabilityStatus }}</span>
+                  </span>
+                </li>
+              </ul>
+            </section>
+
+            <!-- Cuentas y pertenencias por colección -->
+            <section class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50" data-testid="track-detail-memberships">
+              <h3 class="text-[11px] font-bold uppercase tracking-wider text-text-secondary mb-2">Accounts &amp; collections</h3>
+              <p v-if="detailData.memberships.length === 0" class="text-xs text-gray-400 italic">No library memberships recorded.</p>
+              <ul v-else class="space-y-1.5">
+                <li v-for="(membership, idx) in detailData.memberships" :key="`${membership.accountId}-${membership.collection}-${membership.collectionId ?? 'fav'}-${idx}`" class="flex items-center justify-between gap-2 text-xs">
+                  <span class="truncate">{{ membership.displayName || `Account ${membership.accountId}` }} <span class="text-text-secondary">({{ membership.serviceName }})</span></span>
+                  <span class="text-text-secondary text-right shrink-0">{{ membership.collection === 'playlist' ? `playlist: ${membership.collectionName ?? ''}` : 'favorite' }}</span>
+                </li>
+              </ul>
+            </section>
+
+            <!-- Descarga: estado, servicio efectivo, calidad y ruta -->
+            <section class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50" data-testid="track-detail-download">
+              <h3 class="text-[11px] font-bold uppercase tracking-wider text-text-secondary mb-2">Download</h3>
+              <p v-if="!detailData.download" class="text-xs text-gray-400 italic">Not downloaded.</p>
+              <dl v-else class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                <dt class="text-text-secondary">Status</dt>
+                <dd data-testid="track-detail-download-status">{{ detailData.download.status }}</dd>
+                <template v-if="detailData.download.effectiveService">
+                  <dt class="text-text-secondary">Service</dt>
+                  <dd>{{ detailData.download.effectiveService }}</dd>
+                </template>
+                <template v-if="detailData.download.fileFormat">
+                  <dt class="text-text-secondary">Quality</dt>
+                  <dd>{{ [detailData.download.fileFormat, detailData.download.bitDepth && detailData.download.sampleRate ? `${detailData.download.bitDepth}/${detailData.download.sampleRate}` : null].filter(Boolean).join(' · ') }}</dd>
+                </template>
+                <template v-if="detailData.download.filePath">
+                  <dt class="text-text-secondary">Path</dt>
+                  <dd class="break-all font-mono text-[10px]">{{ detailData.download.filePath }}</dd>
+                </template>
+              </dl>
+            </section>
+
+            <!-- Facetas deshabilitadas con su motivo (#72/#73): no se simulan -->
+            <section class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50 opacity-60" data-testid="track-detail-quarantine-disabled">
+              <h3 class="text-[11px] font-bold uppercase tracking-wider text-text-secondary mb-1">Quarantine</h3>
+              <p class="text-xs text-gray-400 italic">Unavailable: sync quarantine (reason and last seen) arrives with #72/L09.</p>
+            </section>
+            <section class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50 opacity-60" data-testid="track-detail-duplicates-disabled">
+              <h3 class="text-[11px] font-bold uppercase tracking-wider text-text-secondary mb-1">Duplicates</h3>
+              <p class="text-xs text-gray-400 italic">Unavailable: ISRC + fingerprint identity arrives with #73/L10.</p>
+            </section>
+
+            <!-- Acciones que no editan la ficha -->
+            <section class="px-4 py-3 space-y-2" data-testid="track-detail-actions">
+              <div class="grid grid-cols-2 gap-2">
+                <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-play" @click="panelTrack && handleTrackPlay(panelTrack)">
+                  <span class="material-symbols-outlined text-[16px]">play_arrow</span> Play
+                </button>
+                <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-download" @click="panelTrack && handleDownload(panelTrack)">
+                  <span class="material-symbols-outlined text-[16px]">download</span> {{ detailData.download?.status === 'downloaded' ? 'Re-download' : 'Download' }}
+                </button>
+                <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-favorite" @click="panelFavorite">
+                  <span :class="['material-symbols-outlined text-[16px]', panelTrack?.isFavorite ? 'material-symbols-filled text-red-500' : '']">{{ panelTrack?.isFavorite ? 'favorite' : 'favorite_border' }}</span> {{ panelTrack?.isFavorite ? 'Unfavorite' : 'Favorite' }}
+                </button>
+                <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-open-metadata" @click="panelTrack && handleShowMetadata(panelTrack)">
+                  <span class="material-symbols-outlined text-[16px]">open_in_new</span> Abrir ficha
+                </button>
+              </div>
+              <div class="flex items-center gap-2">
+                <select v-model="detailPlaylistChoice" class="flex-1 min-w-0 text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-surface-highlight px-2 py-1.5 text-ink" data-testid="track-detail-playlist-select">
+                  <option :value="null" disabled>Add to playlist…</option>
+                  <option v-for="playlist in playlists" :key="playlist.id" :value="playlist.id">{{ playlist.name }}</option>
+                </select>
+                <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors" data-testid="track-detail-playlist-add" :disabled="detailPlaylistChoice === null" @click="panelAddToPlaylist">Add</button>
+              </div>
+              <button type="button" class="w-full px-3 py-1.5 rounded-lg text-xs font-medium bg-error/10 text-error hover:bg-error/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-delete-audio" @click="panelDeleteAudio">
+                <span class="material-symbols-outlined text-[16px]">delete</span> Delete audio
+              </button>
+            </section>
+          </template>
+        </aside>
+      </div>
 
     </div>
   </div>
@@ -1197,7 +1326,7 @@
 defineOptions({ name: 'LibraryView' })
 import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRouter, useRoute, type LocationQueryValue } from 'vue-router'
-import { libraryApi, queryLibrary, enqueueTracks, reconcileQueue, importMbDump, getMbDumpImportState, type MbDumpImportState, type MbDumpProgress }  from '@/api/library'
+import { libraryApi, queryLibrary, enqueueTracks, reconcileQueue, importMbDump, getMbDumpImportState, type TrackDetail, type TrackDetailError, type MbDumpImportState, type MbDumpProgress }  from '@/api/library'
 import type { LibraryQuery, LibraryQueryCounts, LibraryQueryResult, LibrarySortKey, DownloadStatusFilter, QualityBucketFilter } from '@/api/types'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch, queueApi } from '@/api/queue'
 import { playlistsApi } from '@/api/playlists'
@@ -2888,6 +3017,11 @@ function handleKeydown(event: KeyboardEvent) {
       togglePlayback()
     }
   } else if (event.key === 'Escape') {
+    // L04 (#101): el panel de detalle es la capa superior; Escape lo cierra.
+    if (detailTrackId.value !== null) {
+      closeTrackDetail()
+      return
+    }
     clearSelection()
     closeContextMenu()
     showShortcutsModal.value = false
@@ -2961,6 +3095,106 @@ async function focusTrackFromQuery() {
     highlightedTrackId.value = null
     highlightClearTimer = null
   }, 5000)
+
+  // L04 (#101): el deep link también abre el panel de esa pista.
+  openTrackDetail(trackId)
+}
+
+// ==============================================
+// L04 (#101): panel lateral de detalle de pista
+// ==============================================
+// UNA consulta al abrirse (get_library_track_detail: Track, fuentes,
+// pertenencias y descarga en una llamada — no por campo, fuente o
+// pertenencia). Tras una acción o un evento de sync se refresca el panel
+// entero con la misma llamada. Una pista inexistente muestra el error
+// tipado (`track_not_found`), no una fila vacía.
+const detailTrackId = ref<number | null>(null)
+const detailData = ref<TrackDetail | null>(null)
+const detailError = ref<TrackDetailError | null>(null)
+const detailLoading = ref(false)
+const detailPlaylistChoice = ref<number | null>(null)
+// Token de secuencia: si el panel cambia de pista o se cierra mientras una
+// respuesta está en vuelo, la respuesta vieja se descarta.
+let detailQuerySeq = 0
+
+/** La fila canónica del panel, mapeada al Track de la vista para reusar los
+ * manejadores existentes (play, descarga, favorito, abrir ficha). */
+const panelTrack = computed<Track | null>(() => (detailData.value ? mapToTrack(detailData.value.track, 0) : null))
+
+async function openTrackDetail(trackId: number) {
+  detailTrackId.value = trackId
+  detailPlaylistChoice.value = null
+  await refreshTrackDetail()
+}
+
+async function refreshTrackDetail() {
+  const trackId = detailTrackId.value
+  if (trackId === null) return
+  const seq = ++detailQuerySeq
+  detailLoading.value = true
+  detailError.value = null
+  try {
+    const detail = await libraryApi.getTrackDetail(trackId)
+    if (seq !== detailQuerySeq || detailTrackId.value !== trackId) return
+    detailData.value = detail
+  } catch (error) {
+    if (seq !== detailQuerySeq || detailTrackId.value !== trackId) return
+    // El wrapper normaliza el rechazo al error tipado del contrato.
+    detailError.value = error as TrackDetailError
+    detailData.value = null
+  } finally {
+    if (seq === detailQuerySeq) detailLoading.value = false
+  }
+}
+
+function closeTrackDetail() {
+  // Un token nuevo invalida cualquier respuesta en vuelo del panel cerrado.
+  detailQuerySeq++
+  detailTrackId.value = null
+  detailData.value = null
+  detailError.value = null
+  detailLoading.value = false
+  detailPlaylistChoice.value = null
+}
+
+/** Tras una acción del panel: refresca el panel y la lista sin esperar al
+ * debounce (el debounce es para tormentas de eventos, no para una acción
+ * explícita del usuario). */
+async function refreshPanelAndList() {
+  await Promise.allSettled([refreshTrackDetail(), loadLibrary()])
+}
+
+async function panelFavorite() {
+  const track = panelTrack.value
+  if (!track) return
+  await handleToggleFavorite(track)
+  // El estado confirmado llega del backend; la fila canónica manda.
+  await refreshTrackDetail()
+}
+
+async function panelAddToPlaylist() {
+  const trackId = detailTrackId.value
+  const playlistId = detailPlaylistChoice.value
+  if (trackId === null || playlistId === null) return
+  await addTrackToPlaylist(playlistId, trackId)
+  await refreshTrackDetail()
+}
+
+/** Borrar audio con confirmación: elimina solo el Download y el fichero,
+ * nunca el Track, sus fuentes ni su pertenencia (story 22 del spec #96). */
+async function panelDeleteAudio() {
+  const trackId = detailTrackId.value
+  const track = panelTrack.value
+  if (trackId === null || !track) return
+  const confirmed = window.confirm(`Delete downloaded audio for "${track.title}"? The track, its sources and memberships are kept.`)
+  if (!confirmed) return
+  try {
+    const summary = await libraryApi.deleteTrackAudio(trackId)
+    toast.success('Audio deleted', `Download removed${summary.audioFileDeleted ? ' and file deleted' : ''}`)
+  } catch (error) {
+    toast.error('Failed to delete audio', String(error))
+  }
+  await refreshPanelAndList()
 }
 
 // Lifecycle
@@ -3022,14 +3256,22 @@ onMounted(async () => {
   // FE-PERF-01: startQueueStatsInterval hace de guard (véase su comentario).
   startQueueStatsInterval()
 
+  // L04 (#101): con el panel abierto, un evento de sync refresca también el
+  // panel entero (misma llamada única), sin recargar la página.
+  const refreshDetailIfOpen = () => {
+    if (detailTrackId.value !== null) void refreshTrackDetail()
+  }
   eventBus.on(TauriEvents.LIBRARY_UPDATED, async () => {
     debouncedReloadLibrary()
+    refreshDetailIfOpen()
   })
   eventBus.on(TauriEvents.IMPORT_COMPLETE, async () => {
     debouncedReloadLibrary()
+    refreshDetailIfOpen()
   })
   eventBus.on(TauriEvents.SYNC_COMPLETE, async () => {
     debouncedReloadLibrary()
+    refreshDetailIfOpen()
   })
   eventBus.on(TauriEvents.MB_DUMP_PROGRESS, (progress: MbDumpProgress) => {
     mbDumpProgressLine.value = `${progress.table}: ${progress.rows}/${progress.expected} rows`
@@ -3054,6 +3296,18 @@ watch(
     if (serialized === lastWrittenUrl) return
     if (applyUrlState()) {
       void loadLibrary()
+    }
+  }
+)
+
+// L04 (#101): un cambio de ruta cierra el panel. Con KeepAlive la instancia
+// sigue montada al navegar a otra vista; el panel no debe quedar flotando
+// al volver.
+watch(
+  () => route?.path,
+  (path, previous) => {
+    if (previous !== undefined && path !== '/library' && detailTrackId.value !== null) {
+      closeTrackDetail()
     }
   }
 )

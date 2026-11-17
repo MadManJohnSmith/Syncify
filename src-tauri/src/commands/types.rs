@@ -321,6 +321,8 @@ pub struct LibraryTrack {
     // keeps every other query decodable without selecting it.
     #[sqlx(default)]
     pub edition_item_id: Option<String>,
+    #[sqlx(default)]
+    pub musicbrainz_id: Option<String>,
     pub file_path: Option<String>,
     #[sqlx(default)]
     pub display_title: Option<String>,

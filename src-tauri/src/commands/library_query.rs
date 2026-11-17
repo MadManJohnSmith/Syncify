@@ -35,6 +35,22 @@
 //! DELANTE de las de relevancia y el ISRC no se busca solo por prefijo.
 //! Los caracteres especiales de FTS se escapan y el último token va en modo
 //! prefijo (escritura incremental). Con texto vacío se usa el orden elegido.
+//!
+//! Detalle de pista (L04, issue #101): [`get_track_detail`] devuelve en UNA
+//! llamada IPC el Track canónico (misma proyección que la lista, más
+//! MusicBrainz), sus TrackSource por servicio, sus pertenencias por cuenta y
+//! colección (LibraryItem) y la descarga (estado, servicio efectivo,
+//! calidad y ruta). Consultas por faceta —una para la fila, una para todas
+//! las fuentes, una para todas las pertenencias—, nunca por fuente ni por
+//! pertenencia (no N+1). Una pista inexistente es un error tipado
+//! ([`TrackDetailError::TrackNotFound`]), no una fila vacía.
+//!
+//! Facetas deshabilitadas con su motivo (no inventadas), como en el resto
+//! del contrato:
+//! - `quarantine` es `None`: no hay tabla de cuarentena hasta #72; la
+//!   sección la completa L09 (motivo y última fecha vista).
+//! - `duplicate_group` es `None`: la identidad ISRC∪huella y el grupo de
+//!   duplicados llegan con L10 (#73). No se simulan.
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -737,6 +753,7 @@ const ROW_COLUMNS_SQL: &str = "
         t.bpm,
         t.musical_key,
         t.release_year,
+        t.musicbrainz_id as musicbrainz_id,
         t.explicit,
         t.is_favorite,
         t.favorite_at,
@@ -1000,5 +1017,257 @@ async fn build_counts(
         in_playlists,
         by_service,
         by_account,
+    })
+}
+
+// ==========================================================================
+// Detalle de pista (L04, issue #101)
+// ==========================================================================
+
+/// Error tipado del panel de detalle. Una pista inexistente es
+/// [`TrackDetailError::TrackNotFound`], no una fila vacía ni un error de
+/// texto suelto: la UI puede discriminarse por `kind`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TrackDetailError {
+    #[serde(rename_all = "camelCase")]
+    TrackNotFound { track_id: i64 },
+    #[serde(rename_all = "camelCase")]
+    Database { message: String },
+}
+
+impl From<String> for TrackDetailError {
+    fn from(message: String) -> Self {
+        TrackDetailError::Database { message }
+    }
+}
+
+/// TrackSource de la pista, por servicio (story 17 del spec #96): formato,
+/// profundidad de bits, frecuencia, bitrate y disponibilidad.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackDetailSource {
+    pub service_id: i64,
+    pub service_name: String,
+    pub service_track_id: Option<String>,
+    pub format: Option<String>,
+    pub bit_depth: Option<i32>,
+    pub sample_rate: Option<i32>,
+    pub bitrate: Option<i32>,
+    pub quality_score: Option<i32>,
+    pub available: bool,
+    pub availability_status: String,
+    pub availability_reason: Option<String>,
+    pub last_checked: Option<String>,
+}
+
+/// LibraryItem de la pista: pertenencia por cuenta y colección (story 18).
+/// `favorite` es library_entries; `playlist` es playlist_tracks con el dueño
+/// de la playlist atribuyendo la cuenta (la misma regla de [`MEMBERSHIP_SQL`]
+/// y los contadores de cuenta de L01). Las colecciones `album`/`artist` no
+/// existen hasta L00 (#97): no se inventan.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackDetailMembership {
+    pub account_id: i64,
+    pub display_name: Option<String>,
+    pub service_name: String,
+    /// "favorite" | "playlist" (colecciones que existen hoy).
+    pub collection: String,
+    pub collection_id: Option<i64>,
+    pub collection_name: Option<String>,
+    pub added_at: Option<String>,
+}
+
+/// Estado de descarga, servicio efectivo, calidad y ruta (story 19). La
+/// faceta existe siempre; sin fila `downloads` (o con el fichero perdido,
+/// que `verify_page_files` baja) los campos de fichero son `None`. El
+/// `status` usa la MISMA clasificación que la lista para que el panel y la
+/// fila nunca diverjan.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackDetailDownload {
+    pub status: String,
+    pub effective_service: Option<String>,
+    pub file_path: Option<String>,
+    pub file_format: Option<String>,
+    pub bit_depth: Option<i32>,
+    pub sample_rate: Option<i32>,
+    pub downloaded_at: Option<String>,
+}
+
+/// Contrato del panel para la cuarentena por pertenencia (motivo y última
+/// fecha vista). Sin tabla de cuarentena hasta #72, `quarantine` es `None`:
+/// la UI muestra la sección deshabilitada con su motivo. L09 la completa.
+#[allow(dead_code)] // Contrato IPC del panel; L09 (#72) es quien lo construye.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackDetailQuarantine {
+    /// Pertenencia en cuarentena: cuenta o colección que ya no la devuelve.
+    pub collection: String,
+    pub reason: String,
+    pub last_seen_at: Option<String>,
+}
+
+/// Contrato del panel para el grupo de duplicados. La identidad ISRC∪huella
+/// llega con L10 (#73): `duplicate_group` es `None` hoy y la UI muestra la
+/// sección deshabilitada con su motivo. No se agrupa por título/artista.
+#[allow(dead_code)] // Contrato IPC del panel; L10 (#73) es quien lo construye.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackDetailDuplicateGroup {
+    /// "isrc" | "fingerprint": la clave que formó el clúster.
+    pub matched_on: String,
+    pub member_track_ids: Vec<i64>,
+}
+
+/// Respuesta de UNA llamada (`get_library_track_detail`): el panel abre con
+/// todo, sin consulta por campo, fuente o pertenencia.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackDetail {
+    /// Track canónico (título, artista, álbum, duración, ISRC, género, año,
+    /// MusicBrainz): la MISMA proyección que la fila de la lista, más
+    /// `musicbrainz_id`.
+    pub track: crate::commands::types::LibraryTrack,
+    pub sources: Vec<TrackDetailSource>,
+    pub memberships: Vec<TrackDetailMembership>,
+    pub download: TrackDetailDownload,
+    /// `None` hasta #72/L09 (ver cabecera del módulo).
+    pub quarantine: Option<TrackDetailQuarantine>,
+    /// `None` hasta #73/L10 (ver cabecera del módulo).
+    pub duplicate_group: Option<TrackDetailDuplicateGroup>,
+}
+
+/// Detalle de pista para el panel lateral (L04, issue #101). Recibe el pool
+/// — la costura de prueba es esta función, no el comando de Tauri.
+pub async fn get_track_detail(
+    db: &SqlitePool,
+    track_id: i64,
+) -> Result<TrackDetail, TrackDetailError> {
+    // Fila canónica: la MISMA proyección de la lista (los badges agregados en
+    // la misma consulta) filtrada a un id. Una pista inexistente es error
+    // tipado, no una fila vacía.
+    let rows_sql = format!(
+        "SELECT {} \
+         FROM tracks t \
+         LEFT JOIN albums al ON al.id = t.album_id \
+         LEFT JOIN track_sources ts ON ts.track_id = t.id \
+         LEFT JOIN services s ON s.id = ts.service_id \
+         LEFT JOIN track_sources ts_spot ON ts_spot.track_id = t.id AND ts_spot.service_id = (SELECT id FROM services WHERE name = 'spotify') \
+         LEFT JOIN downloads d ON d.track_id = t.id \
+         LEFT JOIN lyrics l ON l.track_id = t.id \
+         WHERE t.id = ? \
+         GROUP BY t.id",
+        page_rows_sql()
+    );
+    let mut rows = sqlx::query_as::<_, crate::commands::types::LibraryTrack>(&rows_sql)
+        .bind(track_id)
+        .fetch_all(db)
+        .await
+        .map_err(|e| TrackDetailError::Database {
+            message: format!("get_track_detail: error leyendo la pista: {e}"),
+        })?;
+    if rows.len() != 1 {
+        // UNIQUE de downloads y FTS garantizan que nunca sea >1; un resultado
+        // vacío es pista inexistente.
+        return Err(TrackDetailError::TrackNotFound { track_id });
+    }
+    let mut row = rows.remove(0);
+
+    // Misma verificación de ficheros que la lista: un download cuyo fichero
+    // desapareció baja a not_downloaded AQUÍ TAMBIÉN.
+    crate::commands::library::verify_page_files(std::slice::from_mut(&mut row)).await?;
+
+    // Todas las fuentes en UNA consulta (no una por servicio).
+    let sources_sql = "SELECT ts.service_id, s.name AS service_name, ts.service_track_id, \
+         ts.format, ts.bit_depth, ts.sample_rate, ts.bitrate, ts.quality_score, \
+         COALESCE(ts.available, 0) != 0 AS available, ts.availability_status, ts.availability_reason, ts.last_checked \
+         FROM track_sources ts \
+         JOIN services s ON s.id = ts.service_id \
+         WHERE ts.track_id = ? \
+         ORDER BY ts.quality_score DESC, s.name COLLATE NOCASE";
+    let sources = sqlx::query_as::<_, TrackDetailSource>(sources_sql)
+        .bind(track_id)
+        .fetch_all(db)
+        .await
+        .map_err(|e| TrackDetailError::Database {
+            message: format!("get_track_detail: error leyendo fuentes: {e}"),
+        })?;
+
+    // Todas las pertenencias en UNA consulta (no una por cuenta ni por
+    // colección): favoritos por cuenta + playlists con dueño.
+    let memberships_sql = "SELECT le.account_id, a.display_name, sv.name AS service_name, \
+         'favorite' AS collection, NULL AS collection_id, NULL AS collection_name, le.added_at \
+         FROM library_entries le \
+         JOIN accounts a ON a.id = le.account_id \
+         JOIN services sv ON sv.id = a.service_id \
+         WHERE le.track_id = ?1 \
+         UNION ALL \
+         SELECT pl.account_id, a2.display_name, sv2.name, \
+         'playlist', pl.id, pl.name, pt.added_at \
+         FROM playlist_tracks pt \
+         JOIN playlists pl ON pl.id = pt.playlist_id \
+         JOIN accounts a2 ON a2.id = pl.account_id \
+         JOIN services sv2 ON sv2.id = a2.service_id \
+         WHERE pt.track_id = ?1 \
+         ORDER BY service_name COLLATE NOCASE, collection, collection_name, account_id";
+    let memberships = sqlx::query_as::<_, TrackDetailMembership>(memberships_sql)
+        .bind(track_id)
+        .fetch_all(db)
+        .await
+        .map_err(|e| TrackDetailError::Database {
+            message: format!("get_track_detail: error leyendo pertenencias: {e}"),
+        })?;
+
+    // Descarga: servicio efectivo, calidad y ruta de la fila `downloads`.
+    // `status` viene de la fila canónica ya verificada contra el disco.
+    let download_sql = "SELECT \
+         COALESCE(d.effective_service, (SELECT s2.name FROM services s2 WHERE s2.id = d.source_service_id)) AS effective_service, \
+         d.file_path, d.file_format, d.bit_depth, d.sample_rate, d.downloaded_at \
+         FROM downloads d WHERE d.track_id = ? LIMIT 1";
+    let download_row = sqlx::query_as::<
+        _,
+        (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i32>,
+            Option<i32>,
+            Option<String>,
+        ),
+    >(download_sql)
+    .bind(track_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| TrackDetailError::Database {
+        message: format!("get_track_detail: error leyendo descarga: {e}"),
+    })?;
+    // La faceta existe SIEMPRE: el estado viene de la fila canónica (en cola
+    // sin fila `downloads` incluido); los datos del fichero solo cuando hay
+    // fila. Si verify_page_files bajó el estado, el panel lo refleja aunque
+    // la fila `downloads` siga existiendo.
+    let download = TrackDetailDownload {
+        status: row
+            .download_status
+            .clone()
+            .unwrap_or_else(|| "not_downloaded".to_owned()),
+        effective_service: download_row.as_ref().and_then(|d| d.0.clone()),
+        file_path: download_row.as_ref().and_then(|d| d.1.clone()),
+        file_format: download_row.as_ref().and_then(|d| d.2.clone()),
+        bit_depth: download_row.as_ref().and_then(|d| d.3),
+        sample_rate: download_row.as_ref().and_then(|d| d.4),
+        downloaded_at: download_row.as_ref().and_then(|d| d.5.clone()),
+    };
+
+    Ok(TrackDetail {
+        track: row,
+        sources,
+        memberships,
+        download,
+        // Sin #72 no hay tabla de cuarentena; sin #73 no hay identidad
+        // ISRC∪huella. `None` con motivo documentado: no se simulan.
+        quarantine: None,
+        duplicate_group: None,
     })
 }
