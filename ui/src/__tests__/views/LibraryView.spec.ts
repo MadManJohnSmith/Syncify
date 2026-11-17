@@ -1289,4 +1289,72 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         expect(strip.text()).toContain('Eligible:');
         expect(strip.text()).toContain('Pending:');
     });
+
+    // L02 (#99): la búsqueda alimenta query_library.text en servidor; el
+    // ritmo en la vista es 250 ms desde la ÚLTIMA tecla y el token de
+    // secuencia descarta la respuesta vieja.
+    const SEARCH_INPUT = 'input[placeholder^="Filter by title"]';
+    const emptyPage = (title: string, id: number) => ({
+        tracks: [createTestTrack({ id, title })],
+        total: 1,
+        offset: 0,
+        limit: 100,
+        has_more: false,
+    });
+
+    it('L02: espera 250 ms desde la última tecla y no consulta por pulsación', async () => {
+        let queryCount = 0;
+        mockInvoke((cmd) => {
+            if (cmd === 'query_library') {
+                queryCount++;
+                return emptyPage('First Load', 1);
+            }
+            return null;
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises();
+        const initial = queryCount;
+        expect(initial).toBeGreaterThanOrEqual(1);
+
+        const input = wrapper.find(SEARCH_INPUT);
+        // Tres pulsaciones seguidas: cada una reprograma el temporizador.
+        await input.setValue('mid');
+        await input.setValue('midn');
+        await input.setValue('midnight');
+        await new Promise(r => setTimeout(r, 100));
+        expect(queryCount).toBe(initial);
+
+        // Tras la pausa: UNA sola consulta para las tres teclas.
+        await new Promise(r => setTimeout(r, 350));
+        await flushPromises();
+        expect(queryCount).toBe(initial + 1);
+    });
+
+    it('L02: descarta la respuesta vieja con el token de secuencia', async () => {
+        let call = 0;
+        let releaseFirst: (page: unknown) => void = () => {};
+        const firstPending = new Promise(resolve => { releaseFirst = resolve; });
+        mockInvoke((cmd) => {
+            if (cmd !== 'query_library') return null;
+            call++;
+            if (call === 1) return firstPending; // carga inicial: lenta
+            return emptyPage('Respuesta Rapida', 2);
+        });
+
+        const wrapper = mount(LibraryView);
+        await flushPromises(); // la carga inicial sigue en vuelo
+
+        const input = wrapper.find(SEARCH_INPUT);
+        await input.setValue('midnight');
+        await new Promise(r => setTimeout(r, 300));
+        await flushPromises();
+        expect(wrapper.text()).toContain('Respuesta Rapida');
+
+        // La respuesta vieja llega DESPUÉS que la vigente: no pisa la lista.
+        releaseFirst(emptyPage('Respuesta Lenta', 1));
+        await flushPromises();
+        expect(wrapper.text()).toContain('Respuesta Rapida');
+        expect(wrapper.text()).not.toContain('Respuesta Lenta');
+    });
 });
