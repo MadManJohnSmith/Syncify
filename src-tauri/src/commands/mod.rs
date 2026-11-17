@@ -66,6 +66,9 @@ pub use notifications::*;
 pub mod playback;
 pub use playback::*;
 
+pub mod playback_queue;
+pub use playback_queue::*;
+
 pub mod player;
 pub use player::*;
 

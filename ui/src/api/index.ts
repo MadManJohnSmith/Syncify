@@ -11,6 +11,7 @@ export * from './types';
 // API modules
 export * from './library';
 export * from './queue';
+export * from './playbackQueue';
 export * from './accounts';
 export * from './settings';
 export * from './dashboard';
