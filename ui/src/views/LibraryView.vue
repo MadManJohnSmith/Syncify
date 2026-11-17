@@ -97,6 +97,43 @@
       </div>
     </div>
 
+    <!-- L03 (#100): armazón de pestañas de la biblioteca (spec #96). El
+         cambio conserva los filtros compatibles (`libraryTabQuery`) y
+         descarta solo los que no aplican; el contenido de álbumes,
+         artistas y duplicados llega con L07/L08/L10. -->
+    <LibraryTabs current="tracks" />
+
+    <!-- L03 (#100): chips de estado de la biblioteca. El chip Descargadas
+         aplica y retira su filtro; su contador viene de los contadores que
+         L01 pide con la primera página (`libraryCounts`, calculados en
+         servidor SIN la condición del propio chip, para que el número
+         coincida con el total al aplicarlo). Álbumes, artistas, cuarentena
+         y duplicados quedan DESHABILITADOS con su motivo: no se simula una
+         dependencia que no existe (#97, #72, #73). -->
+    <div class="library-chips px-8 py-2 flex items-center gap-2 flex-wrap shrink-0" data-testid="library-chips">
+      <button
+        v-for="chip in headerChips"
+        :key="chip.id"
+        :disabled="chip.disabled"
+        :title="chip.reason"
+        :aria-pressed="chip.disabled ? undefined : chip.active"
+        :data-testid="`library-chip-${chip.id}`"
+        @click="toggleHeaderChip(chip)"
+        :class="[
+          'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all',
+          chip.disabled
+            ? 'opacity-40 cursor-not-allowed border border-gray-200 dark:border-border-dark text-text-secondary bg-white dark:bg-surface-dark'
+            : chip.active
+            ? 'bg-primary/15 border border-primary/40 text-primary shadow-xs cursor-pointer'
+            : 'bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-text-secondary hover:text-ink hover:border-gray-300 dark:hover:border-gray-600 cursor-pointer'
+        ]"
+      >
+        <span class="material-symbols-outlined text-[15px]" aria-hidden="true">{{ chip.icon }}</span>
+        <span>{{ chip.label }}</span>
+        <strong class="font-bold" data-testid="library-chip-count">{{ chip.count === null ? '—' : chip.count.toLocaleString() }}</strong>
+      </button>
+    </div>
+
     <!-- Collapsible Queue Details Panel (Reconciliation Strip) -->
     <div v-show="showQueueDetails" class="px-8 mb-3 space-y-2 transition-all shrink-0">
       <div class="reconciliation-strip px-4 py-2 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-xs flex items-center justify-between gap-3 text-xs flex-wrap">
@@ -1174,6 +1211,14 @@ import { usePlayer } from '@/composables/usePlayer'
 import { useVirtualWindow } from '@/composables/useVirtualWindow'
 import { useTrackBrowser } from '@/composables/useTrackBrowser'
 import { useEnrichmentProgress } from '@/composables/useEnrichmentProgress'
+import {
+  buildLibraryUrlQuery,
+  parseLibraryUrlQuery,
+  LIBRARY_URL_KEYS,
+  QUALITY_BUCKET_LABELS,
+  type LibraryUrlState,
+} from '@/composables/libraryUrlState'
+import LibraryTabs from '@/components/LibraryTabs.vue'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import TrackCover from '@/components/TrackCover.vue'
 import { getArtGradient } from '@/utils/artGradient'
@@ -1635,44 +1680,264 @@ async function fetchLibraryPage(offset: number, limit: number): Promise<LibraryQ
 
 const libraryCounts = ref<LibraryQueryCounts | null>(null);
 
-/** Contrato LibraryQuery: los pills del renderer se traducen a dimensiones. */
-function buildLibraryQuery(offset: number, limit: number): LibraryQuery {
+// ==============================================
+// L03 (#100): estado de la vista → LibraryQuery y → URL
+// ==============================================
+// UNA traducción compartida: la consulta (buildLibraryQuery) y la URL
+// (syncUrlFromView) leen el mismo estado, para que no puedan divergir. Las
+// dimensiones del contrato que la vista todavía no dirige (servicios,
+// cuentas, colecciones además de favoritos, «en playlist», cuarentena,
+// género) no tienen ni control ni contador: no se inventan.
+
+/** Estado gestionado por la vista, en la forma del contrato LibraryQuery. */
+function currentLibraryState(): LibraryUrlState {
   const filters = activeFilters.value;
   // OR dentro de la dimensión de estado de descarga.
   const downloadStatuses: DownloadStatusFilter[] = [];
   if (filters.includes('downloaded')) downloadStatuses.push('downloaded');
   if (filters.includes('notDownloaded')) downloadStatuses.push('queued', 'not_downloaded');
   // OR dentro de la dimensión de calidad (buckets del servidor, mismas
-  // etiquetas que el deep-link FE-10 del dashboard).
-  const qualityBuckets: QualityBucketFilter[] = [];
+  // etiquetas que el deep-link FE-10 del dashboard). Orden canónico del
+  // contrato para que el round-trip URL → vista → URL sea estable.
+  let qualityBuckets: QualityBucketFilter[] = [];
   if (filters.includes('flac')) qualityBuckets.push('hi_res', 'cd_quality');
   if (filters.includes('mp3')) qualityBuckets.push('lossy');
   if (filters.includes('quality') && qualityFilter.value) {
-    const deepLinkBucket: Record<string, QualityBucketFilter> = {
-      'Hi-Res (24-bit+)': 'hi_res',
-      'CD Quality': 'cd_quality',
-      'Lossy': 'lossy',
-    };
-    const bucket = deepLinkBucket[qualityFilter.value];
-    if (bucket && !qualityBuckets.includes(bucket)) qualityBuckets.push(bucket);
+    for (const label of qualityFilter.value.split(', ')) {
+      const bucket = (Object.entries(QUALITY_BUCKET_LABELS) as Array<[QualityBucketFilter, string]>)
+        .find(([, l]) => l === label)?.[0];
+      if (bucket && !qualityBuckets.includes(bucket)) qualityBuckets.push(bucket);
+    }
   }
+  qualityBuckets = (['hi_res', 'cd_quality', 'lossy'] as QualityBucketFilter[]).filter((b) =>
+    qualityBuckets.includes(b)
+  );
   return {
-    text: searchQuery.value.trim() || null,
+    text: searchQuery.value.trim(),
+    sort: sortBy.value as LibrarySortKey,
+    direction: sortDirection.value,
+    downloadStatuses,
+    qualityBuckets,
+    favoritesOnly: filters.includes('favorites'),
+  };
+}
+
+/** Contrato LibraryQuery: el estado de la vista se traduce a dimensiones. */
+function buildLibraryQuery(offset: number, limit: number): LibraryQuery {
+  const state = currentLibraryState();
+  return {
+    text: state.text || null,
     serviceIds: [],
     accountIds: [],
     collections: [],
-    favoritesOnly: filters.includes('favorites'),
-    downloadStatuses,
-    qualityBuckets,
+    favoritesOnly: state.favoritesOnly,
+    downloadStatuses: state.downloadStatuses,
+    qualityBuckets: state.qualityBuckets,
     inPlaylists: null,
     duplicates: null,
     quarantine: 'exclude',
     genre: [],
-    sort: sortBy.value as LibrarySortKey,
-    direction: sortDirection.value,
+    sort: state.sort,
+    direction: state.direction,
     offset,
     limit,
   };
+}
+
+// ---------------------------------------------
+// Estado de la vista EN LA URL (deep-linking).
+// La URL es la fuente al montar y al volver atrás (atrás restaura lista y
+// filtro); la vista escribe en ella en cada cambio — `push` en cambios
+// discretos (filtros, orden) para que atrás recorra estados, `replace` en
+// el texto para no inundar el historial por tecla. `lastWrittenUrl`
+// recuerda la última serialización aplicada o escrita: los cambios propios
+// no se re-aplican (guard del watcher de ruta).
+// ---------------------------------------------
+let lastWrittenUrl: string | null = null;
+let suppressSearchWatcher = false;
+let suppressSortWatcher = false;
+
+/** Query canónico para el estado actual: claves gestionadas reemplazadas,
+ * legacy FE-10 (`filter=`) canonicalizado, params ajenos (p. ej. `track`)
+ * conservados. */
+function canonicalQuery(state: LibraryUrlState): Record<string, unknown> {
+  const query: Record<string, unknown> = { ...(route?.query ?? {}) };
+  for (const key of Object.values(LIBRARY_URL_KEYS)) delete query[key];
+  delete query.filter;
+  Object.assign(query, buildLibraryUrlQuery(state));
+  return query;
+}
+
+/** Escribe el estado actual en la URL. No-op si ya coincide. */
+function syncUrlFromView(push: boolean) {
+  if (!router) return;
+  const query = canonicalQuery(currentLibraryState());
+  const serialized = JSON.stringify(query);
+  if (serialized === lastWrittenUrl) return;
+  lastWrittenUrl = serialized;
+  const navigate = push ? router.push : router.replace;
+  void navigate.call(router, { query: query as Record<string, string> }).catch(() => {
+    // Navegación redundante o a la misma URL: inofensiva.
+  });
+}
+
+/**
+ * URL → estado de la vista. Devuelve si algo cambió (y por tanto toca
+ * recargar). Asignaciones solo con diff real: si nada cambia, ningún
+ * watcher se dispara y no hay recarga (un back a la misma vista no relanza
+ * la consulta). Las dimensiones pendientes que llegan por deep-link se
+ * reportan y NO se aplican.
+ */
+function applyUrlState(): boolean {
+  const parsed = parseLibraryUrlQuery(route?.query as Record<string, unknown> | undefined);
+  const state = parsed.state;
+  lastWrittenUrl = JSON.stringify(canonicalQuery(state));
+
+  let changed = false;
+  if (searchQuery.value !== state.text) {
+    suppressSearchWatcher = true;
+    searchQuery.value = state.text;
+    // Un debounce en vuelo del texto anterior pediría dos veces: se cancela.
+    if (searchDebounceTimer) {
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = null;
+    }
+    changed = true;
+  }
+  if (sortBy.value !== state.sort || sortDirection.value !== state.direction) {
+    suppressSortWatcher = true;
+    sortBy.value = state.sort;
+    sortDirection.value = state.direction;
+    changed = true;
+  }
+  const previousQualityLabel = qualityFilter.value;
+  const nextFilters = filtersFromState(state, parsed.legacyQualityLabel);
+  if (nextFilters.join('|') !== activeFilters.value.join('|')) {
+    activeFilters.value = nextFilters;
+    changed = true;
+  }
+  // Un cambio de bucket del deep-link FE-10 cambia la representación
+  // ('quality' + etiqueta) sin cambiar los ids de filtro: también recarga.
+  if (qualityFilter.value !== previousQualityLabel) {
+    changed = true;
+  }
+  if (parsed.unsupported.length) {
+    console.warn('[library] deep-link params sin semántica todavía, ignorados:', parsed.unsupported.join(', '));
+  }
+  return changed;
+}
+
+/** Filtros (ids de píldora / 'quality') que representan el estado.
+ * Con etiqueta legacy FE-10 se conserva SU representación exacta
+ * ('quality' + etiqueta): colapsarla a la píldora 'flac' ampliaría el
+ * filtro (flac = hi_res + cd_quality) y rompería el deep-link del
+ * dashboard. Los buckets sin píldora exacta usan la misma vía. */
+function filtersFromState(state: LibraryUrlState, legacyLabel: string | null): string[] {
+  const filters: string[] = [];
+  if (state.downloadStatuses.includes('downloaded')) filters.push('downloaded');
+  if (state.downloadStatuses.some((s) => s !== 'downloaded')) filters.push('notDownloaded');
+  if (state.favoritesOnly) filters.push('favorites');
+  let buckets = state.qualityBuckets;
+  if (legacyLabel !== null) {
+    // FE-10 legacy con etiqueta: representación exacta, sin colapsar los
+    // buckets a píldoras (los demás filtros de la URL se conservan).
+    qualityFilter.value = legacyLabel;
+    filters.push('quality');
+    return filters;
+  }
+  if (buckets.includes('hi_res') && buckets.includes('cd_quality')) {
+    filters.push('flac');
+    buckets = buckets.filter((b) => b !== 'hi_res' && b !== 'cd_quality');
+  }
+  if (buckets.includes('lossy')) {
+    filters.push('mp3');
+    buckets = buckets.filter((b) => b !== 'lossy');
+  }
+  if (buckets.length) {
+    filters.push('quality');
+    qualityFilter.value = buckets.map((b) => QUALITY_BUCKET_LABELS[b]).join(', ');
+  } else {
+    qualityFilter.value = '';
+  }
+  return filters;
+}
+
+// ==============================================
+// L03 (#100): cabecera con chips de estado (spec #96, historias 9-11)
+// ==============================================
+// El contador de cada chip se calcula en servidor sobre el filtro actual
+// SIN la condición del propio chip (los contadores de L01 vienen con la
+// primera página y la vista los conserva al paginar): el número del chip
+// coincide con el total que se ve al aplicarlo. Los chips sin dependencia
+// (#97 pertenencia, #72 cuarentena, #73 duplicados) quedan deshabilitados
+// con su motivo — el contador que no existe se muestra como '—', nunca
+// inventado.
+type HeaderChipId = 'albums' | 'artists' | 'downloaded' | 'quarantine' | 'duplicates';
+
+interface HeaderChip {
+  id: HeaderChipId;
+  label: string;
+  icon: string;
+  disabled: boolean;
+  reason: string;
+  /** `null` = sin contador (pendiente o primera página aún en vuelo). */
+  count: number | null;
+  active: boolean;
+}
+
+const headerChips = computed<HeaderChip[]>(() => [
+  {
+    id: 'albums',
+    label: 'Albums',
+    icon: 'album',
+    disabled: true,
+    reason: 'Pending: album membership lands with L00 (#97) and the albums tab is completed by L07 (#104)',
+    count: null,
+    active: false,
+  },
+  {
+    id: 'artists',
+    label: 'Artists',
+    icon: 'artist',
+    disabled: true,
+    reason: 'Pending: artist membership lands with L00 (#97) and the artists tab is completed by L08 (#105)',
+    count: null,
+    active: false,
+  },
+  {
+    id: 'downloaded',
+    label: 'Downloaded',
+    icon: 'download_done',
+    disabled: false,
+    reason: 'Filter downloaded tracks',
+    count: libraryCounts.value?.downloaded ?? null,
+    active: activeFilters.value.includes('downloaded'),
+  },
+  {
+    id: 'quarantine',
+    label: 'Quarantine',
+    icon: 'rule',
+    disabled: true,
+    reason: 'Pending: #72 defines the quarantine table and L09 wires the library to it',
+    count: null,
+    active: false,
+  },
+  {
+    id: 'duplicates',
+    label: 'Duplicates',
+    icon: 'content_copy',
+    disabled: true,
+    reason: 'Pending: #73 defines ISRC/fingerprint identity and L10 wires the duplicates view',
+    count: null,
+    active: false,
+  },
+]);
+
+function toggleHeaderChip(chip: HeaderChip) {
+  if (chip.disabled) return;
+  if (chip.id === 'downloaded') {
+    toggleFilter('downloaded');
+  }
 }
 
 const browser = useTrackBrowser<LibraryTrack, Track>({
@@ -1770,19 +2035,36 @@ function maybeLoadMore(scrollBottom: number) {
 
 // Initialize data
 loadColumnsOrder();
+// L03 (#100): la URL es la fuente del estado inicial — se aplica ANTES de la
+// primera carga para que el deep-link llegue a la primera consulta y no se
+// pida dos veces. Los watchers aún no están registrados (van más abajo),
+// así que los flags de supresión que applyUrlState deja puestos no los
+// consume nadie y se limpian aquí.
+applyUrlState();
+suppressSearchWatcher = false;
+suppressSortWatcher = false;
 loadLibrary();
 
 // L02 (#99): la búsqueda alimenta `query_library.text` (FTS con relevancia
 // en servidor) y se combina con los filtros EN SERVIDOR. Espera 250 ms desde
 // la ÚLTIMA tecla (una sola consulta por pausa, ninguna por pulsación) y el
 // token de secuencia de fetchLibraryPage descarta la respuesta vieja.
+// L03 (#100): el texto también vive en la URL — la carga del debounce es la
+// que lo escribe (replace, sin entradas de historial por tecla). Si el texto
+// llegó de la URL (applyUrlState), el flag suprime el debounce: la carga la
+// hizo quien aplicó el estado.
 const SEARCH_DEBOUNCE_MS = 250
 watch(searchQuery, () => {
+  if (suppressSearchWatcher) {
+    suppressSearchWatcher = false
+    return
+  }
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
   }
   searchDebounceTimer = setTimeout(() => {
     loadLibrary()
+    syncUrlFromView(false)
   }, SEARCH_DEBOUNCE_MS)
 })
 
@@ -2310,8 +2592,14 @@ const filteredTracks = computed(() => tracks.value)
 
 // La dirección y la clave de orden son parte de la consulta: al cambiarlas
 // se pide la página de nuevo (la dirección afecta SOLO a la clave primaria
-// y los desempates los fija el servidor).
+// y los desempates los fija el servidor). L03 (#100): también viven en la
+// URL; si llegaron de ella (applyUrlState) la carga ya se hizo.
 watch([sortBy, sortDirection], () => {
+  if (suppressSortWatcher) {
+    suppressSortWatcher = false
+    return
+  }
+  syncUrlFromView(true)
   loadLibrary()
 })
 
@@ -2515,8 +2803,10 @@ function toggleFilter(filterId: string) {
   }
 
   // Cualquier cambio de filtro cambia la consulta: se pide de nuevo al
-  // servidor (los contadores vienen con la primera página).
+  // servidor (los contadores vienen con la primera página) y se refleja en
+  // la URL (push: atrás recorre estados de filtro).
   loadLibrary()
+  syncUrlFromView(true)
 }
 
 function removeFilter(filterId: string) {
@@ -2525,6 +2815,7 @@ function removeFilter(filterId: string) {
     activeFilters.value = ['all']
   }
   loadLibrary()
+  syncUrlFromView(true)
 }
 
 function getFilterLabel(filterId: string) {
@@ -2537,8 +2828,14 @@ function getFilterLabel(filterId: string) {
 function clearAllFilters() {
   activeFilters.value = ['all']
   qualityFilter.value = ''
-  searchQuery.value = ''
+  if (searchQuery.value !== '') {
+    // La carga la hace el loadLibrary de abajo: sin doble consulta ni
+    // replace posterior del debounce.
+    suppressSearchWatcher = true
+    searchQuery.value = ''
+  }
   loadLibrary()
+  syncUrlFromView(true)
 }
 
 // Keep the deep-link value in sync with the chip: whenever the 'quality'
@@ -2600,32 +2897,13 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
-// FE-10: consume the DashboardView deep-links. `?filter=quality&quality=<bucket>`
-// comes from the quality cards and `?filter=duplicates` from the duplicates
-// shortcut. Reading it on mount alone left a stale filter when the query
-// changes in place (back/forward, or another deep-link to the same route),
-// so the query is watched like MetadataView does for `?filter=needs_work`.
-function applyRouteFilters() {
-  const filterParam = route?.query?.filter
-  if (typeof filterParam !== 'string' || filterParam === '') return
-
-  if (filterParam === 'quality') {
-    const qualityParam = route?.query?.quality
-    qualityFilter.value = typeof qualityParam === 'string' && qualityParam ? qualityParam : ''
-    if (qualityFilter.value) {
-      activeFilters.value = ['quality']
-    }
-    return
-  }
-
-  if (filterParam === 'duplicates' || filterParam === 'multiSource') {
-    // Pieza deshabilitada en la vista (duplicados: L10/#73; badges de
-    // servicio: L03): el deep-link no activa un filtro sin semántica.
-    return
-  }
-
-  activeFilters.value = [filterParam]
-}
+// FE-10 / L03 (#100): consume los deep-links de la biblioteca. El legacy del
+// dashboard (`?filter=quality&quality=<bucket>`; `?filter=duplicates` sin
+// semántica) y las claves nuevas (q, sort, dir, dl, quality, fav) los
+// parsea `applyUrlState` (composables/libraryUrlState.ts). Leerlo solo al
+// montar dejaba un filtro viejo cuando el query cambia en el sitio
+// (back/forward u otro deep-link a la misma ruta), así que el watcher de
+// ruta de abajo re-aplica el estado serializado.
 
 // ==============================================
 // Item 45: deep-link /library?track=<id>
@@ -2730,7 +3008,10 @@ onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
   window.addEventListener('keydown', handleKeydown)
 
-  applyRouteFilters()
+  // L03 (#100): la URL es la fuente del estado inicial (deep-linking).
+  // applyUrlState asigna sin disparar watchers suprimidos; la carga única
+  // es la de abajo.
+  applyUrlState()
 
   await loadLibrary()
   await fetchQueueStats()
@@ -2758,18 +3039,22 @@ onMounted(async () => {
   })
 })
 
-// FE-10: react to deep-link query changes on the same route (e.g. browser
-// back between two quality buckets) instead of keeping the mount-time filter.
-// Con la consulta en servidor, un cambio de deep-link pide la lista de nuevo.
-// La clave es el VALOR del query (no la identidad del objeto route) para no
-// recargar la biblioteca en cada navegación, y solo cuando la vista es la
-// activa: una instancia cacheada por KeepAlive no debe pedir en la sombra.
+// FE-10 / L03 (#100): react to query changes on the same route (browser
+// back/forward between filter states, dashboard deep-links, tab round-trip)
+// instead of keeping the mount-time state. La clave es el query SERIALIZADO
+// (no la identidad del objeto route) y solo cuando la vista es la activa:
+// una instancia cacheada por KeepAlive no debe pedir en la sombra. La vista
+// no se re-aplica a sí misma: `syncUrlFromView` dejó `lastWrittenUrl` antes
+// de navegar y el guard evita el eco.
 watch(
-  () => `${route?.query?.filter ?? ''}|${route?.query?.quality ?? ''}`,
+  () => (route && route.path === '/library' ? JSON.stringify(route.query) : ''),
   () => {
-    if (route.path !== '/library') return
-    applyRouteFilters()
-    loadLibrary()
+    if (!route || route.path !== '/library') return
+    const serialized = JSON.stringify(route.query)
+    if (serialized === lastWrittenUrl) return
+    if (applyUrlState()) {
+      void loadLibrary()
+    }
   }
 )
 
