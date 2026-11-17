@@ -23,8 +23,8 @@ use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Sqlite};
 
 use syncify_tauri_lib::commands::account_profiles::{
-    archive_attempt_profile, delete_profiles_for_account, mark_profile_unrecoverable,
-    profile_archive_path, startup_profile_hygiene,
+    archive_attempt_profile, delete_profiles_for_account, profile_archive_path,
+    startup_profile_hygiene,
 };
 use syncify_tauri_lib::crypto::init_crypto;
 
