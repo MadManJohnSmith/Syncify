@@ -293,3 +293,14 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   `worker.rs` que D08 (#120) debe aplicar al partir. Fuente:
   `gh pr view 307` y `gh issue close 119` en la sesión del
   2026-11-17.
+- **2026-11-17, 3008 con 5 carriles llenos**: el relanzamiento de A86
+  (3er intento, esperando bloqueante el flock del carril L03) murió
+  con `3008 user concurrency limit exceeded` — el límite de turns
+  simultáneos de la cuenta GLM se dispara con 5 delegados + hilo
+  padre (ya pasó con P00 y L03 el mismo día). Política aplicada:
+  NO relanzar de inmediato (sería otro 3008); relanzar al liberarse
+  una ranura (el fin de L03 la libera) y mantener 4 delegados hasta
+  que el carril recuperado entregue. El trabajo de A86 sigue
+  blindado en 5 commits (`dc9af8e`), solo faltan gates, rebase y PR.
+  Fuente: fallo del delegado a86-retry-2 y diagnóstico de carriles
+  en la sesión del 2026-11-17.
