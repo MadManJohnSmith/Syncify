@@ -27,8 +27,14 @@
 //! - cuarentena `only`/`include`: no hay tabla de cuarentena hasta #72/L09;
 //!   `exclude` (por defecto) es hoy un no-op honesto.
 //!
-//! Búsqueda de texto: LIKE sobre título/artista/álbum combinada con los
-//! filtros (ya no sustituye la lista). La relevancia ponderada FTS es L02.
+//! Búsqueda de texto (L02, issue #99): FTS5 sobre `library_fts` (migración
+//! 0107: título, artista, álbum, género e ISRC) combinada con los filtros
+//! (no los sustituye). Relevancia `bm25` ponderada — título > artista >
+//! álbum > género > ISRC —; si el texto tiene forma de ISRC (12 caracteres
+//! normalizados sin guiones), las coincidencias exactas por ISRC van
+//! DELANTE de las de relevancia y el ISRC no se busca solo por prefijo.
+//! Los caracteres especiales de FTS se escapan y el último token va en modo
+//! prefijo (escritura incremental). Con texto vacío se usa el orden elegido.
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -151,8 +157,9 @@ pub enum DuplicatesFilter {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LibraryQuery {
-    /// Texto libre (título, artista, álbum). L01: LIKE combinado con los
-    /// filtros; la relevancia ponderada FTS es L02.
+    /// Texto libre (título, artista, álbum, género, ISRC). L02: FTS5 con
+    /// relevancia bm25 ponderada, combinado con los filtros (no los
+    /// sustituye). Con texto vacío manda el orden elegido.
     pub text: Option<String>,
     /// Servicios por id. Solo: pertenencia por `track_sources` (badges).
     /// Con cuentas: pertenencia de esa cuenta en ese servicio.
@@ -301,6 +308,90 @@ const METADATA_SCORE_SQL: &str = "(
 )";
 
 // ==========================================================================
+// Búsqueda FTS (L02, issue #99)
+// ==========================================================================
+
+/// Pesos bm25 en orden de columnas de `library_fts` (migración 0107:
+/// título, artista, álbum, género, isrc). Criterio del issue #99:
+/// título > artista > álbum > género > ISRC. Cuanto mayor el peso, más
+/// manda la columna en la relevancia.
+const FTS_BM25_WEIGHTS: &str = "10.0, 5.0, 3.0, 2.0, 1.0";
+
+/// Normaliza un ISRC: sin guiones ni espacios, en mayúsculas (la columna
+/// indexada aplica la misma normalización en los triggers de 0107).
+fn normalize_isrc(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !matches!(c, '-' | ' ' | '\t'))
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+/// ¿Tiene forma de ISRC tras normalizar? 12 caracteres: 2 letras, 5
+/// alfanuméricos y 5 dígitos (CC-XXX-YY-NNNNN).
+fn looks_like_isrc(normalized: &str) -> bool {
+    let b = normalized.as_bytes();
+    b.len() == 12
+        && b[..2].iter().all(u8::is_ascii_alphabetic)
+        && b[2..7].iter().all(u8::is_ascii_alphanumeric)
+        && b[7..].iter().all(u8::is_ascii_digit)
+}
+
+/// Consulta MATCH de FTS5 desde el texto del usuario:
+/// - cada token se envuelve entre comillas (los caracteres especiales de
+///   FTS5 no se interpretan; `"` interna se duplica);
+/// - el último token va en modo prefijo (`"tok"*`) para la escritura
+///   incremental;
+/// - si el texto completo tiene forma de ISRC, es un token EXACTO sin
+///   prefijo (un ISRC no se busca solo por prefijo);
+/// - los tokens sin ningún alfanumérico se descartan. `None` = texto sin
+///   tokens de búsqueda: se comporta como texto vacío.
+fn build_fts_match_query(raw: &str) -> Option<String> {
+    let normalized = normalize_isrc(raw);
+    if looks_like_isrc(&normalized) {
+        return Some(format!("\"{normalized}\""));
+    }
+    let mut parts: Vec<String> = raw
+        .split_whitespace()
+        .filter(|t| t.chars().any(char::is_alphanumeric))
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    if let Some(last) = parts.last_mut() {
+        last.push('*');
+    }
+    Some(parts.join(" "))
+}
+
+/// Plan de búsqueda derivado del texto: la consulta MATCH ya construida y el
+/// ISRC exacto si el texto tiene forma de ISRC. `None` = sin búsqueda activa
+/// (texto vacío o sin tokens de búsqueda): manda el orden elegido.
+struct SearchPlan {
+    /// Consulta MATCH ya construida (escape + prefijo en el último token).
+    fts_query: String,
+    /// ISRC normalizado del texto, si tiene forma de ISRC. Con `Some`, los
+    /// tracks con ese ISRC exacto van delante de las coincidencias por
+    /// relevancia (criterio del issue #99).
+    isrc_exact: Option<String>,
+}
+
+fn search_plan(query: &LibraryQuery) -> Option<SearchPlan> {
+    let text = query
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())?;
+    let normalized = normalize_isrc(text);
+    let isrc_exact = looks_like_isrc(&normalized).then_some(normalized);
+    let fts_query = build_fts_match_query(text)?;
+    Some(SearchPlan {
+        fts_query,
+        isrc_exact,
+    })
+}
+
+// ==========================================================================
 // Construcción de WHERE (AND entre dimensiones, OR dentro de la lista)
 // ==========================================================================
 
@@ -350,12 +441,6 @@ impl WhereBuilder {
     }
 }
 
-fn escape_like(raw: &str) -> String {
-    raw.replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
-
 /// Construye el WHERE de la consulta (o de un contador) según la dimensión
 /// que se ignora.
 fn build_where(query: &LibraryQuery, skip: Dimension) -> Result<(String, Vec<String>), String> {
@@ -383,24 +468,14 @@ fn build_where(query: &LibraryQuery, skip: Dimension) -> Result<(String, Vec<Str
         }
     }
 
-    // Texto: título, artista primario o álbum. Se COMBINA con los filtros
-    // (no sustituye la lista, como hacía la vista).
-    if let Some(text) = query
-        .text
-        .as_deref()
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-    {
-        let pattern = format!("%{}%", escape_like(text));
-        let like = |col: &str| format!("{} LIKE ? ESCAPE '\\'", col);
+    // Texto: FTS5 sobre library_fts (título, artista, álbum, género, ISRC).
+    // Se COMBINA con los filtros (no sustituye la lista). Los caracteres
+    // especiales de FTS van escapados y el último token en prefijo; un texto
+    // sin tokens de búsqueda se comporta como texto vacío.
+    if let Some(plan) = search_plan(query) {
         w.push_binds(
-            format!(
-                "({} OR {} OR {})",
-                like("t.title"),
-                like(PRIMARY_ARTIST_NAME_SQL),
-                like(ALBUM_TITLE_SQL)
-            ),
-            vec![pattern.clone(), pattern.clone(), pattern],
+            "t.id IN (SELECT rowid FROM library_fts WHERE library_fts MATCH ?)".to_owned(),
+            vec![plan.fts_query],
         );
     }
 
@@ -538,9 +613,36 @@ fn inline_ids(ids: &[i64]) -> String {
         .join(", ")
 }
 
-/// Cláusula ORDER BY: nulos/centinelas al final, dirección SOLO en la clave
-/// primaria, desempates siempre título `NOCASE`, artista e id ascendentes.
-fn order_clause(query: &LibraryQuery) -> String {
+/// Cláusula ORDER BY. Con búsqueda activa: ISRC exacto delante (si el texto
+/// tiene forma de ISRC), relevancia bm25 después (título > artista > álbum >
+/// género > ISRC) y los desempates estables de siempre. Sin búsqueda: nulos/
+/// centinelas al final, dirección SOLO en la clave primaria, desempates
+/// siempre título `NOCASE`, artista e id ascendentes.
+///
+/// Devuelve la SQL y los binds de la cláusula (el ISRC exacto). La cláusula
+/// exige `library_fts` en el FROM — solo la usa la consulta de ids de página;
+/// las filas se devuelven siguiendo ese mismo orden de ids.
+fn order_clause(query: &LibraryQuery) -> (String, Vec<String>) {
+    let search = search_plan(query);
+    let mut binds: Vec<String> = Vec::new();
+
+    if let Some(search) = search {
+        let mut clauses = Vec::new();
+        if let Some(isrc) = &search.isrc_exact {
+            clauses.push(
+                "(CASE WHEN REPLACE(UPPER(t.isrc), '-', '') = ? THEN 0 ELSE 1 END) ASC".to_owned(),
+            );
+            binds.push(isrc.clone());
+        }
+        clauses.push(format!("bm25(library_fts, {FTS_BM25_WEIGHTS}) ASC"));
+        clauses.push("t.title COLLATE NOCASE ASC".to_owned());
+        clauses.push(format!(
+            "{PRIMARY_ARTIST_NAME_SQL} IS NULL ASC, {PRIMARY_ARTIST_NAME_SQL} ASC"
+        ));
+        clauses.push("t.id ASC".to_owned());
+        return (clauses.join(", "), binds);
+    }
+
     let dir = query.direction.sql();
     // DateAdded: centinela '' y NULL se tratan igual (COALESCE) para que el
     // desempate por título decida dentro del bloque de "sin fecha".
@@ -571,11 +673,14 @@ fn order_clause(query: &LibraryQuery) -> String {
             format!("{METADATA_SCORE_SQL} IS NULL"),
         ),
     };
-    format!(
-        "{guard} ASC, {primary} {dir}, \
+    (
+        format!(
+            "{guard} ASC, {primary} {dir}, \
          t.title COLLATE NOCASE ASC, \
          {PRIMARY_ARTIST_NAME_SQL} IS NULL ASC, {PRIMARY_ARTIST_NAME_SQL} ASC, \
          t.id ASC"
+        ),
+        binds,
     )
 }
 
@@ -661,7 +766,18 @@ pub async fn query_library(
 ) -> Result<LibraryQueryResult, String> {
     let offset = query.offset.max(0);
     let limit = query.limit.unwrap_or(100).clamp(1, 200);
-    let order = order_clause(&query);
+    let plan = search_plan(&query);
+    let searching = plan.is_some();
+    let (order, order_binds) = order_clause(&query);
+    // Con búsqueda activa la cláusula de relevancia (bm25) exige la tabla
+    // FTS en el FROM con SU constraint MATCH (el de la subconsulta de filtro
+    // no la cubre): la fila de FTS es 1:1 con el track (rebuild de 0107),
+    // así que el join no descarta ni duplica filas.
+    let fts_join = if searching {
+        " JOIN library_fts ON library_fts.rowid = t.id"
+    } else {
+        ""
+    };
 
     // Total exacto del filtro (independiente de la página).
     let (where_all, binds_all) = build_where(&query, Dimension::All)?;
@@ -675,12 +791,27 @@ pub async fn query_library(
         .await
         .map_err(|e| format!("query_library: error contando: {e}"))?;
 
-    // Ids de la página, ordenados en servidor.
-    let page_ids_sql = format!(
-        "SELECT t.id FROM tracks t WHERE {where_all} ORDER BY {order} LIMIT {limit} OFFSET {offset}"
-    );
+    // Ids de la página, ordenados en servidor. Con búsqueda: ISRC exacto
+    // delante y relevancia bm25 después (con el MATCH sobre la instancia
+    // unida); sin ella, el orden elegido.
+    let page_ids_sql = if searching {
+        format!(
+            "SELECT t.id FROM tracks t{fts_join} WHERE ({where_all}) AND library_fts MATCH ? \
+             ORDER BY {order} LIMIT {limit} OFFSET {offset}"
+        )
+    } else {
+        format!(
+            "SELECT t.id FROM tracks t WHERE {where_all} ORDER BY {order} LIMIT {limit} OFFSET {offset}"
+        )
+    };
     let mut page_ids_query = sqlx::query_as::<_, (i64,)>(&page_ids_sql);
     for bind in &binds_all {
+        page_ids_query = page_ids_query.bind(bind);
+    }
+    if let Some(plan) = &plan {
+        page_ids_query = page_ids_query.bind(&plan.fts_query);
+    }
+    for bind in order_binds.iter() {
         page_ids_query = page_ids_query.bind(bind);
     }
     let page_ids: Vec<(i64,)> = page_ids_query
@@ -691,8 +822,10 @@ pub async fn query_library(
 
     // Filas de la página: una consulta con los badges agregados (GROUP_CONCAT),
     // sin N+1. Sin ids no se consulta nada. El WHERE es solo la lista de ids
-    // (ya pasaron el filtro): sin binds que encajar.
-    let mut tracks = Vec::new();
+    // (ya pasaron el filtro): sin binds que encajar. Sin ORDER BY en SQL: el
+    // orden lo decidió la consulta de ids (con búsqueda, relevancia bm25 que
+    // aquí no se puede reproducir sin contexto MATCH) y se restaura en Rust.
+    let mut tracks: Vec<crate::commands::types::LibraryTrack> = Vec::new();
     if !page_ids.is_empty() {
         let ids = inline_ids(&page_ids);
         let rows_sql = format!(
@@ -705,18 +838,26 @@ pub async fn query_library(
              LEFT JOIN downloads d ON d.track_id = t.id \
              LEFT JOIN lyrics l ON l.track_id = t.id \
              WHERE t.id IN ({ids}) \
-             GROUP BY t.id \
-             ORDER BY {order}",
+             GROUP BY t.id",
             page_rows_sql()
         );
-        tracks = sqlx::query_as::<_, crate::commands::types::LibraryTrack>(&rows_sql)
+        let mut rows = sqlx::query_as::<_, crate::commands::types::LibraryTrack>(&rows_sql)
             .fetch_all(db)
             .await
             .map_err(|e| format!("query_library: error leyendo filas: {e}"))?;
 
         // Misma verificación de ficheros que get_library: un download cuyo
         // fichero desapareció baja a not_downloaded.
-        crate::commands::library::verify_page_files(&mut tracks).await?;
+        crate::commands::library::verify_page_files(&mut rows).await?;
+
+        // Orden de la página = orden de los ids (relevancia o elegido).
+        let mut by_id: std::collections::HashMap<i64, crate::commands::types::LibraryTrack> =
+            rows.into_iter().map(|t| (t.id, t)).collect();
+        for id in &page_ids {
+            if let Some(track) = by_id.remove(id) {
+                tracks.push(track);
+            }
+        }
     }
 
     let has_more = offset + (tracks.len() as i64) < total;
