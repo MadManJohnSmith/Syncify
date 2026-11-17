@@ -14,6 +14,9 @@ pub use accounts::*;
 pub mod account_login;
 pub use account_login::*;
 
+pub mod account_profiles;
+pub use account_profiles::*;
+
 pub mod auth;
 pub use auth::*;
 

@@ -813,6 +813,35 @@ fn main() {
             });
 
             // ═══════════════════════════════════════════════════════
+            // ACCOUNT PROFILE HYGIENE (issue #86)
+            // Arranque sin ventana de login abierta: todo lo que quede bajo
+            // login-profiles/ es huérfano de un cierre abrupto (texto plano)
+            // y se borra; los archivos cifrados sin fila se eliminan y los que
+            // no descifran con la clave activa marcan su cuenta «sin sesión»
+            // sin bloquear la app.
+            // ═══════════════════════════════════════════════════════
+            let db_for_profiles = db_pool_clone.clone();
+            let profiles_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match crate::commands::account_profiles::profile_bases(&profiles_handle) {
+                    Ok((temp_base, archives_base)) => {
+                        if let Err(e) = crate::commands::account_profiles::startup_profile_hygiene(
+                            &db_for_profiles,
+                            &temp_base,
+                            &archives_base,
+                        )
+                        .await
+                        {
+                            tracing::warn!("Account profile hygiene failed: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Account profile hygiene skipped: {}", e);
+                    }
+                }
+            });
+
+            // ═══════════════════════════════════════════════════════
             // POST-CRASH OPERATION RECONCILIATION (Sprint 167)
             // Automatically reconciles un-terminated operations from
             // the persistent journal and download_queue.

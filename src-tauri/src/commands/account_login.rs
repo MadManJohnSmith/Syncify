@@ -1,4 +1,5 @@
-//! Login dentro de la app por cuenta (issue #84, implementa #62).
+//! Login dentro de la app por cuenta (issue #84, implementa #62; perfiles
+//! persistentes cifrados: issue #86).
 //!
 //! Contrato: ADR-0007, decisión 5 — webview con descriptor por proveedor,
 //! lectura SOLO del artefacto necesario (cookie o clave de almacenamiento),
@@ -9,10 +10,13 @@
 //! abre con un `profile_key` por intento (directorio de perfil provisional
 //! bajo `login-profiles/`), el bucle de captura sondea el artefacto y, al
 //! capturarlo, lo entrega AL CAMINO EXISTENTE de guardado
-//! ([`crate::commands::auth::save_auth_result`]). El perfil provisional se
-//! borra SIEMPRE al terminar el intento (éxito, fallo o cancelación): la
-//! sesión se recuerda mediante el artefacto cifrado en la BD, nunca mediante
-//! cookies en texto plano en disco.
+//! ([`crate::commands::auth::save_auth_result`]). Al terminar el intento el
+//! texto plano del perfil desaparece SIEMPRE (criterio del issue #86): si el
+//! login COMPLETÓ, el directorio se CIFRA al archivo del perfil
+//! ([`crate::commands::account_profiles::archive_attempt_profile`]) y se
+//! vincula a la cuenta en `account_profiles` (migración 0111); si falló o se
+//! canceló, el perfil provisional se borra. La sesión se recuerda mediante el
+//! artefacto cifrado en la BD, nunca mediante cookies en texto plano en disco.
 //!
 //! Los puentes Python dejan de lanzar navegadores EN ESTE CAMINO: aquí no se
 //! invoca ningún flujo de Playwright; el único puente involucrado es el
@@ -372,6 +376,13 @@ static ATTEMPTS: LazyLock<Mutex<HashMap<String, AttemptRecord>>> =
 struct AttemptRecord {
     window_label: String,
     profile_dir: PathBuf,
+    /// Archivo cifrado donde el perfil se conservará si el login completa
+    /// (issue #86): `profile-archives/<profile_key>.syncprof`.
+    archive_path: PathBuf,
+    service_id: i64,
+    /// El intento es dueño de su escritura en BD (`login_attempts`,
+    /// `account_profiles`): `cancel_account_login` no necesita `State`.
+    db: sqlx::SqlitePool,
 }
 
 /// Directorio base de los perfiles de intento para esta instalación.
@@ -383,9 +394,15 @@ fn login_profiles_base(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("Failed to resolve app local data dir: {}", e))
 }
 
-/// Crea el perfil provisional de un intento y lo registra. Devuelve el
-/// `profile_key`, el directorio del perfil y el label de la ventana.
-fn begin_attempt(app: &tauri::AppHandle) -> Result<(String, PathBuf, String), String> {
+/// Crea el perfil provisional de un intento, registra la fila 'pending' en
+/// `login_attempts` (migración 0111) y lo apunta en el registro vivo.
+/// Devuelve el `profile_key`, el directorio del perfil y el label de la
+/// ventana.
+async fn begin_attempt(
+    app: &tauri::AppHandle,
+    db: &sqlx::SqlitePool,
+    service_id: i64,
+) -> Result<(String, PathBuf, String), String> {
     {
         let attempts = ATTEMPTS
             .lock()
@@ -403,6 +420,13 @@ fn begin_attempt(app: &tauri::AppHandle) -> Result<(String, PathBuf, String), St
     std::fs::create_dir_all(&profile_dir)
         .map_err(|e| format!("Failed to create login profile directory: {}", e))?;
 
+    let archives_base = super::account_profiles::profile_bases(app)?.1;
+    let archive_path = super::account_profiles::profile_archive_path(&archives_base, &profile_key);
+
+    // La fila del intento nace 'pending'; cancelar la BORRA (spec #83) y
+    // completar/fallar la cierra en [`finalize_attempt`].
+    super::account_profiles::record_login_attempt(db, service_id, &profile_key).await?;
+
     let window_label = format!("login-{}", &profile_key[..12]);
     ATTEMPTS
         .lock()
@@ -412,6 +436,9 @@ fn begin_attempt(app: &tauri::AppHandle) -> Result<(String, PathBuf, String), St
             AttemptRecord {
                 window_label: window_label.clone(),
                 profile_dir: profile_dir.clone(),
+                archive_path,
+                service_id,
+                db: db.clone(),
             },
         );
     Ok((profile_key, profile_dir, window_label))
@@ -431,10 +458,24 @@ fn cleanup_profile_dir(dir: &std::path::Path) {
     }
 }
 
-/// Cierra un intento: retira el registro (transición única), borra el perfil
-/// provisional y emite el evento del resultado. Devuelve `true` solo si ESTA
-/// llamada hizo la transición.
-fn finalize_attempt(
+/// Borra la fila 'pending' del intento cuando el arranque falló ANTES de
+/// abrir la ventana: no hay ventana ni evento que emitir, solo limpieza
+/// (el perfil provisional ya se borró por su cuenta).
+async fn discard_attempt_row(db: &sqlx::SqlitePool, profile_key: &str) {
+    if let Err(e) = super::account_profiles::cancel_login_attempt(db, profile_key).await {
+        tracing::warn!("Failed to discard login attempt {}: {}", profile_key, e);
+    }
+}
+
+/// Cierra un intento: retira el registro (transición única), resuelve el
+/// perfil provisional según el resultado y emite el evento. Devuelve `true`
+/// solo si ESTA llamada hizo la transición.
+///
+/// El texto plano del perfil desaparece SIEMPRE (issue #86): al COMPLETAR se
+/// cifra al archivo del perfil y se vincula a la cuenta en
+/// `account_profiles`; al cancelar se borra junto con la fila del intento
+/// (spec #83); al fallar se borra y el intento queda 'failed'.
+async fn finalize_attempt(
     profile_key: &str,
     outcome: AttemptOutcome,
     account_id: Option<i64>,
@@ -444,6 +485,69 @@ fn finalize_attempt(
         // Otro camino ya finalizó (p. ej. cancel_account_login).
         return false;
     };
+
+    // La fila del intento y el perfil cifrado son contabilidad del intento: un
+    // fallo se registra y no deshace el resultado del login (la cuenta y el
+    // artefacto ya están por el camino existente).
+    match outcome {
+        AttemptOutcome::Completed => {
+            if let Some(account_id) = account_id {
+                match super::account_profiles::archive_attempt_profile(
+                    &record.db,
+                    account_id,
+                    record.service_id,
+                    profile_key,
+                    &record.profile_dir,
+                    &record.archive_path,
+                )
+                .await
+                {
+                    Ok(_) => {}
+                    Err(e) => {
+                        // El login SÍ completó (cuenta creada y artefacto
+                        // guardado): la pérdida es del perfil del webview, no
+                        // de la sesión. Nunca queda texto plano: el temporal
+                        // se borra abajo.
+                        tracing::warn!(
+                            "Failed to archive webview profile for attempt {}: {}",
+                            profile_key,
+                            e
+                        );
+                    }
+                }
+            } else {
+                // Sin `account_id` no hay a quién vincular el perfil: se
+                // descarta con el temporal (el camino de guardado devuelve
+                // account_id en `result.data` en los seis servicios).
+                tracing::warn!(
+                    "Login attempt {} completed without an account_id; the provisional webview profile is discarded",
+                    profile_key
+                );
+            }
+            if let Err(e) =
+                super::account_profiles::finish_login_attempt(&record.db, profile_key, "completed")
+                    .await
+            {
+                tracing::warn!("Failed to record login attempt {}: {}", profile_key, e);
+            }
+        }
+        AttemptOutcome::Cancelled => {
+            // La cancelación borra el intento y su perfil (spec #83).
+            if let Err(e) =
+                super::account_profiles::cancel_login_attempt(&record.db, profile_key).await
+            {
+                tracing::warn!("Failed to record cancelled attempt {}: {}", profile_key, e);
+            }
+        }
+        AttemptOutcome::Failed => {
+            if let Err(e) =
+                super::account_profiles::finish_login_attempt(&record.db, profile_key, "failed")
+                    .await
+            {
+                tracing::warn!("Failed to record login attempt {}: {}", profile_key, e);
+            }
+        }
+    }
 
     cleanup_profile_dir(&record.profile_dir);
 
@@ -475,6 +579,7 @@ fn take_attempt(profile_key: &str) -> Option<AttemptRecord> {
     attempts.remove(profile_key)
 }
 
+#[derive(Clone, Copy)]
 enum AttemptOutcome {
     Completed,
     Cancelled,
@@ -605,7 +710,7 @@ async fn run_web_artifact_attempt(
                     AttemptOutcome::Failed,
                     None,
                     Some(&format!("invalid cookie scope URL: {}", scope_url)),
-                );
+                ).await;
                 return;
             };
             capture_cookie(&app, &window_label, scope, name, *min_len, |v| {
@@ -656,14 +761,14 @@ async fn run_web_artifact_attempt(
     let Some(artifact) = artifact else {
         // El usuario cerró la ventana: cancelación limpia, sin cuenta ni perfil
         // a medias.
-        finalize_attempt(&profile_key, AttemptOutcome::Cancelled, None, None);
+        finalize_attempt(&profile_key, AttemptOutcome::Cancelled, None, None).await;
         return;
     };
 
     let payload = match artifact_payload(service, &artifact) {
         Ok(payload) => payload,
         Err(e) => {
-            finalize_attempt(&profile_key, AttemptOutcome::Failed, None, Some(e.as_str()));
+            finalize_attempt(&profile_key, AttemptOutcome::Failed, None, Some(e.as_str())).await;
             return;
         }
     };
@@ -676,18 +781,18 @@ async fn run_web_artifact_attempt(
                     .as_ref()
                     .and_then(|d| d.get("account_id"))
                     .and_then(Value::as_i64);
-                finalize_attempt(&profile_key, AttemptOutcome::Completed, account_id, None);
+                finalize_attempt(&profile_key, AttemptOutcome::Completed, account_id, None).await;
             } else {
                 finalize_attempt(
                     &profile_key,
                     AttemptOutcome::Failed,
                     None,
                     result.error.as_deref(),
-                );
+                ).await;
             }
         }
         Err(e) => {
-            finalize_attempt(&profile_key, AttemptOutcome::Failed, None, Some(e.as_str()));
+            finalize_attempt(&profile_key, AttemptOutcome::Failed, None, Some(e.as_str())).await;
         }
     }
 }
@@ -760,12 +865,12 @@ async fn run_tidal_device_code_attempt(
                 AttemptOutcome::Failed,
                 None,
                 result.error.as_deref(),
-            );
+            ).await;
             return;
         }
         Err(e) => {
             close_attempt_window(&app, &window_label);
-            finalize_attempt(&profile_key, AttemptOutcome::Failed, None, Some(e.as_str()));
+            finalize_attempt(&profile_key, AttemptOutcome::Failed, None, Some(e.as_str())).await;
             return;
         }
     };
@@ -777,7 +882,7 @@ async fn run_tidal_device_code_attempt(
             AttemptOutcome::Failed,
             None,
             Some("Tidal device code flow returned no data"),
-        );
+        ).await;
         return;
     };
 
@@ -802,7 +907,7 @@ async fn run_tidal_device_code_attempt(
                 "invalid Tidal verification URL: {}",
                 verification_url
             )),
-        );
+        ).await;
         return;
     };
     if build_login_window(
@@ -820,7 +925,7 @@ async fn run_tidal_device_code_attempt(
             AttemptOutcome::Failed,
             None,
             Some("Failed to create Tidal login window"),
-        );
+        ).await;
         return;
     }
     emit_login_started("tidal", &profile_key);
@@ -841,7 +946,7 @@ async fn run_tidal_device_code_attempt(
                                 .as_ref()
                                 .and_then(|d| d.get("account_id"))
                                 .and_then(Value::as_i64);
-                            finalize_attempt(&profile_key, AttemptOutcome::Completed, account_id, None);
+                            finalize_attempt(&profile_key, AttemptOutcome::Completed, account_id, None).await;
                         }
                         Ok(saved) => {
                             finalize_attempt(
@@ -849,10 +954,10 @@ async fn run_tidal_device_code_attempt(
                                 AttemptOutcome::Failed,
                                 None,
                                 saved.error.as_deref(),
-                            );
+                            ).await;
                         }
                         Err(e) => {
-                            finalize_attempt(&profile_key, AttemptOutcome::Failed, None, Some(e.as_str()));
+                            finalize_attempt(&profile_key, AttemptOutcome::Failed, None, Some(e.as_str())).await;
                         }
                     }
                 }
@@ -862,16 +967,16 @@ async fn run_tidal_device_code_attempt(
                         AttemptOutcome::Failed,
                         None,
                         result.error.as_deref(),
-                    );
+                    ).await;
                 }
                 Err(e) => {
-                    finalize_attempt(&profile_key, AttemptOutcome::Failed, None, Some(e.as_str()));
+                    finalize_attempt(&profile_key, AttemptOutcome::Failed, None, Some(e.as_str())).await;
                 }
             }
         }
         _ = wait_window_closed(app.clone(), window_label.clone()) => {
             // Cerrada por el usuario: el futuro del puente se cancela aquí.
-            finalize_attempt(&profile_key, AttemptOutcome::Cancelled, None, None);
+            finalize_attempt(&profile_key, AttemptOutcome::Cancelled, None, None).await;
         }
     }
 }
@@ -904,13 +1009,13 @@ async fn run_spotify_attempt(
     };
     match outcome {
         AttemptOutcome::Completed => {
-            finalize_attempt(&profile_key, AttemptOutcome::Completed, None, None);
+            finalize_attempt(&profile_key, AttemptOutcome::Completed, None, None).await;
         }
         AttemptOutcome::Cancelled => {
-            finalize_attempt(&profile_key, AttemptOutcome::Cancelled, None, None);
+            finalize_attempt(&profile_key, AttemptOutcome::Cancelled, None, None).await;
         }
         AttemptOutcome::Failed => {
-            finalize_attempt(&profile_key, AttemptOutcome::Failed, None, None);
+            finalize_attempt(&profile_key, AttemptOutcome::Failed, None, None).await;
         }
     }
 }
@@ -978,8 +1083,8 @@ pub async fn start_account_login(
         ));
     };
     let service_static = descriptor.service;
-
-    let (profile_key, profile_dir, window_label) = begin_attempt(&app)?;
+    let service_id = super::account_profiles::resolve_service_id(&state.db, service_static).await?;
+    let (profile_key, profile_dir, window_label) = begin_attempt(&app, &state.db, service_id).await?;
     let db = state.db.clone();
 
     match &descriptor.artifact {
@@ -1011,6 +1116,7 @@ pub async fn start_account_login(
                 let message = format!("Invalid login entry URL for {}", service);
                 cleanup_profile_dir(&profile_dir);
                 take_attempt(&profile_key);
+                discard_attempt_row(&db, &profile_key).await;
                 return Err(message);
             };
             let init_script = match &descriptor.artifact {
@@ -1028,6 +1134,7 @@ pub async fn start_account_login(
             ) {
                 cleanup_profile_dir(&profile_dir);
                 take_attempt(&profile_key);
+                discard_attempt_row(&db, &profile_key).await;
                 return Err(e);
             }
             emit_login_started(service_static, &profile_key);
@@ -1071,7 +1178,7 @@ pub async fn cancel_account_login(profile_key: String) -> Result<Value, String> 
     cleanup_profile_dir(&profile_dir);
     // La transición atómica garantiza un solo evento: si el bucle de captura
     // ya finalizó el intento al ver la ventana cerrada, esto no duplica nada.
-    finalize_attempt(&profile_key, AttemptOutcome::Cancelled, None, None);
+    finalize_attempt(&profile_key, AttemptOutcome::Cancelled, None, None).await;
 
     Ok(serde_json::json!({ "cancelled": true, "profile_key": profile_key }))
 }
