@@ -122,6 +122,20 @@ pub struct PlayerEndedPayload {
     pub seq: u64,
 }
 
+/// Umbral de acreditación de escucha (#132, P01): 30 s de reproducción REAL,
+/// acumulados por el ticker del backend; nunca `position >= 30`. Igual
+/// semántica que la que la UI aplicaba antes de P01 (pausa suspende sin
+/// borrar, seek re-ancla, la velocidad divide el avance de medio).
+pub const LISTEN_THRESHOLD_SEC: f64 = 30.0;
+
+/// Escucha acreditada por el tick: el ticker la convierte en una llamada única
+/// a `record_local_play` (idempotente por PK de sesión).
+#[derive(Debug, Clone)]
+pub struct ListenCredit {
+    pub track_id: i64,
+    pub listen_session_id: String,
+}
+
 /// Resultado de una carga (`player_load_track`).
 #[derive(Debug, Clone, Serialize)]
 pub struct PlayerLoadResult {
@@ -143,6 +157,18 @@ pub(crate) struct PlayerCore {
     pub(crate) dirty: bool,
     /// `player:ended` ya emitido para la carga actual.
     pub(crate) ended_reported: bool,
+    /// Sesión de escucha en curso (P01): comienza con cada carga exitosa del
+    /// motor y acredita UNA vez por sesión al cruzar `LISTEN_THRESHOLD_SEC`.
+    pub(crate) listen_track_id: Option<i64>,
+    pub(crate) listen_session_id: Option<String>,
+    /// Segundos de escucha real acumulados en esta sesión.
+    pub(crate) listen_accum_sec: f64,
+    /// La sesión ya acreditó (el crédito es una única vez por sesión).
+    pub(crate) listen_credited: bool,
+    /// Posición del motor en el último tick elegible (ancla del incremento).
+    /// `None` re-ancla sin acreditar: arranque, reanudación tras pausa/buffer
+    /// y seek (cualquier salto de posición no acredita el tramo saltado).
+    pub(crate) listen_anchor: Option<f64>,
 }
 
 /// Resolución de streaming inyectable (ADR-0024): producción delega en
@@ -190,6 +216,7 @@ impl PlayerState {
 /// la actualización de MPRIS y los estados de stream que la frontera haya
 /// producido (se emiten en este orden, como dentro de `collect_tick`).
 /// `stall_refill` pide lanzar la re-resolución única del seek estancado (Q4).
+/// `listen_credit` pide acreditar la escucha de la pista actual (#132, P01).
 #[derive(Default)]
 pub struct TickOutput {
     pub stream_states: Vec<StreamStatePayload>,
@@ -197,6 +224,7 @@ pub struct TickOutput {
     pub tick: Option<PlayerTickPayload>,
     pub ended: Option<PlayerEndedPayload>,
     pub stall_refill: Option<Arc<StreamSession>>,
+    pub listen_credit: Option<ListenCredit>,
 }
 
 fn state_str(state: EngineState) -> &'static str {
@@ -241,6 +269,47 @@ pub(crate) fn load_path_into_core(
     Ok(loaded.duration)
 }
 
+/// Abre la sesión de escucha de una pista (P01): identidad nueva por carga
+/// exitosa del motor; el acumulador parte de cero (la posición restaurada no
+/// acredita tiempo anterior). Sólo se llama tras una carga que SÍ entró en el
+/// motor: si `open` falla, el motor sigue con la pista anterior y su sesión.
+pub(crate) fn begin_listen_session(core: &mut PlayerCore, track_id: i64) {
+    core.listen_track_id = Some(track_id);
+    core.listen_session_id = Some(uuid::Uuid::new_v4().hyphenated().to_string());
+    core.listen_accum_sec = 0.0;
+    core.listen_credited = false;
+    core.listen_anchor = None;
+}
+
+/// Un paso de la acumulación de escucha (P01). El incremento viene del propio
+/// motor (posición entre ticks elegibles, dividida por la velocidad: acredita
+/// segundos de reloj, no de medio), que sólo avanza mientras suena. Devuelve
+/// el acumulado y si este paso cruzó el umbral de acreditación (una única vez
+/// por sesión).
+fn listen_step(
+    anchor: &mut Option<f64>,
+    accum_sec: &mut f64,
+    credited: &mut bool,
+    position_sec: f64,
+    rate: f64,
+) -> (f64, bool) {
+    let Some(anchor_sec) = *anchor else {
+        *anchor = Some(position_sec);
+        return (*accum_sec, false);
+    };
+    let delta = position_sec - anchor_sec;
+    *anchor = Some(position_sec);
+    if delta >= 0.0 {
+        let rate = if rate > 0.0 { rate } else { 1.0 };
+        *accum_sec += delta / rate;
+    }
+    let crossed = !*credited && *accum_sec >= LISTEN_THRESHOLD_SEC;
+    if crossed {
+        *credited = true;
+    }
+    (*accum_sec, crossed)
+}
+
 impl PlayerState {
     /// Resolver de streaming en uso (producción o el doble de pruebas).
     pub(crate) fn resolver(&self) -> StreamResolver {
@@ -273,6 +342,7 @@ impl PlayerState {
                 let mut core = lock_core(self)?;
                 let duration = load_path_into_core(&mut core, Path::new(&path), autoplay, volume)?;
                 core.seq += 1;
+                begin_listen_session(&mut core, track_id);
                 return Ok(PlayerLoadResult {
                     seq: core.seq,
                     duration_sec: duration.map(|d| d.as_secs_f64()),
@@ -392,6 +462,7 @@ impl PlayerState {
                 return Err("carga reemplazada por otra pista".to_string());
             }
             let duration = load_path_into_core(&mut core, &cache_path, autoplay, volume)?;
+            begin_listen_session(&mut core, track_id);
             session.started.store(true, Ordering::SeqCst);
             stream_cache::emit_state(app, &session, None);
             return Ok(PlayerLoadResult {
@@ -574,6 +645,9 @@ impl PlayerState {
         engine
             .seek(Duration::from_secs_f64(sec))
             .map_err(engine_error)?;
+        // El tramo saltado no acredita escucha: el siguiente tick elegible
+        // re-ancla desde la posición nueva.
+        core.listen_anchor = None;
         core.dirty = true;
         Ok(())
     }
@@ -617,6 +691,11 @@ impl PlayerState {
             seq,
             dirty,
             ended_reported,
+            listen_track_id,
+            listen_session_id,
+            listen_accum_sec,
+            listen_credited,
+            listen_anchor,
         } = &mut *core;
         let Some(engine) = engine.as_mut() else {
             return TickOutput::default();
@@ -647,6 +726,37 @@ impl PlayerState {
             engine.position(),
         ));
         let playing = matches!(engine_state, EngineState::Playing);
+        // Acumulación de escucha (P01): sólo avanza con el motor en Playing
+        // (pausa/buffer suspenden sin borrar; el re-anclaje tras un parón o un
+        // seek hace que el tramo saltado no acredite).
+        let listen_credit = if playing {
+            if let (Some(track_id), Some(session_id)) =
+                (*listen_track_id, listen_session_id.clone())
+            {
+                let position = engine.position().as_secs_f64();
+                let rate = engine.rate() as f64;
+                let (_, crossed) = listen_step(
+                    listen_anchor,
+                    listen_accum_sec,
+                    listen_credited,
+                    position,
+                    rate,
+                );
+                if crossed {
+                    Some(ListenCredit {
+                        track_id,
+                        listen_session_id: session_id,
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            *listen_anchor = None;
+            None
+        };
         let tick = if playing || *dirty {
             *dirty = false;
             Some(PlayerTickPayload {
@@ -670,6 +780,7 @@ impl PlayerState {
             tick,
             ended,
             stall_refill,
+            listen_credit,
         }
     }
 }
@@ -701,6 +812,7 @@ pub(crate) fn load_stream_into_engine<R: tauri::Runtime>(
         return Err("carga reemplazada por otra pista".to_string());
     }
     let duration = load_path_into_core(&mut core, &session.path, autoplay, volume)?;
+    begin_listen_session(&mut core, session.track_id);
     session.started.store(true, Ordering::SeqCst);
     Ok(duration.map(|d| d.as_secs_f64()))
 }

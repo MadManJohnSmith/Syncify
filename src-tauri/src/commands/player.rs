@@ -148,6 +148,43 @@ pub fn spawn_player_ticker<R: tauri::Runtime>(app: &AppHandle<R>) {
             }
             if let Some(payload) = out.ended {
                 let _ = app.emit("player:ended", payload);
+                // P01 (#132): el backend decide la siguiente pista y avanza.
+                // La UI ya no orquesta el fin de pista; sincroniza su vista
+                // con `player:advanced`.
+                crate::services::playback_advance::spawn_auto_advance(app.clone(), payload.seq);
+            }
+            if let Some(credit) = out.listen_credit {
+                // P01 (#132): el backend acumula 30 s reales y acredita una
+                // única vez por sesión (dedupe por PK en `playback_listens`).
+                // Un fallo no es recuperable desde el ticker: queda en el log.
+                let db = match app.try_state::<crate::AppState>() {
+                    Some(state) => state.db.clone(),
+                    None => continue,
+                };
+                tauri::async_runtime::spawn(async move {
+                    match crate::commands::playback::perform_record_local_play(
+                        &db,
+                        credit.track_id,
+                        &credit.listen_session_id,
+                    )
+                    .await
+                    {
+                        Ok(stats) if stats.counted => {
+                            tracing::info!(
+                                track_id = credit.track_id,
+                                play_count = stats.play_count,
+                                "escucha acreditada por el backend (30 s reales)"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                track_id = credit.track_id,
+                                "no se pudo acreditar la escucha: {e}"
+                            );
+                        }
+                    }
+                });
             }
         }
     });

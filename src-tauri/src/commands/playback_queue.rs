@@ -230,6 +230,46 @@ pub async fn perform_reorder_queue(db: &DbPool, entry_ids: &[String]) -> Result<
     Ok(())
 }
 
+/// Reconstruye el ciclo de `repeat all` desde el backend (#132, P01): convierte
+/// `history` + `current` (identidades dadas en `order`, ya deduplicadas y
+/// permutadas por el llamante) en la cola pendiente nueva. Conserva la
+/// identidad de cada entrada (`entry_id`): la UI reconoce las suyas y el
+/// crédito de escucha no depende de ello, pero el agregado mantiene la regla
+/// P00 de identidades estables. El `current` vigente se convierte a pendiente:
+/// `perform_set_current` de la cabeza lo archivará de nuevo al consumirla.
+pub async fn perform_rebuild_cycle(db: &DbPool, order: &[String]) -> Result<(), String> {
+    if order.is_empty() {
+        return Err("order vacío: se esperaba al menos una entrada del ciclo".to_string());
+    }
+    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM player_queue_entries WHERE kind = 'pending'")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    for (position, entry_id) in order.iter().enumerate() {
+        let updated = sqlx::query(
+            "UPDATE player_queue_entries SET kind = 'pending', position = ? \
+             WHERE entry_id = ? AND kind IN ('history', 'current')",
+        )
+        .bind(position as i64)
+        .bind(entry_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected();
+        if updated != 1 {
+            tx.rollback()
+                .await
+                .map_err(|e| format!("rollback al reconstruir el ciclo: {e}"))?;
+            return Err(format!(
+                "La entrada {entry_id} no está en el historial ni es la pista actual"
+            ));
+        }
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Recorta el historial al límite: elimina las más antiguas (posición menor).
 async fn trim_history(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), String> {
     // Conserva las HISTORY_LIMIT más recientes: elimina las estrictamente más
