@@ -243,6 +243,8 @@ export const TauriEvents = {
 
     // Auth events
     AUTH_STATE_UPDATED: 'auth-state-updated',
+    /** Ciclo de vida de cuenta cambió (issue #85): enabled|disabled|archived. */
+    ACCOUNT_STATE_CHANGED: 'account-state-changed',
     AUTH_SESSION_EXPIRED: 'auth-session-expired',
     SYNC_SETTINGS_UPDATED: 'sync-settings-updated',
 

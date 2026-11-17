@@ -178,7 +178,7 @@
                  behind the "manage" disclosure to keep the card compact. -->
             <div v-if="service.accounts.length" class="mb-4">
               <div
-                v-for="account in orderedAccounts(service.accounts)"
+                v-for="account in orderedAccounts(service.accounts).filter(a => accountState(a) !== 'archived')"
                 :key="account.id"
                 :class="[
                   'rounded-lg border p-2.5 text-sm transition-colors',
@@ -189,6 +189,7 @@
                 ]"
                 :data-testid="`account-row-${account.id}`"
                 :data-active="account.is_active ? 'true' : 'false'"
+                :data-state="accountState(account)"
                 :data-invalid="account.credentials_invalid ? 'true' : 'false'"
                 :data-no-streaming="account.streaming_entitled === false ? 'true' : 'false'"
               >
@@ -229,17 +230,35 @@
                   </div>
                   <div class="flex items-center gap-1.5 shrink-0">
                     <span
-                      v-if="account.is_active"
+                      v-if="accountState(account) === 'archived'"
+                      class="px-1.5 py-0.5 rounded-full bg-gray-400/10 text-gray-400 text-[10px] font-semibold uppercase tracking-wide"
+                      data-testid="account-state-badge"
+                    >Archived</span>
+                    <span
+                      v-else-if="accountState(account) === 'disabled'"
+                      class="px-1.5 py-0.5 rounded-full bg-warning/10 text-warning text-[10px] font-semibold uppercase tracking-wide"
+                      data-testid="account-state-badge"
+                    >Disabled</span>
+                    <span
+                      v-else-if="account.is_active"
                       class="px-1.5 py-0.5 rounded-full bg-success/10 text-success text-[10px] font-semibold uppercase tracking-wide"
                     >Active</span>
                     <span
-                      v-else-if="account.credentials_invalid"
+                      v-if="account.credentials_invalid"
                       class="px-1.5 py-0.5 rounded-full bg-error/10 text-error text-[10px] font-semibold uppercase tracking-wide"
                     >Reauth</span>
                   </div>
                 </div>
                 <div v-if="!account.is_active" class="flex flex-wrap items-center gap-3 mt-2">
                   <button
+                    v-if="accountState(account) !== 'enabled'"
+                    type="button"
+                    @click="setAccountLifecycle(account.id, 'enabled')"
+                    class="text-xs text-primary hover:underline font-medium"
+                    data-testid="account-enable"
+                  >Enable</button>
+                  <button
+                    v-else
                     type="button"
                     @click="activateAccount(account.id)"
                     class="text-xs text-primary hover:underline font-medium"
@@ -256,7 +275,7 @@
                   >Disconnect</button>
                   <button
                     type="button"
-                    @click="deleteAccount(account.id)"
+                    @click="openDeleteDialog(account)"
                     class="text-xs text-text-secondary hover:text-error"
                   >Remove</button>
                 </div>
@@ -266,6 +285,18 @@
                     @click="reconnectAccount(account)"
                     class="text-xs text-text-secondary hover:text-primary"
                   >Reconnect</button>
+                  <button
+                    type="button"
+                    @click="setAccountLifecycle(account.id, 'disabled')"
+                    class="text-xs text-text-secondary hover:text-warning"
+                    data-testid="account-disable"
+                  >Disable</button>
+                  <button
+                    type="button"
+                    @click="setAccountLifecycle(account.id, 'archived')"
+                    class="text-xs text-text-secondary hover:text-text-secondary"
+                    data-testid="account-archive"
+                  >Archive</button>
                 </div>
               </div>
 
@@ -297,11 +328,16 @@
                       <span class="truncate">No streaming on this plan — downloads may be 30-second previews</span>
                     </div>
                     <div class="flex flex-wrap gap-3 mt-1">
-                      <span v-if="account.is_active" class="text-success font-medium">Active</span>
+                      <span v-if="accountState(account) === 'archived'" class="text-gray-400 font-medium">Archived</span>
+                      <span v-else-if="accountState(account) === 'disabled'" class="text-warning font-medium">Disabled</span>
+                      <span v-else-if="account.is_active" class="text-success font-medium">Active</span>
                       <span v-else-if="account.credentials_invalid" class="text-error">Reauth needed</span>
-                      <button v-if="!account.is_active" type="button" class="text-primary hover:underline" @click="activateAccount(account.id)">Use this</button>
+                      <button v-if="accountState(account) !== 'enabled'" type="button" class="text-primary hover:underline" @click="setAccountLifecycle(account.id, 'enabled')">Enable</button>
+                      <button v-else-if="!account.is_active" type="button" class="text-primary hover:underline" @click="activateAccount(account.id)">Use this</button>
+                      <button v-else type="button" class="text-text-secondary hover:text-warning" @click="setAccountLifecycle(account.id, 'disabled')">Disable</button>
+                      <button v-if="accountState(account) === 'enabled'" type="button" class="text-text-secondary hover:text-text-secondary" @click="setAccountLifecycle(account.id, 'archived')">Archive</button>
                       <button type="button" class="text-text-secondary hover:text-error" @click="disconnectService(service.id, account.id)">Disconnect</button>
-                      <button type="button" class="text-text-secondary hover:text-error" @click="deleteAccount(account.id)">Remove</button>
+                      <button type="button" class="text-text-secondary hover:text-error" @click="openDeleteDialog(account)">Remove</button>
                     </div>
                   </div>
                 </div>
@@ -789,7 +825,7 @@
                               Disconnect
                             </button>
                             <button
-                              @click="deleteAccount(acct.id)"
+                              @click="openDeleteDialog(acct)"
                               class="px-2 py-1 text-error hover:bg-error/10 rounded"
                             >
                               Remove
@@ -1060,6 +1096,55 @@
       @sync-completed="handleLocalSyncCompleted"
     />
 
+    <!-- Diálogo de baja de cuenta (issue #85, ADR-0007 decisión 3): explica
+         qué se borra y qué se conserva ANTES de ejecutarlo, y el audio solo se
+         borra con la casilla aparte, nunca implícito. -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div
+          v-if="deleteDialogAccount"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          data-testid="delete-account-dialog"
+        >
+          <div class="bg-surface rounded-xl shadow-xl max-w-md w-full p-5 text-sm">
+            <h3 class="text-base font-semibold text-gray-900 dark:text-white mb-2">
+              Remove “{{ deleteDialogAccount.label }}”?
+            </h3>
+            <div class="space-y-1.5 text-text-secondary mb-4">
+              <p><span class="text-error font-medium">Deleted:</span> the account, its credentials, its imported library entries, favorites, playlists and sync history.</p>
+              <p><span class="text-success font-medium">Kept:</span> canonical tracks, track sources and your downloaded files, so nothing shared is lost.</p>
+              <p>This action cannot be undone.</p>
+            </div>
+            <label class="flex items-start gap-2 mb-4 rounded-lg bg-warning/5 border border-warning/30 p-2.5 cursor-pointer">
+              <input
+                v-model="deleteAudioChecked"
+                type="checkbox"
+                class="mt-0.5"
+                data-testid="delete-audio-checkbox"
+              />
+              <span class="text-text-secondary">
+                Also delete the audio files this account downloaded.
+                <span class="block text-xs">Unchecked: the files stay on disk and in your library.</span>
+              </span>
+            </label>
+            <div class="flex justify-end gap-2">
+              <button
+                type="button"
+                @click="cancelDeleteDialog"
+                class="px-4 py-2 rounded-lg text-text-secondary hover:bg-surface-highlight"
+              >Cancel</button>
+              <button
+                type="button"
+                @click="confirmDeleteAccount"
+                class="px-4 py-2 rounded-lg bg-error text-white hover:opacity-90"
+                data-testid="confirm-delete-account"
+              >Delete account</button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
     <!-- Spotify API Credentials Modal (C-01 / C-02: Hidden in modal unless deliberately opened) -->
     <Teleport to="body">
       <Transition name="fade">
@@ -1095,7 +1180,7 @@ import { libraryApi } from '@/api/library'
 import { playlistsApi } from '@/api/playlists'
 import type { ImportPlaylistFromFileResult } from '@/api/playlists'
 import { useToast } from '@/composables/useToast'
-import type { ImportResult } from '@/api/types'
+import type { AccountLifecycleState, ImportResult } from '@/api/types'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { useSyncSettings } from '@/composables/useSyncSettings'
@@ -1542,10 +1627,65 @@ async function activateAccount(accountId: number) {
   }
 }
 
-async function deleteAccount(accountId: number) {
-  if (!window.confirm('Delete this account? Its library and playlists will also be deleted. This action cannot be undone.')) return
+// ---- Ciclo de vida de cuenta (issue #85, ADR-0007 decisión 3) ----
+
+/** Estado efectivo de la tarjeta: los payloads legacy (sin migración 0107) son habilitados. */
+function accountState(account: { state?: AccountLifecycleState } | null | undefined): AccountLifecycleState {
+  return account?.state ?? 'enabled'
+}
+
+/**
+ * Transition of the lifecycle state. Disabling or archiving stops sync and
+ * downloads of this account on the backend; archiving additionally hides the
+ * row from the main list (it stays reachable under "Manage accounts").
+ */
+async function setAccountLifecycle(accountId: number, newState: AccountLifecycleState) {
   try {
-    await accountsApi.removeAccount(accountId)
+    const change = await accountsApi.setAccountState(accountId, newState)
+    if (change.changed) {
+      showToast(
+        change.new_state === 'enabled'
+          ? 'Account enabled: sync and downloads resume'
+          : change.new_state === 'archived'
+            ? 'Account archived: hidden and stopped; everything kept'
+            : 'Account disabled: sync and downloads stopped; everything kept',
+        'success',
+      )
+    }
+    await fetchData()
+  } catch (e) {
+    showToast(`Failed to change account state: ${e}`, 'error')
+  }
+}
+
+// El diálogo de borrado explica consecuencias ANTES de ejecutarlas: pistas
+// canónicas, fuentes y archivos se conservan; el audio se borra solo con la
+// casilla aparte, nunca implícito (ADR-0007 decisión 3).
+const deleteDialogAccount = ref<{ id: number; label: string } | null>(null)
+const deleteAudioChecked = ref(false)
+
+function openDeleteDialog(account: { id: number; display_name?: string | null; email?: string | null }) {
+  deleteDialogAccount.value = { id: account.id, label: formatAccountLabel(account) }
+  deleteAudioChecked.value = false
+}
+
+function cancelDeleteDialog() {
+  deleteDialogAccount.value = null
+  deleteAudioChecked.value = false
+}
+
+async function confirmDeleteAccount() {
+  if (!deleteDialogAccount.value) return
+  const accountId = deleteDialogAccount.value.id
+  try {
+    const summary = await accountsApi.deleteAccount(accountId, deleteAudioChecked.value)
+    showToast(
+      summary.delete_audio
+        ? `Account deleted; ${summary.audio_files_deleted} audio file(s) removed`
+        : 'Account deleted. Canonical tracks, sources and downloaded files were kept',
+      'success',
+    )
+    cancelDeleteDialog()
     if (highlightedAccountId.value === accountId) highlightedAccountId.value = null
     await fetchData()
   } catch (e) {
@@ -2400,6 +2540,12 @@ onMounted(async () => {
 
   // Listen for successful auth / re-auth
   await eventBus.on(TauriEvents.AUTH_STATE_UPDATED, async () => {
+    await fetchData()
+  })
+
+  // Ciclo de vida (issue #85): refrescar la tarjeta cuando el estado cambia,
+  // también desde otros puntos de la app.
+  await eventBus.on(TauriEvents.ACCOUNT_STATE_CHANGED, async () => {
     await fetchData()
   })
 
