@@ -224,3 +224,19 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   paralelismo posterior; pertenencia de L00 detrás de un borde claro;
   piezas que la requieren deshabilitadas con motivo). Fuente: PR
   #301, tracker.
+- **2026-11-16**: L01 (#98) fusionado por squash en PR #303
+  (`d317c01` en `dev`, CI 8/8); issue cerrado citando el SHA. Serie
+  #96: 1/14. Con el carril liberado por la orden del propietario
+  («siempre 2 subagentes») se adelantó el raíz del programa #64
+  (SyncRun #65) y el del #83 (login webview #84) a la cola de
+  carriles.
+- **2026-11-16, rebase de carril por el orquestador**: el PR #304
+  (SyncRun #65) quedó CONFLICTING al abrirse antes del merge de #303
+  (ambos tocaban el registro de AGENTS.md). El jefe de gabinete hizo
+  el rebase mecánico directamente en el worktree del delegado
+  (conflicto único de claims: 325 vs 327 desde base 324 → resuelto a
+  328; el código de ambos carriles se combinó sin conflicto) y
+  force-push con lease. La nueva head es `8706f91`; CI re-corre.
+  Lección: el rebase mecánico de un carril terminado es gestión de
+  carril, no implementación — no requiere delegado si el conflicto es
+  de una línea. Fuente: git log de la rama rebasada.
