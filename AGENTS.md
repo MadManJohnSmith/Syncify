@@ -24,7 +24,7 @@ CARGO_TARGET_DIR=/tmp/syncify-target cargo check --workspace --all-targets --loc
 CARGO_TARGET_DIR=/tmp/syncify-target cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --no-fail-fast   # 334 objetivos de test: recuento real
-(FE-SYNC-01: SyncRun — migración 0106 y tres suites de prueba (#65); A84: login en webview por cuenta — suite de guardado con artefacto falso (#84); L02: búsqueda FTS y upgrade de 0107 (#99); ciclo de vida de cuenta — migración renumerada a 0108 (#85); P00: cola persistente — migración 0109 y suite de persistencia (#131))
+(FE-SYNC-01: SyncRun — migración 0106 y tres suites de prueba (#65); A84: login en webview por cuenta — suite de guardado con artefacto falso (#84); L02: búsqueda FTS y upgrade de 0107 (#99); ciclo de vida de cuenta — migración renumerada a 0108 (#85); P00: cola persistente — migración 0109 y suite de persistencia (#131); PL00: modelo local de playlists — migración renumerada a 0110 (#153))
 CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --test batch_50_audit_test -- --test-threads=1
 npm --prefix ui run build && npm --prefix ui run test:run                  # 137 ficheros / 1170 tests
 .venv/bin/python -m unittest discover -s scripts/tests                    # 445 tests (2 skipped)

@@ -1713,6 +1713,7 @@ pub async fn get_playlists(state: State<'_, AppState>) -> Result<Vec<Playlist>, 
         FROM playlists p
         LEFT JOIN accounts a ON a.id = p.account_id
         LEFT JOIN services s ON s.id = a.service_id
+        WHERE p.deleted_at IS NULL
         ORDER BY p.name ASC
         "#,
     )
@@ -1767,6 +1768,10 @@ pub async fn add_to_playlist(
 }
 
 /// Create a new playlist
+///
+/// PL00 (#153): una playlist local no es de ninguna cuenta (borrar la cuenta
+/// no puede llevársela) y su identidad estable es `local_uuid`, no el nombre.
+/// El parámetro `account_id` se conserva por compatibilidad IPC y se ignora.
 #[tauri::command]
 pub async fn create_playlist(
     state: State<'_, AppState>,
@@ -1774,16 +1779,17 @@ pub async fn create_playlist(
     name: String,
     description: Option<String>,
 ) -> Result<i64, String> {
-    let account_id = account_id.unwrap_or(1);
-    tracing::info!("create_playlist: {} for account {}", name, account_id);
+    let _ = account_id;
+    let local_uuid = uuid::Uuid::new_v4().to_string();
+    tracing::info!("create_playlist: local '{}' ({})", name, local_uuid);
 
     let playlist_id: i64 = sqlx::query_scalar(
-        r#"INSERT INTO playlists (account_id, service_playlist_id, name, description, track_count)
-           VALUES (?, 'local_' || ?, ?, ?, 0)
+        r#"INSERT INTO playlists (account_id, service_playlist_id, local_uuid, name, description, track_count)
+           VALUES (NULL, 'local_' || ?, ?, ?, ?, 0)
            RETURNING id"#,
     )
-    .bind(account_id)
     .bind(&name)
+    .bind(&local_uuid)
     .bind(&name)
     .bind(&description)
     .fetch_one(&state.db)

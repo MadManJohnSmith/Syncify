@@ -1569,9 +1569,15 @@ pub async fn import_library_with_bases(
     // 4. Import Playlists
     for pl in &manifest.playlists {
         // Find or create playlist
+        // PL00 (#153): las playlists restauradas son locales, sin cuenta y con
+        // local_uuid propio (antes colgaban de la cuenta 1).
+        let local_uuid = uuid::Uuid::new_v4().to_string();
         let pl_id: i64 = sqlx::query_scalar(
-            "INSERT INTO playlists (account_id, name, description) VALUES (1, ?, ?) RETURNING id",
+            r#"INSERT INTO playlists (account_id, service_playlist_id, local_uuid, name, description)
+               VALUES (NULL, 'local_' || ?, ?, ?, ?) RETURNING id"#,
         )
+        .bind(&pl.name)
+        .bind(&local_uuid)
         .bind(&pl.name)
         .bind(&pl.description)
         .fetch_one(&mut *tx)

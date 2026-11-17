@@ -1,12 +1,13 @@
-//! TASK-107: Test suite for playlist deduplication, position recompaction, track_count sync, and name disambiguation.
+//! TASK-107 / PL00: Test suite for position recompaction, track_count sync, and name disambiguation.
 //!
 //! Validates:
-//! 1. Duplicate tracks inside a playlist are purged, preserving the first occurrence (lowest position).
-//! 2. Positions are recompacted to strictly 1-indexed, sequential, and gap-free (1, 2, 3... N).
-//! 3. `playlists.track_count` is synchronized to match exact `COUNT(*)` in `playlist_tracks`.
-//! 4. Duplicate playlist names within the same account are disambiguated with `(2)`, `(3)`, etc.
-//! 5. Disambiguation handles preexisting `(2)` suffixes without colliding.
-//! 6. Playlists in different accounts with identical names are preserved independently.
+//! 1. Repeated tracks inside a playlist are KEPT (PL00 #153 allows duplicates) and
+//!    positions are recompacted to strictly 1-indexed, sequential, gap-free (1..N).
+//! 2. `playlists.track_count` is synchronized to match exact `COUNT(*)` in `playlist_tracks`
+//!    (duplicates counted).
+//! 3. Duplicate playlist names within the same account are disambiguated with `(2)`, `(3)`, etc.
+//! 4. Disambiguation handles preexisting `(2)` suffixes without colliding.
+//! 5. Playlists in different accounts with identical names are preserved independently.
 
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use syncify_tauri_lib::commands::{
@@ -44,7 +45,7 @@ async fn create_test_db() -> SqlitePool {
 }
 
 #[tokio::test]
-async fn test_dedup_tracks_preserves_first_occurrence_and_recompacts() {
+async fn test_repeated_tracks_are_kept_and_recompacted() {
     let pool = create_test_db().await;
 
     // Create tracks
@@ -75,13 +76,13 @@ async fn test_dedup_tracks_preserves_first_occurrence_and_recompacts() {
     .await
     .unwrap();
 
-    // Insert tracks with deliberate duplicates and gaps:
+    // Insert tracks with deliberate repetitions and gaps:
     // t1 at pos 5
     // t2 at pos 10
-    // t1 at pos 15 (duplicate!)
+    // t1 at pos 15 (repeat, legal since PL00 #153)
     // t3 at pos 20
-    // t2 at pos 25 (duplicate!)
-    // t1 at pos 30 (duplicate!)
+    // t2 at pos 25 (repeat)
+    // t1 at pos 30 (repeat)
     sqlx::query(
         r#"
         INSERT INTO playlist_tracks (playlist_id, track_id, position)
@@ -119,11 +120,11 @@ async fn test_dedup_tracks_preserves_first_occurrence_and_recompacts() {
     assert_eq!(initial_tracks_count.0, 6);
 
     // Sanitize single playlist
-    let purged = sanitize_single_playlist(&pool, playlist_id)
+    let rows_kept = sanitize_single_playlist(&pool, playlist_id)
         .await
         .expect("sanitize_single_playlist must succeed");
 
-    assert_eq!(purged, 3, "Exactly 3 duplicate tracks must be purged");
+    assert_eq!(rows_kept, 6, "All 6 occurrences are kept (no dedup purge)");
 
     // Verify remaining tracks and positions
     let rows: Vec<(i64, i64)> = sqlx::query_as(
@@ -134,21 +135,11 @@ async fn test_dedup_tracks_preserves_first_occurrence_and_recompacts() {
     .await
     .unwrap();
 
-    assert_eq!(rows.len(), 3, "Only the 3 distinct tracks should remain");
+    assert_eq!(rows.len(), 6, "Every occurrence stays in the playlist");
     assert_eq!(
-        rows[0],
-        (t1, 1),
-        "Track A first appeared at pos 5 -> must be pos 1"
-    );
-    assert_eq!(
-        rows[1],
-        (t2, 2),
-        "Track B first appeared at pos 10 -> must be pos 2"
-    );
-    assert_eq!(
-        rows[2],
-        (t3, 3),
-        "Track C first appeared at pos 20 -> must be pos 3"
+        rows,
+        vec![(t1, 1), (t2, 2), (t1, 3), (t3, 4), (t2, 5), (t1, 6)],
+        "Recompacted 1..N in original order, repetitions preserved"
     );
 
     // Verify track_count synchronization
@@ -158,7 +149,7 @@ async fn test_dedup_tracks_preserves_first_occurrence_and_recompacts() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(final_track_count.0, 3, "track_count must be updated to 3");
+    assert_eq!(final_track_count.0, 6, "track_count counts duplicates");
 }
 
 #[tokio::test]
@@ -232,7 +223,10 @@ async fn test_sanitize_all_playlists_global() {
         .await
         .expect("sanitize_playlists_in_pool must succeed");
 
-    assert_eq!(stats.duplicate_tracks_purged, 1);
+    assert_eq!(
+        stats.duplicate_tracks_purged, 0,
+        "PL00: repetitions are legal, nothing is purged"
+    );
     assert_eq!(stats.playlist_names_disambiguated, 2);
 
     // Verify names in Account 1
@@ -264,10 +258,10 @@ async fn test_sanitize_all_playlists_global() {
         .unwrap();
     assert_eq!(name_p4.0, "Workout Beats");
 
-    // Verify p1 positions: 1, 2
+    // Verify p1 positions: repetitions preserved, recompacted 1..3
     let p1_tracks: Vec<(i64, i64)> = sqlx::query_as("SELECT track_id, position FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC")
         .bind(p1).fetch_all(&pool).await.unwrap();
-    assert_eq!(p1_tracks, vec![(t1, 1), (t2, 2)]);
+    assert_eq!(p1_tracks, vec![(t1, 1), (t2, 2), (t1, 3)]);
 
     // Verify p2 positions: 1, 2
     let p2_tracks: Vec<(i64, i64)> = sqlx::query_as("SELECT track_id, position FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC")
@@ -295,7 +289,7 @@ async fn test_sanitize_all_playlists_global() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(cnt_p1.0, 2);
+    assert_eq!(cnt_p1.0, 3);
     assert_eq!(cnt_p2.0, 2);
     assert_eq!(cnt_p3.0, 1);
 }
@@ -350,7 +344,7 @@ async fn test_disambiguation_with_existing_suffixed_names() {
 }
 
 #[tokio::test]
-async fn test_recompact_playlist_positions_purges_duplicates() {
+async fn test_recompact_playlist_positions_keeps_repeated_tracks() {
     let pool = create_test_db().await;
 
     let t1: i64 = sqlx::query_scalar(
@@ -373,7 +367,7 @@ async fn test_recompact_playlist_positions_purges_duplicates() {
     sqlx::query("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, 10), (?, ?, 20), (?, ?, 30)")
         .bind(pl).bind(t1)
         .bind(pl).bind(t2)
-        .bind(pl).bind(t1) // Duplicate t1
+        .bind(pl).bind(t1) // Repeat of t1, legal since PL00 #153
         .execute(&pool)
         .await
         .unwrap();
@@ -385,16 +379,15 @@ async fn test_recompact_playlist_positions_purges_duplicates() {
     let rows: Vec<(i64, i64)> = sqlx::query_as("SELECT track_id, position FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC")
         .bind(pl).fetch_all(&pool).await.unwrap();
 
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0], (t1, 1));
-    assert_eq!(rows[1], (t2, 2));
+    assert_eq!(rows.len(), 3, "recompaction does not purge repetitions");
+    assert_eq!(rows, vec![(t1, 1), (t2, 2), (t1, 3)]);
 
     let count: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
         .bind(pl)
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(count.0, 2);
+    assert_eq!(count.0, 3, "track_count counts every occurrence");
 }
 
 #[tokio::test]
@@ -405,11 +398,11 @@ async fn test_empty_playlist_sanitization() {
         "INSERT INTO playlists (account_id, service_playlist_id, name, track_count) VALUES (1, 'sp_empty', 'Empty Pl', 77) RETURNING id",
     ).fetch_one(&pool).await.unwrap();
 
-    let purged = sanitize_single_playlist(&pool, pl)
+    let rows_kept = sanitize_single_playlist(&pool, pl)
         .await
         .expect("sanitize_single_playlist must succeed on empty playlist");
 
-    assert_eq!(purged, 0);
+    assert_eq!(rows_kept, 0);
 
     let count: (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
         .bind(pl)
