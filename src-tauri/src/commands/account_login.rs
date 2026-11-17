@@ -710,7 +710,8 @@ async fn run_web_artifact_attempt(
                     AttemptOutcome::Failed,
                     None,
                     Some(&format!("invalid cookie scope URL: {}", scope_url)),
-                ).await;
+                )
+                .await;
                 return;
             };
             capture_cookie(&app, &window_label, scope, name, *min_len, |v| {
@@ -788,7 +789,8 @@ async fn run_web_artifact_attempt(
                     AttemptOutcome::Failed,
                     None,
                     result.error.as_deref(),
-                ).await;
+                )
+                .await;
             }
         }
         Err(e) => {
@@ -865,7 +867,8 @@ async fn run_tidal_device_code_attempt(
                 AttemptOutcome::Failed,
                 None,
                 result.error.as_deref(),
-            ).await;
+            )
+            .await;
             return;
         }
         Err(e) => {
@@ -882,7 +885,8 @@ async fn run_tidal_device_code_attempt(
             AttemptOutcome::Failed,
             None,
             Some("Tidal device code flow returned no data"),
-        ).await;
+        )
+        .await;
         return;
     };
 
@@ -907,7 +911,8 @@ async fn run_tidal_device_code_attempt(
                 "invalid Tidal verification URL: {}",
                 verification_url
             )),
-        ).await;
+        )
+        .await;
         return;
     };
     if build_login_window(
@@ -925,7 +930,8 @@ async fn run_tidal_device_code_attempt(
             AttemptOutcome::Failed,
             None,
             Some("Failed to create Tidal login window"),
-        ).await;
+        )
+        .await;
         return;
     }
     emit_login_started("tidal", &profile_key);
@@ -1084,7 +1090,8 @@ pub async fn start_account_login(
     };
     let service_static = descriptor.service;
     let service_id = super::account_profiles::resolve_service_id(&state.db, service_static).await?;
-    let (profile_key, profile_dir, window_label) = begin_attempt(&app, &state.db, service_id).await?;
+    let (profile_key, profile_dir, window_label) =
+        begin_attempt(&app, &state.db, service_id).await?;
     let db = state.db.clone();
 
     match &descriptor.artifact {

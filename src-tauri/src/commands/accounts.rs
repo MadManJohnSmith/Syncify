@@ -1672,11 +1672,11 @@ pub struct AccountDeletionSummary {
 /// y los archivos descargados salvo casilla explícita.
 ///
 /// Las tablas propiedad de la cuenta llevan `ON DELETE CASCADE`
-    /// (library_entries, playlists, playlist_sources, favorites,
-    /// account_import_counts, sync_runs), pero el borrado es explícito por tabla:
-    /// no depende del orden de cascada y deja el efecto legible en el resumen.
-    /// El perfil cifrado del webview (issue #86) se borra aquí abajo ANTES de
-    /// la fila: eliminar borra el archivo; desactivar y archivar lo conservan.
+/// (library_entries, playlists, playlist_sources, favorites,
+/// account_import_counts, sync_runs), pero el borrado es explícito por tabla:
+/// no depende del orden de cascada y deja el efecto legible en el resumen.
+/// El perfil cifrado del webview (issue #86) se borra aquí abajo ANTES de
+/// la fila: eliminar borra el archivo; desactivar y archivar lo conservan.
 pub async fn perform_delete_account(
     db: &sqlx::SqlitePool,
     account_id: i64,
