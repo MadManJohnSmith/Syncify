@@ -1,11 +1,11 @@
 //! Issue #85 — upgrade real de los estados de ciclo de vida (`accounts.state`,
-//! migración 0107 nueva).
+//! migración 0108 nueva).
 //!
 //! Mina de AGENTS: una BD `:memory:` recién migrada **no** demuestra que el
 //! upgrade funcione. Molde de `sync_run_schema_migration_test` (#65): el
 //! fixture ejecuta los ficheros REALES de migración 0001–0106 sobre una BD
 //! limpia, siembra cuentas del esquema vigente (activa, hermana, credencial
-//! inválida) y después aplica 0107, comprobando el criterio del issue: la
+//! inválida) y después aplica 0108, comprobando el criterio del issue: la
 //! cuenta activa queda habilitada. Las migraciones aplicadas nunca se editan
 //! ni se reutilizan números.
 
@@ -57,7 +57,7 @@ async fn seed_accounts(pool: &Pool<Sqlite>) -> (i64, i64) {
 }
 
 #[tokio::test]
-async fn el_upgrade_a_0107_deja_la_cuenta_activa_como_habilitada() {
+async fn el_upgrade_a_0108_deja_la_cuenta_activa_como_habilitada() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -79,15 +79,15 @@ async fn el_upgrade_a_0107_deja_la_cuenta_activa_como_habilitada() {
     let new_migration = MIGRATOR
         .iter()
         .find(|m| m.version == NEW_VERSION)
-        .expect("la migración 0107 está en el árbol");
+        .expect("la migración 0108 está en el árbol");
     assert_eq!(
         new_migration.description, "account lifecycle states",
-        "el número 0107 es nuevo y describe los estados de ciclo de vida"
+        "el número 0108 es nuevo y describe los estados de ciclo de vida"
     );
     sqlx::raw_sql(&new_migration.sql)
         .execute(&pool)
         .await
-        .expect("el upgrade a 0107 aplica sobre la base 0106");
+        .expect("el upgrade a 0108 aplica sobre la base 0106");
 
     // 3. Criterio del issue: la cuenta activa conservada como habilitada.
     let active_state: String = sqlx::query_scalar("SELECT state FROM accounts WHERE id = ?")
@@ -153,5 +153,5 @@ async fn el_upgrade_a_0107_deja_la_cuenta_activa_como_habilitada() {
     MIGRATOR
         .run(&fresh)
         .await
-        .expect("migración completa desde cero con 0107 incluida");
+        .expect("migración completa desde cero con 0108 incluida");
 }
