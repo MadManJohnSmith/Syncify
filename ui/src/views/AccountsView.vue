@@ -693,7 +693,7 @@
                       <div
                         v-for="acct in orderedAccounts(selectedService.accounts)"
                         :key="acct.id"
-                        class="flex items-center justify-between p-2 rounded bg-white dark:bg-surface-dark border text-xs"
+                        class="flex flex-wrap items-center justify-between p-2 rounded bg-white dark:bg-surface-dark border text-xs"
                         :class="acct.is_active ? 'border-primary/40' : 'border-gray-200 dark:border-border-dark'"
                         :data-testid="`settings-account-row-${acct.id}`"
                         :data-active="acct.is_active ? 'true' : 'false'"
@@ -752,6 +752,16 @@
                               Use this
                             </button>
                             <button
+                              v-if="canUseSyncRunsFor(selectedService?.id)"
+                              @click="syncAccountNow(acct)"
+                              :disabled="Boolean(liveRuns[acct.id] && !liveRuns[acct.id]!.terminal)"
+                              class="px-2 py-1 text-primary hover:bg-primary/10 rounded font-medium disabled:opacity-50"
+                              title="Sync this account's favorites now (progress, cancellation and history)"
+                              :data-testid="`sync-run-start-${acct.id}`"
+                            >
+                              Sync now
+                            </button>
+                            <button
                               @click="resyncAccount(selectedService?.id, acct.id)"
                               :disabled="syncingServices[selectedService?.id]"
                               class="px-2 py-1 text-primary hover:bg-primary/10 rounded font-medium disabled:opacity-50"
@@ -786,6 +796,50 @@
                             </button>
                           </div>
                         </template>
+
+                        <!-- SyncRun: corrida en vivo (cuenta, fase, vistos e
+                             importados, tiempo) e historial reciente
+                             (issue #65, ADR-0006) -->
+                        <div
+                          v-if="isSyncRunVisibleFor(acct)"
+                          class="w-full mt-1 p-2 rounded bg-gray-50 dark:bg-surface-highlight/40 border border-gray-200 dark:border-border-dark text-xs space-y-1"
+                          :data-testid="`sync-run-panel-${acct.id}`"
+                        >
+                          <div
+                            v-if="liveRuns[acct.id] && !liveRuns[acct.id]!.terminal"
+                            class="flex items-center justify-between gap-2"
+                          >
+                            <div class="flex items-center gap-2 min-w-0">
+                              <span class="material-symbols-outlined text-[16px] animate-spin text-primary" aria-hidden="true">sync</span>
+                              <span class="font-medium text-gray-900 dark:text-white truncate">
+                                {{ syncRunPhaseLabel(liveRuns[acct.id]!.phase) }}
+                              </span>
+                              <span class="text-text-secondary shrink-0" :data-testid="`sync-run-counters-${acct.id}`">
+                                {{ liveRuns[acct.id]!.seen }} seen · {{ liveRuns[acct.id]!.imported }} imported
+                              </span>
+                            </div>
+                            <div class="flex items-center gap-2 shrink-0">
+                              <span class="text-text-secondary tabular-nums">{{ syncRunElapsed(acct.id) }}</span>
+                              <button
+                                @click="cancelAccountRun(acct)"
+                                class="px-2 py-0.5 text-error hover:bg-error/10 rounded font-medium"
+                                :data-testid="`sync-run-cancel-${acct.id}`"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                          <div v-else-if="runHistory[acct.id]?.length" class="flex items-center justify-between gap-2">
+                            <span class="text-text-secondary truncate">
+                              Last run:
+                              {{ syncRunStatusLabel(runHistory[acct.id]![0].status) }} ·
+                              {{ runHistory[acct.id]![0].imported_total }} imported
+                            </span>
+                            <span class="text-text-secondary shrink-0 tabular-nums">
+                              {{ formatRunDuration(runHistory[acct.id]![0]) }}
+                            </span>
+                          </div>
+                        </div>
                       </div>
                       <!-- /v-for acct -->
                     </div>
@@ -1035,6 +1089,8 @@ import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { open } from '@tauri-apps/plugin-dialog'
 import { accountsApi } from '@/api/accounts'
+import { syncRunsApi } from '@/api/syncRuns'
+import type { SyncRunRecord } from '@/api/syncRuns'
 import { libraryApi } from '@/api/library'
 import { playlistsApi } from '@/api/playlists'
 import type { ImportPlaylistFromFileResult } from '@/api/playlists'
@@ -1051,6 +1107,178 @@ import SpotifyApiConfigCard from '@/components/SpotifyApiConfigCard.vue'
 const router = useRouter()
 const toast = useToast()
 const eventBus = useEventBus()
+
+// ---- SyncRun: corridas con estado (issue #65, ADR-0006) ----
+// La ficha de cuenta muestra la corrida en vivo (cuenta, fase, vistos e
+// importados, tiempo) y permite cancelarla en el límite de página. El estado
+// vive aquí: llega por los eventos sync-run-* y se reconcilia con
+// get_sync_run al abrir la ficha.
+interface LiveSyncRun {
+    runId: number
+    phase: string
+    status: string
+    seen: number
+    imported: number
+    reportedTotal: number | null
+    elapsedMs: number
+    lastEventAt: number
+    terminal: boolean
+}
+
+const liveRuns = reactive<Record<number, LiveSyncRun | undefined>>({})
+const runHistory = reactive<Record<number, SyncRunRecord[]>>({})
+const runNow = ref(Date.now())
+let runTicker: ReturnType<typeof setInterval> | null = null
+
+function ensureRunTicker(): void {
+    if (runTicker === null) {
+        runTicker = setInterval(() => {
+            runNow.value = Date.now()
+        }, 1000)
+    }
+}
+
+function stopTickerIfIdle(): void {
+    const anyLive = Object.values(liveRuns).some(live => live && !live.terminal)
+    if (runTicker !== null && !anyLive) {
+        clearInterval(runTicker)
+        runTicker = null
+    }
+}
+
+function formatRunElapsed(ms: number): string {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+    const minutes = Math.floor(totalSeconds / 60)
+    const seconds = totalSeconds % 60
+    if (minutes >= 60) {
+        const hours = Math.floor(minutes / 60)
+        return `${hours}h ${minutes % 60}m`
+    }
+    return `${minutes}m ${String(seconds).padStart(2, '0')}s`
+}
+
+function syncRunElapsed(accountId: number): string {
+    const live = liveRuns[accountId]
+    if (!live) return ''
+    const elapsed = live.terminal
+        ? live.elapsedMs
+        : live.elapsedMs + (runNow.value - live.lastEventAt)
+    return formatRunElapsed(elapsed)
+}
+
+function syncRunPhaseLabel(phase: string): string {
+    const labels: Record<string, string> = {
+        started: 'Starting sync…',
+        authenticating: 'Authenticating…',
+        fetching_favorite_tracks: 'Fetching favorites…',
+        importing_favorite_tracks: 'Importing favorites…',
+        persisting: 'Persisting…',
+        completed: 'Completed',
+    }
+    return labels[phase] || phase
+}
+
+function syncRunStatusLabel(status: string): string {
+    const labels: Record<string, string> = {
+        running: 'Running',
+        completed: 'Completed',
+        partial: 'Partial (gaps)',
+        failed: 'Failed',
+        cancelled: 'Cancelled',
+    }
+    return labels[status] || status
+}
+
+function formatRunDuration(run: SyncRunRecord): string {
+    if (!run.started_at) return ''
+    const started = Date.parse(run.started_at.replace(' ', 'T') + 'Z')
+    const finished = run.finished_at
+        ? Date.parse(run.finished_at.replace(' ', 'T') + 'Z')
+        : Date.now()
+    if (Number.isNaN(started)) return ''
+    return formatRunElapsed(Math.max(0, finished - started))
+}
+
+function canUseSyncRunsFor(serviceId: string | undefined | null): boolean {
+    // El corte SyncRun actual es Qobuz + favoritos (issue #65): la UI no
+    // promete colecciones ni proveedores que el contrato aún no recorre.
+    return serviceId === 'qobuz'
+}
+
+function isSyncRunVisibleFor(acct: any): boolean {
+    return (
+        canUseSyncRunsFor(selectedService.value?.id) &&
+        (Boolean(liveRuns[acct.id]) || Boolean(runHistory[acct.id]?.length))
+    )
+}
+
+async function syncAccountNow(acct: any): Promise<void> {
+    try {
+        const response = await syncRunsApi.startSyncRun(acct.id)
+        liveRuns[acct.id] = {
+            runId: response.run_id,
+            phase: 'started',
+            status: 'running',
+            seen: 0,
+            imported: 0,
+            reportedTotal: null,
+            elapsedMs: 0,
+            lastEventAt: Date.now(),
+            terminal: false,
+        }
+        ensureRunTicker()
+    } catch (e) {
+        showToast(`${e instanceof Error ? e.message : String(e)}`, 'error')
+    }
+}
+
+async function cancelAccountRun(acct: any): Promise<void> {
+    const live = liveRuns[acct.id]
+    if (!live || live.terminal) return
+    try {
+        await syncRunsApi.cancelSyncRun(live.runId)
+        showToast('Cancel requested; the run stops at the next page boundary', 'info')
+    } catch (e) {
+        showToast(`${e instanceof Error ? e.message : String(e)}`, 'error')
+    }
+}
+
+async function refreshRunHistory(accountId: number): Promise<void> {
+    try {
+        runHistory[accountId] = await syncRunsApi.listSyncRuns(accountId, 5)
+    } catch (e) {
+        console.error('Failed to load sync run history:', e)
+    }
+}
+
+async function refreshRunHistoryForAccounts(accounts: any[]): Promise<void> {
+    if (!canUseSyncRunsFor(selectedService.value?.id)) return
+    await Promise.all(accounts.filter(acct => acct?.id).map(acct => refreshRunHistory(acct.id)))
+}
+
+// Reconciliación al abrir la ficha: si una corrida quedó a medio camino (o se
+// perdió un evento), get_sync_run trae el estado real de la fila.
+async function reconcileLiveRunsWithBackend(accounts: any[]): Promise<void> {
+    for (const acct of accounts.filter(item => item?.id)) {
+        const live = liveRuns[acct.id]
+        if (!live || live.terminal) continue
+        try {
+            const record = await syncRunsApi.getSyncRun(live.runId)
+            if (record.status !== 'running') {
+                live.status = record.status
+                live.imported = record.imported_total
+                live.reportedTotal = record.reported_total
+                live.terminal = true
+                stopTickerIfIdle()
+            }
+        } catch {
+            // La corrida ya no existe: limpiar el estado vivo.
+            delete liveRuns[acct.id]
+            stopTickerIfIdle()
+        }
+    }
+}
+
 const globalTasks = useGlobalTasks()
 const syncSettings = useSyncSettings()
 const downloadSettings = useDownloadSettings()
@@ -1837,6 +2065,11 @@ async function openServiceSettings(service: any) {
   activeSettingsTab.value = 'import'
   showSettingsModal.value = true
   loadingServicePreferences.value = true
+
+  // SyncRun: reconciliar corridas vivas y traer el historial reciente de las
+  // cuentas de este servicio (issue #65).
+  void reconcileLiveRunsWithBackend(service.accounts || [])
+  void refreshRunHistoryForAccounts(service.accounts || [])
   
   try {
     const prefs = await accountsApi.getServiceImportPreferences(service.id)
@@ -2169,6 +2402,54 @@ onMounted(async () => {
   await eventBus.on(TauriEvents.AUTH_STATE_UPDATED, async () => {
     await fetchData()
   })
+
+  // ---- SyncRun: corrida en vivo por cuenta (issue #65, ADR-0006) ----
+  await eventBus.on(TauriEvents.SYNC_RUN_STARTED, (payload: any) => {
+    if (typeof payload?.account_id !== 'number') return
+    liveRuns[payload.account_id] = {
+      runId: payload.run_id,
+      phase: payload.phase || 'started',
+      status: payload.status || 'running',
+      seen: payload.seen || 0,
+      imported: payload.imported || 0,
+      reportedTotal: payload.reported_total ?? null,
+      elapsedMs: payload.elapsed_ms || 0,
+      lastEventAt: Date.now(),
+      terminal: false,
+    }
+    ensureRunTicker()
+  })
+
+  await eventBus.on(TauriEvents.SYNC_RUN_PROGRESS, (payload: any) => {
+    if (typeof payload?.account_id !== 'number') return
+    const live = liveRuns[payload.account_id]
+    if (!live || live.runId !== payload.run_id || live.terminal) return
+    live.phase = payload.phase
+    live.seen = payload.seen || live.seen
+    live.imported = payload.imported || live.imported
+    live.elapsedMs = payload.elapsed_ms || live.elapsedMs
+    live.lastEventAt = Date.now()
+  })
+
+  const onSyncRunTerminal = async (payload: any) => {
+    if (typeof payload?.account_id !== 'number') return
+    const live = liveRuns[payload.account_id]
+    if (live && live.runId === payload.run_id) {
+      live.status = payload.status
+      live.phase = payload.phase || 'finished'
+      live.seen = payload.seen || live.seen
+      live.imported = payload.imported || live.imported
+      live.reportedTotal = payload.reported_total ?? live.reportedTotal
+      live.elapsedMs = payload.elapsed_ms || live.elapsedMs
+      live.terminal = true
+      stopTickerIfIdle()
+    }
+    await refreshRunHistory(payload.account_id)
+    await fetchData()
+  }
+
+  await eventBus.on(TauriEvents.SYNC_RUN_FINISHED, onSyncRunTerminal)
+  await eventBus.on(TauriEvents.SYNC_RUN_ERROR, onSyncRunTerminal)
 })
 </script>
 

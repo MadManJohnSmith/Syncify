@@ -84,6 +84,9 @@ pub use settings::*;
 pub mod storage;
 pub use storage::*;
 
+pub mod sync_run;
+pub use sync_run::*;
+
 pub mod tags;
 pub use tags::*;
 

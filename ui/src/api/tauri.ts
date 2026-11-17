@@ -233,6 +233,12 @@ export const TauriEvents = {
     SYNC_PROGRESS: 'sync-progress',
     SYNC_COMPLETE: 'sync-complete',
     SYNC_FAILED: 'sync-failed',
+    // SyncRun: corridas con estado del contrato de sincronización (ADR-0006,
+    // issue #65). Los emite el job de corridas; la ficha de cuenta los escucha.
+    SYNC_RUN_STARTED: 'sync-run-started',
+    SYNC_RUN_PROGRESS: 'sync-run-progress',
+    SYNC_RUN_FINISHED: 'sync-run-finished',
+    SYNC_RUN_ERROR: 'sync-run-error',
     MB_DUMP_PROGRESS: 'mb-dump-progress',
 
     // Auth events
