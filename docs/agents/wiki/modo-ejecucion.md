@@ -316,3 +316,17 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   (334 de dev vs 335 del árbol combinado) confirma que la puerta
   mide, no la aritmética manual. Fuente: `gh pr merge`/`gh issue
   close` de #309 y #310 en la sesión del 2026-11-17.
+- **2026-11-17, cortes de run en agentvm1 y checkout compartido
+  inviable para el mismo módulo**: D06 (×2) y D05 (×2) murieron con
+  estado `completed` y último mensaje de PROGRESO (sin informe ni
+  PR). Evidencia: el run de D06-retry-2 quedó EN COLA 73 min por la
+  concurrencia de cuenta (pedido 19:46, arrancó 20:59) y cortó a
+  los ~30 min clasificando hunks. El checkout compartido de
+  agentvm1 entrelaza los WIP de carriles que tocan el mismo módulo
+  (D05/D06 ambos en download/, hunks mixtos en worker.rs) y el WIP
+  roto de un hermano (lyrics.rs de LY01 a mitad) rompe las puertas
+  de los demás. Decisión: el D-programa pasa a la cola LOCAL con
+  worktree aislado (donde L03/A86/P00/PL00 avanzaron sin
+  incidentes); agentvm1 como máximo un carril del mismo módulo a la
+  vez. Fuente: lecturas de hilos d06-retry-2 y d05-relanzado en la
+  sesión del 2026-11-17.
