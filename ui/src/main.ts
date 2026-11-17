@@ -16,6 +16,13 @@ export const routes: RouteRecordRaw[] = [
     { path: '/', redirect: '/dashboard' },
     { path: '/dashboard', name: 'Dashboard', component: () => import('./views/DashboardView.vue') },
     { path: '/library', name: 'Library', component: () => import('./views/LibraryView.vue') },
+    // L03 (#100): armazón de pestañas de la biblioteca (spec #96). El
+    // contenido lo completan L07 (álbumes), L08 (artistas) y L10
+    // (duplicados); el placeholder muestra el motivo, no simula nada.
+    // Playlists y descargas conservan sus vistas y rutas propias.
+    { path: '/library/albums', name: 'LibraryAlbums', component: () => import('./views/LibraryTabPlaceholder.vue'), meta: { libraryTab: 'albums' } },
+    { path: '/library/artists', name: 'LibraryArtists', component: () => import('./views/LibraryTabPlaceholder.vue'), meta: { libraryTab: 'artists' } },
+    { path: '/library/duplicates', name: 'LibraryDuplicates', component: () => import('./views/LibraryTabPlaceholder.vue'), meta: { libraryTab: 'duplicates' } },
     { path: '/playlists', name: 'Playlists', component: () => import('./views/PlaylistView.vue') },
     { path: '/downloads', name: 'Downloads', component: () => import('./views/DownloadsView.vue') },
     { path: '/queue', redirect: '/downloads' },
