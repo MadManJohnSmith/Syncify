@@ -16,13 +16,32 @@
 > `ui/src/composables/usePlayer.ts`. El resto del documento se conserva como registro
 > histórico de la fase 1.
 
+> **Actualización 2026-11-17 — P01 (#132): el backend decide la siguiente pista y
+> acredita la escucha.** Desde #131 (P00) el agregado de cola vive en SQLite
+> (`player_queue_entries` + `player_state`, migración 0109) y desde P01 el backend
+> también decide el avance: al fin natural de una pista (`player:ended`), el ticker
+> lanza `services::playback_advance::spawn_auto_advance`, que con la decisión pura
+> `decide_auto_advance` (pendientes primero; `repeat one` repite la actual;
+> `repeat all` reconstruye el ciclo con `perform_rebuild_cycle`; shuffle es el orden
+> persistido) transiciona el agregado con los `perform_*` de `commands/playback_queue.rs`
+> y carga la pista en el motor, notificando por el evento `player:advanced`
+> (`TauriEvents.PLAYER_ADVANCED`). La UI ya NO avanza al `ended` ni cronometra: el
+> backend acumula los 30 s reales en `PlayerCore` (`services/playback_session.rs`,
+> `listen_step`, umbral `LISTEN_THRESHOLD_SEC`) y acredita llamando a
+> `perform_record_local_play` una vez por sesión — el comando IPC `record_local_play`
+> **se retiró** (ya no hay invocador en la UI); la semántica del writer no cambia.
+> Las secciones «Contrato de escucha», «Alcance de la fase 1» y la lista de decisiones
+> describen el comportamiento PRE-P01 de la UI y quedan como registro histórico del
+> reparto de responsabilidades anterior.
+
 **Último cambio:** re-revisión 2026-10-25 — MPRIS nativo (`services/mpris.rs`) y motor nativo Fase 2 documentados; el registro de la fase 1 queda intacto. Antes: fase 1 del player — archivos: `ui/src/composables/usePlayer.ts`, `ui/src/components/StatusBar.vue` (mini reproductor, desde PL-08) y `ui/src/components/player/FullscreenPlayer.vue`, `ui/src/api/library.ts` (`recordLocalPlay`), vistas consumidoras (`AlbumDetailView.vue`, `ArtistDetailView.vue`, `PlaylistView.vue`, `LibraryView.vue`).
-**Leer antes de modificar el reproductor actual:** `ui/src/composables/usePlayer.ts` (estado de reproducción), `src-tauri/src/commands/player.rs` (`player_load_track`, motor nativo), `src-tauri/src/commands/playback.rs` (`record_local_play`, solo escucha local) y `src-tauri/migrations/0091_local_play_stats.sql`. La antigua resolución de fuentes que aparece más abajo es contexto histórico, no una ruta que deba reutilizarse.
+**Leer antes de modificar el reproductor actual:** `ui/src/composables/usePlayer.ts` (proyección de estado), `src-tauri/src/commands/player.rs` (`player_load_track`, motor nativo), `src-tauri/src/services/playback_session.rs` (sesión, acumulación de 30 s, `LISTEN_THRESHOLD_SEC`), `src-tauri/src/services/playback_advance.rs` (decisión y avance automático, #132), `src-tauri/src/commands/playback_queue.rs` (agregado de cola, migración 0109) y `src-tauri/migrations/0091_local_play_stats.sql` (schema de escuchas). La antigua resolución de fuentes que aparece más abajo es contexto histórico, no una ruta que deba reutilizarse.
 **Archivos core:**
-- `ui/src/composables/usePlayer.ts` (player, cola, modos, acreditación 30 s, persistencia, MediaSession)
+- `ui/src/composables/usePlayer.ts` (player, cola, modos, persistencia, MediaSession; desde #132 NO cronometra ni avanza al ended)
 - `ui/src/components/StatusBar.vue` (mini reproductor y controles globales; PL-08 borró el `NowPlayingBar.vue` duplicado) + `ui/src/components/player/FullscreenPlayer.vue` (panel expandido/cola)
 - `src-tauri/migrations/0091_local_play_stats.sql` (schema `play_count`/`last_played`/`playback_listens`)
-- `src-tauri/src/commands/playback.rs` (`record_local_play`: INSERT-primero, idempotente por `listen_session_id`)
+- `src-tauri/src/commands/playback.rs` (`perform_record_local_play`: INSERT-primero, idempotente por `listen_session_id`; llamado por el ticker del backend desde #132 — ya no es comando IPC)
+- `src-tauri/src/services/playback_advance.rs` (#132: `decide_auto_advance`, `run_auto_advance`, `spawn_auto_advance`, evento `player:advanced`)
 - `src-tauri/src/services/mpris.rs` (MPRIS nativo: `MprisService::start`, interface `org.mpris.MediaPlayer2` + `.Player`)
 - `src-tauri/src/services/stream_cache.rs` (sesión de streaming progresivo de la Fase 2)
 

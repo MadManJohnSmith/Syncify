@@ -1289,24 +1289,11 @@ export async function getTrackMetadata(trackId: number): Promise<TrackMetadataWi
     return normalizeTrackMetadata(raw);
 }
 
-/** Result of `record_local_play` (mirror of the Rust struct `PlayStats`). */
-export interface PlayStats {
-    track_id: number;
-    play_count: number;
-    last_played: string | null;
-    counted: boolean;
-}
-
 /**
- * Player phase 1: credits a completed listen (≥ 30 s of real
- * playback) for a track. Idempotent by `listen_session_id` in the backend:
- * resending the same token after a lost response returns `counted: false`
- * without duplicating the count. Contract: migration 0091 + `record_local_play` in
- * `src-tauri/src/commands/playback.rs`.
+ * The listen crediting (`record_local_play`) is no longer an IPC command
+ * (P01, #132): the backend accumulates the 30 real seconds in its ticker and
+ * credits once per session on its own — the UI never times playback.
  */
-export async function recordLocalPlay(trackId: number, listenSessionId: string): Promise<PlayStats> {
-    return invokeCommand<PlayStats>('record_local_play', { trackId, listenSessionId });
-}
 
 /**
  * Repair tracks missing their artist links (creates Unknown Artist entries
