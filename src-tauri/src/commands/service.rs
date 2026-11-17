@@ -7460,6 +7460,16 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
     // paralelo. Ver `resolve_effective_account_id` para el TOCTOU documentado.
     let effective_account =
         resolve_effective_account_id(db, &service_normalized, account_id_opt).await?;
+
+    // #85 ciclo de vida (ADR-0007 decisión 3): una cuenta desactivada o
+    // archivada no sincroniza. Gate explícito sobre la cuenta pedida (el camino
+    // legacy ya la excluye vía `is_active = 0` que aplica
+    // perform_set_account_state) para que el sync por cuenta concreta falle con
+    // un motivo legible y no con un "not connected" ambiguo.
+    if account_id_opt.is_some() {
+        crate::commands::accounts::ensure_account_can_sync(db, effective_account).await?;
+    }
+
     let _sync_writer_guard =
         crate::db::SyncWriterLock::acquire(db, &service_normalized, effective_account)
             .await

@@ -1201,6 +1201,8 @@ fn main() {
             commands::get_accounts,
             commands::add_account,
             commands::remove_account,
+            commands::set_account_state,
+            commands::delete_account,
             commands::reset_account_sync_data,
             commands::refresh_account_identities,
             commands::set_account_display_name,
