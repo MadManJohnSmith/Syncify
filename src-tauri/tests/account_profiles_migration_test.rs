@@ -16,17 +16,17 @@
 //!   borrado).
 //! - Los temporales huérfanos de un cierre abrupto se limpian al arrancar.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Sqlite};
 
-use syncify::commands::account_profiles::{
+use syncify_tauri_lib::commands::account_profiles::{
     archive_attempt_profile, delete_profiles_for_account, mark_profile_unrecoverable,
     profile_archive_path, startup_profile_hygiene,
 };
-use syncify::crypto::init_crypto;
+use syncify_tauri_lib::crypto::init_crypto;
 
 const MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
