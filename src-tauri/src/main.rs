@@ -1139,6 +1139,18 @@ fn main() {
             commands::player_mpris_update,
             // Fase 1 del player: estadísticas de reproducción local
             commands::record_local_play,
+            // #131 (P00): cola de reproducción persistente en SQLite
+            commands::playback_queue_get,
+            commands::playback_queue_enqueue,
+            commands::playback_queue_remove,
+            commands::playback_queue_reorder,
+            commands::playback_queue_set_current,
+            commands::playback_queue_clear,
+            commands::playback_history_clear,
+            commands::playback_state_set_position,
+            commands::playback_state_set_modes,
+            commands::playback_state_set_volume,
+            commands::playback_state_reset,
             // Downloads
             // Metadata Enrichment
             commands::enrich_metadata,
