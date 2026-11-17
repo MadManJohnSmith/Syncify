@@ -169,3 +169,27 @@ El módulo único que descarga, verifica por SHA-256 y coloca los binarios exter
 pines: CI y build local consumen la misma tabla.
 _Evitar_: «dependency manager» (nombre de implementación); «instalador de
 dependencias»; una segunda tabla de pines.
+
+## Playlists
+
+**Playlist local**:
+Playlist sin cuenta: es del usuario, no de un proveedor (borrar la cuenta no puede
+borrarla). Su identidad estable es el `local_uuid`, nunca el nombre ni el
+`service_playlist_id` heredado (`local_<nombre>`, que sí puede repetirse).
+_Evitar_: «playlist de la cuenta 1» (modelo retirado por PL00); identificar una
+local por su nombre.
+
+**local_uuid**:
+Identificador textual UUID v4 de una playlist local, generado al crearla y asignado
+por la migración 0107 a las locales existentes. Es la clave de identidad que la UI,
+el export y el push citan; sobrevive a renombrados y a borrados de cuenta.
+_Evitar_: usar `service_playlist_id` como identidad de una local.
+
+**Tombstone de playlist**:
+Marca de borrado (`playlists.deleted_at`) que oculta una playlist de todas las
+lecturas sin borrar su fila: es lo que acabará impidiendo que el siguiente sync
+la recree. PL00 solo añade la columna y filtra las lecturas por
+`deleted_at IS NULL`; el borrado con tombstone se activa en fases posteriores
+de la spec #152.
+_Evitar_: «borrado lógico» a secas; filtrar por «existe fila» en lugar de por
+`deleted_at IS NULL`.

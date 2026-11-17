@@ -529,7 +529,7 @@ pub async fn get_dashboard_stats(state: State<'_, AppState>) -> Result<Dashboard
                  OR (art.tidal_id IS NOT NULL AND s.name = 'tidal')
                  OR (art.qobuz_id IS NOT NULL AND s.name = 'qobuz'))
                AND (EXISTS (SELECT 1 FROM track_artists ta WHERE ta.artist_id = art.id UNION SELECT 1 FROM album_artists aa WHERE aa.artist_id = art.id) OR art.is_favorite = 1 OR art.favorite_at IS NOT NULL)) as artist_count,
-            (SELECT COUNT(DISTINCT p.id) FROM playlists p JOIN accounts a ON a.id = p.account_id WHERE a.service_id = s.id) as playlist_count
+            (SELECT COUNT(DISTINCT p.id) FROM playlists p JOIN accounts a ON a.id = p.account_id WHERE a.service_id = s.id AND p.deleted_at IS NULL) as playlist_count
         FROM services s
         "#
     ).fetch_all(&state.db).await.map_err(|e| format!("Dashboard stats error (services breakdown): {}", e))?;

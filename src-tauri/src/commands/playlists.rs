@@ -47,7 +47,7 @@ pub async fn get_playlist(state: State<'_, AppState>, id: i64) -> Result<Option<
         FROM playlists p
         LEFT JOIN accounts a ON a.id = p.account_id
         LEFT JOIN services s ON s.id = a.service_id
-        WHERE p.id = ?
+        WHERE p.id = ? AND p.deleted_at IS NULL
         "#,
     )
     .bind(id)
@@ -184,6 +184,10 @@ pub async fn remove_from_playlist(
 }
 
 /// TASK-107: Sanitization result statistics for playlists
+///
+/// PL00 (#153): las playlists admiten la misma pista repetida, así que la
+/// sanitización ya no purga duplicados. `duplicate_tracks_purged` se conserva
+/// por compatibilidad del contrato IPC y siempre vale 0.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaylistSanitizationStats {
@@ -193,10 +197,14 @@ pub struct PlaylistSanitizationStats {
     pub playlist_names_disambiguated: usize,
 }
 
-/// TASK-107: Transactionally sanitizes a single playlist:
-/// 1. Purgar pistas duplicadas dentro de la misma playlist conservando la de menor position (primera aparición).
-/// 2. Recompactar position secuencialmente 1..N usando técnica segura contra colisiones transitorias UNIQUE (staging negativo).
-/// 3. Sincronizar playlists.track_count = (SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = playlists.id).
+/// TASK-107 / PL00: Transactionally sanitizes a single playlist:
+/// 1. Recompactar position secuencialmente 1..N usando técnica segura contra colisiones transitorias UNIQUE (staging negativo).
+/// 2. Sincronizar playlists.track_count = (SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = playlists.id).
+///
+/// PL00 (#153): las playlists admiten la misma pista repetida, así que la
+/// sanitización ya NO purga duplicados; conserva todas las ocurrencias y solo
+/// recompacta posiciones. Devuelve el número de filas que quedaron tras la
+/// recompactación (0 en una playlist vacía).
 pub async fn sanitize_single_playlist(
     pool: &sqlx::SqlitePool,
     playlist_id: i64,
@@ -208,36 +216,7 @@ pub async fn sanitize_single_playlist(
         )
     })?;
 
-    // 1. Purge duplicate tracks within this playlist, keeping the first occurrence (lowest position)
-    let purge_res = sqlx::query(
-        r#"
-        DELETE FROM playlist_tracks
-        WHERE id IN (
-            SELECT id FROM (
-                SELECT id,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY track_id
-                           ORDER BY position ASC, added_at ASC, id ASC
-                       ) as rn
-                FROM playlist_tracks
-                WHERE playlist_id = ?
-            ) WHERE rn > 1
-        )
-        "#,
-    )
-    .bind(playlist_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        format!(
-            "Failed to purge duplicate tracks in playlist {}: {}",
-            playlist_id, e
-        )
-    })?;
-
-    let purged_count = purge_res.rows_affected() as usize;
-
-    // 2. Fetch remaining tracks ordered by current position ASC, and added_at ASC, id ASC as tie-breakers
+    // 1. Fetch tracks ordered by current position ASC, and added_at ASC, id ASC as tie-breakers
     let remaining: Vec<(i64,)> = sqlx::query_as(
         "SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, added_at ASC, id ASC",
     )
@@ -246,15 +225,15 @@ pub async fn sanitize_single_playlist(
     .await
     .map_err(|e| format!("Failed to fetch playlist tracks for recompact: {}", e))?;
 
-    // 3. Stage existing positions to unique negative values to avoid UNIQUE(playlist_id, position) collisions
+    // 2. Stage existing positions to unique negative values to avoid UNIQUE(playlist_id, position) collisions
     sqlx::query("UPDATE playlist_tracks SET position = -(id + 1) WHERE playlist_id = ?")
         .bind(playlist_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("Failed to stage playlist track positions: {}", e))?;
 
-    // 4. Sequentially assign 1-indexed positions (1, 2, 3... N)
-    for (idx, (row_id,)) in remaining.into_iter().enumerate() {
+    // 3. Sequentially assign 1-indexed positions (1, 2, 3... N)
+    for (idx, (row_id,)) in remaining.iter().enumerate() {
         let canonical_pos = (idx + 1) as i64;
         sqlx::query("UPDATE playlist_tracks SET position = ? WHERE id = ?")
             .bind(canonical_pos)
@@ -264,7 +243,7 @@ pub async fn sanitize_single_playlist(
             .map_err(|e| format!("Failed to reassign playlist track position: {}", e))?;
     }
 
-    // 5. Atomically update track_count in playlists table to match exact COUNT(*)
+    // 4. Atomically update track_count in playlists table to match exact COUNT(*)
     sqlx::query(
         "UPDATE playlists SET track_count = (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?) WHERE id = ?",
     )
@@ -278,7 +257,7 @@ pub async fn sanitize_single_playlist(
         .await
         .map_err(|e| format!("Failed to commit playlist sanitization: {}", e))?;
 
-    Ok(purged_count)
+    Ok(remaining.len())
 }
 
 /// Aud23: recalcula `playlists.track_count` para las playlists cuyo contador o
@@ -330,10 +309,11 @@ pub async fn recompact_playlist_positions(
 }
 
 /// TASK-107: Transactionally sanitizes all playlists across the library:
-/// 1. Purgar pistas duplicadas dentro de la misma playlist conservando la de menor position (primera aparición).
-/// 2. Recompactar position secuencialmente 1..N sin huecos para todas las playlists.
-/// 3. Sincronizar playlists.track_count con el conteo real en playlist_tracks.
-/// 4. Desambiguar colisiones de nombres de playlists bajo la misma cuenta (account_id, LOWER(TRIM(name))).
+/// 1. Recompactar position a secuencia contigua 1..N sin huecos para todas las playlists.
+/// 2. Sincronizar playlists.track_count con el conteo real en playlist_tracks.
+/// 3. Desambiguar colisiones de nombres de playlists bajo la misma cuenta (account_id, LOWER(TRIM(name))).
+///
+/// PL00: ya no purga duplicados (las repeticiones del mismo track son legales).
 pub async fn sanitize_playlists_in_pool(
     pool: &sqlx::SqlitePool,
 ) -> Result<PlaylistSanitizationStats, String> {
@@ -344,30 +324,10 @@ pub async fn sanitize_playlists_in_pool(
         )
     })?;
 
-    // 1. Purgar pistas duplicadas dentro de cada playlist conservando la primera aparición
-    let purge_res = sqlx::query(
-        r#"
-        DELETE FROM playlist_tracks
-        WHERE id IN (
-            SELECT id FROM (
-                SELECT id,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY playlist_id, track_id
-                           ORDER BY position ASC, added_at ASC, id ASC
-                       ) as rn
-                FROM playlist_tracks
-            ) WHERE rn > 1
-        )
-        "#,
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("Failed to purge duplicate tracks across playlists: {}", e))?;
+    let duplicate_tracks_purged: usize = 0;
 
-    let duplicate_tracks_purged = purge_res.rows_affected() as usize;
-
-    // 2. Recompactar position a secuencia contigua 1..N sin huecos
-    // 2a. Crear staging temporal con nueva posición 1-indexed
+    // 1. Recompactar position a secuencia contigua 1..N sin huecos
+    // 1a. Crear staging temporal con nueva posición 1-indexed
     sqlx::query("DROP TABLE IF EXISTS _playlist_tracks_recompact")
         .execute(&mut *tx)
         .await
@@ -401,13 +361,13 @@ pub async fn sanitize_playlists_in_pool(
     .await
     .map_err(|e| format!("Failed to populate temp recompact table: {}", e))?;
 
-    // 2b. Staging negativo de todas las posiciones para evitar colisiones UNIQUE(playlist_id, position)
+    // 1b. Staging negativo de todas las posiciones para evitar colisiones UNIQUE(playlist_id, position)
     sqlx::query("UPDATE playlist_tracks SET position = -(id + 1)")
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("Failed to stage playlist positions to negative: {}", e))?;
 
-    // 2c. Aplicar nuevas posiciones 1-indexed desde la tabla staging
+    // 1c. Aplicar nuevas posiciones 1-indexed desde la tabla staging
     sqlx::query(
         r#"
         UPDATE playlist_tracks
@@ -427,7 +387,7 @@ pub async fn sanitize_playlists_in_pool(
         .await
         .map_err(|e| format!("Failed to drop temp recompact table: {}", e))?;
 
-    // 3. Sincronizar track_count de todas las playlists
+    // 2. Sincronizar track_count de todas las playlists
     let count_res = sqlx::query(
         r#"
         UPDATE playlists
@@ -444,7 +404,7 @@ pub async fn sanitize_playlists_in_pool(
 
     let track_counts_updated = count_res.rows_affected() as usize;
 
-    // 4. Desambiguar colisiones de nombres de playlists bajo la misma cuenta (account_id, LOWER(TRIM(name)))
+    // 3. Desambiguar colisiones de nombres de playlists bajo la misma cuenta (account_id, LOWER(TRIM(name)))
     let dup_name_groups: Vec<(i64, String, i64)> = sqlx::query_as(
         r#"
         SELECT account_id, LOWER(TRIM(name)) as norm_name, COUNT(*) as cnt
@@ -565,8 +525,21 @@ pub async fn reorder_playlist_tracks(
         .map_err(|e| format!("Failed to stage playlist reordering: {}", e))?;
 
     for item in positions {
+        // PL00 (#153): la misma pista puede aparecer varias veces, así que
+        // track_id ya no identifica una fila única. Cada entrada del payload
+        // mueve UNA ocurrencia: la primera en el orden de la playlist (tras el
+        // staging negativo, position DESC recupera el orden original ASC).
         sqlx::query(
-            "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?",
+            r#"
+            UPDATE playlist_tracks
+            SET position = ?
+            WHERE id = (
+                SELECT id FROM playlist_tracks
+                WHERE playlist_id = ? AND track_id = ?
+                ORDER BY position DESC, id ASC
+                LIMIT 1
+            )
+            "#,
         )
         .bind(item.new_position)
         .bind(playlist_id)
@@ -1145,7 +1118,7 @@ pub struct ImportPlaylistFromFileResult {
     pub playlist_name: String,
     /// Entradas totales parseadas del archivo.
     pub total_entries: usize,
-    /// Entradas enlazadas a pistas existentes (tras dedupe).
+    /// Entradas enlazadas a pistas existentes (las repeticiones cuentan).
     pub matched_count: usize,
     pub unmatched: Vec<UnmatchedImportedEntry>,
 }
@@ -1666,12 +1639,11 @@ pub async fn import_playlist_from_file_core(
         let track_id = match_entry_to_track(pool, entry).await?;
         match track_id {
             Some(id) => {
-                // Dedupe intra-import: playlist_tracks ya no tiene
-                // UNIQUE(playlist_id, track_id) (migration 0064), y la misma
-                // pista puede aparecer dos veces en el archivo.
-                if !matched_track_ids.contains(&id) {
-                    matched_track_ids.push(id);
-                }
+                // PL00 (#153): las repeticiones se conservan. playlist_tracks
+                // ya no tiene UNIQUE(playlist_id, track_id) (migration 0064) y
+                // el modelo nuevo permite la misma pista dos veces, incluida
+                // dos veces dentro del mismo archivo importado.
+                matched_track_ids.push(id);
             }
             None => unmatched.push(UnmatchedImportedEntry {
                 title: entry.title.clone(),
