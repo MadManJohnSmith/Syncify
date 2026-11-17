@@ -59,6 +59,15 @@ aquí solo queda lo aprendido con fecha. Relacionadas:
   <comando>` — y el brief prohíbe correr dos comandos cargo pesados en
   paralelo dentro del mismo carril. Fuente: muerte del delegado A86
   (2026-11-17) con el cargo test del carril L03 aún vivo.
+- **2026-11-17, segunda muerte misma noche**: el flock NO protege contra
+  un carril cuyo brief es anterior a la regla (L03 gatea sin lock) —
+  A86 murió OOM de nuevo por clippy mientras el cargo test de L03
+  seguía; la máquina estaba presionada (swap 16G/23G usada, 23G RAM).
+  Contramedida endurecida en los briefs: espera activa ANTES de cada
+  comando cargo — bucle `pgrep -x cargo && sleep 300` hasta que no
+  quede ningún cargo en la máquina (máx ~50 min), además del flock.
+  Fuente: dos muertes OOM del carril A86 en la sesión del 2026-11-17;
+  `free -h` y `pgrep -a cargo` medidos.
 
 ## Symlinks de entorno y staging
 
