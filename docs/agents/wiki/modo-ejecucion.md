@@ -256,3 +256,21 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   agotada; volver a GLM cuando el propietario lo indique o la cuota
   se recupere. Fuente: fallos 1005 de los delegados en la sesión del
   2026-11-17.
+- **2026-11-17**: SyncRun (#65) fusionado por squash en PR #304
+  (`3774eae` en `dev`, CI 8/8 tras el rebase de claims del 16);
+  issue cerrado citando el SHA. Programa #64: 1/18.
+- **2026-11-17, cuota GLM agotada de nuevo y orden reiterada**: los
+  dos carriles en vuelo (L02 #99 y A84 #84) murieron con `1005
+  exceed quota limit` el mismo turno — patrón del 15/16. El
+  orquestador aplicó la mitigación cross-provider de la wiki (Codex
+  `gpt-6.1-sol`), y el propietario la revocó en el mismo momento:
+  «los subagentes usarán el mismo modelo que la sesión padre, o sea
+  tú, pero en high» — la orden del 2026-11-16 queda reiterada como
+  política aunque la cuota falle; los Codex lanzados se cancelaron
+  sin zombis y ambos carriles se relanzaron con GLM-5.3-Flash
+  thought high, RETOMANDO la inspección pagada (L02: WIP sin commit
+  con migración 0107_library_fts_v2.sql; A84: implementación ya
+  commiteada en 2 commits, 2.088 líneas — murió solo en claims,
+  puertas y PR). La mitigación cross-provider queda disponible pero
+  NO se aplica sin orden explícita del propietario. Fuente: fallos
+  1005 y orden del propietario en la sesión del 2026-11-17.
