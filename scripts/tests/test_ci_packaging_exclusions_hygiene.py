@@ -224,7 +224,7 @@ class TestCiPackagingExclusionsHygiene(unittest.TestCase):
 
 
 class TestLinuxBundledPythonPackaging(unittest.TestCase):
-    """Congela el empaquetado de Python en build-linux.yml (AppImage/DEB/tarball).
+    """Lo que build-linux.yml sigue siendo dueño de declarar (AppImage/DEB/tarball).
 
     Cada artefacto Linux debe llevar un CPython autónomo con las dependencias
     de scripts/requirements.txt ya instaladas, para que la app funcione tras
@@ -232,14 +232,18 @@ class TestLinuxBundledPythonPackaging(unittest.TestCase):
     runtime de Windows). Desde #242 el MONTAJE del runtime vive en el
     proveedor (install-runtime en scripts/dependency_manager.py): la descarga
     pineada, los requirements y el smoke canónico se prueban en las suites del
-    módulo, no congelando aquí los pasos que ya no existen. Esta clase conserva
-    lo que build-linux.yml sigue siendo dueño de hacer: verificar los imports
-    en los tres artefactos finales antes de publicar. Ambas inyecciones
-    dejaron de ser inline: la cadena del AppImage vive desde #243 en
-    scripts/ci/package_appimage.sh (comportamiento en
-    test_package_appimage.py) y la del DEB desde #244 en
-    scripts/ci/package_deb.sh (comportamiento en test_ci_package_deb.py);
-    sus aserciones congeladas murieron aquí.
+    módulo, no congelando aquí los pasos que ya no existen. Desde #245 los
+    SMOKES de los tres artefactos finales (imports canónicos con el env limpio
+    + arranque del AppRun bajo xvfb con la guarda EGL) viven en
+    scripts/ci/smoke_artifacts.sh, probados contra fixtures en
+    test_ci_smoke_artifacts.py: las aserciones congeladas de
+    "OK tarball/appimage/deb" murieron aquí. Ambas inyecciones dejaron de ser
+    inline: la cadena del AppImage vive desde #243 en
+    scripts/ci/package_appimage.sh (comportamiento en test_package_appimage.py)
+    y la del DEB desde #244 en scripts/ci/package_deb.sh (comportamiento en
+    test_ci_package_deb.py); sus aserciones congeladas murieron aquí. Esta
+    clase conserva solo lo que el workflow sigue declarando: YAML válido y el
+    glob de recursos compartido con los puentes.
     """
 
     @classmethod
@@ -249,25 +253,12 @@ class TestLinuxBundledPythonPackaging(unittest.TestCase):
         )
         if not cls.build_linux_path.exists():
             raise FileNotFoundError(f"Workflow file missing: {cls.build_linux_path}")
-        cls.content = cls.build_linux_path.read_text(encoding="utf-8")
 
     def test_workflow_is_valid_yaml(self):
         with open(self.build_linux_path, "r", encoding="utf-8") as f:
             docs = yaml.safe_load(f)
         self.assertIsInstance(docs, dict)
         self.assertIn("jobs", docs)
-
-    def test_final_smoke_test_covers_all_three_artifacts(self):
-        self.assertIn("OK tarball", self.content)
-        self.assertIn("OK appimage", self.content)
-        self.assertIn("OK deb", self.content)
-        # El smoke del AppImage replica el entorno de AppRun: si un
-        # LD_LIBRARY_PATH del AppDir sombreadera el libpython del bundle,
-        # este es el sitio donde se detecta. La lista de imports y la
-        # limpieza de PYTHONHOME/PYTHONPATH las aplica el módulo
-        # (smoke-imports); aquí solo se elige el intérprete por artefacto.
-        self.assertIn("LD_LIBRARY_PATH", self.content)
-        self.assertIn("smoke-imports", self.content)
 
     def test_tauri_resources_include_services_package(self):
         conf = (self.build_linux_path.parent.parent.parent / "src-tauri/tauri.conf.json"
