@@ -73,8 +73,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Configurar toolchain Rust estable (MSVC)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Configurar toolchain Rust 1.98.1 (MSVC)
+        uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: x86_64-pc-windows-msvc
 
