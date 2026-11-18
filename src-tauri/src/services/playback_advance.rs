@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::playback_queue::{
     perform_get_playback_queue, perform_rebuild_cycle, perform_set_current, perform_set_position,

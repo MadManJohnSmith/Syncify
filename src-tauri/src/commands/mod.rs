@@ -65,8 +65,10 @@ pub use migration::*;
 pub mod notifications;
 pub use notifications::*;
 
+// El módulo playback ya no expone comandos IPC (#132, P01): el crédito de
+// escucha lo llama el ticker vía `perform_record_local_play` (ruta completa),
+// así que sin glob re-export que quede huérfano en el binario.
 pub mod playback;
-pub use playback::*;
 
 pub mod playback_queue;
 pub use playback_queue::*;

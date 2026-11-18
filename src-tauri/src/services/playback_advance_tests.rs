@@ -81,10 +81,12 @@ async fn mock_advance_app_with_handle(
 ) -> (tauri::App<tauri::test::MockRuntime>, SimHandle) {
     let app = tauri::test::mock_app();
     let state = PlayerState::default();
+    let handle;
     {
         let mut core = lock_core(&state).expect("player core");
-        let (engine, handle) = sim_engine_with_handle(clock);
+        let (engine, sim_handle) = sim_engine_with_handle(clock);
         core.engine = Some(engine);
+        handle = sim_handle;
     }
     app.manage(state);
     app.manage(StreamCacheState::default());
@@ -367,7 +369,6 @@ async fn una_carga_mas_nueva_retira_el_avance_automatico() {
     let c = seed_track_with_file(&db, dir.path(), "C", 5.0).await;
     let clock = VirtualClock::new();
     let app = mock_advance_app(db.clone(), &clock).await;
-    let state = app.state::<PlayerState>();
 
     let ids = perform_enqueue(&db, &[a, b], false).await.unwrap();
     perform_set_current(&db, &ids[0], a).await.unwrap();

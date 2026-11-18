@@ -25,7 +25,7 @@ use syncify_tauri_lib::commands::playback_queue::{
     perform_enqueue, perform_get_playback_queue, perform_rebuild_cycle, perform_set_current,
     perform_set_modes,
 };
-use syncify_tauri_lib::services::playback_advance::AdvanceDecision;
+use syncify_tauri_lib::services::playback_advance::{decide_auto_advance, AdvanceDecision};
 
 /// Pool `:memory:` de UNA conexión con FK activa y migraciones completas,
 /// igual que la producción (db.rs activa `PRAGMA foreign_keys` por conexión).
@@ -34,7 +34,7 @@ async fn memory_pool() -> sqlx::Pool<sqlx::Sqlite> {
         .expect("cadena en memoria")
         .foreign_keys(true)
         .busy_timeout(std::time::Duration::from_secs(30));
-    let pool = sqlx::SqlitePoolOptions::new()
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(opts)
         .await

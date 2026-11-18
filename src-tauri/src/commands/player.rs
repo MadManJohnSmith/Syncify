@@ -147,7 +147,7 @@ pub fn spawn_player_ticker<R: tauri::Runtime>(app: &AppHandle<R>) {
                 let _ = app.emit("player:tick", payload);
             }
             if let Some(payload) = out.ended {
-                let _ = app.emit("player:ended", payload);
+                let _ = app.emit("player:ended", &payload);
                 // P01 (#132): el backend decide la siguiente pista y avanza.
                 // La UI ya no orquesta el fin de pista; sincroniza su vista
                 // con `player:advanced`.
