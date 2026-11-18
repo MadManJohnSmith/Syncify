@@ -682,6 +682,13 @@ impl DownloadWorker {
     /// reclaman; el resto de la cola sigue avanzando mientras el proveedor
     /// caído descansa. El breaker solo modula el ritmo: la fila abierta
     /// conserva su propio `next_attempt_at`.
+    ///
+    /// #87 (ADR-0007 decisiones 4 y 12): un servicio cuyas cuentas habilitadas
+    /// son TODAS de credencial inválida tampoco se reclama — el 401/403 marca
+    /// la cuenta y pausa sus descargas sin quemar un intento por fila; la
+    /// reautenticación limpia la marca y el claim vuelve a abrir solo. Solo
+    /// pausa cuando HAY cuentas habilitadas y ninguna válida: un servicio sin
+    /// filas de cuenta (flujo sin accounts) se reclama como antes.
     pub async fn claim_next_item(&self) -> Option<(i64, i64, String, String)> {
         let open = self.breaker.open_services(std::time::Instant::now());
         let exclusion = if open.is_empty() {
@@ -693,6 +700,22 @@ impl DownloadWorker {
                 .join(", ");
             format!(r#" AND LOWER(COALESCE(dq.service_name, '')) NOT IN ({placeholders})"#)
         };
+        let auth_paused = r#"
+            AND NOT (
+                EXISTS (
+                    SELECT 1 FROM accounts pa
+                    JOIN services ps ON ps.id = pa.service_id
+                    WHERE LOWER(ps.name) = LOWER(dq.service_name)
+                      AND pa.state = 'enabled'
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM accounts va
+                    JOIN services vs ON vs.id = va.service_id
+                    WHERE LOWER(vs.name) = LOWER(dq.service_name)
+                      AND va.state = 'enabled'
+                      AND IFNULL(va.credentials_invalid, 0) = 0
+                )
+            )"#;
         let sql = format!(
             r#"
             SELECT dq.id, dq.track_id,
@@ -706,7 +729,7 @@ impl DownloadWorker {
                OR (dq.status = 'failed'
                    AND dq.next_attempt_at IS NOT NULL
                    AND dq.next_attempt_at <= datetime('now'))
-            {exclusion}
+            {exclusion}{auth_paused}
             ORDER BY dq.priority DESC, dq.position ASC, dq.created_at ASC
             LIMIT 1
             "#

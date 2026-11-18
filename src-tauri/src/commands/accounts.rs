@@ -1570,9 +1570,16 @@ pub fn is_valid_account_state(state: &str) -> bool {
 /// #91: una cuenta cuya sesión se cerró tampoco sincroniza hasta reautenticar
 /// (ADR-0007 decisión 9). El estado de ciclo de vida sigue siendo el mismo;
 /// «sin sesión» es la marca `invalid_reason = logged_out`.
+///
+/// #87 (ADR-0007 decisiones 4 y 12): una cuenta con credencial marcada
+/// inválida (`credentials_invalid` — 401/403, o perfil ilegible) tampoco
+/// sincroniza; su sync queda PAUSADO hasta reautenticar, sin reintentos en
+/// bucle contra una credencial rechazada. Reautenticar limpia la marca
+/// (`upsert_service_account`) y el gate vuelve a abrir solo. El cierre de
+/// sesión se comprueba antes: su marca es la que el usuario provocó.
 pub async fn ensure_account_can_sync(db: &sqlx::SqlitePool, account_id: i64) -> Result<(), String> {
-    let row: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT COALESCE(state, 'enabled'), invalid_reason FROM accounts WHERE id = ?",
+    let row: Option<(String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT COALESCE(state, 'enabled'), invalid_reason, IFNULL(credentials_invalid, 0) FROM accounts WHERE id = ?",
     )
     .bind(account_id)
     .fetch_optional(db)
@@ -1580,15 +1587,23 @@ pub async fn ensure_account_can_sync(db: &sqlx::SqlitePool, account_id: i64) -> 
     .map_err(|e| e.to_string())?;
     match row {
         None => Ok(()),
-        Some((state, _)) if state != ACCOUNT_STATE_ENABLED => Err(format!(
+        Some((state, _, _)) if state != ACCOUNT_STATE_ENABLED => Err(format!(
             "AccountDisabled: account {} is '{}' and cannot sync; enable it first",
             account_id, state
         )),
-        Some((_, Some(reason))) if reason == INVALID_REASON_LOGGED_OUT => Err(format!(
+        Some((_, Some(reason), _)) if reason == INVALID_REASON_LOGGED_OUT => Err(format!(
             "AccountSessionClosed: account {} has no session; reauthenticate it",
             account_id
         )),
-        Some(_) => Ok(()),
+        Some((_, _, 0)) => Ok(()),
+        // `RequiresAuth:` primero: es el prefijo que reconoce la UI y que
+        // mapea los caminos de `service.rs`. El token de taxonomía del issue
+        // #87 (`AuthExpired`) va detrás para logs y diagnóstico, sin romper
+        // ese contrato.
+        Some((_, _, _)) => Err(format!(
+            "RequiresAuth: AccountAuthExpired: account {} has invalid credentials and cannot sync; reauthenticate first",
+            account_id
+        )),
     }
 }
 
