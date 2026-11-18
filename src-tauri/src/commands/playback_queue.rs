@@ -184,6 +184,7 @@ pub async fn perform_enqueue(
 /// Transición de `previous` (#133, P02): la entrada del historial pasa a ser
 /// la pista actual y la pista que sonaba vuelve al FRENTE de los pendientes.
 /// Es la misma semántica que la UI aplicaba en memoria; aquí queda persistida.
+#[cfg(target_os = "linux")]
 pub async fn perform_return_to_pending_and_set_current(
     db: &DbPool,
     entry_id: &str,
@@ -468,6 +469,7 @@ pub async fn perform_set_modes(db: &DbPool, shuffle: bool, repeat: &str) -> Resu
 /// transacción (#133, P02): al activarlo se permuta el orden vigente; al
 /// apagarlo se vuelve al orden de encolado (`enqueued_at`, `rowid`). Devuelve
 /// las `entry_id` en su nuevo orden para que la UI y MPRIS proyecten lo mismo.
+#[cfg(target_os = "linux")]
 pub async fn perform_set_shuffle(db: &DbPool, enabled: bool) -> Result<Vec<String>, String> {
     let mut tx = db.begin().await.map_err(|e| e.to_string())?;
     let mut pending: Vec<String> = sqlx::query_scalar(

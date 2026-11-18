@@ -332,6 +332,7 @@ impl PlayerState {
 
     /// Estado de transporte observable sin tocar el ticker (#133): MPRIS y
     /// las acciones del backend deciden play/pause sobre el motor real.
+    #[cfg(target_os = "linux")]
     pub fn playback_status(&self) -> PlaybackStatus {
         let Ok(core) = self.core.lock() else {
             return PlaybackStatus::Stopped;
@@ -346,6 +347,7 @@ impl PlayerState {
     /// `true` si el motor tiene una pista cargada (aunque esté pausada o haya
     /// llegado a su final natural). `false` tras `stop` o antes de la primera
     /// carga.
+    #[cfg(target_os = "linux")]
     pub fn is_loaded(&self) -> bool {
         self.core
             .lock()
@@ -360,6 +362,7 @@ impl PlayerState {
 
     /// Identidad de la pista cargada (la misma que el ticker publica en
     /// MPRIS). No depende de que la webview haya restaurado nada.
+    #[cfg(target_os = "linux")]
     pub fn current_track_id(&self) -> Option<i64> {
         self.core
             .lock()
@@ -368,6 +371,7 @@ impl PlayerState {
     }
 
     /// Posición actual del motor, si hay algo cargado.
+    #[cfg(target_os = "linux")]
     pub fn position(&self) -> Option<Duration> {
         self.core
             .lock()

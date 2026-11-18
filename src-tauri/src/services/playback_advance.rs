@@ -141,6 +141,7 @@ pub fn decide_auto_advance(snapshot: &PlaybackQueueSnapshot) -> AdvanceDecision 
 /// de los pendientes; si la cola se agotó, sólo `repeat all` reconstruye el
 /// ciclo. A diferencia del fin natural, `repeat one` NO repite la actual: un
 /// next manual con la cola vacía es un no-op (misma regla que la UI).
+#[cfg(target_os = "linux")]
 pub fn decide_manual_next(snapshot: &PlaybackQueueSnapshot) -> AdvanceDecision {
     if let Some(head) = snapshot.pending.first() {
         return AdvanceDecision::PlayHead {
@@ -250,6 +251,7 @@ pub async fn run_auto_advance<R: tauri::Runtime>(
 /// `next` manual desde el backend (#133): la cola manda; repeat one no repite
 /// y repeat all reconstruye el ciclo cuando no quedan pendientes. La UI, MPRIS
 /// y la bandeja comparten esta transición.
+#[cfg(target_os = "linux")]
 pub async fn run_manual_next<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> Result<Option<PlayerAdvancedPayload>, String> {
@@ -264,6 +266,7 @@ pub async fn run_manual_next<R: tauri::Runtime>(
 /// `previous` manual desde el backend (#133): con más de 3 s reproducidos
 /// reinicia la pista actual; si no, recupera la última entrada del historial y
 /// devuelve la pista que sonaba al frente de los pendientes.
+#[cfg(target_os = "linux")]
 pub async fn run_manual_previous<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> Result<Option<PlayerAdvancedPayload>, String> {
@@ -308,6 +311,7 @@ pub async fn run_manual_previous<R: tauri::Runtime>(
 
 /// Segundos a partir de los cuales `previous` reinicia la pista en vez de
 /// saltar al historial (paridad con la UI desde la fase 1).
+#[cfg(target_os = "linux")]
 pub const PREVIOUS_RESTART_SECS: f64 = 3.0;
 
 /// Avance automático lanzado por el ticker cuando `player:ended` se emite.
