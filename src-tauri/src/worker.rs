@@ -724,11 +724,13 @@ impl DownloadWorker {
                     JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id)) as artist
             FROM download_queue dq
             LEFT JOIN tracks t ON t.id = dq.track_id
-            WHERE (dq.status = 'queued'
-                   AND (dq.next_attempt_at IS NULL OR dq.next_attempt_at <= datetime('now')))
-               OR (dq.status = 'failed'
-                   AND dq.next_attempt_at IS NOT NULL
-                   AND dq.next_attempt_at <= datetime('now'))
+            WHERE (
+                   (dq.status = 'queued'
+                    AND (dq.next_attempt_at IS NULL OR dq.next_attempt_at <= datetime('now')))
+                OR (dq.status = 'failed'
+                    AND dq.next_attempt_at IS NOT NULL
+                    AND dq.next_attempt_at <= datetime('now'))
+            )
             {exclusion}{auth_paused}
             ORDER BY dq.priority DESC, dq.position ASC, dq.created_at ASC
             LIMIT 1

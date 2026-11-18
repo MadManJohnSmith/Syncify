@@ -117,7 +117,10 @@ async fn credencial_marcada_pausa_sync_y_descargas_y_el_relogin_reanuda() {
     assert_eq!(marked, 1, "solo la cuenta del account_id dado se marca");
     let (invalid_a, reason_a) = credential_flags(&pool, account_a).await;
     assert_eq!(invalid_a, 1);
-    assert_eq!(reason_a.as_deref(), Some("token_expired"));
+    // `invalid_reason` es el texto saneado que ve el usuario (contrato de
+    // mark_account_credentials_invalid); los códigos canónicos como
+    // `token_expired` los escriben los caminos que ya conocen la taxonomía.
+    assert_eq!(reason_a.as_deref(), Some("HTTP 401 Unauthorized"));
     let (invalid_b, _) = credential_flags(&pool, account_b).await;
     assert_eq!(invalid_b, 0, "la cuenta hermana no se toca");
 
@@ -134,16 +137,20 @@ async fn credencial_marcada_pausa_sync_y_descargas_y_el_relogin_reanuda() {
         .await
         .expect("la hermana sana sigue sincronizando");
 
-    // Descargas: con B sana, la fila del servicio se reclama con normalidad.
-    let queue_id = seed_queue_item(&pool, "qobuz").await;
+    // Descargas: con B sana, una fila del servicio se reclama con normalidad.
+    seed_queue_item(&pool, "qobuz").await;
     let claimed = worker(&pool).claim_next_item().await;
     assert!(claimed.is_some(), "una cuenta sana del servicio descarga");
 
-    // Marcando también B, el servicio entero queda en pausa: el claim NO
-    // quema un intento por fila (criterio 4) y la fila conserva su estado.
-    mark_account_credentials_invalid(&pool, "qobuz", "HTTP 403 Forbidden", Some(account_b))
-        .await
-        .expect("marca la segunda cuenta");
+    // Otra fila aún encolada: marcando también B, el servicio entero queda en
+    // pausa y el claim NO quema un intento por fila (criterio 4).
+    let queue_id = seed_queue_item(&pool, "qobuz").await;
+    let marked_b =
+        mark_account_credentials_invalid(&pool, "qobuz", "HTTP 403 Forbidden", Some(account_b))
+            .await
+            .expect("marca la segunda cuenta");
+    assert_eq!(marked_b, 1, "B marcada");
+    assert_eq!(credential_flags(&pool, account_b).await.0, 1, "B inválida");
     let claimed = worker(&pool).claim_next_item().await;
     assert!(
         claimed.is_none(),
