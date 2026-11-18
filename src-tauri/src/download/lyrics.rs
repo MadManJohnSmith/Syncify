@@ -19,7 +19,8 @@ pub use syncify_lyrics_domain::{
     ms_to_lrc_timestamp, parse_lrc_line, parse_time_str_to_ms, parse_ttml_to_elrc,
     parse_ultrastar_to_elrc, preserve_word_timestamps_exact, simplify_track_name,
     strip_lrc_timestamps, validate_lyrics_timestamps, LyricsLineDomain, LyricsResolution,
-    LyricsSyncType, LyricsTagContract, ResolutionStatus,
+    LyricsSyncType, LyricsTagContract, ResolutionStatus, SelectionOutcome, SequentialSelection,
+    SourceOutcome, SyncLevel,
 };
 
 /// A single line of lyrics with timestamps
@@ -220,6 +221,23 @@ pub struct LyricsClient {
     config: RwLock<LyricsEngineConfig>,
 }
 
+/// Sync level of a fetched response, shared by search filtering and the
+/// sequential cascade so both rank payloads the same way.
+fn response_sync_level(lyrics: &LyricsResponse) -> SyncLevel {
+    if lyrics.elrc_content.as_ref().is_some_and(|s| !s.is_empty())
+        || matches!(
+            lyrics.sync_type.as_str(),
+            "KARAOKE_WORD_SYNCED" | "WORD_SYNCED"
+        )
+    {
+        SyncLevel::Word
+    } else if lyrics.sync_type == "LINE_SYNCED" || !lyrics.lines.is_empty() {
+        SyncLevel::Line
+    } else {
+        SyncLevel::Plain
+    }
+}
+
 /// Validate lyrics response quality (ensures content is genuine and not just title/artist placeholder)
 pub fn is_valid_lyrics(lyrics: &LyricsResponse, expected_title: &str) -> bool {
     if lyrics.lines.is_empty()
@@ -405,28 +423,16 @@ impl LyricsClient {
         sources
     }
 
-    fn policy_accepts(&self, lyrics: &LyricsResponse, title: &str) -> bool {
+    /// Content policy shared by interactive search, automatic download and the
+    /// sequential cascade: genuine payload plus the language preference. The
+    /// sync level is decided by the caller (`policy_accepts` filters by the
+    /// user's target; the cascade uses it to keep probing for improvement).
+    fn content_matches_policy(
+        lyrics: &LyricsResponse,
+        title: &str,
+        config: &LyricsEngineConfig,
+    ) -> bool {
         if !is_valid_lyrics(lyrics, title) {
-            return false;
-        }
-        let config = self.config();
-        let rank = if lyrics.elrc_content.as_ref().is_some_and(|s| !s.is_empty())
-            || matches!(
-                lyrics.sync_type.as_str(),
-                "KARAOKE_WORD_SYNCED" | "WORD_SYNCED"
-            ) {
-            3
-        } else if lyrics.sync_type == "LINE_SYNCED" || !lyrics.lines.is_empty() {
-            2
-        } else {
-            1
-        };
-        let minimum = match config.min_sync_level.as_str() {
-            "syllable" | "word" => 3,
-            "line" => 2,
-            _ => 1,
-        };
-        if rank < minimum {
             return false;
         }
         let lang = config.preferred_language.trim();
@@ -445,6 +451,13 @@ impl LyricsClient {
         content
             .and_then(detect_language_heuristic)
             .is_some_and(|detected| detected.eq_ignore_ascii_case(lang))
+    }
+
+    fn policy_accepts(&self, lyrics: &LyricsResponse, title: &str) -> bool {
+        let config = self.config();
+        Self::content_matches_policy(lyrics, title, &config)
+            && response_sync_level(lyrics)
+                >= SyncLevel::target_from_min_sync_level(&config.min_sync_level)
     }
 
     async fn fetch_source(
@@ -499,27 +512,48 @@ impl LyricsClient {
         results
     }
 
-    /// Automatic fetch uses the same enabled/priority/sync/language policy as search.
+    /// Automatic fetch uses the same enabled/priority/language policy as search.
+    ///
+    /// Sequential selection with improvement: it stops at the first candidate
+    /// that reaches `min_sync_level` (as before), but while the best result is
+    /// below that target it keeps probing so a finer result lower in the list
+    /// can win. At exhaustion the best candidate seen is returned.
     pub async fn fetch_all_sources(
         &self,
         artist: &str,
         track: &str,
         duration_sec: f64,
     ) -> Result<LyricsResponse> {
+        let config = self.config();
+        let mut selection = SequentialSelection::new(&config.min_sync_level);
+
         for source in self.ordered_sources() {
-            if let Ok(mut lyrics) = self
+            let probe = match self
                 .fetch_source(&source.provider_id, artist, track, duration_sec)
                 .await
             {
-                if self.policy_accepts(&lyrics, track) {
+                Ok(mut lyrics) if Self::content_matches_policy(&lyrics, track, &config) => {
                     lyrics.lines.sort_by_key(|line| line.start_time_ms);
-                    return Ok(lyrics);
+                    let level = response_sync_level(&lyrics);
+                    SourceOutcome::Candidate {
+                        level,
+                        value: lyrics,
+                    }
                 }
+                // Per-source failures (rate limits, HTTP/network/parse errors,
+                // auth) and policy rejections only skip that source: the cascade
+                // never aborts. Classification of the final failure stays in
+                // `orchestrate_resolution`.
+                _ => SourceOutcome::NoCandidate,
+            };
+            if selection.offer(probe) == SelectionOutcome::Stop {
+                break;
             }
         }
-        Err(anyhow!(
-            "No lyrics matched enabled sources and lyrics policy"
-        ))
+
+        selection
+            .finish()
+            .ok_or_else(|| anyhow!("No lyrics matched enabled sources and lyrics policy"))
     }
 
     /// Obtain a Musixmatch usertoken (auto-refreshed, cached for 10 minutes)
@@ -2435,6 +2469,36 @@ mod tests {
                 .into(),
         );
         assert!(!client.policy_accepts(&candidate, "Canción"));
+    }
+
+    #[test]
+    fn cascade_keeps_below_target_candidates_but_search_filters_them() {
+        let mut config = LyricsEngineConfig::default();
+        config.min_sync_level = "word".into();
+        let client = LyricsClient::with_config(config.clone());
+        let line = LyricsResponse {
+            lines: vec![LyricsLine {
+                start_time_ms: 10_000,
+                words: "A line of the song".into(),
+                end_time_ms: None,
+            }],
+            sync_type: "LINE_SYNCED".into(),
+            instrumental: false,
+            plain_lyrics: None,
+            provider: "fixture".into(),
+            source: "fixture".into(),
+            elrc_content: None,
+        };
+
+        assert_eq!(response_sync_level(&line), SyncLevel::Line);
+        assert!(
+            !client.policy_accepts(&line, "Song"),
+            "interactive search must keep enforcing the target"
+        );
+        assert!(
+            LyricsClient::content_matches_policy(&line, "Song", &config),
+            "the cascade must hold a below-target result to improve on it"
+        );
     }
 
     use syncify_lyrics_domain::{

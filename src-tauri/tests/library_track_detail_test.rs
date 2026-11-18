@@ -32,12 +32,19 @@ async fn fresh_pool() -> SqlitePool {
 
 /// Crea el fichero real que el fixture declara como descargado:
 /// `verify_page_files` exige que exista para mantener el estado `downloaded`.
+///
+/// El nombre lleva un contador además del pid: varios tests de este binario
+/// siembran en paralelo y comparten `temp_dir()`, así que reutilizar el mismo
+/// fichero hacía que uno borrara el de otro entre `exists` y `remove_file`.
 fn real_download_file(tag: &str) -> String {
-    let path =
-        std::env::temp_dir().join(format!("syncify-l04-{}-{}.flac", std::process::id(), tag));
-    if path.exists() {
-        std::fs::remove_file(&path).unwrap();
-    }
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "syncify-l04-{}-{}-{}.flac",
+        std::process::id(),
+        seq,
+        tag
+    ));
     std::fs::write(&path, b"L04 fixture audio bytes").unwrap();
     path.to_string_lossy().to_string()
 }

@@ -119,6 +119,56 @@ fn fixture_instrumental() -> LyricsResolution {
     }
 }
 
+/// Word/syllable-synced resolution fixture for sequential-selection tests.
+pub fn fixture_word_synced_resolution(provider: &str) -> LyricsResolution {
+    LyricsResolution::new_resolved(
+        provider,
+        "fixture_word_synced",
+        LyricsSyncType::KaraokeWordSynced,
+        Some(FIXTURE_ENHANCED_LRC_WORD.to_string()),
+        Some(FIXTURE_PLAIN_LYRICS.to_string()),
+        vec![LyricsLineDomain {
+            start_time_ms: 10000,
+            words: "I wish you could swim".to_string(),
+            end_time_ms: Some(12000),
+        }],
+        false,
+        "fixture_word_synced",
+    )
+}
+
+/// Line-synced resolution fixture for sequential-selection tests.
+pub fn fixture_line_synced_resolution(provider: &str) -> LyricsResolution {
+    LyricsResolution::new_resolved(
+        provider,
+        "fixture_line_synced",
+        LyricsSyncType::LineSynced,
+        None,
+        Some(FIXTURE_PLAIN_LYRICS.to_string()),
+        vec![LyricsLineDomain {
+            start_time_ms: 10000,
+            words: "I wish you could swim".to_string(),
+            end_time_ms: None,
+        }],
+        false,
+        "fixture_line_synced",
+    )
+}
+
+/// Plain resolution fixture for sequential-selection tests.
+pub fn fixture_plain_resolution(provider: &str) -> LyricsResolution {
+    LyricsResolution::new_resolved(
+        provider,
+        "fixture_plain",
+        LyricsSyncType::Plain,
+        None,
+        Some(FIXTURE_PLAIN_LYRICS.to_string()),
+        Vec::new(),
+        false,
+        "fixture_plain",
+    )
+}
+
 /// HTTP Error Response Object (module-internal test helper)
 #[cfg(test)]
 fn fixture_http_error(code: u16) -> LyricsResolution {
