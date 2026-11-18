@@ -7,7 +7,8 @@ ffprobe, fpcalc placed by the provider with a triple) + scripts/ + the
 autonomous python/ from bundle/python — and compresses it into
 Syncify-Linux-x86_64.tar.gz. The security exclusions (TASK-95 / SEC-011) are
 NOT inline in the script: it consumes scripts/ci/exclusions.txt via
-`rsync --exclude-from`, the single source Windows adopts in #247.
+`rsync --exclude-from`, the single source the Windows portable also applies
+(#247).
 
 The central case is the spec's own: a scripts/ tree full of garbage (dotfiles,
 tokens, credentials, caches, *.pyc, __pycache__) must produce a clean output.
@@ -38,8 +39,7 @@ EXCLUSIONS = REPO_ROOT / "scripts" / "ci" / "exclusions.txt"
 TRIPLE = "x86_64-unknown-linux-gnu"
 
 # El contrato congelado de SEC-011: las 11 globs, en el orden del fichero.
-# Windows lleva la misma lista inline hasta #247; este es el dato, no texto
-# de workflow.
+# Los dos adaptadores (Linux y Windows) consumen este dato, no una copia.
 CANONICAL_EXCLUSIONS = [
     ".*",
     "*.json",

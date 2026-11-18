@@ -2,14 +2,22 @@
 """
 CI/CD Packaging Exclusions Hygiene & Download Integrity Test Suite (TASK-95 / SEC-011).
 
+Since #247 the Windows portable is assembled by
+``scripts/ci/assemble_portable.ps1``, which consumes the single exclusion
+source ``scripts/ci/exclusions.txt`` (the same file the Linux raw tarball
+applies). The workflow only delegates to the script, so this suite follows the
+behaviour: the pattern contract is read from the source file, the recursive
+purge and the WebView2 digest stay in the script, and the workflow must not
+carry the old inline copy again.
+
 Verifies:
-1. Strict exclusion rules in .github/workflows/build-windows.yml preventing secrets,
-   credentials, tokens, session caches, logs, databases, and temporary files from
-   being packaged into portable releases.
-2. Simulated pattern matching ensuring all known sensitive file patterns are excluded
-   while legitimate production scripts are retained.
-3. Cryptographic SHA-256 integrity verification for the downloads that remain
-   inline in the packaging workflows (the optional WebView2 bootstrapper).
+1. The single exclusion source still declares every required SEC-011 pattern,
+   and the Windows workflow delegates the portable assembly to the script
+   instead of carrying a twin list inline.
+2. Simulated pattern matching ensuring all known sensitive file patterns are
+   excluded while legitimate production scripts are retained.
+3. Cryptographic SHA-256 integrity verification for the remaining download
+   (the optional WebView2 bootstrapper), which lives in the portable script.
 4. Since #241/#242, ALL pinned dependencies (ffmpeg/fpcalc/ffprobe, CPython,
    get-pip.py) live in the provider's single pin table
    (scripts/dependency_manager.py) and are proven by
@@ -39,6 +47,19 @@ class TestCiPackagingExclusionsHygiene(unittest.TestCase):
 
         cls.build_windows_content = cls.build_windows_path.read_text(encoding="utf-8")
 
+        cls.exclusions_path = cls.repo_root / "scripts" / "ci" / "exclusions.txt"
+        cls.portable_script_path = cls.repo_root / "scripts" / "ci" / "assemble_portable.ps1"
+        if not cls.exclusions_path.is_file():
+            raise FileNotFoundError(f"Exclusions source missing: {cls.exclusions_path}")
+        if not cls.portable_script_path.is_file():
+            raise FileNotFoundError(f"Portable assembler missing: {cls.portable_script_path}")
+        cls.portable_content = cls.portable_script_path.read_text(encoding="utf-8")
+        cls.exclusion_patterns = [
+            line.strip()
+            for line in cls.exclusions_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+
         # Required strict exclusion patterns (TASK-95 / SEC-011)
         cls.required_exclusion_patterns = [
             ".*",
@@ -67,12 +88,32 @@ class TestCiPackagingExclusionsHygiene(unittest.TestCase):
         self.assertIn("jobs", data)
 
     def test_all_required_exclusion_patterns_present(self):
-        """Verify that every required exclusion pattern is explicitly declared in build-windows.yml."""
+        """Every SEC-011 pattern is declared in the single exclusion source."""
         for pattern in self.required_exclusion_patterns:
             self.assertIn(
                 pattern,
+                self.exclusion_patterns,
+                f"Required exclusion pattern '{pattern}' missing in {self.exclusions_path.name}"
+            )
+
+    def test_workflow_delegates_portable_assembly_and_drops_the_inline_copy(self):
+        """The job calls the script; the inline assembly (and its twin list) is gone."""
+        self.assertIn(
+            "assemble_portable.ps1",
+            self.build_windows_content,
+            "build-windows.yml must delegate the portable assembly to scripts/ci/assemble_portable.ps1",
+        )
+        for inline_marker in (
+            "$scriptExclusions",
+            "readmeLines",
+            'Copy-Item -Path "scripts" -Destination "dist/portable/Syncify-Portable/scripts"',
+            "instalar_webview2_si_falla.exe",
+            "Invoke-WebRequest",
+        ):
+            self.assertNotIn(
+                inline_marker,
                 self.build_windows_content,
-                f"Required exclusion pattern '{pattern}' missing in {self.build_windows_path.name}"
+                f"build-windows.yml still carries the inline portable assembly: {inline_marker}",
             )
 
     def test_sensitive_artifacts_are_excluded_by_patterns(self):
@@ -103,7 +144,7 @@ class TestCiPackagingExclusionsHygiene(unittest.TestCase):
 
         for sample in sensitive_samples:
             matched = any(
-                fnmatch.fnmatch(sample, pat) for pat in self.required_exclusion_patterns
+                fnmatch.fnmatch(sample, pat) for pat in self.exclusion_patterns
             )
             self.assertTrue(
                 matched,
@@ -133,7 +174,7 @@ class TestCiPackagingExclusionsHygiene(unittest.TestCase):
 
         # For legitimate non-hidden files, only check against file patterns (excluding '.*')
         file_exclusion_patterns = [
-            pat for pat in self.required_exclusion_patterns if pat != ".*"
+            pat for pat in self.exclusion_patterns if pat != ".*"
         ]
 
         for script in legitimate_files:
@@ -150,14 +191,18 @@ class TestCiPackagingExclusionsHygiene(unittest.TestCase):
         """Verify that a recursive post-copy hygiene sweep exists to prevent nested leaks."""
         self.assertIn(
             "Remove-Item",
-            self.build_windows_content,
-            "Workflow should contain post-copy hygiene/cleanup with Remove-Item"
+            self.portable_content,
+            "The portable assembler must contain post-copy hygiene/cleanup with Remove-Item"
         )
-        # Check that the scripts packaging step has recursive filtering
         self.assertRegex(
-            self.build_windows_content,
-            r'Get-ChildItem\s+-Path\s+["\']dist/portable/Syncify-Portable/scripts["\']\s+-Recurse',
-            "Workflow must contain a recursive sweep over portable scripts directory"
+            self.portable_content,
+            r"Get-ChildItem[^\n]*-Recurse",
+            "The portable assembler must contain a recursive sweep over the portable scripts tree"
+        )
+        self.assertIn(
+            "scripts/ci/exclusions.txt",
+            self.portable_content,
+            "The portable assembler must consume the single exclusion source",
         )
 
     # ═══════════════════════════════════════════════════════
@@ -165,24 +210,32 @@ class TestCiPackagingExclusionsHygiene(unittest.TestCase):
     # ═══════════════════════════════════════════════════════
 
     def test_all_invoke_webrequests_have_sha256_verification(self):
-        """Verify that every download left inline in build-windows.yml performs SHA-256 verification.
+        """Verify that every download left inline in the packaging scripts performs SHA-256 verification.
 
         The pinned runtime/tool downloads moved into the provider module
         (#241/#242), where the hash-before-extract rule is enforced and proven
         by the module suites. What stays inline is the OPTIONAL WebView2
-        bootstrapper, and it must keep its digest check.
+        bootstrapper, which moved with the portable assembly to
+        ``scripts/ci/assemble_portable.ps1`` in #247, and it must keep its
+        digest check. No download may drift back into the workflow.
         """
+        self.assertNotIn(
+            "Invoke-WebRequest",
+            self.build_windows_content,
+            "downloads belong to the packaging scripts, not to build-windows.yml",
+        )
+
         # Find all Invoke-WebRequest calls with -OutFile
         download_matches = re.findall(
             r'Invoke-WebRequest[^\n]+-OutFile\s+["\']?([^"\'\n]+)["\']?',
-            self.build_windows_content
+            self.portable_content
         )
-        self.assertGreater(len(download_matches), 0, "No downloads found in build-windows.yml")
+        self.assertGreater(len(download_matches), 0, "No downloads found in assemble_portable.ps1")
 
         # Every downloaded file should be checked with Get-FileHash ... -Algorithm SHA256
         hash_check_matches = re.findall(
             r'Get-FileHash[^\n]+-Algorithm\s+SHA256',
-            self.build_windows_content,
+            self.portable_content,
             re.IGNORECASE
         )
         self.assertEqual(
@@ -192,21 +245,43 @@ class TestCiPackagingExclusionsHygiene(unittest.TestCase):
             f"and SHA256 checks ({len(hash_check_matches)})"
         )
 
+    def test_webview2_bootstrapper_keeps_fwlink_allowlist_and_tolerance(self):
+        """The optional WebView2 bootstrapper keeps the inline contract exactly.
+
+        Its download is network-only, so the cross-adapter behaviour suite runs
+        the assembler with -SkipWebView2; this text gate keeps the security
+        properties that moved with it: the fwlink, the SHA-256 allowlist, the
+        purge on mismatch and the release-engineering tolerance (warning, not a
+        failed release).
+        """
+        self.assertIn("https://go.microsoft.com/fwlink/p/?LinkId=2124703", self.portable_content)
+        self.assertIn(
+            "17debf797a6c737959bc588236e897936ffac1af5f7e515e674ab32f9edfe719",
+            self.portable_content,
+        )
+        self.assertIn("$knownWvHashes -notcontains $wvHash", self.portable_content)
+        self.assertIn("Remove-Item -Force $webview2Path", self.portable_content)
+        self.assertIn(
+            "No se pudo descargar o validar el instalador opcional de WebView2",
+            self.portable_content,
+        )
+
     def test_integrity_check_failure_aborts_or_purges(self):
         """Verify that checksum mismatch causes an abort (throw) and purges the unverified file.
 
-        One inline download remains (the optional WebView2 installer) and it
-        must keep its throw-on-mismatch. The pinned downloads abort inside the
-        provider module — mismatch means no extraction — and the workflow
-        throws on its nonzero exit code; that behavior is frozen by
-        test_dependency_manager_security.py and the runtime suite, not here.
+        One inline download remains (the optional WebView2 installer, now in
+        the portable script) and it must keep its throw-on-mismatch. The pinned
+        downloads abort inside the provider module — mismatch means no
+        extraction — and the workflow throws on its nonzero exit code; that
+        behavior is frozen by test_dependency_manager_security.py and the
+        runtime suite, not here.
         """
         # Checks should contain throw statements on failure
-        throw_matches = re.findall(r'throw\s+["\'].*?SHA256.*?["\']', self.build_windows_content, re.IGNORECASE)
+        throw_matches = re.findall(r'throw\s+["\'].*?SHA256.*?["\']', self.portable_content, re.IGNORECASE)
         self.assertGreaterEqual(
             len(throw_matches),
             1,
-            "Workflow must contain throw statements on SHA256 integrity verification failures"
+            "assemble_portable.ps1 must contain throw statements on SHA256 integrity verification failures"
         )
 
     def test_no_insecure_downloads_in_any_workflow(self):
