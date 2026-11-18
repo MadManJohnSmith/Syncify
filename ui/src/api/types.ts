@@ -252,6 +252,10 @@ export interface QueueItem {
     status: string;
     priority: number;
     progress_percent: number;
+    /** D00/D04: account that served this row, when resolved. */
+    resolved_account_id?: number | null;
+    /** Optional display label returned alongside the resolved account. */
+    resolved_account_name?: string | null;
     error_message: string | null;
     last_error?: string | null;
     retry_count?: number;
