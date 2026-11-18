@@ -357,3 +357,39 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   clasificación solo por ficheros (sin hunks) para retomarlo en
   carriles locales aislados. Fuente: informes de l03-retry-3 y
   a86-retry-3, `gh pr merge 311` en la sesión del 2026-11-17.
+- **2026-11-18, once fusiones y tres límites de infraestructura medidos**:
+  L04 #101 (#313), P01 #132 (#314), Packaging Windows #246 (#315), Toolchain
+  #249 (#319), D08 #120 (#318), LY02 #183 (#316), P02 #133 (#317), A02 #93
+  (#321), Packaging Linux #245 (#320), PL01 #154 (#322) y Portable Windows
+  #247 (#324). L01 #97 quedó en PR #323. Fuente: `git log dev` y merges de
+  la sesión del 2026-11-18.
+- **2026-11-18, ZCode limita a UNA sesión concurrente**: `3008 user
+  concurrency limit exceeded` no es solo «no background»: al relanzar #165
+  mientras #247 estaba en vuelo, el proveedor mató #247 a mitad de clippy.
+  Regla: un solo carril Flash a la vez; el siguiente entra cuando el
+  anterior cierra. Fuente: fallos de #165-retry y #247 en la sesión.
+- **2026-11-18, agentvm1 sigue sin ZCode autenticado**: sesiones nuevas y
+  reenvíos con `mode: auto` a la misma sesión fallan con
+  `provider_not_configured · Provider authentication failed`; solo
+  `acpRegistry_zcode` figura habilitado allí y `mode: restart` exige un turno
+  vivo. `delegate_task` con `isolation: worktree` se rechaza en entornos
+  vinculados (`invalid_request`): corren en el checkout del proyecto. Fuente:
+  reintentos de #102/#165/#247 y `orchestrator_capabilities` del 2026-11-18.
+- **2026-11-18, `/tmp` es un tmpfs de 12 GB y el target compartido lo llenó
+  al 100%**: `cargo test` y el smoke de recuperación murieron con ENOSPC
+  (`StorageFull`); varios delegados cortaron a la vez. Mitigación aplicada:
+  `CARGO_TARGET_DIR` por carril bajo `~/.cache` y `TMPDIR` en disco. Fuente:
+  log del job de #183 y del delegado de #249.
+- **2026-11-18, worktree nuevo sin `ui/dist`**: `tauri::generate_context!`
+  panickea (`proc macro panicked` en `main.rs:1386`) y parece un fallo de
+  clippy del binario; se resuelve con `npm --prefix ui run build` antes de
+  las puertas. Fuente: push fallido de #247 y su rescate.
+- **2026-11-18, flake de L04 destapado por la suite completa**: el fixture de
+  `library_track_detail_test` compartía un fichero temporal entre tests en
+  paralelo; corregido con contador atómico en el nombre. Fuente: job Rust de
+  #316 y commit `6910d43`.
+- **2026-11-18, dead_code de Windows por código Linux-only**: gatear MPRIS
+  obliga a gatear también `player_control` y la cadena de transporte manual
+  (`run_manual_*`, `perform_set_shuffle`, métodos de `PlayerState`); `-D
+  warnings` en Windows los marca uno a uno. Fuente: jobs Windows de #317 y
+  commits `9d3988c`/`807cac3`.
