@@ -47,7 +47,11 @@ function stubBackend() {
         },
         lyrics: { total_tracks: 1, with_lyrics: 0, synced_lyrics: 0, embedded_lyrics: 0 },
       }
-    if (cmd === 'get_service_statuses' || cmd === 'get_accounts') return []
+    // Una cuenta en el arranque: con cero, la App aterriza en /accounts al
+    // iniciar (#93, ADR-0007 decisión 15) y este escenario de KeepAlive de
+    // Dashboard no es el primer arranque.
+    if (cmd === 'get_service_statuses') return []
+    if (cmd === 'get_accounts') return [{ id: 1, service_id: 2, is_active: true }]
     if (cmd === 'query_library') return { tracks: [], total: 0 }
     return []
   })

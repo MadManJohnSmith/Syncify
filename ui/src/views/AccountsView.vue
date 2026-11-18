@@ -37,8 +37,22 @@
 
       <!-- Connected Services Section (C-01: visible directly on enter) -->
       <section class="mb-10">
-        <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Connected Services</h2>
-        
+        <!-- Cero cuentas es un estado vacío, no un wizard (ADR-0007, decisión 15).
+             Las seis tarjetas se renderizan debajo desde el catálogo de servicios
+             del backend; cada una ofrece su botón Connect. El titular de la
+             sección solo tiene sentido cuando hay algo conectado. -->
+        <h2 v-if="rawAccounts.length > 0" class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Connected Services</h2>
+        <div
+          v-if="!isLoading && rawAccounts.length === 0"
+          data-testid="accounts-empty-state"
+          class="mb-4 rounded-xl border border-dashed border-primary/30 bg-primary/5 px-4 py-3"
+        >
+          <p class="text-sm font-medium text-gray-900 dark:text-white">No services connected yet</p>
+          <p class="text-xs text-text-secondary mt-1">
+            Choose one of the six services below to sign in. The login opens inside Syncify; no separate setup is needed.
+          </p>
+        </div>
+
         <div class="service-cards grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           
           <!-- Service Card Component -->
@@ -411,6 +425,7 @@
                 <button 
                   @click="connectServiceFromCard(service.id)"
                   :disabled="authLoading !== null"
+                  :data-testid="`connect-service-${service.id}`"
                   class="flex-1 px-4 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
                 >
                   <span v-if="authLoading === service.id" class="material-symbols-outlined text-[18px] animate-spin">sync</span>
@@ -1170,8 +1185,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import { accountsApi } from '@/api/accounts'
 import { syncRunsApi } from '@/api/syncRuns'
@@ -1371,6 +1387,7 @@ const {
   services,
   rawServices,
   rawAccounts,
+  isLoading,
   fetchData,
   findAccountForService,
   // Identity helpers are owned by useAccountsStatus (single source of truth) so
@@ -1398,6 +1415,47 @@ const syncingServices = reactive<Record<string, boolean>>({})
 const importUrl = ref('')
 const importUrlLoading = ref(false)
 const spotifyApiCard = ref<InstanceType<typeof SpotifyApiConfigCard> | null>(null)
+
+// ── Login en app por cuenta (issue #84) ────────────────────────────────────
+// `start_account_login` devuelve en cuanto la ventana de webview está abierta;
+// el desenlace del intento llega por `account-login-*`. La cuenta guardada se
+// anuncia además por `auth-state-updated`, que esta vista ya escucha.
+type AccountLoginOutcome = 'completed' | 'failed' | 'cancelled'
+interface AccountLoginPayload {
+  profile_key?: string
+  account_id?: number
+  error?: string | null
+}
+
+let loginOutcomeUnlisteners: UnlistenFn[] = []
+
+function unlistenLoginOutcome() {
+  loginOutcomeUnlisteners.forEach(unlisten => unlisten())
+  loginOutcomeUnlisteners = []
+}
+
+function awaitLoginOutcome(profileKey: string): Promise<{ outcome: AccountLoginOutcome; payload: AccountLoginPayload }> {
+  return new Promise(resolve => {
+    let settled = false
+    const settle = (outcome: AccountLoginOutcome) => async (event: { payload?: AccountLoginPayload }) => {
+      const payload = event?.payload ?? {}
+      // Un intento vivo a la vez por diseño (backend): el profile_key filtra
+      // cuando el payload lo trae.
+      if (settled || (payload.profile_key && payload.profile_key !== profileKey)) return
+      settled = true
+      unlistenLoginOutcome()
+      resolve({ outcome, payload })
+    }
+    listen<AccountLoginPayload>(TauriEvents.ACCOUNT_LOGIN_COMPLETED, settle('completed'))
+      .then(unlisten => loginOutcomeUnlisteners.push(unlisten))
+    listen<AccountLoginPayload>(TauriEvents.ACCOUNT_LOGIN_FAILED, settle('failed'))
+      .then(unlisten => loginOutcomeUnlisteners.push(unlisten))
+    listen<AccountLoginPayload>(TauriEvents.ACCOUNT_LOGIN_CANCELLED, settle('cancelled'))
+      .then(unlisten => loginOutcomeUnlisteners.push(unlisten))
+  })
+}
+
+onBeforeUnmount(unlistenLoginOutcome)
 
 /**
  * Identity line shown on a service card. Uses the shared resolver so it can
@@ -1524,62 +1582,37 @@ function safeAuthError(error: unknown): string {
     .slice(0, 300)
 }
 
-// Connect service
+// Connect service from the "Add New Service" modal.
 async function connectService(service: { id: string; name: string }) {
-  authLoading.value = service.id
   showServiceModal.value = false
-
-  try {
-    // S196: hydrate DB credential cache before the OAuth window opens.
-    if (service.id === 'spotify') await ensureSpotifyApiConfigLoaded()
-    // S65: Use native WebView2 for Spotify, Python bridge for others
-    const result = service.id === 'spotify'
-      ? await accountsApi.spotifyAuthWebview()
-      : await accountsApi.startAuthAndSave(service.id)
-
-    if (result.success) {
-      await fetchData()
-      highlightedAccountId.value = typeof result.data?.account_id === 'number' ? result.data.account_id : null
-    } else {
-      showToast(`Auth failed: ${safeAuthError(result.error)}`, 'error')
-      if (service.id === 'spotify' && result.error && isSpotifyCredentialsError(result.error)) {
-        handleSpotifyCredentialsError()
-      }
-    }
-  } catch (e) {
-    const errorMsg = String(e)
-    if (isSpotifyCredentialsError(errorMsg)) {
-      handleSpotifyCredentialsError()
-    } else {
-      showToast(`Failed to connect service: ${safeAuthError(e)}`, 'error')
-    }
-  } finally {
-    authLoading.value = null
-  }
+  await connectServiceFromCard(service.id)
 }
 
-// Connect service from card (simplified version)
+// Connect (or link another account) through the in-app webview login (issue
+// #84). The empty state uses this exact path: six cards, one click, no wizard.
 async function connectServiceFromCard(serviceId: string) {
   authLoading.value = serviceId
 
   try {
     // S196: hydrate DB credential cache before the OAuth window opens.
     if (serviceId === 'spotify') await ensureSpotifyApiConfigLoaded()
-    // S65: Use native WebView2 for Spotify, Python bridge for others
-    const result = serviceId === 'spotify'
-      ? await accountsApi.spotifyAuthWebview()
-      : await accountsApi.startAuthAndSave(serviceId)
+    const started = await accountsApi.startAccountLogin(serviceId)
+    const { outcome, payload } = await awaitLoginOutcome(started.profile_key)
 
-    if (result.success) {
+    if (outcome === 'completed') {
+      // Refresh in place: the empty state becomes the normal account list
+      // without reloading the view (ADR-0007 decision 15).
       await fetchData()
-      highlightedAccountId.value = typeof result.data?.account_id === 'number' ? result.data.account_id : null
+      highlightedAccountId.value = typeof payload.account_id === 'number' ? payload.account_id : null
       showToast(`Connected to ${serviceId} successfully!`, 'success')
-    } else {
-      showToast(`Failed to connect: ${safeAuthError(result.error)}`, 'error')
-      if (serviceId === 'spotify' && result.error && isSpotifyCredentialsError(result.error)) {
+    } else if (outcome === 'failed') {
+      const error = payload.error ?? 'Authentication failed'
+      showToast(`Failed to connect: ${safeAuthError(error)}`, 'error')
+      if (serviceId === 'spotify' && isSpotifyCredentialsError(String(error))) {
         handleSpotifyCredentialsError()
       }
     }
+    // `cancelled`: the window was closed; no account and no half profile exist.
   } catch (e) {
     const errorMsg = String(e)
     if (isSpotifyCredentialsError(errorMsg)) {
