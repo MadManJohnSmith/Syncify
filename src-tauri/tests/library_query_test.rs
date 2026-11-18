@@ -1,15 +1,15 @@
 //! Tests de integración de `query_library` — L01 (issue #98, spec #96).
 //!
 //! Fixture determinista contra SQLite `:memory:` recién migrada (el fixture
-//! base compartido de la serie L02-L12; L00 lo extenderá con álbumes,
-//! artistas y `library_added_at`). La costura probada es la función con el
-//! pool, no el comando de Tauri.
+//! base compartido de la serie L02-L12; L00 lo extendió con pertenencias de
+//! álbum/artista en `library_memberships` y el materializado
+//! `library_added_at`). La costura probada es la función con el pool, no el
+//! comando de Tauri.
 //!
-//! Nota L00: los planes de consulta se verifican con `query_plan`
-//! (EXPLAIN QUERY PLAN). Hoy entran por los índices existentes
-//! (`idx_library_track`, `idx_playlist_tracks_track`, `idx_track_sources_*`);
-//! cuando L00 aterrice con sus índices de pertenencia, ese test es el punto
-//! de re-verificación.
+//! Los planes de consulta se verifican con `query_plan`
+//! (EXPLAIN QUERY PLAN): entran por los índices de pertenencia de L00/L01
+//! (`idx_library_track`, `idx_playlist_tracks_track`,
+//! `idx_library_memberships_*`); este test es el punto de re-verificación.
 
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
@@ -76,13 +76,13 @@ async fn seed() -> SqlitePool {
         .unwrap();
 
     sqlx::query(
-        "INSERT INTO tracks (id, title, album_id, duration_ms, genre, is_favorite) VALUES \
-         (1, 'Sunrise', 1, 200000, 'Rock', 1), \
-         (2, 'Island', NULL, NULL, 'Jazz', 0), \
-         (3, 'River', NULL, 180000, 'Rock', 0), \
-         (4, 'Ghost', NULL, 90000, 'Rock', 1), \
-         (5, 'Echoes', NULL, 240000, 'Pop', 0), \
-         (6, 'Storm', NULL, 150000, 'Rock', 0)",
+        "INSERT INTO tracks (id, title, album_id, duration_ms, genre, is_favorite, created_at) VALUES \
+         (1, 'Sunrise', 1, 200000, 'Rock', 1, '2025-12-01T09:00:00Z'), \
+         (2, 'Island', NULL, NULL, 'Jazz', 0, '2025-12-01T09:00:00Z'), \
+         (3, 'River', NULL, 180000, 'Rock', 0, '2025-12-01T09:00:00Z'), \
+         (4, 'Ghost', NULL, 90000, 'Rock', 1, '2025-12-01T09:00:00Z'), \
+         (5, 'Echoes', NULL, 240000, 'Pop', 0, '2025-12-01T09:00:00Z'), \
+         (6, 'Storm', NULL, 150000, 'Rock', 0, '2025-12-01T09:00:00Z')",
     )
     .execute(&pool)
     .await
@@ -152,6 +152,32 @@ async fn seed() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
+
+    // L00 (#97): pertenencia completa por colección. Álbum 'Dawn' para T3
+    // (cuenta A2) y colección artista Beta Trio para T6 (cuenta A1): los
+    // filtros de colección `album`/`artist` entran por library_memberships.
+    sqlx::query("INSERT INTO albums (id, title) VALUES (2, 'Dawn')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO library_memberships (account_id, track_id, collection_type, collection_id, provider_item, added_at) VALUES \
+         (2, 3, 'album', 2, 'qb-alb-dawn', NULL), \
+         (1, 6, 'artist', 2, 'sp-art-beta', NULL)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Materialización de library_added_at (L00): el seed simula lo que el
+    // sync/importador hacen en cada escritura de pertenencia.
+    for track_id in 1..=6 {
+        syncify_tauri_lib::services::library_membership::refresh_track_library_added_at(
+            &pool, track_id,
+        )
+        .await
+        .unwrap();
+    }
 
     pool
 }
@@ -271,16 +297,19 @@ async fn dimension_colecciones() {
     query.collections = vec![CollectionFilter::Favorite, CollectionFilter::Playlist];
     assert_eq!(ids(&pool, query).await, vec![5, 2, 1, 3, 6]);
 
-    // Piezas deshabilitadas con su motivo: la pertenencia por álbum/artista
-    // no existe hasta L00 (#97).
+    // L00 (#97): `album`/`artist` entran por la pertenencia completa de
+    // library_memberships (álbum 'Dawn' para T3, Beta Trio para T6).
     let mut query = q();
     query.collections = vec![CollectionFilter::Album];
-    let err = query_library(&pool, query).await.unwrap_err();
-    assert!(err.contains("L00"), "err={err}");
+    assert_eq!(ids(&pool, query).await, vec![3]);
     let mut query = q();
     query.collections = vec![CollectionFilter::Artist];
-    let err = query_library(&pool, query).await.unwrap_err();
-    assert!(err.contains("L00"), "err={err}");
+    assert_eq!(ids(&pool, query).await, vec![6]);
+    let mut query = q();
+    query.collections = vec![CollectionFilter::Album, CollectionFilter::Artist];
+    // Orden DateAdded DESC: T3 (respaldo created_at 2025-12-01) delante de
+    // T6 (le con centinela '' → bloque de nulos al final).
+    assert_eq!(ids(&pool, query).await, vec![3, 6]);
 }
 
 #[tokio::test]
@@ -367,13 +396,16 @@ async fn texto_se_combina_con_los_filtros() {
 #[tokio::test]
 async fn orden_date_added_desc_por_defecto_con_nulos_y_centinelas_al_final() {
     let pool = seed().await;
-    // Default: DateAdded DESC. T5 (playlist 02-01 es la pertenencia MAX),
-    // T2 (01-05), T1 (01-03), luego nulos y centinelas ('') al final,
-    // desempate título NOCASE ASC: River (T3) antes que Storm (T6).
+    // Default: DateAdded DESC sobre el materializado (L00): T5 (playlist
+    // 02-01 es la pertenencia MAX), T2 (01-05), T1 (01-03), T3 (sin
+    // added_at vivo: respaldo created_at 2025-12-01) y el centinela '' de
+    // T6 al final, desempate título NOCASE ASC.
     assert_eq!(ids(&pool, q()).await, vec![5, 2, 1, 3, 6]);
     let mut query = q();
     query.direction = SortDirection::Asc;
-    assert_eq!(ids(&pool, query).await, vec![1, 2, 5, 3, 6]);
+    // Ascendente: la fecha más vieja primero (T3, created_at) y el
+    // centinela '' de T6 al final (el guard de nulos/centinelas no cambia).
+    assert_eq!(ids(&pool, query).await, vec![3, 1, 2, 5, 6]);
 }
 
 #[tokio::test]
@@ -492,14 +524,15 @@ async fn contadores_sin_su_propia_condicion() {
     let counts = result.counts.as_ref().unwrap();
 
     // El contador de cuentas IGNORA el filtro de cuentas: cuenta sobre el
-    // conjunto sin esa dimensión, así que A2 (3 pertenencias: T2 playlist,
-    // T3 y T5) sigue apareciendo junto a A1 (4).
+    // conjunto sin esa dimensión, así que A2 (3 pistas: T2 playlist, T3 y
+    // T5) sigue apareciendo junto a A1 (3 pistas: T1, T5 y T6 — DISTINCT
+    // por pista: T5 en le Y en playlist de A1 cuenta UNA).
     let acc: Vec<(i64, i64)> = counts
         .by_account
         .iter()
         .map(|a| (a.account_id, a.count))
         .collect();
-    assert!(acc.contains(&(1, 4)), "acc={acc:?}");
+    assert!(acc.contains(&(1, 3)), "acc={acc:?}");
     assert!(acc.contains(&(2, 3)), "acc={acc:?}");
 
     // El contador de servicios no ve la dimensión de servicios (aquí vacía):
@@ -524,20 +557,22 @@ async fn contadores_sin_su_propia_condicion() {
 }
 
 #[tokio::test]
-async fn contadores_por_cuenta_suman_mas_que_el_global() {
+async fn contadores_por_cuenta_cuentan_pistas_distintas_y_suman_mas_que_el_global() {
     let pool = seed().await;
     let result = query_library(&pool, q()).await.unwrap();
     let counts = result.counts.as_ref().unwrap();
-    // A1: T1 + T5(le) + T5(playlist) + T6 = 4; A2: T2 + T3 + T5 = 3.
+    // Pistas DISTINTAS por cuenta (L00 deduplica las pertenencias espejo):
+    // A1: T1 + T5 + T6 = 3 (T5 en le Y en playlist cuenta UNA);
+    // A2: T2 + T3 + T5 = 3.
     let acc: Vec<(i64, i64)> = counts
         .by_account
         .iter()
         .map(|a| (a.account_id, a.count))
         .collect();
-    assert!(acc.contains(&(1, 4)), "acc={acc:?}");
+    assert!(acc.contains(&(1, 3)), "acc={acc:?}");
     assert!(acc.contains(&(2, 3)), "acc={acc:?}");
-    // La suma de pertenencias puede superar el total de pistas distintas:
-    // la UI no debe presentarla como total.
+    // La suma puede superar el total de pistas distintas: la misma pista en
+    // dos cuentas cuenta en las dos; la UI no debe presentarla como total.
     assert!(acc.iter().map(|(_, c)| c).sum::<i64>() > result.total);
     assert_eq!(counts.total, result.total);
 }
@@ -587,9 +622,15 @@ async fn cuarentena_y_duplicados_contrato_pendiente() {
 async fn plan_de_consulta_incluye_la_pertenencia_viva() {
     let pool = seed().await;
     let plan = query_plan(&pool, &q()).await.unwrap().join("\n");
-    // La pertenencia viva entra al plan por los índices existentes de
-    // library_entries y playlist_tracks (los índices de pertenencia completos
-    // llegan con L00; este test es la puerta de re-verificación).
+    // La pertenencia viva entra al plan por los índices de pertenencia: los
+    // de L01 (library_entries y playlist_tracks) y los de L00 en
+    // library_memberships (0112). Este test es la puerta de re-verificación.
     assert!(plan.contains("idx_library_track"), "plan={plan}");
     assert!(plan.contains("idx_playlist_tracks_track"), "plan={plan}");
+    assert!(
+        plan.contains("idx_library_memberships_track_added")
+            || plan.contains("idx_library_memberships_account_track")
+            || plan.contains("uq_library_memberships_identity"),
+        "plan={plan}"
+    );
 }

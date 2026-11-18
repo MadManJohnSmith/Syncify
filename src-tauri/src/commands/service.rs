@@ -2168,6 +2168,26 @@ where
                             .bind(res.track_id)
                             .bind((processed_in_playlist + 1) as i32)
                             .execute(db)).await;
+                            // L00 (#97): pertenencia de la colección
+                            // playlist con su id local y el ítem del
+                            // proveedor (SoundCloud no trae added_at por
+                            // ítem de playlist).
+                            let _ = crate::db::write_or_log(
+                                "sync_soundcloud_playlists_with_engine",
+                                crate::services::library_membership::record_membership(
+                                    db,
+                                    &crate::services::library_membership::MembershipWrite {
+                                        account_id,
+                                        track_id: res.track_id,
+                                        collection:
+                                            crate::services::library_membership::MembershipCollection::Playlist,
+                                        collection_id: Some(playlist_db_id),
+                                        provider_item: Some(track.id.to_string()),
+                                        added_at: None,
+                                    },
+                                ),
+                            )
+                            .await;
                             if res.is_new_import {
                                 totals.imported += 1;
                             } else {
@@ -4029,11 +4049,23 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
             if artists.is_empty() {
                 break;
             }
-            for (_artist_provider_id, artist_name) in &artists {
+            for (artist_provider_id, artist_name) in &artists {
                 if let Ok(artist_db_id) = client.get_or_create_artist(db, artist_name).await {
                     let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
                         .bind(artist_db_id)
                         .execute(db)).await;
+                    // L00 (#97): pertenencia de la colección artista para
+                    // las pistas ya conocidas del artista (todos los roles).
+                    let _ = crate::db::write_or_log(
+                        "perform_sync_service_with_emitter_inner",
+                        crate::services::library_membership::record_artist_memberships(
+                            db,
+                            account_id,
+                            artist_db_id,
+                            Some(artist_provider_id.as_str()),
+                        ),
+                    )
+                    .await;
                     arm.favorite_artists_total += 1;
                 }
             }
@@ -4189,6 +4221,26 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                                 .execute(db)).await;
                                 arm.persistence_ms += t_pl_track.elapsed().as_millis() as u64;
                                 arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                // L00 (#97): pertenencia de la colección
+                                // playlist con su id local y el ítem del
+                                // proveedor (la API pública de Deezer no
+                                // trae added_at).
+                                let _ = crate::db::write_or_log(
+                                    "perform_sync_service_with_emitter_inner",
+                                    crate::services::library_membership::record_membership(
+                                        db,
+                                        &crate::services::library_membership::MembershipWrite {
+                                            account_id,
+                                            track_id: res.track_id,
+                                            collection:
+                                                crate::services::library_membership::MembershipCollection::Playlist,
+                                            collection_id: Some(p_id),
+                                            provider_item: Some(track.id.clone()),
+                                            added_at: None,
+                                        },
+                                    ),
+                                )
+                                .await;
                                 arm.tracks_processed += 1;
                                 if res.is_new_global_track {
                                     arm.tracks_new_global += 1;
@@ -4804,6 +4856,26 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                             .execute(db)).await;
                                             arm.persistence_ms +=
                                                 t_pl_track.elapsed().as_millis() as u64;
+                                            // L00 (#97): pertenencia de la
+                                            // colección playlist con su id
+                                            // local, el ítem del proveedor y
+                                            // el added_at crudo de Spotify.
+                                            let _ = crate::db::write_or_log(
+                                                "perform_sync_service_with_emitter_inner",
+                                                crate::services::library_membership::record_membership(
+                                                    db,
+                                                    &crate::services::library_membership::MembershipWrite {
+                                                        account_id,
+                                                        track_id: res.track_id,
+                                                        collection:
+                                                            crate::services::library_membership::MembershipCollection::Playlist,
+                                                        collection_id: Some(p_id),
+                                                        provider_item: Some(track.id.clone()),
+                                                        added_at: item.added_at.clone(),
+                                                    },
+                                                ),
+                                            )
+                                            .await;
                                             arm.tracks_processed += 1;
 
                                             if res.is_new_global_track {
@@ -5051,6 +5123,18 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                 .bind(&art.id)
                                 .bind(aid)
                                 .execute(db)).await;
+                            // L00 (#97): pertenencia de la colección artista
+                            // para las pistas ya conocidas del artista.
+                            let _ = crate::db::write_or_log(
+                                "perform_sync_service_with_emitter_inner",
+                                crate::services::library_membership::record_artist_memberships(
+                                    db,
+                                    account_id,
+                                    aid,
+                                    Some(&art.id),
+                                ),
+                            )
+                            .await;
                         }
                         arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
                     }
@@ -5949,6 +6033,27 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                                                     .execute(db)).await;
                                                     arm.persistence_ms +=
                                                         t_pl_track.elapsed().as_millis() as u64;
+                                                    // L00 (#97): pertenencia de
+                                                    // la colección playlist con
+                                                    // su id local y el ítem del
+                                                    // proveedor (Tidal no trae
+                                                    // added_at por ítem).
+                                                    let _ = crate::db::write_or_log(
+                                                        "perform_sync_service_with_emitter_inner",
+                                                        crate::services::library_membership::record_membership(
+                                                            db,
+                                                            &crate::services::library_membership::MembershipWrite {
+                                                                account_id,
+                                                                track_id: res.track_id,
+                                                                collection:
+                                                                    crate::services::library_membership::MembershipCollection::Playlist,
+                                                                collection_id: Some(p_id),
+                                                                provider_item: Some(track.id.to_string()),
+                                                                added_at: None,
+                                                            },
+                                                        ),
+                                                    )
+                                                    .await;
 
                                                     if res.is_new_global_track {
                                                         arm.tracks_new_global += 1;
@@ -6131,6 +6236,18 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                                 .bind(&tidal_id_str)
                                 .bind(aid)
                                 .execute(db)).await;
+                            // L00 (#97): pertenencia de la colección artista
+                            // para las pistas ya conocidas del artista.
+                            let _ = crate::db::write_or_log(
+                                "perform_sync_service_with_emitter_inner",
+                                crate::services::library_membership::record_artist_memberships(
+                                    db,
+                                    account_id,
+                                    aid,
+                                    Some(&tidal_id_str),
+                                ),
+                            )
+                            .await;
                         }
                         arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
                     }
@@ -7350,6 +7467,26 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                         .execute(db)).await;
                                         arm.persistence_ms +=
                                             t_pl_track.elapsed().as_millis() as u64;
+                                        // L00 (#97): pertenencia de la
+                                        // colección playlist con su id local
+                                        // y el ítem del proveedor (Qobuz no
+                                        // trae added_at por ítem).
+                                        let _ = crate::db::write_or_log(
+                                            "perform_sync_service_with_emitter_inner",
+                                            crate::services::library_membership::record_membership(
+                                                db,
+                                                &crate::services::library_membership::MembershipWrite {
+                                                    account_id,
+                                                    track_id: res.track_id,
+                                                    collection:
+                                                        crate::services::library_membership::MembershipCollection::Playlist,
+                                                    collection_id: Some(p_id),
+                                                    provider_item: Some(track.id.to_string()),
+                                                    added_at: None,
+                                                },
+                                            ),
+                                        )
+                                        .await;
 
                                         if res.is_new_global_track {
                                             arm.tracks_new_global += 1;
@@ -7472,6 +7609,19 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                 let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
                                     .bind(aid)
                                     .execute(db)).await;
+                                // L00 (#97): pertenencia de la colección
+                                // artista para las pistas ya conocidas del
+                                // artista, con el ítem del proveedor.
+                                let _ = crate::db::write_or_log(
+                                    "perform_sync_service_with_emitter_inner",
+                                    crate::services::library_membership::record_artist_memberships(
+                                        db,
+                                        account_id,
+                                        aid,
+                                        art.id.as_ref().map(|id| id.to_string()).as_deref(),
+                                    ),
+                                )
+                                .await;
                             }
                             arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
                         }

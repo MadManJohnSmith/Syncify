@@ -1,3 +1,43 @@
+## Biblioteca
+
+**Pertenencia**:
+La relación entre una **cuenta**, un **Track** y una **colección de origen** que la
+biblioteca registra como una fila de `library_memberships` (migración 0112), con el
+ítem del proveedor que la produjo y el `added_at` crudo. Una pista puede tener varias
+pertenencias; la cuenta de una pista sale SOLO de sus pertenencias — no se infiere ni
+se rellena con la cuenta activa.
+_Evitar_: llamar «LibraryItem» a la pertenencia de `library_items` (0067); inferir la
+cuenta por el servicio de una fuente.
+
+**Colección de origen**:
+La colección del proveedor que dio la pertenencia: favorito, álbum, playlist o
+artista, con el id LOCAL de la colección cuando tiene fila (playlists/albums/artists).
+El favorito no tiene fila propia y no se expande por release: la misma grabación
+produce una pertenencia por cuenta y colección, nunca una por release.
+_Evitar_: usar el id de proveedor como identidad de la colección cuando existe fila
+local; crear una pertenencia por edición.
+
+**Pertenencia viva**:
+Pertenencia que sostiene la visibilidad: una pista aparece en la biblioteca solo si
+tiene al menos una (`library_entries`, `playlist_tracks` o `library_memberships`). Una
+fila de `tracks` sin ninguna pertenencia viva no aparece.
+_Evitar_: mostrar el catálogo residual como biblioteca; usar `is_active` de la cuenta
+para decidir visibilidad.
+
+**Fecha de añadido**:
+`tracks.library_added_at`, materialización del máximo `added_at` no nulo y distinto de
+`1970-01-01` sobre las pertenencias vivas de la pista, con `tracks.created_at` como
+respaldo. La mantienen el sync y el importador en cada escritura de pertenencia
+(`services/library_membership.rs`).
+_Evitar_: recalcular el máximo en runtime en la vista; normalizar el `added_at` de la
+pertenencia (se guarda crudo).
+
+**library_items**:
+Espejo del flujo de migración mbdump: una fila por Track con la mejor fuente (0067,
+triggers 0086/0087). NO es la pertenencia por cuenta y ningún código la lee como tal.
+_Evitar_: mezclar su semántica («mejor fuente») con la de la pertenencia; añadirle
+`account_id` para reconvertirla.
+
 ## Puentes Python
 
 **Puente**:

@@ -16,6 +16,7 @@ pub mod http_retry;
 pub mod import_pagination;
 pub mod incremental_enrichment;
 pub mod lastfm;
+pub mod library_membership;
 pub mod logging;
 pub mod manifest_writer;
 pub mod mb_dump_import;

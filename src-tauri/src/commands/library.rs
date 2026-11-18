@@ -7003,6 +7003,28 @@ pub async fn sync_local_library_inner(
                 continue;
             }
 
+            // L00 (#97): pertenencia de biblioteca del importador local,
+            // sin colección de proveedor, que mantiene el materializado.
+            if let Err(e) = crate::services::library_membership::record_membership(
+                db,
+                &crate::services::library_membership::MembershipWrite {
+                    account_id,
+                    track_id: tid,
+                    collection: crate::services::library_membership::MembershipCollection::Library,
+                    collection_id: None,
+                    provider_item: None,
+                    added_at: Some(chrono::Utc::now().to_rfc3339()),
+                },
+            )
+            .await
+            {
+                errors.push(format!(
+                    "Error linking library membership for track #{}: {}",
+                    tid, e
+                ));
+                continue;
+            }
+
             duplicates_matched += 1;
         } else {
             let clean_artist = syncify_core_domain::metadata::sanitize_artist_name(&track.artist);
@@ -7179,6 +7201,28 @@ pub async fn sync_local_library_inner(
             if let Err(e) = link_le {
                 errors.push(format!(
                     "Error linking library entry for track #{}: {}",
+                    new_track_id, e
+                ));
+                continue;
+            }
+
+            // L00 (#97): pertenencia de biblioteca del importador local,
+            // sin colección de proveedor, que mantiene el materializado.
+            if let Err(e) = crate::services::library_membership::record_membership(
+                db,
+                &crate::services::library_membership::MembershipWrite {
+                    account_id,
+                    track_id: new_track_id,
+                    collection: crate::services::library_membership::MembershipCollection::Library,
+                    collection_id: None,
+                    provider_item: None,
+                    added_at: Some(chrono::Utc::now().to_rfc3339()),
+                },
+            )
+            .await
+            {
+                errors.push(format!(
+                    "Error linking library membership for track #{}: {}",
                     new_track_id, e
                 ));
                 continue;
@@ -7397,6 +7441,40 @@ mod local_library_tests {
                 effective_service TEXT,
                 effective_service_track_id TEXT
             );
+            -- L00 (#97): el importador local escribe la pertenencia de
+            -- biblioteca y mantiene el materializado; el espejo mínimo del
+            -- esquema real (migración 0112) que la costura toca: la
+            -- pertenencia, las playlists (el refresco lee playlist_tracks)
+            -- y la columna materializada.
+            CREATE TABLE playlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE,
+                service_playlist_id TEXT,
+                name TEXT NOT NULL,
+                description TEXT,
+                track_count INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE playlist_tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+                track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL DEFAULT 0,
+                added_at TEXT,
+                UNIQUE(playlist_id, position)
+            );
+            CREATE TABLE library_memberships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+                collection_type TEXT NOT NULL CHECK (collection_type IN
+                    ('favorite', 'album', 'playlist', 'artist', 'purchase', 'library')),
+                collection_id INTEGER,
+                provider_item TEXT,
+                added_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            ALTER TABLE tracks ADD COLUMN library_added_at TEXT;
             INSERT INTO services (name, supports_download, max_quality) VALUES ('spotify', 0, 'lossy');
             INSERT INTO services (name, supports_download, max_quality) VALUES ('tidal', 1, 'hires');
             "#,
