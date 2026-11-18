@@ -1897,7 +1897,7 @@ impl QobuzClient {
             .await;
 
             match res {
-                Ok(pid) => {
+                Ok(Some(pid)) => {
                     imported += 1;
 
                     let mut track_offset = 0i32;
@@ -2034,6 +2034,14 @@ impl QobuzClient {
                             break;
                         }
                     }
+                }
+                Ok(None) => {
+                    // PL01 (#154): tombstone del usuario; el sync no la recrea.
+                    tracing::debug!(
+                        "Qobuz: playlist {} tombstoneada; el sync la salta",
+                        playlist.id
+                    );
+                    skipped += 1;
                 }
                 Err(e) => {
                     tracing::error!("Qobuz: Failed to insert playlist {}: {}", playlist.id, e);

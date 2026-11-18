@@ -124,7 +124,15 @@ pub(crate) async fn resolve_effective_account_id(
 /// Upsert or reuse playlist by (account_id, service_playlist_id) strictly when remote ID is provided,
 /// or by (account_id, LOWER(TRIM(name))) only when service_playlist_id is null/empty (manual local playlists).
 /// Registers/updates its entry in `playlist_sources` (TASK-78: decoupling collisions).
-/// Returns the resolved `playlist_id`.
+///
+/// PL01 (#154): una playlist con tombstone (`deleted_at`) ya fue borrada por
+/// el usuario y no existe para el sync: la identidad remota reencontrada NO
+/// la resucita — se devuelve `Ok(None)` y el llamador la salta (ni metadatos,
+/// ni `playlist_sources`, ni pistas). Este es el criterio «una importada
+/// borrada no vuelve en el siguiente sync».
+///
+/// Returns the resolved `playlist_id`, or `None` when the matched playlist is
+/// tombstoned and the import must skip it.
 pub async fn upsert_playlist_and_source(
     db: &sqlx::SqlitePool,
     account_id: i64,
@@ -136,11 +144,14 @@ pub async fn upsert_playlist_and_source(
     is_collaborative: i32,
     image_url: Option<&str>,
     track_count: i32,
-) -> Result<i64, sqlx::Error> {
+) -> Result<Option<i64>, sqlx::Error> {
     let trimmed_sp_id = service_playlist_id.trim();
 
     // Invert priority: Remote identity (account_id, service_playlist_id) strictly takes precedence.
     // Matching by name is only evaluated if service_playlist_id is empty (manual local playlists).
+    // PL01: el lookup NO filtra deleted_at — encontrar el tombstone es lo que
+    // permite saber que esta identidad remota fue borrada y no recrearla
+    // (la fila tombstoneada sigue ocupando el índice UNIQUE).
     let existing_playlist_id: Option<i64> = if !trimmed_sp_id.is_empty() {
         // 1. Strictly look up by (account_id, service_playlist_id) in playlist_sources first
         let by_source: Option<(i64,)> = sqlx::query_as(
@@ -178,10 +189,34 @@ pub async fn upsert_playlist_and_source(
         by_name.map(|(id,)| id)
     };
 
+    // PL01 (#154): deletion wins. Un tombstone bloquea al sync: sin UPDATE de
+    // metadatos, sin registro de fuente y sin pistas nuevas.
+    if let Some(pid) = existing_playlist_id {
+        let deleted_at: Option<String> =
+            sqlx::query_scalar("SELECT deleted_at FROM playlists WHERE id = ?")
+                .bind(pid)
+                .fetch_optional(db)
+                .await?
+                .flatten();
+
+        if deleted_at.is_some() {
+            tracing::debug!(
+                "upsert_playlist_and_source: playlist {} (account {}, '{}') tombstoneada; el sync la salta",
+                pid,
+                account_id,
+                name
+            );
+            return Ok(None);
+        }
+    }
+
     let playlist_id = match existing_playlist_id {
         Some(id) => {
             // Reuse existing playlist, updating metadata/track_count
-            sqlx::query(
+            // PL01: el guard `deleted_at IS NULL` cierra la carrera con un
+            // borrado concurrente: si tombstoneó entre el lookup y aquí, no se
+            // actualiza nada y el sync la salta.
+            let res = sqlx::query(
                 r#"
                 UPDATE playlists SET
                     name = ?,
@@ -194,7 +229,7 @@ pub async fn upsert_playlist_and_source(
                     service_playlist_id = COALESCE(service_playlist_id, ?),
                     last_synced = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND deleted_at IS NULL
                 "#,
             )
             .bind(name)
@@ -212,6 +247,16 @@ pub async fn upsert_playlist_and_source(
             .bind(id)
             .execute(db)
             .await?;
+
+            if res.rows_affected() == 0 {
+                tracing::debug!(
+                    "upsert_playlist_and_source: playlist {} (account {}, '{}') tombstoneada; el sync la salta",
+                    id,
+                    account_id,
+                    name
+                );
+                return Ok(None);
+            }
 
             id
         }
@@ -267,7 +312,7 @@ pub async fn upsert_playlist_and_source(
         .await?;
     }
 
-    Ok(playlist_id)
+    Ok(Some(playlist_id))
 }
 
 /// S186: Resolve a usable Qobuz user_auth_token for the sync/enrichment/playlists paths.
@@ -972,7 +1017,14 @@ pub async fn import_spotify_playlists(
             .await;
 
             let playlist_db_id = match playlist_id_res {
-                Ok(id) => (id,),
+                Ok(Some(id)) => (id,),
+                Ok(None) => {
+                    tracing::debug!(
+                        "Spotify playlist '{}' tombstoneada; el sync la salta",
+                        playlist.name
+                    );
+                    continue;
+                }
                 Err(e) => {
                     tracing::warn!("Failed to insert/update playlist {}: {}", playlist.name, e);
                     continue;
@@ -2020,7 +2072,14 @@ where
             )
             .await
             {
-                Ok(id) => id,
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    tracing::debug!(
+                        "SoundCloud playlist '{}' tombstoneada; el sync la salta",
+                        playlist_title
+                    );
+                    continue;
+                }
                 Err(e) => {
                     totals.errors.push(format!(
                         "SoundCloud playlist '{}' upsert failed: {}",
@@ -4036,7 +4095,14 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                 )
                 .await
                 {
-                    Ok(id) => Some((id,)),
+                    Ok(Some(id)) => Some((id,)),
+                    Ok(None) => {
+                        tracing::debug!(
+                            "Deezer playlist '{}' tombstoneada; el sync la salta",
+                            pl.title
+                        );
+                        None
+                    }
                     Err(e) => {
                         arm.errors.push(format!(
                             "Deezer playlist '{}' upsert failed: {}",
@@ -4592,7 +4658,14 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                         )
                         .await
                         {
-                            Ok(id) => Some((id,)),
+                            Ok(Some(id)) => Some((id,)),
+                            Ok(None) => {
+                                tracing::debug!(
+                                    "Spotify playlist '{}' tombstoneada; el sync la salta",
+                                    pl.name
+                                );
+                                None
+                            }
                             Err(e) => {
                                 tracing::warn!(
                                     "Failed to upsert Spotify playlist '{}': {}",
@@ -5745,7 +5818,14 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                         )
                         .await
                         {
-                            Ok(id) => Some((id,)),
+                            Ok(Some(id)) => Some((id,)),
+                            Ok(None) => {
+                                tracing::debug!(
+                                    "Tidal playlist '{}' tombstoneada; el sync la salta",
+                                    pl.title
+                                );
+                                None
+                            }
                             Err(e) => {
                                 tracing::warn!(
                                     "Failed to upsert Tidal playlist '{}': {}",
@@ -7066,7 +7146,14 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                         )
                         .await
                         {
-                            Ok(id) => Some((id,)),
+                            Ok(Some(id)) => Some((id,)),
+                            Ok(None) => {
+                                tracing::debug!(
+                                    "Qobuz playlist '{}' tombstoneada; el sync la salta",
+                                    pl.name
+                                );
+                                None
+                            }
                             Err(e) => {
                                 tracing::warn!(
                                     "Failed to upsert Qobuz playlist '{}': {}",
@@ -8490,6 +8577,8 @@ mod service_tests {
                 is_public INTEGER DEFAULT 0,
                 track_count INTEGER DEFAULT 0,
                 last_synced TEXT,
+                local_uuid TEXT,
+                deleted_at TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 owner_name TEXT,
                 owner_id TEXT,
@@ -8538,7 +8627,8 @@ mod service_tests {
             50,
         )
         .await
-        .expect("Initial upsert failed");
+        .expect("Initial upsert failed")
+        .expect("Initial upsert returned None (tombstoned)");
 
         assert!(pid1 > 0);
 
@@ -8570,7 +8660,8 @@ mod service_tests {
             55,
         )
         .await
-        .expect("Re-import upsert failed");
+        .expect("Re-import upsert failed")
+        .expect("Re-import upsert returned None (tombstoned)");
 
         assert_eq!(
             pid1, pid_reimport,
@@ -8591,7 +8682,8 @@ mod service_tests {
             30,
         )
         .await
-        .expect("Second upsert failed");
+        .expect("Second upsert failed")
+        .expect("Second upsert returned None (tombstoned)");
 
         assert_ne!(pid1, pid2, "Should NOT reuse existing playlist ID when service_playlist_id differs (prevents collision/absorption)");
 

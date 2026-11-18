@@ -864,6 +864,26 @@ impl AppleMusicClient {
                     }
                 };
 
+                // PL01 (#154): un tombstone del usuario bloquea la reimportación
+                // (deletion wins, igual que upsert_playlist_and_source); sin el
+                // guard, el ON CONFLICT actualizaría en silencio la fila oculta.
+                let tombstone: Option<i64> = sqlx::query_scalar(
+                    "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ? AND deleted_at IS NOT NULL LIMIT 1",
+                )
+                .bind(account_id)
+                .bind(&playlist.id)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| format!("Failed to check playlist tombstone: {}", e))?;
+                if tombstone.is_some() {
+                    tracing::debug!(
+                        "AppleMusic: playlist {} tombstoneada; el sync la salta",
+                        playlist.id
+                    );
+                    skipped += 1;
+                    continue;
+                }
+
                 // Upsert playlist
                 let playlist_db_id: i64 = sqlx::query_scalar(
                     r#"

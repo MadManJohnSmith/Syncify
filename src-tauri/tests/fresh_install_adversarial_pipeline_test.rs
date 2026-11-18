@@ -286,7 +286,8 @@ async fn test_03_c2_playlist_sources_traceability_and_dedup() {
         42,
     )
     .await
-    .expect("Initial upsert_playlist_and_source must succeed");
+    .expect("Initial upsert_playlist_and_source must succeed")
+    .expect("Initial upsert_playlist_and_source returned None (tombstoned)");
     assert!(pid1 > 0);
 
     // Verify playlist_sources was populated
@@ -316,7 +317,8 @@ async fn test_03_c2_playlist_sources_traceability_and_dedup() {
         45,
     )
     .await
-    .expect("Re-import upsert_playlist_and_source must succeed");
+    .expect("Re-import upsert_playlist_and_source must succeed")
+    .expect("Re-import upsert_playlist_and_source returned None (tombstoned)");
 
     assert_eq!(
         pid1, pid_reimport,
@@ -337,7 +339,8 @@ async fn test_03_c2_playlist_sources_traceability_and_dedup() {
         42,
     )
     .await
-    .expect("Second playlist upsert_playlist_and_source must succeed");
+    .expect("Second playlist upsert_playlist_and_source must succeed")
+    .expect("Second playlist upsert_playlist_and_source returned None (tombstoned)");
 
     assert_ne!(
         pid1, pid2,

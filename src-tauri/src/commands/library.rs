@@ -1884,6 +1884,9 @@ pub async fn add_to_playlist(
 ///
 /// PL00 (#153): una playlist local no es de ninguna cuenta (borrar la cuenta
 /// no puede llevársela) y su identidad estable es `local_uuid`, no el nombre.
+/// PL01 (#154): el nombre no es único (la cuenta NULL lo exime del índice
+/// UNIQUE sobre (account_id, service_playlist_id)) y crear con un nombre
+/// repetido nunca comparte `local_uuid`.
 /// El parámetro `account_id` se conserva por compatibilidad IPC y se ignora.
 #[tauri::command]
 pub async fn create_playlist(
@@ -1893,6 +1896,15 @@ pub async fn create_playlist(
     description: Option<String>,
 ) -> Result<i64, String> {
     let _ = account_id;
+    create_playlist_core(&state.db, name, description).await
+}
+
+/// Núcleo testeable de `create_playlist`: alta local con UUID y sin cuenta.
+pub async fn create_playlist_core(
+    db: &sqlx::SqlitePool,
+    name: String,
+    description: Option<String>,
+) -> Result<i64, String> {
     let local_uuid = uuid::Uuid::new_v4().to_string();
     tracing::info!("create_playlist: local '{}' ({})", name, local_uuid);
 
@@ -1905,7 +1917,7 @@ pub async fn create_playlist(
     .bind(&local_uuid)
     .bind(&name)
     .bind(&description)
-    .fetch_one(&state.db)
+    .fetch_one(db)
     .await
     .map_err(|e| format!("Failed to create playlist: {}", e))?;
 

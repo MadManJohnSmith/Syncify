@@ -1806,7 +1806,14 @@ impl TidalClient {
                 )
                 .await
                 {
-                    Ok(id) => id,
+                    Ok(Some(id)) => id,
+                    Ok(None) => {
+                        tracing::debug!(
+                            "Tidal playlist '{}' tombstoneada; el sync la salta",
+                            playlist.title
+                        );
+                        continue;
+                    }
                     Err(e) => {
                         tracing::error!(
                             "Failed to insert/update playlist {}: {}",
