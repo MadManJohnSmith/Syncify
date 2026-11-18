@@ -23,8 +23,8 @@ Desde la raíz. El target de Rust va **fuera del repo** para no llenar el disco:
 CARGO_TARGET_DIR=/tmp/syncify-target cargo check --workspace --all-targets --locked
 CARGO_TARGET_DIR=/tmp/syncify-target cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
-CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --no-fail-fast   # 336 objetivos de test: recuento real
-(FE-SYNC-01: SyncRun — migración 0106 y tres suites de prueba (#65); A84: login en webview por cuenta — suite de guardado con artefacto falso (#84); L02: búsqueda FTS y upgrade de 0107 (#99); ciclo de vida de cuenta — migración renumerada a 0108 (#85); P00: cola persistente — migración 0109 y suite de persistencia (#131); PL00: modelo local de playlists — migración renumerada a 0110 (#153); A86: perfiles por cuenta — upgrade de 0111 y ciclo de vida cifrado (#86))
+CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --no-fail-fast   # 337 objetivos de test: recuento real
+(FE-SYNC-01: SyncRun — migración 0106 y tres suites de prueba (#65); A84: login en webview por cuenta — suite de guardado con artefacto falso (#84); L02: búsqueda FTS y upgrade de 0107 (#99); ciclo de vida de cuenta — migración renumerada a 0108 (#85); P00: cola persistente — migración 0109 y suite de persistencia (#131); PL00: modelo local de playlists — migración renumerada a 0110 (#153); A86: perfiles por cuenta — upgrade de 0111 y ciclo de vida cifrado (#86); A87: pausa por sesión y reanudación tras re-login — suite de integración (#87))
 CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --test batch_50_audit_test -- --test-threads=1
 npm --prefix ui run build && npm --prefix ui run test:run                  # 140 ficheros / 1200 tests
 .venv/bin/python -m unittest discover -s scripts/tests                    # 445 tests (2 skipped)

@@ -1535,19 +1535,30 @@ pub fn is_valid_account_state(state: &str) -> bool {
 /// sincroniza. Una cuenta inexistente NO se rechaza aquí: la validación de
 /// existencia sigue en cada camino (auth-status, service_of_account) con sus
 /// errores propios.
+///
+/// #87 (ADR-0007 decisiones 4 y 12): una cuenta con credencial marcada
+/// inválida (`credentials_invalid` — 401/403, logout o perfil ilegible)
+/// tampoco sincroniza; su sync queda PAUSADO hasta reautenticar, sin
+/// reintentos en bucle contra una credencial rechazada. Reautenticar limpia
+/// la marca (`upsert_service_account`) y el gate vuelve a abrir solo.
 pub async fn ensure_account_can_sync(db: &sqlx::SqlitePool, account_id: i64) -> Result<(), String> {
-    let state: Option<String> =
-        sqlx::query_scalar("SELECT COALESCE(state, 'enabled') FROM accounts WHERE id = ?")
-            .bind(account_id)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| e.to_string())?;
-    match state {
+    let row: Option<(String, i64)> = sqlx::query_as(
+        "SELECT COALESCE(state, 'enabled'), IFNULL(credentials_invalid, 0) FROM accounts WHERE id = ?",
+    )
+    .bind(account_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    match row {
         None => Ok(()),
-        Some(s) if s == ACCOUNT_STATE_ENABLED => Ok(()),
-        Some(s) => Err(format!(
+        Some((s, _)) if s != ACCOUNT_STATE_ENABLED => Err(format!(
             "AccountDisabled: account {} is '{}' and cannot sync; enable it first",
             account_id, s
+        )),
+        Some((_, 0)) => Ok(()),
+        Some((_, _)) => Err(format!(
+            "AccountAuthExpired: account {} has invalid credentials and cannot sync; reauthenticate first",
+            account_id
         )),
     }
 }

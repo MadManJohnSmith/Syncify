@@ -398,10 +398,15 @@ fn login_profiles_base(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// `login_attempts` (migración 0111) y lo apunta en el registro vivo.
 /// Devuelve el `profile_key`, el directorio del perfil y el label de la
 /// ventana.
+///
+/// Con `reauth_account_id` (re-login de una cuenta existente, issue #87) el
+/// perfil cifrado de esa cuenta se restaura en el directorio provisional
+/// ANTES de abrir la ventana: el mismo webview, decisión 4 del ADR-0007.
 async fn begin_attempt(
     app: &tauri::AppHandle,
     db: &sqlx::SqlitePool,
     service_id: i64,
+    reauth_account_id: Option<i64>,
 ) -> Result<(String, PathBuf, String), String> {
     {
         let attempts = ATTEMPTS
@@ -419,6 +424,35 @@ async fn begin_attempt(
     let profile_dir = base.join(&profile_key);
     std::fs::create_dir_all(&profile_dir)
         .map_err(|e| format!("Failed to create login profile directory: {}", e))?;
+
+    // Re-login de una cuenta existente (issue #87): restaurar el perfil
+    // cifrado. Sin fila 'archived' (cuenta previa a 0111) el intento sigue
+    // con un webview vacío; un archivo que no descifra deja la cuenta «sin
+    // sesión» (la marca hace [`restore_profile_for_reauth`]) y también
+    // continúa vacío, porque el login nunca bloquea la reparación.
+    if let Some(account_id) = reauth_account_id {
+        match super::account_profiles::restore_profile_for_reauth(db, account_id, &profile_dir)
+            .await
+        {
+            Ok(Some(())) => tracing::info!(
+                "Re-login of account {}: webview profile restored from its encrypted archive",
+                account_id
+            ),
+            Ok(None) => {}
+            Err(e) => {
+                // Restauración fallida: el temporal puede quedar a medias, se
+                // re-crea vacío (el fallo real ya quedó registrado y la
+                // cuenta marcada por el helper).
+                tracing::warn!(
+                    "Login attempt continues with a fresh webview after a failed profile restore: {}",
+                    e
+                );
+                let _ = std::fs::remove_dir_all(&profile_dir);
+                std::fs::create_dir_all(&profile_dir)
+                    .map_err(|e| format!("Failed to recreate login profile directory: {}", e))?;
+            }
+        }
+    }
 
     let archives_base = super::account_profiles::profile_bases(app)?.1;
     let archive_path = super::account_profiles::profile_archive_path(&archives_base, &profile_key);
@@ -1073,12 +1107,18 @@ fn emit_login_started(service: &str, profile_key: &str) {
 /// `account-login-completed` / `account-login-failed` /
 /// `account-login-cancelled`.
 ///
+/// Con `account_id` (reautenticación desde la ficha, issue #87; ADR-0007
+/// decisión 4) el intento restaura el perfil cifrado de ESA cuenta antes de
+/// abrir la ventana: el mismo webview, sin repetir el alta. La cuenta debe
+/// existir y ser del servicio pedido.
+///
 /// El artefacto capturado entra al camino existente de guardado
 /// (`commands::auth::save_auth_result`): cifrado, upsert por identidad y
 /// re-encola de descargas idénticos a los del puente.
 #[tauri::command]
 pub async fn start_account_login(
     service: String,
+    account_id: Option<i64>,
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Value, String> {
@@ -1090,8 +1130,36 @@ pub async fn start_account_login(
     };
     let service_static = descriptor.service;
     let service_id = super::account_profiles::resolve_service_id(&state.db, service_static).await?;
+
+    // Reautenticación (issue #87): la cuenta tiene que existir y ser del
+    // servicio pedido — restaurar el perfil de otra cuenta sería abrir el
+    // cookie jar equivocado.
+    if let Some(account_id) = account_id {
+        let account_service: Option<i64> =
+            sqlx::query_scalar("SELECT service_id FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_optional(&state.db)
+                .await
+                .map_err(|e| format!("Failed to read account {}: {}", account_id, e))?;
+        match account_service {
+            None => {
+                return Err(format!(
+                    "Account {} does not exist; it cannot be re-authenticated",
+                    account_id
+                ));
+            }
+            Some(id) if id != service_id => {
+                return Err(format!(
+                    "Account {} is not a {} account",
+                    account_id, service
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+
     let (profile_key, profile_dir, window_label) =
-        begin_attempt(&app, &state.db, service_id).await?;
+        begin_attempt(&app, &state.db, service_id, account_id).await?;
     let db = state.db.clone();
 
     match &descriptor.artifact {

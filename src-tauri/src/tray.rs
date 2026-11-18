@@ -827,6 +827,16 @@ async fn sync_all_services_inner<R: Runtime>(app: &AppHandle<R>) -> Result<usize
            FROM accounts a
            JOIN services s ON s.id = a.service_id
            WHERE a.is_active = 1
+             -- #87 (ADR-0007 decisión 12): un servicio cuyas cuentas activas
+             -- son TODAS de credencial inválida no entra en el sync del
+             -- scheduler — cada tick rebotaría contra un 401 en bucle. La
+             -- reautenticación limpia la marca y el servicio vuelve a la cola.
+             AND EXISTS (
+                 SELECT 1 FROM accounts ha
+                 WHERE ha.service_id = s.id
+                   AND ha.is_active = 1
+                   AND IFNULL(ha.credentials_invalid, 0) = 0
+             )
            ORDER BY 1"#,
     )
     .fetch_all(&db)

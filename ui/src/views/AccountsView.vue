@@ -1170,9 +1170,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { open } from '@tauri-apps/plugin-dialog'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { accountsApi } from '@/api/accounts'
 import { syncRunsApi } from '@/api/syncRuns'
 import type { SyncRunRecord } from '@/api/syncRuns'
@@ -1433,12 +1434,66 @@ function getServiceIconForName(serviceName: string): string {
   return SERVICE_ICON_SYMBOLS[String(serviceName || '').toLowerCase()] || 'cloud'
 }
 
-/** Reconnect a single account (re-authenticate) instead of the whole service. */
+/** Outcome of an in-app login attempt, delivered via the `account-login-*` events. */
+type LoginOutcome = 'completed' | 'failed' | 'cancelled'
+
+let loginOutcomeUnlisteners: UnlistenFn[] = []
+
+function unlistenLoginOutcome() {
+  loginOutcomeUnlisteners.forEach(u => u())
+  loginOutcomeUnlisteners = []
+}
+
+/** Await the outcome of one in-app login attempt, filtered by its `profile_key`. */
+function awaitLoginOutcome(profileKey: string): Promise<LoginOutcome> {
+  return new Promise(resolve => {
+    let settled = false
+    const settle = (outcome: LoginOutcome) => async (event: { payload?: { profile_key?: string } }) => {
+      const payload = event?.payload
+      if (settled || (payload?.profile_key && payload.profile_key !== profileKey)) return
+      settled = true
+      unlistenLoginOutcome()
+      resolve(outcome)
+    }
+    listen<{ profile_key?: string }>(TauriEvents.ACCOUNT_LOGIN_COMPLETED, settle('completed'))
+      .then(u => loginOutcomeUnlisteners.push(u))
+    listen<{ profile_key?: string }>(TauriEvents.ACCOUNT_LOGIN_FAILED, settle('failed'))
+      .then(u => loginOutcomeUnlisteners.push(u))
+    listen<{ profile_key?: string }>(TauriEvents.ACCOUNT_LOGIN_CANCELLED, settle('cancelled'))
+      .then(u => loginOutcomeUnlisteners.push(u))
+  })
+}
+
+onBeforeUnmount(unlistenLoginOutcome)
+
+/**
+ * Reconnect a single account (re-authenticate) instead of the whole service.
+ * #87 (ADR-0007 decisión 4): the in-app webview login of THIS account — its
+ * encrypted profile is restored, so the same webview repairs the session
+ * without re-adding the account or touching its library.
+ */
 async function reconnectAccount(account: any) {
   if (!account) return
-  // Same auth flow as connecting: re-do the provider login for this service.
   const serviceId = findServiceIdForAccount(account)
-  if (serviceId) await connectServiceFromCard(serviceId)
+  if (!serviceId) return
+  authLoading.value = serviceId
+  try {
+    const accountId = typeof account.id === 'number' ? account.id : undefined
+    const started = await accountsApi.startAccountLogin(serviceId, accountId)
+    const outcome = await awaitLoginOutcome(started.profile_key)
+    if (outcome === 'completed') {
+      await fetchData()
+      highlightedAccountId.value = accountId ?? null
+      showToast(`Re-authenticated ${serviceId} successfully`, 'success')
+    } else if (outcome === 'failed') {
+      showToast(`Re-authentication for ${serviceId} failed`, 'error')
+    }
+    // 'cancelled' cierra la ventana a petición del usuario: sin aviso.
+  } catch (e) {
+    showToast(`Re-authentication error for ${serviceId}: ${safeAuthError(e)}`, 'error')
+  } finally {
+    authLoading.value = null
+  }
 }
 
 /** Resolve the service id (string) for an account row coming from either view. */

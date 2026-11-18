@@ -136,11 +136,9 @@ pub fn archive_directory(dir: &Path, key: &[u8; 32]) -> Result<Vec<u8>, String> 
 /// GCM no valida (clave equivocada o manipulación) o el cuerpo no cuadra con
 /// el manifiesto.
 ///
-/// Sin llamante en producción todavía: las issues #87 y #91 (bloqueadas por
-/// #86) materializan perfiles cifrados. `expect` no cabe aquí (en el objetivo
-/// lib el lint no dispara y la expectativa quedaría sin cumplir); el `allow`
-/// es inerte en lib y solo calla el bin.
-#[allow(dead_code)]
+/// Consumida en producción por [`restore_profile_for_reauth`] (issue #87,
+/// ADR-0007 decisión 4: reautenticar reutiliza el mismo webview) y por las
+/// pruebas de unidad de abajo.
 pub fn restore_directory(archive: &[u8], dest: &Path, key: &[u8; 32]) -> Result<usize, String> {
     if archive.len() < PROFILE_ARCHIVE_MAGIC.len() + 12 {
         return Err("profile archive too short to be valid".into());
@@ -211,7 +209,6 @@ pub fn restore_directory(archive: &[u8], dest: &Path, key: &[u8; 32]) -> Result<
 /// Ruta bajo `dest` que rechaza rutas absolutas y componentes `..`: el
 /// manifiesto se restauró de bytes descifrados y no se le da poder de
 /// escribir fuera del directorio temporal. Ratchet: ver [`restore_directory`].
-#[allow(dead_code)]
 fn safe_join(dest: &Path, relative: &str) -> Result<PathBuf, String> {
     let relative_path = Path::new(relative);
     if relative_path.is_absolute() {
@@ -286,7 +283,6 @@ pub fn archive_profile_dir_to_file(
 
 /// Restaura el contenedor de `archive_path` en `dest_dir`.
 /// Ratchet: ver [`restore_directory`].
-#[allow(dead_code)]
 pub fn restore_profile_dir_from_file(
     archive_path: &Path,
     dest_dir: &Path,
@@ -300,6 +296,55 @@ pub fn restore_profile_dir_from_file(
         )
     })?;
     restore_directory(&bytes, dest_dir, key)
+}
+
+/// Restaura el perfil cifrado de una cuenta en el directorio provisional de
+/// un intento de RE-LOGIN (issue #87; ADR-0007 decisión 4: reautenticar
+/// reutiliza el mismo webview, sin repetir el alta ni tocar la biblioteca).
+///
+/// - La cuenta SIN fila 'archived' (cuenta previa a 0111, o perfil ya
+///   marcado ilegible) devuelve `Ok(None)`: el intento sigue con un
+///   directorio vacío y el login es un alta nueva por identidad.
+/// - Si el archivo no descifra con la clave activa, el perfil pasa a
+///   'unrecoverable' y su cuenta a «sin sesión» (decisión 10) y el error
+///   sube: el llamante limpia el directorio y continúa con un webview vacío,
+///   que el login siga siendo posible nunca bloquea la reparación.
+pub async fn restore_profile_for_reauth(
+    db: &SqlitePool,
+    account_id: i64,
+    dest_dir: &Path,
+) -> Result<Option<()>, String> {
+    let row: Option<(i64, String)> = sqlx::query_as(
+        "SELECT id, archive_path FROM account_profiles
+         WHERE account_id = ? AND status = ?
+         ORDER BY updated_at DESC, id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .bind(PROFILE_STATUS_ARCHIVED)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Failed to read profile of account {}: {}", account_id, e))?;
+    let Some((profile_id, archive_path)) = row else {
+        return Ok(None);
+    };
+
+    let key = crate::crypto::key()?;
+    if let Err(e) = restore_profile_dir_from_file(Path::new(&archive_path), dest_dir, &key) {
+        if let Err(mark_err) = mark_profile_unrecoverable(db, profile_id).await {
+            // La marca es el efecto visible («sin sesión» en la ficha); su
+            // fallo no es silencioso, pero no disfraza el error real.
+            tracing::warn!(
+                "Failed to mark profile {} unrecoverable after a failed restore: {}",
+                profile_id,
+                mark_err
+            );
+        }
+        return Err(format!(
+            "Profile archive of account {} does not restore: {}",
+            account_id, e
+        ));
+    }
+    Ok(Some(()))
 }
 
 /// Comprobación de descifrado SIN escribir nada en disco: la higiene de
