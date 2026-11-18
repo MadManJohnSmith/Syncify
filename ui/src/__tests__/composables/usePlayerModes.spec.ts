@@ -27,6 +27,7 @@ vi.mock('../../api/player', () => ({
     onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
     onPlayerAdvanced: vi.fn(),
+    onPlayerModesChanged: vi.fn(() => Promise.resolve()),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
 }));

@@ -26,6 +26,7 @@ pub mod notification;
 pub mod operation_recovery;
 pub mod playback_advance;
 pub mod playback_session;
+pub mod player_control;
 pub mod qobuz;
 pub mod rate_limiter;
 pub mod repair_guardrail;

@@ -4,7 +4,7 @@
 > sigue en español; no hay traducción de este documento todavía. El índice
 > que marca su estado está en `docs/README.en.md`.
 
-**Estado de revisión:** 2026-10-25 — re-revisión contra el árbol (verificación dirigida de símbolos y comportamiento): existe implementación MPRIS nativa en Rust (`src-tauri/src/services/mpris.rs`, `MprisService::start` en el setup de `src-tauri/src/main.rs`, bus `org.mpris.MediaPlayer2.syncify` en `/org/mpris/MediaPlayer2`); el spike WebKitGTK→D-Bus pasa a registro histórico. Añadida la sección del motor nativo (Fase 2: `PlayerState`, `player_load_track`, ticker, `services/stream_cache.rs`). Sin verificar en sesión gráfica real: la comprobación D-Bus end-to-end del panel MPRIS (prueba manual abajo) y la reproducción de audio real (README §"Verification and limitations").
+**Estado de revisión:** 2026-11-18 — P02 (#133): MPRIS y bandeja leen y mandan sobre el backend. El servicio (`src-tauri/src/services/mpris.rs`) resuelve metadatos desde la biblioteca por `track_id`, ejecuta play/pause/next/previous/seek en `services/player_control.rs` sobre el motor nativo y expone `Shuffle`/`LoopStatus` escribibles sobre `player_state`; la UI ya no publica `player_mpris_update` ni escucha `player:mpris-action`. La comprobación D-Bus y de bandeja en sesión gráfica real sigue **sin ejecutar** en este repo: la definición queda anotada abajo para P18 (#149). Antes: 2026-10-25 — re-revisión contra el árbol (verificación dirigida de símbolos y comportamiento): existe implementación MPRIS nativa en Rust (`src-tauri/src/services/mpris.rs`, `MprisService::start` en el setup de `src-tauri/src/main.rs`, bus `org.mpris.MediaPlayer2.syncify` en `/org/mpris/MediaPlayer2`); el spike WebKitGTK→D-Bus pasa a registro histórico. Añadida la sección del motor nativo (Fase 2: `PlayerState`, `player_load_track`, ticker, `services/stream_cache.rs`). Sin verificar en sesión gráfica real: la comprobación D-Bus end-to-end del panel MPRIS (prueba manual abajo) y la reproducción de audio real (README §"Verification and limitations").
 
 > **Actualización 2026-10-19 — la ruta de audio de este documento está retirada.**
 > El cuerpo describe la fase 1 original (elemento HTML Audio + `resolve_playback_source` +
@@ -34,7 +34,7 @@
 > describen el comportamiento PRE-P01 de la UI y quedan como registro histórico del
 > reparto de responsabilidades anterior.
 
-**Último cambio:** re-revisión 2026-10-25 — MPRIS nativo (`services/mpris.rs`) y motor nativo Fase 2 documentados; el registro de la fase 1 queda intacto. Antes: fase 1 del player — archivos: `ui/src/composables/usePlayer.ts`, `ui/src/components/StatusBar.vue` (mini reproductor, desde PL-08) y `ui/src/components/player/FullscreenPlayer.vue`, `ui/src/api/library.ts` (`recordLocalPlay`), vistas consumidoras (`AlbumDetailView.vue`, `ArtistDetailView.vue`, `PlaylistView.vue`, `LibraryView.vue`).
+**Último cambio:** 2026-11-18 — P02 (#133): `services/player_control.rs` (play/pause/next/previous/seek y modos sobre el backend), MPRIS con metadatos desde la biblioteca y `Shuffle`/`LoopStatus` escribibles; retirados `player_mpris_update` y `player:mpris-action`. Antes: re-revisión 2026-10-25 — MPRIS nativo (`services/mpris.rs`) y motor nativo Fase 2 documentados; el registro de la fase 1 queda intacto. Antes: fase 1 del player — archivos: `ui/src/composables/usePlayer.ts`, `ui/src/components/StatusBar.vue` (mini reproductor, desde PL-08) y `ui/src/components/player/FullscreenPlayer.vue`, `ui/src/api/library.ts` (`recordLocalPlay`), vistas consumidoras (`AlbumDetailView.vue`, `ArtistDetailView.vue`, `PlaylistView.vue`, `LibraryView.vue`).
 **Leer antes de modificar el reproductor actual:** `ui/src/composables/usePlayer.ts` (proyección de estado), `src-tauri/src/commands/player.rs` (`player_load_track`, motor nativo), `src-tauri/src/services/playback_session.rs` (sesión, acumulación de 30 s, `LISTEN_THRESHOLD_SEC`), `src-tauri/src/services/playback_advance.rs` (decisión y avance automático, #132), `src-tauri/src/commands/playback_queue.rs` (agregado de cola, migración 0109) y `src-tauri/migrations/0091_local_play_stats.sql` (schema de escuchas). La antigua resolución de fuentes que aparece más abajo es contexto histórico, no una ruta que deba reutilizarse.
 **Archivos core:**
 - `ui/src/composables/usePlayer.ts` (player, cola, modos, persistencia, MediaSession; desde #132 NO cronometra ni avanza al ended)
@@ -42,7 +42,8 @@
 - `src-tauri/migrations/0091_local_play_stats.sql` (schema `play_count`/`last_played`/`playback_listens`)
 - `src-tauri/src/commands/playback.rs` (`perform_record_local_play`: INSERT-primero, idempotente por `listen_session_id`; llamado por el ticker del backend desde #132 — ya no es comando IPC)
 - `src-tauri/src/services/playback_advance.rs` (#132: `decide_auto_advance`, `run_auto_advance`, `spawn_auto_advance`, evento `player:advanced`)
-- `src-tauri/src/services/mpris.rs` (MPRIS nativo: `MprisService::start`, interface `org.mpris.MediaPlayer2` + `.Player`)
+- `src-tauri/src/services/mpris.rs` (MPRIS nativo: `MprisService::start`, interface `org.mpris.MediaPlayer2` + `.Player`; desde #133 lee el backend y resuelve metadatos por `track_id`)
+- `src-tauri/src/services/player_control.rs` (#133: acciones de MPRIS/bandeja sobre `PlayerState` y la cola persistida; `set_shuffle`/`set_repeat`, evento `player:modes-changed`)
 - `src-tauri/src/services/stream_cache.rs` (sesión de streaming progresivo de la Fase 2)
 
 ---
@@ -80,8 +81,11 @@ un motor nativo Rust (rodio + symphonia) gestionado desde el setup de
   progresivo de proveedores vía `src-tauri/src/services/stream_cache.rs`
   (`StreamSession` / `StreamCacheState`, caché temporal Qobuz/Tidal).
 - `spawn_player_ticker` (mismo fichero, llamado una vez en `setup`): tick periódico de
-  progreso y detección de fin de pista.
-- `player_mpris_update`: alimenta los metadatos y modos del panel MPRIS (ver sección siguiente).
+  progreso, detección de fin de pista y publicación del transporte en MPRIS.
+- MPRIS (#133): el ticker publica `PlaybackStatus`, `Position` y la pista
+  cargada; `services/mpris.rs` resuelve título/artista/álbum/carátula desde la
+  biblioteca. El comando `player_mpris_update` y el evento `player:mpris-action`
+  se retiraron: las acciones se ejecutan en `services/player_control.rs`.
 
 La fuente de verdad del estado de reproducción en la UI sigue siendo
 `ui/src/composables/usePlayer.ts`. Sin verificación de escritorio real: la
@@ -110,6 +114,46 @@ Honestidad del inventario (encargo previo de esta fase), conservada literalmente
 2. `busctl --user list | grep org.mpris.MediaPlayer2` — debe aparecer un nombre `org.mpris.MediaPlayer2.<algo>`.
 3. Consultar `Identity`, `PlaybackStatus`, `Metadata` y `Position` del interface `org.mpris.MediaPlayer2.Player` (`busctl --user get-property <nombre> /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player <propiedad>`).
 4. Enviar `PlayPause` (`busctl --user call <nombre> /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player PlayPause`) y verificar pausa/reanudación en la app; repetir con `Seek`.
+
+### Verificación manual de P02 (#133) para P18 (#149)
+
+**Estado:** pendiente de ejecución en una sesión gráfica real. El trabajo de
+P02 valida la capa con estado simulado (motor `syncify_player::sim` y BD
+`:memory:`), no D-Bus ni audio reales. P18 registra la evidencia fechada en
+`docs/historico/`; esta lista es su definición, no una afirmación de que ya se
+haya ejecutado.
+
+Preparación: arrancar con `tools/prueba-limpia.sh` (o `npm run dev`) en una
+sesión Linux con D-Bus de sesión y una pista descargada en la biblioteca.
+
+1. **Registro y metadatos.** Reproducir una pista. `busctl --user list | grep
+   org.mpris.MediaPlayer2.syncify` debe mostrar el nombre. Consultar
+   `PlaybackStatus`, `Metadata`, `Position`, `Shuffle` y `LoopStatus` con
+   `busctl --user get-property org.mpris.MediaPlayer2.syncify
+   /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player <propiedad>`.
+   `PlaybackStatus` debe ser `Playing` y `Metadata` debe llevar
+   `xesam:title`, `xesam:artist` y `mpris:length` de la pista real.
+2. **Transporte sin webview.** Con la ventana oculta a bandeja (paso 4),
+   invocar `PlayPause`, `Next` y `Previous` con `busctl --user call ...`.
+   Verificar que el audio cambia de estado, que `player:advanced` aparece en el
+   log nativo al cambiar de pista y que `Metadata`/`Position` se actualizan.
+   `Seek` relativo y `SetPosition` (con el `mpris:trackid` actual) deben mover
+   la posición; `SetPosition` con un trackid ajeno debe ignorarse.
+3. **Modos.** `busctl --user set-property ... Shuffle b true` y
+   `busctl --user set-property ... LoopStatus s Playlist`. Comprobar que
+   `player_state.shuffle`/`player_state.repeat` quedan en `1`/`all`, que el
+   panel refleja los valores y que los pendientes se reproducen en el orden
+   barajado (o el ciclo con repeat all). Repetir con `LoopStatus s Track` y
+   `Shuffle b false`.
+4. **Bandeja activa.** Con «Cerrar a bandeja» activo, cerrar la ventana: el
+   proceso sigue vivo, la pista y la cola siguen sonando sin cortes y MPRIS
+   responde a `Next`/`PlayPause` con la webview oculta.
+5. **Sin close-to-tray.** Desactivar «Cerrar a bandeja» en Ajustes y cerrar la
+   ventana: el proceso termina y el audio se detiene; no debe quedar un
+   propietario `org.mpris.MediaPlayer2.syncify` en el bus.
+6. **Evidencia.** Anotar fecha, sesión, versión/commit, comandos ejecutados y
+   rutas de los logs de `~/.local/state/syncify-manual-test/` en la entrada de
+   P18. No versionar los logs.
 
 ## Decisiones de producto registradas (fase 1)
 

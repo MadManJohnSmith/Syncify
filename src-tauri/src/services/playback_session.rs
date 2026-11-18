@@ -212,6 +212,17 @@ impl PlayerState {
     }
 }
 
+/// Estado que el ticker publica en MPRIS (#133, P02): transporte, posición y
+/// la identidad de la pista que el motor tiene cargada. Los metadatos se
+/// resuelven desde la BD en el servicio MPRIS, no los empuja la UI.
+#[derive(Debug, Clone)]
+pub struct MprisTick {
+    pub status: PlaybackStatus,
+    pub position: Duration,
+    pub track_id: Option<i64>,
+    pub duration: Option<Duration>,
+}
+
 /// Lo que un paso del ticker necesita emitir: `player:tick`, `player:ended`,
 /// la actualización de MPRIS y los estados de stream que la frontera haya
 /// producido (se emiten en este orden, como dentro de `collect_tick`).
@@ -220,7 +231,7 @@ impl PlayerState {
 #[derive(Default)]
 pub struct TickOutput {
     pub stream_states: Vec<StreamStatePayload>,
-    pub mpris: Option<(PlaybackStatus, Duration)>,
+    pub mpris: Option<MprisTick>,
     pub tick: Option<PlayerTickPayload>,
     pub ended: Option<PlayerEndedPayload>,
     pub stall_refill: Option<Arc<StreamSession>>,
@@ -317,6 +328,51 @@ impl PlayerState {
     /// Resolver de streaming en uso (producción o el doble de pruebas).
     pub(crate) fn resolver(&self) -> StreamResolver {
         self.resolver.clone()
+    }
+
+    /// Estado de transporte observable sin tocar el ticker (#133): MPRIS y
+    /// las acciones del backend deciden play/pause sobre el motor real.
+    pub fn playback_status(&self) -> PlaybackStatus {
+        let Ok(core) = self.core.lock() else {
+            return PlaybackStatus::Stopped;
+        };
+        match core.engine.as_ref().map(PlayerEngine::state) {
+            Some(EngineState::Playing) => PlaybackStatus::Playing,
+            Some(EngineState::Paused) => PlaybackStatus::Paused,
+            _ => PlaybackStatus::Stopped,
+        }
+    }
+
+    /// `true` si el motor tiene una pista cargada (aunque esté pausada o haya
+    /// llegado a su final natural). `false` tras `stop` o antes de la primera
+    /// carga.
+    pub fn is_loaded(&self) -> bool {
+        self.core
+            .lock()
+            .map(|core| {
+                core.engine
+                    .as_ref()
+                    .map(|engine| engine.loaded().is_some())
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Identidad de la pista cargada (la misma que el ticker publica en
+    /// MPRIS). No depende de que la webview haya restaurado nada.
+    pub fn current_track_id(&self) -> Option<i64> {
+        self.core
+            .lock()
+            .map(|core| core.listen_track_id)
+            .unwrap_or(None)
+    }
+
+    /// Posición actual del motor, si hay algo cargado.
+    pub fn position(&self) -> Option<Duration> {
+        self.core
+            .lock()
+            .ok()
+            .and_then(|core| core.engine.as_ref().map(PlayerEngine::position))
     }
 
     /// Carga y reproduce una pista de la biblioteca: usa el archivo local
@@ -718,16 +774,19 @@ impl PlayerState {
             }
         }
         let engine_state = engine.state();
-        // MPRIS: estado + posición (el hilo D-Bus emite PropertiesChanged si
-        // cambian; la posición sólo se expone, nunca se emite en el diff).
-        let mpris = Some((
-            match engine_state {
+        // MPRIS: estado + posición + identidad de la pista cargada (el hilo
+        // D-Bus emite PropertiesChanged si cambian; la posición sólo se
+        // expone, nunca se emite en el diff).
+        let mpris = Some(MprisTick {
+            status: match engine_state {
                 EngineState::Playing => PlaybackStatus::Playing,
                 EngineState::Paused => PlaybackStatus::Paused,
                 EngineState::Stopped => PlaybackStatus::Stopped,
             },
-            engine.position(),
-        ));
+            position: engine.position(),
+            track_id: *listen_track_id,
+            duration: engine.duration(),
+        });
         let playing = matches!(engine_state, EngineState::Playing);
         // Acumulación de escucha (P01): sólo avanza con el motor en Playing
         // (pausa/buffer suspenden sin borrar; el re-anclaje tras un parón o un

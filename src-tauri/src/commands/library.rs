@@ -118,7 +118,7 @@ pub struct TrackMetadata {
     pub sources: Option<Vec<TrackSourceAvailability>>,
 }
 
-async fn fetch_track_metadata(
+pub(crate) async fn fetch_track_metadata(
     db: &sqlx::SqlitePool,
     track_id: i64,
 ) -> Result<TrackMetadata, String> {

@@ -69,11 +69,16 @@ export interface PlayerTrackLoadResult extends PlayerLoadResult {
  * Payload de `player:advanced` (P01, #132): el backend decidió la siguiente
  * pista tras el fin natural de la anterior y la cargó en el motor. La UI
  * sincroniza su proyección con este evento; no avanza por su cuenta.
+ *
+ * P02 (#133): `previousEntryId` sólo llega en un `previous` manual; entonces
+ * la pista que sonaba vuelve al frente de los pendientes y la entrada
+ * avanzada (la última del historial) es la actual.
  */
 export interface PlayerAdvanced {
     seq: number;
     trackId: number;
     entryId: string;
+    previousEntryId?: string;
 }
 
 /** Payload de `player:stream-state` (backend camelCase). */
@@ -163,16 +168,32 @@ export function onPlayerEnded(cb: (seq: number) => void): Promise<UnlistenFn> {
 
 /** Suscripción a `player:advanced`: el backend avanzó de pista por su cuenta. */
 export function onPlayerAdvanced(cb: (advanced: PlayerAdvanced) => void): Promise<UnlistenFn> {
-    return listen<{ seq: number; track_id: number; entry_id: string }>(
+    return listen<{ seq: number; track_id: number; entry_id: string; previous_entry_id?: string }>(
         TauriEvents.PLAYER_ADVANCED,
         (event) => {
             cb({
                 seq: event.payload.seq,
                 trackId: event.payload.track_id,
                 entryId: event.payload.entry_id,
+                previousEntryId: event.payload.previous_entry_id,
             });
         },
     );
+}
+
+/** Modos persistidos por el backend (MPRIS reordena la cola pendiente). */
+export interface PlayerModesChanged {
+    shuffle: boolean;
+    repeat: 'off' | 'all' | 'one';
+    /** Sólo cuando el shuffle cambió el orden de los pendientes. */
+    pendingEntryIds?: string[];
+}
+
+/** Suscripción a `player:modes-changed` (P02, #133). */
+export function onPlayerModesChanged(cb: (modes: PlayerModesChanged) => void): Promise<UnlistenFn> {
+    return listen<PlayerModesChanged>(TauriEvents.PLAYER_MODES_CHANGED, (event) => {
+        cb(event.payload);
+    });
 }
 
 /**
@@ -186,41 +207,3 @@ export function onPlayerStreamState(cb: (state: PlayerStreamState) => void): Pro
     });
 }
 
-export type MprisLoopStatus = 'None' | 'Track' | 'Playlist'
-
-/** Estado que la UI publica para el panel MPRIS del escritorio (Linux). */
-export interface MprisStateUpdate {
-    trackId: number | null;
-    title: string | null;
-    artist: string | null;
-    album: string | null;
-    durationSec: number | null;
-    artUrl: string | null;
-    shuffle: boolean;
-    loopStatus: MprisLoopStatus;
-}
-
-export type MprisAction =
-    | 'play' | 'pause' | 'playPause' | 'next' | 'previous' | 'stop'
-    | 'seek' | 'setPosition'
-
-/** Acción MPRIS reenviada por el backend (payload de `player:mpris-action`). */
-export interface MprisActionPayload {
-    action: MprisAction;
-    /** `seek`: offset relativo en microsegundos (puede ser negativo). */
-    offsetUs?: number;
-    /** `setPosition`: posición absoluta en microsegundos. */
-    positionUs?: number;
-}
-
-/** Publica metadatos y modos para MPRIS (no-op en plataformas sin panel MPRIS). */
-export function playerMprisUpdate(state: MprisStateUpdate): Promise<void> {
-    return invokeCommand<void>('player_mpris_update', { metadata: state });
-}
-
-/** Suscripción a `player:mpris-action` (media keys / panel del escritorio). */
-export function onMprisAction(cb: (action: MprisActionPayload) => void): Promise<UnlistenFn> {
-    return listen<MprisActionPayload>(TauriEvents.PLAYER_MPRIS_ACTION, (event) => {
-        cb(event.payload);
-    });
-}
