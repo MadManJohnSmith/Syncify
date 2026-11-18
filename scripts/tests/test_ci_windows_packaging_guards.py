@@ -312,10 +312,16 @@ class GuardKeyringBehaviorTests(unittest.TestCase):
             calls,
         )
         self.assertFalse(any(line.startswith("dumpbin ") for line in calls), calls)
-        # cargo corre desde la raiz del repo, como en el workflow.
+        # cargo corre desde la raiz del repo, como en el workflow. Se compara
+        # por identidad de fichero y no por cadena: en Windows Get-Location
+        # puede devolver la forma larga de una ruta que el test creo con la
+        # forma corta (RUNNER~1), y la cadena no coincide aunque el directorio
+        # sea el mismo.
+        recorded_repo = calls[0].rsplit(" @ ", 1)[-1]
+        self.assertTrue(os.path.isdir(recorded_repo), calls[0])
         self.assertTrue(
-            os.path.normcase(calls[0]).endswith(os.path.normcase(f"@ {self.repo}")),
-            calls[0],
+            os.path.samefile(recorded_repo, self.repo),
+            f"{recorded_repo!r} no es {str(self.repo)!r}",
         )
 
     def test_keyring_failure_runs_loader_diagnostics_and_keeps_the_code(self):
