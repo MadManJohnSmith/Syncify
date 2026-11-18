@@ -153,6 +153,20 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   nuevo). Ambos con el modelo fijado ese día y target privado por
   carril (`/tmp/syncify-target-sb05`, `/tmp/syncify-target-d06c`).
   Fuente: orden del propietario en la sesión del 2026-11-16.
+- **2026-11-18, cambio de modelo de delegación (vigente)**: los
+  subagentes pasan a `opencode-go/deepseek-v4.1-flash` (proveedor
+  OpenCode). Suplanta la decisión del 2026-11-16
+  (`builtin:zai-start-plan\GLM-5.3-Flash`): esa madrugada el proveedor
+  ZCode agotó cuota (`1005 exceed quota limit`) y murieron los tres
+  delegados en vuelo — L04 llegó a PR #313, P01 y #87 dejaron commits o
+  WIP en sus worktrees. Fuente: orden del propietario en la sesión del
+  2026-11-18 y estado de los hilos de delegación.
+- **2026-11-18**: L04 (#101) fusionado por squash en PR #313
+  (`e27cfaf`); issue cerrado citando el SHA. P01 (#132) abrió PR #314,
+  rebasado sobre `dev` y con claims re-derivados (338 objetivos cargo;
+  140 ficheros / 1199 tests UI). #87 quedó con la rama remota
+  `feat/87-profile-restoration` (WIP + fix del claim; suite reauth 5/5)
+  a la espera de gates y PR. Fuente: `gh`, `git log`.
 - **2026-11-16**: D-06c (#39) fusionado por squash en PR #296
   (`b27b611` en `dev`, CI 8/8); issue cerrado citando el SHA. El
   programa #32 queda 4/5. Fuente: PR #296, tracker.
