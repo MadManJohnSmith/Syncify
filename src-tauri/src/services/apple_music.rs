@@ -649,6 +649,25 @@ impl AppleMusicClient {
                 .await
                 .map_err(|e| format!("DB error: {}", e))?;
 
+                // L00 (#97): pertenencia de la colección favorito, con el
+                // ítem del proveedor y el added_at crudo de Apple Music.
+                let _ = crate::db::write_or_log(
+                    "import_library",
+                    crate::services::library_membership::record_membership(
+                        db,
+                        &crate::services::library_membership::MembershipWrite {
+                            account_id,
+                            track_id,
+                            collection:
+                                crate::services::library_membership::MembershipCollection::Favorite,
+                            collection_id: None,
+                            provider_item: Some(track.id.clone()),
+                            added_at: attrs.date_added.clone(),
+                        },
+                    ),
+                )
+                .await;
+
                 if result.rows_affected() > 0 {
                     imported += 1;
                 } else {
@@ -775,6 +794,48 @@ impl AppleMusicClient {
                     .execute(db)
                     .await
                     .map_err(|e| format!("DB error: {}", e))?;
+
+                    // L00 (#97): pertenencia de la colección álbum (los
+                    // álbumes de biblioteca de Apple Music son favoritos)
+                    // con la fila local del álbum, y la de favorito espejo
+                    // de library_entries (is_liked=1); ambas con el
+                    // added_at crudo del proveedor.
+                    let _ = crate::db::write_or_log(
+                        "import_albums",
+                        crate::services::library_membership::record_membership(
+                            db,
+                            &crate::services::library_membership::MembershipWrite {
+                                account_id,
+                                track_id,
+                                collection: crate::services::library_membership::MembershipCollection::Album,
+                                collection_id: Some(album_id),
+                                provider_item: Some(track.id.clone()),
+                                added_at: track_attrs
+                                    .date_added
+                                    .clone()
+                                    .or_else(|| attrs.date_added.clone()),
+                            },
+                        ),
+                    )
+                    .await;
+                    let _ = crate::db::write_or_log(
+                        "import_albums",
+                        crate::services::library_membership::record_membership(
+                            db,
+                            &crate::services::library_membership::MembershipWrite {
+                                account_id,
+                                track_id,
+                                collection: crate::services::library_membership::MembershipCollection::Favorite,
+                                collection_id: None,
+                                provider_item: Some(track.id.clone()),
+                                added_at: track_attrs
+                                    .date_added
+                                    .clone()
+                                    .or_else(|| attrs.date_added.clone()),
+                            },
+                        ),
+                    )
+                    .await;
 
                     if result.rows_affected() > 0 {
                         imported += 1;
@@ -960,6 +1021,28 @@ impl AppleMusicClient {
                     )
                     .await;
 
+                    // L00 (#97): pertenencia de la colección playlist con su
+                    // id local, el ítem del proveedor y el added_at crudo de
+                    // Apple Music.
+                    let _ = crate::db::write_or_log(
+                        "import_playlists",
+                        crate::services::library_membership::record_membership(
+                            db,
+                            &crate::services::library_membership::MembershipWrite {
+                                account_id,
+                                track_id,
+                                collection: crate::services::library_membership::MembershipCollection::Playlist,
+                                collection_id: Some(playlist_db_id),
+                                provider_item: Some(track.id.clone()),
+                                added_at: track_attrs
+                                    .date_added
+                                    .clone()
+                                    .or_else(|| attrs.date_added.clone()),
+                            },
+                        ),
+                    )
+                    .await;
+
                     let normalized_date = crate::services::import_pagination::normalize_added_at(
                         track_attrs
                             .date_added
@@ -985,6 +1068,28 @@ impl AppleMusicClient {
                     .execute(db)
                     .await
                     .map_err(|e| format!("DB error: {}", e))?;
+
+                    // L00 (#97): pertenencia de favorito espejo de la
+                    // library_entries (is_liked=1) que este importador
+                    // escribe para cada pista de playlist.
+                    let _ = crate::db::write_or_log(
+                        "import_playlists",
+                        crate::services::library_membership::record_membership(
+                            db,
+                            &crate::services::library_membership::MembershipWrite {
+                                account_id,
+                                track_id,
+                                collection: crate::services::library_membership::MembershipCollection::Favorite,
+                                collection_id: None,
+                                provider_item: Some(track.id.clone()),
+                                added_at: track_attrs
+                                    .date_added
+                                    .clone()
+                                    .or_else(|| attrs.date_added.clone()),
+                            },
+                        ),
+                    )
+                    .await;
 
                     if result.rows_affected() > 0 {
                         imported += 1;

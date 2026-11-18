@@ -3677,6 +3677,56 @@ impl EnrichmentEngine {
         .await
         .map_err(|e| format!("library entry persistence failed: {e}"))?;
 
+        // 9b. Library memberships (L00, issue #97): la pertenencia por cuenta
+        // y colección, con el ítem del proveedor y el added_at CRUDO (puede
+        // ser NULL/1970: el materializado los descarta). El favorito de la
+        // misma grabación produce UNA pertenencia por cuenta, no una por
+        // release (el índice único de 0112 deduplica); el favorito de álbum
+        // (S198) atribuye la colección álbum cuando la pista resolvió a una
+        // fila local. Las pertenencias de playlist las escriben los brazos
+        // con su colección concreta.
+        if input.is_favorite || input.is_purchased {
+            let collection = if input.is_favorite {
+                crate::services::library_membership::MembershipCollection::Favorite
+            } else {
+                crate::services::library_membership::MembershipCollection::Purchase
+            };
+            crate::services::library_membership::insert_membership(
+                &mut *tx,
+                &crate::services::library_membership::MembershipWrite {
+                    account_id: input.account_id,
+                    track_id,
+                    collection,
+                    collection_id: None,
+                    provider_item: Some(input.service_track_id.clone()),
+                    added_at: input.origin_meta.added_at.clone(),
+                },
+            )
+            .await
+            .map_err(|e| format!("library membership persistence failed: {e}"))?;
+        }
+        if input.album_is_favorite {
+            if let Some(album_id) = album_id_opt {
+                crate::services::library_membership::insert_membership(
+                    &mut *tx,
+                    &crate::services::library_membership::MembershipWrite {
+                        account_id: input.account_id,
+                        track_id,
+                        collection:
+                            crate::services::library_membership::MembershipCollection::Album,
+                        collection_id: Some(album_id),
+                        provider_item: Some(input.service_track_id.clone()),
+                        added_at: input.origin_meta.added_at.clone(),
+                    },
+                )
+                .await
+                .map_err(|e| format!("album membership persistence failed: {e}"))?;
+            }
+        }
+        crate::services::library_membership::refresh_track_library_added_at(&mut *tx, track_id)
+            .await
+            .map_err(|e| format!("library_added_at refresh failed: {e}"))?;
+
         let is_already_present =
             !is_new_global_track && !is_new_source_for_service && !is_new_library_entry_for_account;
         let is_new_import =

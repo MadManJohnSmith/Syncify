@@ -20,9 +20,18 @@
 //!   primaria;
 //! - paginación `offset`/`limit` con `limit` por defecto 100 y máximo 200.
 //!
+//! Pertenencia (L00, issue #97): la biblioteca incluye TODO lo importado de
+//! cualquier colección. El borde de visibilidad ([`MEMBERSHIP_SQL`]) es la
+//! unión de las tres fuentes de pertenencia viva: favoritos por cuenta
+//! (`library_entries`), pistas de playlist (`playlist_tracks`) y la
+//! pertenencia completa por cuenta/track/colección (`library_memberships`,
+//! migración 0112 — álbumes, artistas, compras e importación local). La
+//! cuenta de una pista sale solo de esas pertenencias; el orden por fecha de
+//! añadido lee el materializado `tracks.library_added_at` (índice
+//! `idx_tracks_library_added_at` de 0112) y las colecciones `album`/`artist`
+//! del filtro entran por `library_memberships`.
+//!
 //! Piezas deshabilitadas con su motivo (no inventadas):
-//! - colecciones `album`/`artist`: la pertenencia por álbum/artista no
-//!   existe hasta L00 (#97);
 //! - filtro `duplicates`: la identidad ISRC∪huella llega con L10 (#73);
 //! - cuarentena `only`/`include`: no hay tabla de cuarentena hasta #72/L09;
 //!   `exclude` (por defecto) es hoy un no-op honesto.
@@ -64,9 +73,10 @@ use sqlx::SqlitePool;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LibrarySortKey {
-    /// Fecha de añadido: `MAX(added_at)` sobre las pertenencias vivas.
-    /// L00 materializará `tracks.library_added_at`; este es el otro punto
-    /// de conexión (junto a [`MEMBERSHIP_SQL`]).
+    /// Fecha de añadido: `tracks.library_added_at` materializado por L00
+    /// (#97) — máximo `added_at` vivo no nulo/distinto de 1970, con
+    /// `created_at` como respaldo. La consulta entra por
+    /// `idx_tracks_library_added_at` (0112).
     #[default]
     DateAdded,
     Title,
@@ -146,8 +156,9 @@ impl QualityBucketFilter {
     }
 }
 
-/// Colección del filtro. `favorite` y `playlist` existen hoy;
-/// `album`/`artist` son del contrato y quedan deshabilitados hasta L00 (#97).
+/// Colección del filtro (L00, #97): las cuatro colecciones del contrato.
+/// `favorite` y `playlist` conservan sus bordes de L01; `album`/`artist`
+/// entran por `library_memberships` (0112) con el id local de la colección.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CollectionFilter {
@@ -181,9 +192,10 @@ pub struct LibraryQuery {
     /// Con cuentas: pertenencia de esa cuenta en ese servicio.
     pub service_ids: Vec<i64>,
     /// Cuentas por id. La atribución de cuenta sale de las pertenencias
-    /// (library_entries y playlists con dueño), no se inventa.
+    /// (library_entries, playlists con dueño y library_memberships de L00),
+    /// no se inventa ni se rellena con la cuenta activa.
     pub account_ids: Vec<i64>,
-    /// Colecciones; `album`/`artist` deshabilitados hasta L00 (#97).
+    /// Colecciones (L00, #97): favorite, playlist, album y artist.
     pub collections: Vec<CollectionFilter>,
     /// Solo favoritos (`tracks.is_favorite`).
     pub favorites_only: bool,
@@ -220,9 +232,10 @@ pub struct LibraryQueryCounts {
     pub in_playlists: i64,
     /// Pistas distintas con fuente en cada servicio (badges: track_sources).
     pub by_service: Vec<ServiceCount>,
-    /// Pertenencias por cuenta (library_entries + playlists con dueño).
-    /// PUEDE superar el total global: una pista en dos cuentas cuenta en las
-    /// dos; la UI no debe presentar la suma como total.
+    /// Pistas distintas por cuenta (pertenencias: library_entries +
+    /// playlists con dueño + library_memberships de L00). PUEDE superar el
+    /// total global: una pista en dos cuentas cuenta en las dos; la UI no
+    /// debe presentar la suma como total.
     pub by_account: Vec<AccountCount>,
 }
 
@@ -261,23 +274,17 @@ pub struct LibraryQueryResult {
 // Expresiones SQL compartidas (una definición, varios usos: filtro y fila)
 // ==========================================================================
 
-/// Pertenencia viva (L01): favoritos por cuenta (`library_entries`) o pistas
-/// de playlist (`playlist_tracks`). UNA pista sin ninguna pertenencia viva
-/// no aparece. Ninguna consulta usa `is_active`.
+/// Pertenencia viva (L01 + L00): favoritos por cuenta (`library_entries`),
+/// pistas de playlist (`playlist_tracks`) y la pertenencia completa por
+/// cuenta y colección (`library_memberships`, migración 0112: álbumes,
+/// artistas y demás colecciones del sync). UNA pista sin ninguna
+/// pertenencia viva no aparece. Ninguna consulta usa `is_active`.
 ///
-/// BORDE ÚNICO DE L00 (#97): cuando aterrice la pertenencia completa
-/// (álbumes, artistas), se enchufa AQUÍ — este es el único sitio donde la
-/// pertenencia entra al filtro de la consulta.
+/// La pertenencia de L00 (#97) entra SOLO aquí: este es el único sitio donde
+/// la pertenencia entra al filtro de la consulta.
 const MEMBERSHIP_SQL: &str = "(EXISTS (SELECT 1 FROM library_entries le WHERE le.track_id = t.id) \
-     OR EXISTS (SELECT 1 FROM playlist_tracks pt WHERE pt.track_id = t.id))";
-
-/// Fecha de añadido: `MAX(added_at)` sobre las pertenencias vivas de la
-/// pista. Segundo punto de conexión de L00: materializará
-/// `tracks.library_added_at` y este cálculo pasará a leerla.
-const ADDED_AT_SQL: &str = "(SELECT MAX(m.added_at) FROM (\
-    SELECT le.added_at AS added_at FROM library_entries le WHERE le.track_id = t.id \
-    UNION ALL \
-    SELECT pt.added_at AS added_at FROM playlist_tracks pt WHERE pt.track_id = t.id) m)";
+     OR EXISTS (SELECT 1 FROM playlist_tracks pt WHERE pt.track_id = t.id) \
+     OR EXISTS (SELECT 1 FROM library_memberships lm WHERE lm.track_id = t.id))";
 
 /// Nombre del artista primario (subconsulta, sin depender de joins externos).
 const PRIMARY_ARTIST_NAME_SQL: &str = "(SELECT a2.name FROM track_artists ta2 \
@@ -495,8 +502,9 @@ fn build_where(query: &LibraryQuery, skip: Dimension) -> Result<(String, Vec<Str
         );
     }
 
-    // Cuenta + servicio sobre la MISMA pertenencia (favorito o playlist con
-    // dueño en ese servicio); servicio solo, sobre las fuentes (badges).
+    // Cuenta + servicio sobre la MISMA pertenencia (favorito, playlist con
+    // dueño o pertenencia L00 en ese servicio); servicio solo, sobre las
+    // fuentes (badges).
     let has_services = !query.service_ids.is_empty() && skip != Dimension::Services;
     let has_accounts = !query.account_ids.is_empty() && skip != Dimension::Accounts;
     if has_services && has_accounts {
@@ -511,7 +519,11 @@ fn build_where(query: &LibraryQuery, skip: Dimension) -> Result<(String, Vec<Str
                 JOIN playlists pl_c ON pl_c.id = pt_c.playlist_id \
                 JOIN accounts ac_c ON ac_c.id = pl_c.account_id \
                 JOIN services sv_c ON sv_c.id = ac_c.service_id \
-                WHERE pt_c.track_id = t.id AND pl_c.account_id IN ({accounts}) AND sv_c.id IN ({services})))"
+                WHERE pt_c.track_id = t.id AND pl_c.account_id IN ({accounts}) AND sv_c.id IN ({services})) \
+             OR EXISTS (SELECT 1 FROM library_memberships lm_c \
+                JOIN accounts ac_c ON ac_c.id = lm_c.account_id \
+                JOIN services sv_c ON sv_c.id = ac_c.service_id \
+                WHERE lm_c.track_id = t.id AND lm_c.account_id IN ({accounts}) AND sv_c.id IN ({services})))"
         ));
     } else {
         if has_services {
@@ -528,39 +540,50 @@ fn build_where(query: &LibraryQuery, skip: Dimension) -> Result<(String, Vec<Str
                     WHERE le_a.track_id = t.id AND le_a.account_id IN ({accounts})) \
                  OR EXISTS (SELECT 1 FROM playlist_tracks pt_a \
                     JOIN playlists pl_a ON pl_a.id = pt_a.playlist_id \
-                    WHERE pt_a.track_id = t.id AND pl_a.account_id IN ({accounts})))"
+                    WHERE pt_a.track_id = t.id AND pl_a.account_id IN ({accounts})) \
+                 OR EXISTS (SELECT 1 FROM library_memberships lm_a \
+                    WHERE lm_a.track_id = t.id AND lm_a.account_id IN ({accounts})))"
             ));
         }
     }
 
-    // Colecciones: solo las que existen hoy. `album`/`artist` explícitos
-    // con su motivo (pertenencia de L00, #97).
+    // Colecciones (L00, #97): las cuatro del contrato. `favorite` y
+    // `playlist` ven sus DOS fuentes (los bordes de L01 y las pertenencias
+    // de 0112); `album`/`artist` entran solo por la pertenencia completa
+    // de `library_memberships` (0112).
     if !query.collections.is_empty() {
         let mut kinds = Vec::new();
         for collection in &query.collections {
             match collection {
                 CollectionFilter::Favorite => {
                     kinds.push(
-                        "EXISTS (SELECT 1 FROM library_entries le_k WHERE le_k.track_id = t.id)"
+                        "(EXISTS (SELECT 1 FROM library_entries le_k WHERE le_k.track_id = t.id) \
+                         OR EXISTS (SELECT 1 FROM library_memberships lm_k \
+                         WHERE lm_k.track_id = t.id AND lm_k.collection_type = 'favorite'))"
                             .to_owned(),
                     );
                 }
                 CollectionFilter::Playlist => {
                     kinds.push(
-                        "EXISTS (SELECT 1 FROM playlist_tracks pt_k WHERE pt_k.track_id = t.id)"
+                        "(EXISTS (SELECT 1 FROM playlist_tracks pt_k WHERE pt_k.track_id = t.id) \
+                         OR EXISTS (SELECT 1 FROM library_memberships lm_k \
+                         WHERE lm_k.track_id = t.id AND lm_k.collection_type = 'playlist'))"
                             .to_owned(),
                     );
                 }
-                CollectionFilter::Album | CollectionFilter::Artist => {
-                    return Err(format!(
-                        "Colección {:?} es contrato pendiente: la pertenencia por \
-                         álbum/artista aterriza con L00 (#97). No disponible todavía.",
-                        match collection {
-                            CollectionFilter::Album => "album",
-                            CollectionFilter::Artist => "artist",
-                            _ => unreachable!(),
-                        }
-                    ));
+                CollectionFilter::Album => {
+                    kinds.push(
+                        "EXISTS (SELECT 1 FROM library_memberships lm_k \
+                         WHERE lm_k.track_id = t.id AND lm_k.collection_type = 'album')"
+                            .to_owned(),
+                    );
+                }
+                CollectionFilter::Artist => {
+                    kinds.push(
+                        "EXISTS (SELECT 1 FROM library_memberships lm_k \
+                         WHERE lm_k.track_id = t.id AND lm_k.collection_type = 'artist')"
+                            .to_owned(),
+                    );
                 }
             }
         }
@@ -660,12 +683,14 @@ fn order_clause(query: &LibraryQuery) -> (String, Vec<String>) {
     }
 
     let dir = query.direction.sql();
-    // DateAdded: centinela '' y NULL se tratan igual (COALESCE) para que el
-    // desempate por título decida dentro del bloque de "sin fecha".
+    // DateAdded (L00, #97): el materializado `tracks.library_added_at`
+    // (máximo added_at vivo no nulo/distinto de 1970, con created_at como
+    // respaldo). Centinela '' y NULL se tratan igual para que el desempate
+    // por título decida dentro del bloque de "sin fecha".
     let (primary, guard) = match query.sort {
         LibrarySortKey::DateAdded => (
-            format!("COALESCE({ADDED_AT_SQL}, '')"),
-            format!("({ADDED_AT_SQL} IS NULL OR {ADDED_AT_SQL} = '')"),
+            "COALESCE(t.library_added_at, '')".to_owned(),
+            "(t.library_added_at IS NULL OR t.library_added_at = '')".to_owned(),
         ),
         LibrarySortKey::Title => (
             "t.title COLLATE NOCASE".to_owned(),
@@ -722,10 +747,11 @@ const ROW_COLUMNS_SQL: &str = "
         t.isrc,
         GROUP_CONCAT(DISTINCT s.name) as services,
         (SELECT GROUP_CONCAT(DISTINCT s_imp.name)
-         FROM library_entries le
-         JOIN accounts acc ON acc.id = le.account_id
-         JOIN services s_imp ON s_imp.id = acc.service_id
-         WHERE le.track_id = t.id) as imported_from,
+         FROM (SELECT le.account_id AS account_id FROM library_entries le WHERE le.track_id = t.id
+               UNION
+               SELECT lm_imp.account_id FROM library_memberships lm_imp WHERE lm_imp.track_id = t.id) m_imp
+         JOIN accounts acc ON acc.id = m_imp.account_id
+         JOIN services s_imp ON s_imp.id = acc.service_id) as imported_from,
         COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
         (SELECT GROUP_CONCAT(DISTINCT s_avail.name)
          FROM track_sources ts_avail
@@ -897,9 +923,11 @@ pub async fn query_library(
 }
 
 /// Plan de la consulta de conteo (EXPLAIN QUERY PLAN) para la verificación
-/// del issue #98. Hoy entra por los índices existentes; cuando L00 (#97)
-/// aterrice con sus índices de pertenencia, esta función es el punto de
-/// re-verificación del plan.
+/// de los issues #98 y #97. Entra por los índices de pertenencia: los de
+/// L01 (`idx_library_track`, `idx_playlist_tracks_track`,
+/// `idx_track_sources_*`) y los de L00 en `library_memberships`
+/// (`idx_library_memberships_track_added`, `idx_library_memberships_account_track`,
+/// 0112). Esta función es el punto de re-verificación del plan.
 #[allow(dead_code)] // Cubierta por `tests/library_query_test.rs` (el IPC no la expone).
 pub async fn query_plan(db: &SqlitePool, query: &LibraryQuery) -> Result<Vec<String>, String> {
     let (where_all, binds) = build_where(query, Dimension::All)?;
@@ -978,23 +1006,31 @@ async fn build_counts(
         .await
         .map_err(|e| format!("query_library: error contando servicios: {e}"))?;
 
-    // Por cuenta: pertenencias (favoritos por cuenta + playlists con dueño),
-    // sin el propio filtro de cuentas. COUNT de pertenencias: puede superar
-    // el total de pistas distintas. El conjunto filtrado va en un CTE para
-    // no duplicar sus placeholders.
+    // Por cuenta (L00, #97): pertenencias vivas de las TRES fuentes
+    // (favoritos por cuenta, playlists con dueño y pertenencias completas
+    // de library_memberships: álbumes, artistas, compras e importación
+    // local), sin el propio filtro de cuentas. El UNION deduplica los pares
+    // (cuenta, pista) — las pertenencias espejo de L00 no duplican — y el
+    // COUNT es de PISTAS DISTINTAS por cuenta: puede superar el total global
+    // (una pista en dos cuentas cuenta en las dos). El conjunto filtrado va
+    // en un CTE para no duplicar sus placeholders.
     let (where_acc, binds_acc) = build_where(query, Dimension::Accounts)?;
     let by_account_sql = format!(
         "WITH matched AS (SELECT t.id FROM tracks t WHERE {where_acc}) \
-         SELECT a.id AS account_id, a.display_name, sv.name AS service_name, SUM(m.cnt) AS count \
+         SELECT a.id AS account_id, a.display_name, sv.name AS service_name, COUNT(DISTINCT m.track_id) AS count \
          FROM ( \
-           SELECT le.account_id AS account_id, le.track_id AS track_id, 1 AS cnt \
+           SELECT le.account_id AS account_id, le.track_id AS track_id \
            FROM library_entries le \
            WHERE le.track_id IN (SELECT id FROM matched) \
-           UNION ALL \
-           SELECT pl.account_id AS account_id, pt.track_id AS track_id, 1 AS cnt \
+           UNION \
+           SELECT pl.account_id AS account_id, pt.track_id AS track_id \
            FROM playlist_tracks pt \
            JOIN playlists pl ON pl.id = pt.playlist_id \
            WHERE pt.track_id IN (SELECT id FROM matched) \
+           UNION \
+           SELECT lm.account_id AS account_id, lm.track_id AS track_id \
+           FROM library_memberships lm \
+           WHERE lm.track_id IN (SELECT id FROM matched) \
          ) m \
          JOIN accounts a ON a.id = m.account_id \
          JOIN services sv ON sv.id = a.service_id \
@@ -1064,15 +1100,16 @@ pub struct TrackDetailSource {
 /// LibraryItem de la pista: pertenencia por cuenta y colección (story 18).
 /// `favorite` es library_entries; `playlist` es playlist_tracks con el dueño
 /// de la playlist atribuyendo la cuenta (la misma regla de [`MEMBERSHIP_SQL`]
-/// y los contadores de cuenta de L01). Las colecciones `album`/`artist` no
-/// existen hasta L00 (#97): no se inventan.
+/// y los contadores de cuenta de L01); `album`/`artist`/`purchase`/`library`
+/// son `library_memberships` (0112, L00). La cuenta sale solo de las
+/// pertenencias; no se infiere ni se rellena con la cuenta activa.
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackDetailMembership {
     pub account_id: i64,
     pub display_name: Option<String>,
     pub service_name: String,
-    /// "favorite" | "playlist" (colecciones que existen hoy).
+    /// "favorite" | "playlist" | "album" | "artist" | "purchase" | "library".
     pub collection: String,
     pub collection_id: Option<i64>,
     pub collection_name: Option<String>,
@@ -1196,7 +1233,9 @@ pub async fn get_track_detail(
         })?;
 
     // Todas las pertenencias en UNA consulta (no una por cuenta ni por
-    // colección): favoritos por cuenta + playlists con dueño.
+    // colección): favoritos por cuenta, playlists con dueño y la
+    // pertenencia completa de library_memberships (álbumes, artistas,
+    // compras e importación local — L00).
     let memberships_sql = "SELECT le.account_id, a.display_name, sv.name AS service_name, \
          'favorite' AS collection, NULL AS collection_id, NULL AS collection_name, le.added_at \
          FROM library_entries le \
@@ -1211,6 +1250,20 @@ pub async fn get_track_detail(
          JOIN accounts a2 ON a2.id = pl.account_id \
          JOIN services sv2 ON sv2.id = a2.service_id \
          WHERE pt.track_id = ?1 \
+         UNION ALL \
+         SELECT lm.account_id, a3.display_name, sv3.name, \
+         lm.collection_type, lm.collection_id, \
+         CASE lm.collection_type \
+             WHEN 'album' THEN (SELECT al2.title FROM albums al2 WHERE al2.id = lm.collection_id) \
+             WHEN 'playlist' THEN (SELECT pl2.name FROM playlists pl2 WHERE pl2.id = lm.collection_id) \
+             WHEN 'artist' THEN (SELECT ar2.name FROM artists ar2 WHERE ar2.id = lm.collection_id) \
+             ELSE NULL \
+         END, \
+         lm.added_at \
+         FROM library_memberships lm \
+         JOIN accounts a3 ON a3.id = lm.account_id \
+         JOIN services sv3 ON sv3.id = a3.service_id \
+         WHERE lm.track_id = ?1 \
          ORDER BY service_name COLLATE NOCASE, collection, collection_name, account_id";
     let memberships = sqlx::query_as::<_, TrackDetailMembership>(memberships_sql)
         .bind(track_id)
