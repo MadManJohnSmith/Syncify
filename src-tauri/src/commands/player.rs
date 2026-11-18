@@ -25,7 +25,6 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::services::mpris::{MprisMetadataInput, MprisService};
 use crate::services::playback_session::{PlayerLoadResult, PlayerState, TickOutput};
 use crate::services::stream_cache::StreamCacheState;
 
@@ -103,17 +102,6 @@ pub fn player_set_rate(state: State<'_, PlayerState>, rate: f64) -> Result<(), S
     state.set_rate(rate)
 }
 
-/// Actualiza los metadatos y modos que ve el panel MPRIS del escritorio.
-/// En plataformas sin MPRIS (o sin bus de sesión) es un no-op.
-#[tauri::command]
-pub fn player_mpris_update(
-    state: State<'_, MprisService>,
-    metadata: MprisMetadataInput,
-) -> Result<(), String> {
-    state.update_metadata(&metadata);
-    Ok(())
-}
-
 /// Arranca el ticker de eventos del player (se llama una vez en `setup`).
 /// Cada paso consume `PlayerState::tick()` y emite, en orden: los estados de
 /// stream que la frontera haya producido, la actualización de MPRIS,
@@ -138,9 +126,19 @@ pub fn spawn_player_ticker<R: tauri::Runtime>(app: &AppHandle<R>) {
             if let Some(session) = out.stall_refill {
                 crate::services::playback_session::spawn_stall_refill(app.clone(), session);
             }
-            if let Some((status, position)) = out.mpris {
-                if let Some(mpris) = app.try_state::<MprisService>() {
-                    mpris.update_playback(status, position);
+            if let Some(mpris_tick) = out.mpris {
+                if let Some(mpris) = app.try_state::<crate::services::mpris::MprisService>() {
+                    mpris.update_playback(
+                        &app,
+                        mpris_tick.status,
+                        mpris_tick.position,
+                        mpris_tick
+                            .track_id
+                            .map(|track_id| crate::services::mpris::NowPlaying {
+                                track_id,
+                                duration: mpris_tick.duration,
+                            }),
+                    );
                 }
             }
             if let Some(payload) = out.tick {

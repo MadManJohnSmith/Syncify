@@ -37,13 +37,12 @@
 import { computed, ref } from 'vue'
 import { getTrackMetadata, type TrackMetadataWithSources } from '../api/library'
 import {
-    onMprisAction,
     onPlayerAdvanced,
     onPlayerEnded,
+    onPlayerModesChanged,
     onPlayerStreamState,
     onPlayerTick,
     playerLoadTrack,
-    playerMprisUpdate,
     playerPause,
     playerResume,
     playerSeek,
@@ -366,21 +365,6 @@ function updateMediaSessionMetadata(track: PlayerTrack): void {
  * La pista llega por parámetro: al empezar a sonar la carga se confirma antes
  * de que `currentEntry` apunte a la pista nueva.
  */
-function syncMprisState(track: PlayerTrack | null = current.value): void {
-    void playerMprisUpdate({
-        trackId: track?.id ?? null,
-        title: track?.title ?? null,
-        artist: track?.artist ?? null,
-        album: track?.album ?? null,
-        durationSec: durationSec.value > 0 ? durationSec.value : null,
-        artUrl: track?.coverUrl ?? null,
-        shuffle: shuffle.value,
-        loopStatus: repeat.value === 'one' ? 'Track' : repeat.value === 'all' ? 'Playlist' : 'None',
-    }).catch(() => {
-        // MPRIS es opcional (y sólo Linux): jamás escala a la UI.
-    });
-}
-
 function updateMediaSessionPosition(): void {
     if (!mediaSessionAvailable()) return;
     const ms = navigator.mediaSession;
@@ -516,41 +500,24 @@ function bindEngineEvents(): void {
     }).catch((err: unknown) => {
         console.warn(`[player] could not subscribe to player:advanced: ${messageOf(err)}`);
     });
-    void onMprisAction(payload => {
-        // Misma delegación que los handlers de MediaSession: la UI es la dueña
-        // de la cola, los modos y el crédito de escucha.
-        switch (payload.action) {
-            case 'play':
-                void playIdle();
-                break;
-            case 'pause':
-                pausePlayback();
-                break;
-            case 'playPause':
-                toggle();
-                break;
-            case 'next':
-                next();
-                break;
-            case 'previous':
-                void previous();
-                break;
-            case 'stop':
-                stop();
-                break;
-            case 'seek':
-                if (typeof payload.offsetUs === 'number' && Number.isFinite(payload.offsetUs)) {
-                    seek(positionSec.value + payload.offsetUs / 1_000_000);
-                }
-                break;
-            case 'setPosition':
-                if (typeof payload.positionUs === 'number' && Number.isFinite(payload.positionUs)) {
-                    seek(payload.positionUs / 1_000_000);
-                }
-                break;
+    void onPlayerModesChanged(modes => {
+        // P02 (#133): las acciones de MPRIS las ejecuta el backend. La UI sólo
+        // proyecta el modo persistido; si shuffle reordenó los pendientes, el
+        // orden nuevo viaja en el evento para no divergir del agregado.
+        shuffle.value = !!modes.shuffle;
+        if (isValidRepeat(modes.repeat)) repeat.value = modes.repeat;
+        if (Array.isArray(modes.pendingEntryIds)) {
+            const byId = new Map(queue.value.map(entry => [entry.entryId, entry]));
+            const reordered = modes.pendingEntryIds
+                .map(entryId => byId.get(entryId))
+                .filter((entry): entry is PlaybackQueueEntry => Boolean(entry));
+            if (reordered.length === queue.value.length) {
+                queue.value = reordered;
+                if (!modes.shuffle) baseOrder = reordered.map(entry => entry.entryId);
+            }
         }
     }).catch((err: unknown) => {
-        console.warn(`[player] could not subscribe to player:mpris-action: ${messageOf(err)}`);
+        console.warn(`[player] could not subscribe to player:modes-changed: ${messageOf(err)}`);
     });
     bindMediaSessionHandlers();
 }
@@ -576,6 +543,10 @@ function removePending(entryId: string): void {
  * es el eco de una generación ya sustituida (la UI cargó otra pista después)
  * y se descarta. Los metadatos se proyectan perezosos: la reproducción no
  * espera a la IPC de biblioteca.
+ *
+ * P02 (#133): en un `previous` manual la entrada avanzada sale del historial
+ * y la pista que sonaba vuelve al FRENTE de los pendientes (`previousEntryId`),
+ * igual que dejó el agregado el backend.
  */
 async function syncFromBackendAdvance(advanced: PlayerAdvanced): Promise<void> {
     if (advanced.seq <= engineSeq) return;
@@ -593,7 +564,13 @@ async function syncFromBackendAdvance(advanced: PlayerAdvanced): Promise<void> {
     error.value = null;
     positionSec.value = 0;
     durationSec.value = 0;
-    if (previous && previous.entryId !== advanced.entryId) {
+    if (advanced.previousEntryId) {
+        history.value = history.value.filter(entry => entry.entryId !== advanced.entryId);
+        if (previous && previous.entryId !== advanced.entryId) {
+            queue.value = [previous, ...queue.value.filter(e => e.entryId !== previous.entryId)];
+            baseOrder = [previous.entryId, ...baseOrder.filter(id => id !== previous.entryId)];
+        }
+    } else if (previous && previous.entryId !== advanced.entryId) {
         pushHistory(previous);
         removePending(advanced.entryId);
     }
@@ -605,7 +582,6 @@ async function syncFromBackendAdvance(advanced: PlayerAdvanced): Promise<void> {
         if (currentEntry.value?.entryId === advanced.entryId) {
             currentEntry.value = { ...currentEntry.value, track };
             updateMediaSessionMetadata(track);
-            syncMprisState(track);
         }
     } catch (err) {
         console.warn(`[player] metadata of advanced track ${advanced.trackId}: ${messageOf(err)}`);
@@ -670,7 +646,6 @@ async function resolveAndPlay(track: PlayerTrack, transition: Transition): Promi
         // did nothing after the first stop().
         if (mediaSessionHandlersCleared) bindMediaSessionHandlers();
         updateMediaSessionMetadata(track);
-        syncMprisState(track);
         return 'played';
     } catch (err) {
         if (transition.aborted) return 'aborted';
@@ -1035,7 +1010,6 @@ function stop(): void {
     baseOrder = [];
     history.value = [];
     clearMediaSession();
-    syncMprisState();
     isLoadingSource.value = false;
     persistQueueWrite('reset', () => playbackStateReset());
 }
@@ -1102,13 +1076,11 @@ function toggleShuffle(): void {
         persistQueueWrite('reorder', () => playbackQueueReorder(queue.value.map(e => e.entryId)));
     }
     persistQueueWrite('modes', () => playbackStateSetModes(shuffle.value, repeat.value));
-    syncMprisState();
 }
 
 function cycleRepeat(): void {
     repeat.value = repeat.value === 'off' ? 'all' : repeat.value === 'all' ? 'one' : 'off';
     persistQueueWrite('modes', () => playbackStateSetModes(shuffle.value, repeat.value));
-    syncMprisState();
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,7 +1171,6 @@ async function restoreFromPersistence(): Promise<void> {
         currentEntry.value = null;
     } finally {
         if (!transition.aborted) isLoadingSource.value = false;
-        syncMprisState();
     }
 }
 

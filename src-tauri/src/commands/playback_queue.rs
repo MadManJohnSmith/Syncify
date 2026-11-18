@@ -16,6 +16,7 @@
 //! CASCADE` descarta las entradas de una pista borrada.
 
 use super::*;
+use tauri::Manager;
 
 /// Límite del historial de reproducción (paridad con el recorte que hacía la
 /// UI): al superar 100, se elimina por el extremo más antiguo.
@@ -178,6 +179,65 @@ pub async fn perform_enqueue(
     }
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(entry_ids)
+}
+
+/// Transición de `previous` (#133, P02): la entrada del historial pasa a ser
+/// la pista actual y la pista que sonaba vuelve al FRENTE de los pendientes.
+/// Es la misma semántica que la UI aplicaba en memoria; aquí queda persistida.
+#[cfg(target_os = "linux")]
+pub async fn perform_return_to_pending_and_set_current(
+    db: &DbPool,
+    entry_id: &str,
+    track_id: i64,
+) -> Result<(), String> {
+    if track_id <= 0 {
+        return Err(format!("track_id inválido: {track_id}"));
+    }
+    if entry_id.trim().is_empty() {
+        return Err("entry_id vacío".to_string());
+    }
+    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+
+    // La pista que sonaba deja el foco y ocupa la primera posición pendiente.
+    sqlx::query("UPDATE player_queue_entries SET position = position + 1 WHERE kind = 'pending'")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "UPDATE player_queue_entries SET kind = 'pending', position = 0 WHERE kind = 'current'",
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // La entrada del historial pasa a actual; si no existe, no se confirma
+    // un agregado a medias.
+    let promoted = sqlx::query(
+        "UPDATE player_queue_entries SET kind = 'current', position = 0 \
+         WHERE entry_id = ? AND kind = 'history'",
+    )
+    .bind(entry_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?
+    .rows_affected();
+    if promoted != 1 {
+        tx.rollback()
+            .await
+            .map_err(|e| format!("rollback tras previous sin fila: {e}"))?;
+        return Err(format!(
+            "La entrada {entry_id} no está en el historial (o ya no está)"
+        ));
+    }
+
+    sqlx::query(
+        "UPDATE player_state SET position_sec = 0, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Quita UNA entrada pendiente por su identidad. El historial y la pista
@@ -405,6 +465,53 @@ pub async fn perform_set_modes(db: &DbPool, shuffle: bool, repeat: &str) -> Resu
     Ok(())
 }
 
+/// Cambia `shuffle` y ORDENA de nuevo la cola pendiente en la misma
+/// transacción (#133, P02): al activarlo se permuta el orden vigente; al
+/// apagarlo se vuelve al orden de encolado (`enqueued_at`, `rowid`). Devuelve
+/// las `entry_id` en su nuevo orden para que la UI y MPRIS proyecten lo mismo.
+#[cfg(target_os = "linux")]
+pub async fn perform_set_shuffle(db: &DbPool, enabled: bool) -> Result<Vec<String>, String> {
+    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+    let mut pending: Vec<String> = sqlx::query_scalar(
+        "SELECT entry_id FROM player_queue_entries WHERE kind = 'pending' \
+         ORDER BY position ASC, enqueued_at ASC, rowid ASC",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if enabled {
+        use rand::seq::SliceRandom;
+        pending.shuffle(&mut rand::thread_rng());
+    } else {
+        // Sin una copia separada del orden base (ADR-0010 lo deja para la
+        // evolución de la cola), el orden de encolado es el verificable.
+        pending = sqlx::query_scalar(
+            "SELECT entry_id FROM player_queue_entries WHERE kind = 'pending' \
+             ORDER BY enqueued_at ASC, rowid ASC",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    for (position, entry_id) in pending.iter().enumerate() {
+        sqlx::query("UPDATE player_queue_entries SET position = ? WHERE entry_id = ?")
+            .bind(position as i64)
+            .bind(entry_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    sqlx::query("UPDATE player_state SET shuffle = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1")
+        .bind(enabled)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(pending)
+}
+
 /// Guarda volumen y silencio (0..1; el silencio lo modela la UI como volumen
 /// efectivo 0 hacia el motor, pero su interruptor se persiste aparte).
 pub async fn perform_set_volume(db: &DbPool, volume: f64, muted: bool) -> Result<(), String> {
@@ -514,14 +621,21 @@ pub async fn playback_state_set_position(
     perform_set_position(&state.db, position_sec).await
 }
 
-/// Guarda shuffle y repeat.
+/// Guarda shuffle y repeat. El panel MPRIS refleja el modo persistido: hasta
+/// #133 la UI lo empujaba aparte con `player_mpris_update`; ahora la fuente es
+/// esta misma fila de `player_state`.
 #[tauri::command]
 pub async fn playback_state_set_modes(
+    app: tauri::AppHandle,
     state: State<'_, crate::AppState>,
     shuffle: bool,
     repeat: String,
 ) -> Result<(), String> {
-    perform_set_modes(&state.db, shuffle, &repeat).await
+    perform_set_modes(&state.db, shuffle, &repeat).await?;
+    if let Some(mpris) = app.try_state::<crate::services::mpris::MprisService>() {
+        mpris.update_modes(shuffle, &repeat);
+    }
+    Ok(())
 }
 
 /// Guarda volumen y silencio.

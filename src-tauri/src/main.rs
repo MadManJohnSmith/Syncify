@@ -1170,7 +1170,6 @@ fn main() {
             commands::player_seek,
             commands::player_set_volume,
             commands::player_set_rate,
-            commands::player_mpris_update,
             // #131 (P00): cola de reproducción persistente en SQLite
             commands::playback_queue_get,
             commands::playback_queue_enqueue,

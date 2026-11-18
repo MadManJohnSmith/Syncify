@@ -290,11 +290,12 @@ export const TauriEvents = {
     // Playback events (motor nativo, fase 1)
     PLAYER_TICK: 'player:tick',
     PLAYER_ENDED: 'player:ended',
-    PLAYER_MPRIS_ACTION: 'player:mpris-action',
     // Fase 2: estado de la caché de streaming (buffer, calidad obtenida)
     PLAYER_STREAM_STATE: 'player:stream-state',
     // P01 (#132): el backend decidió la siguiente pista tras el fin natural
     PLAYER_ADVANCED: 'player:advanced',
+    // P02 (#133): modos persistidos por el backend (MPRIS reordena la cola)
+    PLAYER_MODES_CHANGED: 'player:modes-changed',
 } as const;
 
 export type TauriEventName = typeof TauriEvents[keyof typeof TauriEvents];
