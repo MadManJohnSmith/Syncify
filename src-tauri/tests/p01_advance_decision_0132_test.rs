@@ -284,15 +284,21 @@ async fn el_rebuild_con_entrada_desconocida_falla_sin_dejar_estado_a_mitad() {
         .expect_err("entrada fantasma rechazada");
     assert!(err.contains("entry-fantasma") || err.contains("no está"));
 
-    // Rollback: el agregado queda intacto (A actual, nada pendiente nuevo).
+    // Rollback: el agregado queda EXACTAMENTE como antes del rebuild
+    // (A actual; B, que ya era pendiente, sigue pendiente e intacto).
     let snapshot = perform_get_playback_queue(&pool).await.expect("snapshot");
     assert_eq!(
         snapshot.current.as_ref().expect("current intacto").entry_id,
         ids[0]
     );
-    assert!(
-        snapshot.pending.is_empty(),
-        "el rebuild fallido no dejó pendientes a mitad"
+    assert_eq!(
+        snapshot
+            .pending
+            .iter()
+            .map(|e| e.entry_id.clone())
+            .collect::<Vec<_>>(),
+        vec![ids[1].clone()],
+        "el rebuild fallido no dejó pendientes a mitad: el estado previo se restaura"
     );
 }
 
