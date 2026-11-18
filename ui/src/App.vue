@@ -711,11 +711,13 @@ async function initializeApp() {
     splashProgress.value = 75
     splashStatusText.value = 'Loading services and configuration...'
 
+    let startupAccounts: unknown[] | null = null
     try {
-      await Promise.all([
+      const [accountsData] = await Promise.all([
         accountsApi.getAccounts(),
         getDownloadSettings(),
       ])
+      if (Array.isArray(accountsData)) startupAccounts = accountsData
     } catch (err) {
       console.warn('[App] Services/settings load non-fatal note:', err)
     }
@@ -727,14 +729,14 @@ async function initializeApp() {
     // Smooth transition
     showSplash.value = false
 
-    // Check if onboarding needed (no services connected)
-    const hasCompletedOnboarding =
-      localStorage.getItem(ONBOARDING_COMPLETED_KEY) === 'true' ||
-      localStorage.getItem(ONBOARDING_COMPLETE_KEY) === 'true'
-    if (!hasCompletedOnboarding) {
-      setTimeout(() => {
-        showOnboarding.value = true
-      }, 500)
+    // ADR-0007 decisión 15 (#93): cero cuentas ES el estado vacío de la
+    // pantalla de cuentas (seis tarjetas con «conectar»), no un flujo de
+    // bienvenida aparte. El arranque aterriza ahí y el wizard automático
+    // desaparece; `showOnboarding` queda solo para usos manuales. Si el
+    // recuento no se pudo leer, el estado es desconocido y no se navega.
+    if (startupAccounts !== null && startupAccounts.length === 0) {
+      // `router` puede faltar al montar el shell sin router (tests).
+      void router?.push('/accounts')
     }
   } catch (err: any) {
     console.error('[App] Critical initialization failure:', err)
