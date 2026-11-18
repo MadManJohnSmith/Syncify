@@ -191,18 +191,10 @@ jobs:
                 Sort-Object FullName -Descending | Select-Object -First 1
         if (-not $mt) { throw "mt.exe no encontrado en Windows Kits" }
         Write-Host "mt: $($mt.FullName)"
-        $manifest = Join-Path $env:RUNNER_TEMP "comctl32-v6.manifest"
-        $manifestLines = @(
-          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-          '<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">'
-          '  <dependency>'
-          '    <dependentAssembly>'
-          '      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>'
-          '    </dependentAssembly>'
-          '  </dependency>'
-          '</assembly>'
-        )
-        $manifestLines | Set-Content -Encoding UTF8 $manifest
+        $manifest = Join-Path $env:GITHUB_WORKSPACE "scripts/ci/comctl32.manifest"
+        if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+          throw "Falta el manifiesto comctl32: $manifest"
+        }
         # El target/ del workspace vive en la raiz del repo, no en src-tauri/.
         $deps = Join-Path $env:GITHUB_WORKSPACE "target\debug\deps"
         $patched = 0
