@@ -356,6 +356,18 @@
         </div>
       </div>
 
+      <!-- Download Jobs Panel (D08, spec #111 / issue #120) -->
+      <DownloadJobPanel
+        :jobs="downloadJobs"
+        :progress="jobProgress"
+        :account-labels="jobAccountLabels"
+        :busy="jobActionBusy || jobsClearing"
+        :clearing="jobsClearing"
+        @cancel="handleCancelJob"
+        @retry="handleRetryJob"
+        @clear="handleClearFinishedJobs"
+      />
+
       <!-- Active Downloads Section -->
       <div v-if="(viewFilter === 'all' || viewFilter === 'active') && (filteredActiveDownloads.length > 0 || !searchQuery)" class="active-downloads">
         <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
@@ -426,6 +438,16 @@
                   <span :class="['px-2 py-0.5 rounded text-[10px] font-bold', item.qualityBadgeClass]">{{ item.quality }}</span>
                 </div>
                 <p class="text-xs text-text-secondary truncate mb-2">{{ item.artist }} • {{ item.album }}</p>
+
+                <!-- D08: resolved account and requested/delivered quality per row -->
+                <p class="text-[11px] text-text-secondary truncate mb-2" data-testid="queue-row-account-quality">
+                  <span class="material-symbols-outlined text-[12px] align-middle">manage_accounts</span>
+                  {{ item.accountLabel }}
+                  <span class="mx-1 text-gray-300 dark:text-gray-600">·</span>
+                  Requested: <strong class="text-gray-700 dark:text-gray-300">{{ item.requestedQualityLabel }}</strong>
+                  <span class="mx-1 text-gray-300 dark:text-gray-600">·</span>
+                  Delivered: <strong class="text-gray-700 dark:text-gray-300">{{ item.deliveredQualityLabel || 'pending' }}</strong>
+                </p>
                 
                 <!-- Individual Progress Bar -->
                 <div class="item-progress">
@@ -469,10 +491,16 @@
               </div>
               
               <!-- Action Buttons -->
-              <div class="flex items-center gap-1.5 shrink-0">
-                <button @click="cancelItem(item.id)" class="p-2 text-gray-400 hover:text-error hover:bg-error/10 rounded-lg transition-all" title="Cancel">
+              <div class="flex flex-col items-center gap-1 shrink-0">
+                <button
+                  disabled
+                  class="p-2 text-gray-300 dark:text-gray-600 rounded-lg cursor-not-allowed"
+                  data-testid="active-cancel-disabled"
+                  title="Terminará la actual: the active download will finish; only queued rows can be cancelled"
+                >
                   <span class="material-symbols-outlined text-[20px]">close</span>
                 </button>
+                <span class="text-[9px] text-text-secondary leading-tight text-center max-w-[64px]">Active will finish</span>
               </div>
             </div>
           </div>
@@ -558,7 +586,13 @@
                   <!-- Track Info -->
                   <div class="flex-1 min-w-0">
                     <p class="text-xs font-semibold text-gray-900 dark:text-white truncate">{{ item.title }}</p>
-                    <p class="text-[11px] text-text-secondary truncate">{{ item.artist }} • {{ item.album }}</p>
+                    <p class="text-[11px] text-text-secondary truncate" data-testid="queue-row-account-quality">
+                      {{ item.artist }} • {{ item.album }}
+                      <span class="mx-1 text-gray-300 dark:text-gray-600">·</span>
+                      {{ item.accountLabel }}
+                      <span class="mx-1 text-gray-300 dark:text-gray-600">·</span>
+                      Requested {{ item.requestedQualityLabel }}
+                    </p>
                   </div>
                   
                   <!-- Service Badge (small) -->
@@ -614,7 +648,15 @@
                   <!-- Track Info -->
                   <div class="flex-1 min-w-0">
                     <p class="text-xs font-semibold text-gray-900 dark:text-white truncate">{{ item.title }}</p>
-                    <p class="text-[11px] text-text-secondary truncate">{{ item.artist }}</p>
+                    <p class="text-[11px] text-text-secondary truncate" data-testid="queue-row-account-quality">
+                      {{ item.artist }}
+                      <span class="mx-1 text-gray-300 dark:text-gray-600">·</span>
+                      {{ item.accountLabel }}
+                      <span class="mx-1 text-gray-300 dark:text-gray-600">·</span>
+                      Requested {{ item.requestedQualityLabel }}
+                      <span class="mx-1 text-gray-300 dark:text-gray-600">·</span>
+                      Delivered {{ item.effectiveQualityLabel }}
+                    </p>
                   </div>
                   
                   <!-- Badges -->
@@ -662,6 +704,10 @@
                       <div>
                         <span class="text-text-secondary">Requested:</span> 
                         <strong class="text-gray-900 dark:text-white ml-1">{{ item.requestedQualityLabel }}</strong>
+                      </div>
+                      <div>
+                        <span class="text-text-secondary">Account:</span>
+                        <strong class="text-gray-900 dark:text-white ml-1">{{ item.accountLabel }}</strong>
                       </div>
                       <div v-if="item.originalService && item.originalService.toLowerCase() !== item.service.toLowerCase()">
                         <span class="text-text-secondary">Original source:</span> 
@@ -827,7 +873,15 @@
                   </span>
                 </div>
 
-                <p class="text-xs text-text-secondary truncate mb-1">{{ item.artist }} • {{ item.album }}</p>
+                <p class="text-xs text-text-secondary truncate mb-1">
+                  {{ item.artist }} • {{ item.album }}
+                  <span class="mx-1 text-gray-300 dark:text-gray-600">·</span>
+                  {{ item.accountLabel }}
+                  <span class="mx-1 text-gray-300 dark:text-gray-600">·</span>
+                  Requested {{ item.requestedQualityLabel }}
+                  <span class="mx-1 text-gray-300 dark:text-gray-600">·</span>
+                  Delivered {{ item.deliveredQualityLabel || '—' }}
+                </p>
                 
                 <div class="error-message text-error text-xs truncate mb-1" :title="item.errorMessage">
                   {{ item.errorMessage }}
@@ -850,6 +904,7 @@
                       <span v-else>Stopped after a terminal failure (attempt count unavailable)</span>
                       <span>Origin: <strong>{{ formatServiceName(item.originalService) }}</strong></span>
                       <span v-if="item.effectiveService && item.effectiveService.toLowerCase() !== item.originalService.toLowerCase()">Effective: <strong>{{ formatServiceName(item.effectiveService) }}</strong></span>
+                      <span>Account: <strong>{{ item.accountLabel }}</strong></span>
                       <span v-if="item.failure.reason === 'stale_source'">Fallback {{ item.allowFallback ? 'Allowed' : 'Disabled' }}</span>
                       <span>Last attempt: {{ item.failedAt }}</span>
                     </div>
@@ -1116,11 +1171,22 @@ import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { settingsApi } from '@/api/settings'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import { useVirtualWindow } from '@/composables/useVirtualWindow'
-import type { QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/types'
+import type { Account, QueueItem, QueueStats, WorkerStatus, ProgressEvent } from '@/api/types'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
+import DownloadJobPanel from '@/components/DownloadJobPanel.vue'
 import TrackCover from '@/components/TrackCover.vue'
 import { auditDownloadQueue, libraryApi, reorderQueue, type QueueAuditReport } from '@/api/library'
 import { formatServiceName } from '@/composables/useGlobalTasks'
+import {
+  cancelDownloadJob,
+  clearDownloadJobs,
+  getDownloadJobs,
+  onDownloadJobProgress,
+  retryDownloadJobFailed,
+  type DownloadJob,
+  type DownloadJobProgress,
+} from '@/api/downloadJobs'
+import { accountsApi } from '@/api/accounts'
 
 export interface DownloadTimelineEntry {
   phase: string
@@ -1345,9 +1411,175 @@ const toast = useToast()
 const showDownloadFavoritesModal = ref(false)
 const auditReport = ref<QueueAuditReport | null>(null)
 
+// D08 (#120): jobs panel state. The job list is the persisted view; the event
+// keeps counters and progress live between refetches.
+const downloadJobs = ref<DownloadJob[]>([])
+const jobProgress = ref<Record<number, DownloadJobProgress>>({})
+const jobActionBusy = ref(false)
+const jobsClearing = ref(false)
+const accountsById = ref<Record<number, Account>>({})
+
+const jobAccountLabels = computed<Record<number, string>>(() => {
+  const labels: Record<number, string> = {}
+  for (const account of Object.values(accountsById.value)) {
+    labels[account.id] = accountDisplayName(account)
+  }
+  return labels
+})
+
+function accountDisplayName(account: Account): string {
+  const identity = account.display_name || account.email || `Account #${account.id}`
+  return `${identity} (${formatServiceName(account.service_name)})`
+}
+
+function accountLabelForItem(item: EnrichedQueueItem): string {
+  if (item.resolved_account_name) return item.resolved_account_name
+  const accountId = item.resolved_account_id
+  if (accountId != null) {
+    const account = accountsById.value[accountId]
+    if (account) return accountDisplayName(account)
+    return `Account #${accountId}`
+  }
+  return 'Automatic'
+}
+
+async function loadJobs() {
+  try {
+    const jobs = await getDownloadJobs(50)
+    downloadJobs.value = Array.isArray(jobs) ? jobs : []
+  } catch (e) {
+    console.error('Failed to load download jobs:', e)
+  }
+}
+
+async function loadJobAccounts() {
+  try {
+    const accounts = await accountsApi.getAccounts()
+    const byId: Record<number, Account> = {}
+    for (const account of accounts) {
+      byId[account.id] = account
+    }
+    accountsById.value = byId
+  } catch (e) {
+    // The account label is informative; the job still works with the account
+    // resolved by the backend.
+    console.warn('Failed to load accounts for download jobs:', e)
+  }
+}
+
+function isTerminalJob(job: DownloadJob): boolean {
+  return job.status !== 'running'
+}
+
+function replaceJob(updated: DownloadJob) {
+  const index = downloadJobs.value.findIndex((job) => job.id === updated.id)
+  if (index === -1) {
+    downloadJobs.value = [updated, ...downloadJobs.value]
+    return
+  }
+  const next = [...downloadJobs.value]
+  next[index] = updated
+  downloadJobs.value = next
+}
+
+/** Drop the live projection so the persisted command result drives the row. */
+function resetJobProgress(jobId: number) {
+  if (jobProgress.value[jobId] === undefined) return
+  const next = { ...jobProgress.value }
+  delete next[jobId]
+  jobProgress.value = next
+}
+
+function handleDownloadJobProgress(payload: DownloadJobProgress | null | undefined) {
+  if (!payload || typeof payload.job_id !== 'number') return
+
+  jobProgress.value = { ...jobProgress.value, [payload.job_id]: payload }
+
+  const index = downloadJobs.value.findIndex((job) => job.id === payload.job_id)
+  if (index === -1) {
+    // A job created by another view may have started after the last fetch.
+    void loadJobs()
+    return
+  }
+
+  const current = downloadJobs.value[index]
+  const next = [...downloadJobs.value]
+  next[index] = {
+    ...current,
+    label: payload.label ?? current.label,
+    status: payload.status,
+    requestedCount: payload.total || current.requestedCount,
+    completedCount: payload.completed,
+    failedCount: payload.failed,
+    skippedCount: payload.skipped,
+  }
+  downloadJobs.value = next
+
+  // The terminal event carries the final counters and timestamp; refetch once
+  // so the persisted job replaces the live projection.
+  if (payload.terminal) void loadJobs()
+}
+
+async function handleCancelJob(jobId: number) {
+  if (jobActionBusy.value) return
+  jobActionBusy.value = true
+  try {
+    const job = await cancelDownloadJob(jobId)
+    resetJobProgress(jobId)
+    replaceJob(job)
+    toast.info('Job cancellation requested', 'Queued tracks were cancelled; the active download will finish.')
+  } catch (e) {
+    toast.error('Could not cancel the job', String(e))
+  } finally {
+    jobActionBusy.value = false
+  }
+}
+
+async function handleRetryJob(jobId: number) {
+  if (jobActionBusy.value) return
+  jobActionBusy.value = true
+  try {
+    const job = await retryDownloadJobFailed(jobId)
+    resetJobProgress(jobId)
+    replaceJob(job)
+    toast.success('Retrying failed tracks', `Only the failed tracks of job #${jobId} were requeued.`)
+  } catch (e) {
+    toast.error('Could not retry the job', String(e))
+  } finally {
+    jobActionBusy.value = false
+  }
+}
+
+async function handleClearFinishedJobs() {
+  if (jobsClearing.value) return
+  const finished = downloadJobs.value.filter(isTerminalJob)
+  if (finished.length === 0) return
+
+  const confirmed = await confirm(
+    `Clear ${finished.length.toLocaleString()} finished job${finished.length === 1 ? '' : 's'}? The downloads ledger is kept.`,
+    { title: 'Clear Finished Jobs', variant: 'warning' },
+  )
+  if (confirmed !== true) return
+
+  jobsClearing.value = true
+  try {
+    const removed = await clearDownloadJobs()
+    const finishedIds = new Set(finished.map((job) => job.id))
+    downloadJobs.value = downloadJobs.value.filter((job) => !finishedIds.has(job.id))
+    const remainingProgress = { ...jobProgress.value }
+    for (const id of finishedIds) delete remainingProgress[id]
+    jobProgress.value = remainingProgress
+    toast.success('Finished jobs cleared', `${removed} job${removed === 1 ? '' : 's'} removed; the downloads ledger is untouched.`)
+  } catch (e) {
+    toast.error('Could not clear finished jobs', String(e))
+  } finally {
+    jobsClearing.value = false
+  }
+}
+
 async function handleFavoritesEnqueued(res: { message: string }) {
-  toast.success('Favorites Enqueued', res.message)
-  await fetchData()
+  toast.success('Download job created', res.message)
+  await Promise.all([fetchData(), loadJobs()])
 }
 
 // Toolbar state
@@ -1443,6 +1675,9 @@ const activeDownloads = computed(() => {
         coverUrl: item.cover_art_url ?? null,
         service: sName,
         serviceBadgeClass: getServiceBadgeClass(sName),
+        accountLabel: accountLabelForItem(item),
+        requestedQualityLabel: formatQualityLabel(rawQuality),
+        deliveredQualityLabel: item.effective_quality ? formatQualityLabel(item.effective_quality) : null,
         quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
         qualityBadgeClass: 'bg-primary/10 text-primary border border-primary/20',
         progress: item.progress_percent || 0,
@@ -1481,6 +1716,9 @@ function mapQueueItem(item: EnrichedQueueItem) {
     coverUrl: item.cover_art_url ?? null,
     service: sName,
     serviceBadgeClass: getServiceBadgeClass(sName),
+    accountLabel: accountLabelForItem(item),
+    requestedQualityLabel: formatQualityLabel(rawQuality),
+    deliveredQualityLabel: item.effective_quality ? formatQualityLabel(item.effective_quality) : null,
     quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
     qualityBadgeClass: 'bg-gray-100 dark:bg-surface-highlight text-text-secondary border border-gray-200 dark:border-border-dark',
     progress: item.progress_percent || 0,
@@ -1519,6 +1757,7 @@ function mapCompletedItem(item: EnrichedQueueItem) {
       originalService,
       effectiveService,
       serviceBadgeClass: getServiceBadgeClass(effectiveService),
+      accountLabel: accountLabelForItem(item),
       quality: rawQuality.startsWith('Downloaded') ? rawQuality : `Downloaded ${rawQuality}`,
       qualityBadgeClass: 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20',
       completedAt: formatTime(item.completed_at ?? undefined),
@@ -1570,6 +1809,7 @@ function mapFailedItem(item: EnrichedQueueItem) {
       originalService,
       effectiveService,
       serviceBadgeClass: getServiceBadgeClass(effectiveService || originalService),
+      accountLabel: accountLabelForItem(item),
       quality: rawQuality.startsWith('Declared') ? rawQuality : `Declared ${rawQuality}`,
       qualityBadgeClass: 'bg-red-500/10 text-red-500 border border-red-500/20',
       errorMessage: item.error_message || 'Download failed',
@@ -1583,6 +1823,7 @@ function mapFailedItem(item: EnrichedQueueItem) {
       isRejectedQuality,
       requestedQualityLabel,
       receivedQualityLabel,
+      deliveredQualityLabel: item.effective_quality ? formatQualityLabel(item.effective_quality) : null,
       resultLabel,
       decisionReason,
     }
@@ -1830,6 +2071,7 @@ async function fetchData() {
     if (audit) {
       auditReport.value = audit
     }
+    await loadJobs()
   } catch (e) {
     // Without flagging it, zero counters read as "no downloads".
     loadError.value = String(e)
@@ -2147,23 +2389,6 @@ async function clearHistory() {
   }
 }
 
-async function cancelItem(id: number) {
-  const confirmed = await confirm('Cancel this download?', {
-    title: 'Cancel Download',
-    variant: 'warning'
-  })
-  if (confirmed !== true) return
-  
-  isProcessing.value = true
-  try {
-    await queueApi.cancelItem(id)
-    lastProgressTimestamps.delete(id)
-    await fetchData()
-  } finally {
-    isProcessing.value = false
-  }
-}
-
 async function retryItem(id: number) {
   await queueApi.retryItem(id)
   lastProgressTimestamps.delete(id)
@@ -2252,6 +2477,7 @@ async function saveSettings() {
 }
 
 let unlistenProgress: (() => void) | null = null
+let unlistenJobProgress: (() => void) | null = null
 
 // Initialize
 onMounted(async () => {
@@ -2264,13 +2490,19 @@ onMounted(async () => {
 
   await loadDownloadSettings()
   await fetchData()
+  await loadJobAccounts()
   unlistenProgress = await on<DownloadProgressEventPayload>(TauriEvents.DOWNLOAD_PROGRESS, handleProgressEvent)
+  unlistenJobProgress = await onDownloadJobProgress(handleDownloadJobProgress)
 })
 
 onUnmounted(() => {
   if (unlistenProgress) {
     unlistenProgress()
     unlistenProgress = null
+  }
+  if (unlistenJobProgress) {
+    unlistenJobProgress()
+    unlistenJobProgress = null
   }
 })
 </script>

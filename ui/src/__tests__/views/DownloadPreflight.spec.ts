@@ -142,15 +142,15 @@ describe('Download Preflight & Safe Batch Enqueuing (S138A)', () => {
     });
 
     describe('DownloadFavoritesModal Preflight Grid', () => {
-        it('renders the aggregate estimate breakdown before creating a job', async () => {
+        it('renders the aggregate estimate breakdown before creating a large job', async () => {
             mockInvoke((cmd) => {
                 if (cmd === 'estimate_download_job') {
                     return {
-                        total: 100,
-                        bySource: [],
-                        byDestination: [],
-                        byCapacity: { hires: 40, lossless: 20, high: 10, lossy: 10, unknown: 20 },
-                        estimatedSizeMb: 2100,
+                        total: 1001,
+                        bySource: [{ service: 'qobuz', count: 1001 }],
+                        byDestination: [{ service: 'qobuz', count: 1001 }],
+                        byCapacity: { hires: 400, lossless: 200, high: 100, lossy: 100, unknown: 201 },
+                        estimatedSizeMb: 21000,
                     };
                 }
                 if (cmd === 'create_download_job') return { jobId: 9 };
@@ -162,25 +162,26 @@ describe('Download Preflight & Safe Batch Enqueuing (S138A)', () => {
             });
             await flushPromises();
 
-            // Select 'All' limit to trigger the preflight estimate
+            // Select 'All' to request the unbounded favorites job.
             const allBtn = wrapper.findAll('button').find(b => b.text().includes('10k+'));
             if (allBtn) {
                 await allBtn.trigger('click');
                 await flushPromises();
             }
 
-            const startBtn = wrapper.findAll('button').find(b => b.text().includes('Run Preflight Check') || b.text().includes('Enqueue Downloads'));
-            expect(startBtn).toBeDefined();
-            await startBtn!.trigger('click');
+            await wrapper.find('[data-testid="job-submit"]').trigger('click');
             await flushPromises();
 
-            expect(wrapper.text()).toContain('Preflight Verification Guardrail');
-            expect(wrapper.text()).toContain('Requested');
-            expect(wrapper.text()).toContain('Ready Exact');
-            expect(wrapper.text()).toContain('Fallback');
-            expect(wrapper.text()).toContain('Downloaded');
-            expect(wrapper.text()).toContain('In Queue');
-             expect(wrapper.text()).toContain('No Provider');
+            const confirmation = wrapper.find('[data-testid="job-estimate-confirmation"]');
+            expect(confirmation.exists()).toBe(true);
+            expect(confirmation.text()).toContain('1,001');
+            expect(confirmation.text()).toContain('Tracks');
+            expect(confirmation.text()).toContain('Hi-Res');
+            expect(confirmation.text()).toContain('Lossless');
+            expect(confirmation.text()).toContain('High');
+            expect(confirmation.text()).toContain('No source');
+            expect(confirmation.text()).toContain('Sources');
+            expect(confirmation.text()).toContain('Destinations');
         });
     });
 });
