@@ -477,10 +477,13 @@ pub async fn get_dashboard_stats(state: State<'_, AppState>) -> Result<Dashboard
     .fetch_one(&state.db)
     .await
     .map_err(|e| format!("Dashboard stats error (artists): {}", e))?;
-    let (total_playlists,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM playlists")
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| format!("Dashboard stats error (playlists): {}", e))?;
+    // PL01 (#154): los tombstones de playlists importadas borradas ya no son
+    // playlists para el usuario; antes del tombstone el borrado era físico.
+    let (total_playlists,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM playlists WHERE deleted_at IS NULL")
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| format!("Dashboard stats error (playlists): {}", e))?;
     let (total_downloads,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM downloads")
         .fetch_one(&state.db)
         .await

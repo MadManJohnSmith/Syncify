@@ -4,12 +4,12 @@
 > sigue en español; no hay traducción de este documento todavía. El índice
 > que marca su estado está en `docs/README.en.md`.
 
-**Estado de revisión:** 2026-10-25 — re-revisión contra el árbol (verificación dirigida de símbolos y comportamiento): citas de línea de `commands/service.rs` y `commands/tools.rs` sustituidas por símbolos; reescrito el razonamiento de SoundCloud (`SoundcloudClient::get_playlists`/`get_playlist_tracks` existen en `services/soundcloud.rs` tras `#[allow(dead_code)]`, sin comando que los invoque) y corregido el punto de ruptura de `create_playlist` (hace `account_id.unwrap_or(1)`, nunca inserta `NULL`). Sin verificar: importaciones contra servicios reales en vivo.
+**Estado de revisión:** 2026-11-18 — PL01 (#154) sobre el modelo local de PL00 (#153): crear/renombrar/editar la local no toca la identidad (`local_uuid`), la local se borra de verdad, la importada deja tombstone (`deleted_at`) que el sync no resucita, y borrar la cuenta elimina las importadas sin tocar las locales. Sin verificar: importaciones contra servicios reales en vivo.
 
-**Último cambio:** re-revisión 2026-10-25 — símbolos en lugar de números de línea, razonamiento de SoundCloud corregido y punto de ruptura de `create_playlist` actualizado. Antes: ítem 9.1 del plan post-auditoría (2026-10-02) — estado real de la importación de playlists por servicio. Antes: S40 — 2026-03-30 — archivos: `migrations/0006_playlists.sql`, `commands/library.rs`, `commands/service.rs`
+**Último cambio:** 2026-11-18 — CRUD local y borrado de PL01 (#154). Antes: re-revisión 2026-10-25 — símbolos en lugar de números de línea y razonamiento de SoundCloud corregido. Antes: ítem 9.1 del plan post-auditoría (2026-10-02) — estado real de la importación de playlists por servicio. Antes: S40 — 2026-03-30 — archivos: `migrations/0006_playlists.sql`, `commands/library.rs`, `commands/service.rs`
 **Leer antes de modificar:** `commands/tools.rs` (Python bridge playlist commands), `scripts/playlist_bridge.py`
 **Archivos core:**
-- `migrations/0006_playlists.sql` (schema) y `migrations/0048_playlist_sync.sql` (identidad remota `playlist_sources`)
+- `migrations/0006_playlists.sql` (schema), `migrations/0048_playlist_sync.sql` (identidad remota `playlist_sources`) y `migrations/0110_pl00_local_playlist_model.sql` (modelo local: `local_uuid`, tombstone `deleted_at`, unicidad por posición)
 - `src-tauri/src/commands/service.rs` — `upsert_playlist_and_source`, `import_spotify_playlists`, `import_qobuz_playlists`, `import_tidal_library`, `import_deezer_library`, `import_apple_music_library` (helpers `emit_import_progress`/`emit_import_complete`)
 - `src-tauri/src/commands/library.rs` (`get_local_playlist_tracks`, `get_playlists`, `add_to_playlist`, `create_playlist`)
 - `src-tauri/src/commands/playlists.rs` (`recompact_playlist_positions`, `match_entry_to_track`)
@@ -35,6 +35,8 @@ service.rs::import_spotify_playlists()
     │        → SELECT playlist_sources WHERE account_id=? AND service_playlist_id=?
     │        → fallback: SELECT playlists WHERE account_id=? AND service_playlist_id=?
     │        → si no hay service_playlist_id, busca por nombre (playlists locales)
+    │        → si la fila encontrada tiene tombstone (deleted_at), devuelve None:
+    │          el usuario la borró y el sync no la recrea (PL01 #154)
     │        → UPDATE playlists (metadatos + last_synced) o INSERT, y registra
     │          la identidad remota en playlist_sources
     │     b. Paginate playlist tracks (limit=100) mientras page.next exista
@@ -53,18 +55,36 @@ service.rs::import_spotify_playlists()
 
 ```
 FRONTEND → invoke("create_playlist", { name, description })
-    → library.rs: INSERT INTO playlists (account_id = account_id.unwrap_or(1),
+    → library.rs: INSERT INTO playlists (account_id NULL, local_uuid UUID,
       service_playlist_id = 'local_' || name, name, ...)
+      (el nombre no es único: la cuenta NULL lo exime del índice UNIQUE; la
+      identidad estable es local_uuid — PL00 #153, PL01 #154)
+
+FRONTEND → invoke("update_playlist", { id, name?, description? })
+    → playlists.rs: UPDATE solo name/description (+ updated_at) y solo si
+      deleted_at IS NULL; local_uuid, service_playlist_id y account_id no se
+      tocan (renombrar no cambia la identidad — PL01 #154)
+
+FRONTEND → invoke("delete_playlist", { id })
+    → playlists.rs: una local (sin cuenta o smart) se DELETE de verdad; una
+      importada deja tombstone (deleted_at), borra sus playlist_tracks y
+      conserva playlist_sources (la identidad remota que el sync consulta y
+      con la que no la recrea — PL01 #154)
 
 FRONTEND → invoke("add_to_playlist", { playlist_id, track_ids })
     → library.rs: INSERT OR IGNORE INTO playlist_tracks per track_id
 
 FRONTEND → invoke("get_playlists")
-    → library.rs: SELECT * FROM playlists ORDER BY name
+    → library.rs: SELECT ... WHERE deleted_at IS NULL ORDER BY name
 
 FRONTEND → invoke("get_local_playlist_tracks", { playlist_id })
     → library.rs: SELECT tracks JOIN playlist_tracks WHERE playlist_id=?
 ```
+
+Borrar una cuenta elimina sus playlists importadas (`DELETE FROM playlists
+WHERE account_id = ?` en `perform_delete_account`, con sus fuentes) y nunca
+las locales: estas no tienen cuenta (`account_id IS NULL`) y sobreviven al
+borrado. La confirmación del borrado es el diálogo in-app R13 de la UI.
 
 ### Cross-Service Playlist Operations (Python Bridge)
 
@@ -87,16 +107,16 @@ ningún command de Rust lo invoca; la UI lista las playlists locales con
 
 ---
 
-## Schema (0006_playlists.sql)
+## Schema (0006 + 0110)
 
 ### playlists
 
 | Column | Type | Constraints | Notes |
 |--------|------|-------------|-------|
 | `id` | INTEGER | PK AUTOINCREMENT | |
-| `account_id` | INTEGER | NOT NULL FK → accounts(id) ON DELETE CASCADE | `create_playlist` usa la cuenta 1 para playlists locales (nunca `NULL`) |
-| `service_playlist_id` | TEXT | NOT NULL | Service-specific ID |
-| `name` | TEXT | NOT NULL | Playlist name |
+| `account_id` | INTEGER | NULL FK → accounts(id) ON DELETE CASCADE | Las locales no tienen cuenta (`NULL`, PL00 #153); las importadas sí |
+| `service_playlist_id` | TEXT | NULL | Identidad remota; en las locales es la etiqueta histórica `local_<nombre>` |
+| `name` | TEXT | NOT NULL | No es identidad y puede repetirse (PL01 #154) |
 | `description` | TEXT | | Optional description |
 | `owner_name` | TEXT | | Playlist owner |
 | `is_public` | INTEGER | DEFAULT 1 | Boolean flag |
@@ -104,10 +124,15 @@ ningún command de Rust lo invoca; la UI lista las playlists locales con
 | `image_url` | TEXT | | Cover art URL |
 | `track_count` | INTEGER | DEFAULT 0 | From service metadata |
 | `last_synced` | TEXT | | Last sync timestamp |
+| `local_uuid` | TEXT | UNIQUE parcial (no NULL) | Identidad estable de las locales; renombrar no la toca (0110) |
+| `deleted_at` | TEXT | NULL | Tombstone de las importadas borradas (0110/PL01) |
 | `created_at` | TEXT | DEFAULT CURRENT_TIMESTAMP | |
 | `updated_at` | TEXT | DEFAULT CURRENT_TIMESTAMP | |
 
-UNIQUE constraint: `(account_id, service_playlist_id)`
+UNIQUE constraint: `(account_id, service_playlist_id)` — solo gobierna filas
+con cuenta: SQLite trata los NULL como distintos, por eso dos locales pueden
+compartir nombre. La identidad de las locales es `local_uuid` (índice único
+parcial).
 
 ### playlist_tracks
 
@@ -119,7 +144,8 @@ UNIQUE constraint: `(account_id, service_playlist_id)`
 | `position` | INTEGER | NOT NULL DEFAULT 0 | Track order in playlist |
 | `added_at` | TEXT | | When track was added |
 
-UNIQUE constraint: `(playlist_id, track_id)`
+UNIQUE constraint: `(playlist_id, position)` (0110: posiciones canónicas
+1..N; la misma pista puede repetirse en la playlist)
 
 ### Indexes
 

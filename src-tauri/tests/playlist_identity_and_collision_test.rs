@@ -67,7 +67,8 @@ async fn test_different_service_playlist_id_creates_distinct_playlists() {
         25,
     )
     .await
-    .expect("First upsert must succeed");
+    .expect("First upsert must succeed")
+    .expect("Upsert returned None (tombstoned)");
 
     assert!(pid1 > 0);
 
@@ -85,7 +86,8 @@ async fn test_different_service_playlist_id_creates_distinct_playlists() {
         30,
     )
     .await
-    .expect("Second upsert must succeed");
+    .expect("Second upsert must succeed")
+    .expect("Upsert returned None (tombstoned)");
 
     assert!(pid2 > 0);
     assert_ne!(
@@ -157,7 +159,8 @@ async fn test_same_service_playlist_id_reuses_and_updates() {
         15,
     )
     .await
-    .expect("Initial upsert must succeed");
+    .expect("Initial upsert must succeed")
+    .expect("Upsert returned None (tombstoned)");
 
     // 2. Re-import with changed title and metadata but SAME service_playlist_id
     let pid2 = upsert_playlist_and_source(
@@ -173,7 +176,8 @@ async fn test_same_service_playlist_id_reuses_and_updates() {
         18,
     )
     .await
-    .expect("Re-import upsert must succeed");
+    .expect("Re-import upsert must succeed")
+    .expect("Upsert returned None (tombstoned)");
 
     assert_eq!(
         pid1, pid2,
@@ -219,7 +223,8 @@ async fn test_empty_service_playlist_id_falls_back_to_name_matching() {
         10,
     )
     .await
-    .expect("First manual upsert must succeed");
+    .expect("First manual upsert must succeed")
+    .expect("Upsert returned None (tombstoned)");
 
     // 2. Second upsert with same name (differing case/whitespace) and empty service_playlist_id
     let pid2 = upsert_playlist_and_source(
@@ -235,7 +240,8 @@ async fn test_empty_service_playlist_id_falls_back_to_name_matching() {
         12,
     )
     .await
-    .expect("Second manual upsert must succeed");
+    .expect("Second manual upsert must succeed")
+    .expect("Upsert returned None (tombstoned)");
 
     assert_eq!(
         pid1, pid2,

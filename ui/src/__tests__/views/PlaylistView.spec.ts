@@ -343,4 +343,35 @@ describe('PlaylistView', () => {
         expect(invokeCalls).toContainEqual({ cmd: 'delete_playlist', args: { id: 99 } });
     });
 
+    it('does not delete when the confirmation is cancelled', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'get_local_playlist_tracks') return makePage([]);
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+
+        const playlistItem = wrapper.findAll('.playlist-item').find((el: any) => el.text().includes('Chill Vibes'));
+        expect(playlistItem).toBeDefined();
+        await playlistItem!.trigger('click');
+        await flushPromises();
+
+        const deleteButton = wrapper.find('button[aria-label="Delete playlist"]');
+        expect(deleteButton.exists()).toBe(true);
+        await deleteButton.trigger('click');
+        await flushPromises();
+
+        // Cancelar el diálogo R13: la playlist se queda y no hay IPC de borrado.
+        const { resolveDialog } = useDialog();
+        resolveDialog('cancel');
+        await flushPromises();
+
+        expect(invokeCalls.some(c => c.cmd === 'delete_playlist')).toBe(false);
+        expect(wrapper.text()).toContain('Chill Vibes');
+    });
+
 });

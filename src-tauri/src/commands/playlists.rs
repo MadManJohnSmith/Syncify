@@ -59,6 +59,10 @@ pub async fn get_playlist(state: State<'_, AppState>, id: i64) -> Result<Option<
 }
 
 /// Update a playlist's name or description
+///
+/// PL01 (#154): renombrar o editar la descripción no toca la identidad
+/// (`local_uuid`, `service_playlist_id` ni `account_id`). Una playlist con
+/// tombstone ya no existe para la UI y tampoco se puede editar.
 #[tauri::command]
 pub async fn update_playlist(
     state: State<'_, AppState>,
@@ -67,28 +71,44 @@ pub async fn update_playlist(
     description: Option<String>,
     is_public: Option<bool>,
 ) -> Result<Playlist, String> {
-    let mut tx = state
-        .db
+    update_playlist_core(&state.db, id, name, description, is_public).await
+}
+
+/// Núcleo testeable de `update_playlist`: solo toca `name` y `description`
+/// (más `updated_at`), nunca columnas de identidad, y rechaza playlists con
+/// tombstone (la relectura final ya filtra `deleted_at`).
+pub async fn update_playlist_core(
+    db: &sqlx::SqlitePool,
+    id: i64,
+    name: Option<String>,
+    description: Option<String>,
+    is_public: Option<bool>,
+) -> Result<Playlist, String> {
+    let mut tx = db
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
     if let Some(new_name) = &name {
-        sqlx::query("UPDATE playlists SET name = ? WHERE id = ?")
-            .bind(new_name)
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("Failed to update name: {}", e))?;
+        sqlx::query(
+            "UPDATE playlists SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(new_name)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to update name: {}", e))?;
     }
 
     if let Some(new_desc) = &description {
-        sqlx::query("UPDATE playlists SET description = ? WHERE id = ?")
-            .bind(new_desc)
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("Failed to update description: {}", e))?;
+        sqlx::query(
+            "UPDATE playlists SET description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(new_desc)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to update description: {}", e))?;
     }
 
     let _ = is_public; // Preserved for forward-compatibility
@@ -97,43 +117,101 @@ pub async fn update_playlist(
         .await
         .map_err(|e| format!("Failed to commit update: {}", e))?;
 
-    let updated = get_playlist(state, id)
-        .await?
-        .ok_or_else(|| format!("Playlist {} not found after update", id))?;
+    let updated = sqlx::query_as::<_, Playlist>(
+        r#"
+        SELECT
+            p.id,
+            p.name,
+            p.description,
+            p.owner_name,
+            p.track_count,
+            p.image_url,
+            s.name as service_name
+        FROM playlists p
+        LEFT JOIN accounts a ON a.id = p.account_id
+        LEFT JOIN services s ON s.id = a.service_id
+        WHERE p.id = ? AND p.deleted_at IS NULL
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Failed to get playlist: {}", e))?
+    .ok_or_else(|| format!("Playlist {} not found after update", id))?;
 
     Ok(updated)
 }
 
 /// Delete a playlist and cascade delete its tracks associations
+///
+/// PL01 (#154): una playlist local (sin cuenta o smart) se borra de verdad:
+/// es del usuario y no tiene contraparte remota que la resucite. Una
+/// importada deja tombstone (`deleted_at`): sus pistas se borran, pero la
+/// fila conserva su identidad remota (`account_id`, `service_playlist_id` y
+/// su registro en `playlist_sources`) para que el siguiente sync, al
+/// reencontrarla, no la recree (`upsert_playlist_and_source`).
 #[tauri::command]
 pub async fn delete_playlist(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let mut tx = state
-        .db
+    delete_playlist_core(&state.db, id).await
+}
+
+/// Núcleo testeable de `delete_playlist`: local se DELETE, importada deja
+/// tombstone. El borrado local de la fila dispara el ON DELETE CASCADE de sus
+/// `playlist_sources` (0002); el DELETE explícito deja el intento legible.
+pub async fn delete_playlist_core(db: &sqlx::SqlitePool, id: i64) -> Result<(), String> {
+    let mut tx = db
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
-    // Cascade delete playlist_tracks and playlist_sources
+    let target: Option<(Option<String>, Option<i64>, i64)> = sqlx::query_as(
+        "SELECT local_uuid, account_id, COALESCE(is_smart, 0) FROM playlists WHERE id = ? AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to get playlist: {}", e))?;
+
+    let (local_uuid, account_id, is_smart) =
+        target.ok_or_else(|| format!("Playlist {} not found", id))?;
+    let is_local = local_uuid.is_some() || account_id.is_none() || is_smart != 0;
+
+    // Las pistas dejan de existir en ambos casos: el contenido se va con la
+    // playlist, sea física o tombstone.
     sqlx::query("DELETE FROM playlist_tracks WHERE playlist_id = ?")
         .bind(id)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("Failed to delete playlist tracks: {}", e))?;
 
-    sqlx::query("DELETE FROM playlist_sources WHERE playlist_id = ?")
+    if is_local {
+        sqlx::query("DELETE FROM playlist_sources WHERE playlist_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to delete playlist sources: {}", e))?;
+
+        let res = sqlx::query("DELETE FROM playlists WHERE id = ? AND deleted_at IS NULL")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to delete playlist: {}", e))?;
+
+        if res.rows_affected() == 0 {
+            return Err(format!("Playlist {} not found", id));
+        }
+    } else {
+        let res = sqlx::query(
+            "UPDATE playlists SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, track_count = 0 WHERE id = ? AND deleted_at IS NULL",
+        )
         .bind(id)
         .execute(&mut *tx)
         .await
-        .map_err(|e| format!("Failed to delete playlist sources: {}", e))?;
+        .map_err(|e| format!("Failed to tombstone playlist: {}", e))?;
 
-    let res = sqlx::query("DELETE FROM playlists WHERE id = ?")
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to delete playlist: {}", e))?;
-
-    if res.rows_affected() == 0 {
-        return Err(format!("Playlist {} not found", id));
+        if res.rows_affected() == 0 {
+            return Err(format!("Playlist {} not found", id));
+        }
     }
 
     tx.commit()
@@ -405,10 +483,13 @@ pub async fn sanitize_playlists_in_pool(
     let track_counts_updated = count_res.rows_affected() as usize;
 
     // 3. Desambiguar colisiones de nombres de playlists bajo la misma cuenta (account_id, LOWER(TRIM(name)))
+    // PL01 (#154): los tombstones ya no participan — una importada borrada no
+    // debe provocar renombres en playlists vivas.
     let dup_name_groups: Vec<(i64, String, i64)> = sqlx::query_as(
         r#"
         SELECT account_id, LOWER(TRIM(name)) as norm_name, COUNT(*) as cnt
         FROM playlists
+        WHERE deleted_at IS NULL
         GROUP BY account_id, LOWER(TRIM(name))
         HAVING cnt > 1
         ORDER BY account_id, norm_name
@@ -425,7 +506,7 @@ pub async fn sanitize_playlists_in_pool(
             r#"
             SELECT id, name
             FROM playlists
-            WHERE account_id = ? AND LOWER(TRIM(name)) = ?
+            WHERE account_id = ? AND LOWER(TRIM(name)) = ? AND deleted_at IS NULL
             ORDER BY id ASC
             "#,
         )
@@ -435,17 +516,18 @@ pub async fn sanitize_playlists_in_pool(
         .await
         .map_err(|e| format!("Failed to fetch playlists for group '{}': {}", norm_name, e))?;
 
-        let existing_names: Vec<(String,)> =
-            sqlx::query_as("SELECT LOWER(TRIM(name)) FROM playlists WHERE account_id = ?")
-                .bind(acc_id)
-                .fetch_all(&mut *tx)
-                .await
-                .map_err(|e| {
-                    format!(
-                        "Failed to fetch existing playlist names for account {}: {}",
-                        acc_id, e
-                    )
-                })?;
+        let existing_names: Vec<(String,)> = sqlx::query_as(
+            "SELECT LOWER(TRIM(name)) FROM playlists WHERE account_id = ? AND deleted_at IS NULL",
+        )
+        .bind(acc_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| {
+            format!(
+                "Failed to fetch existing playlist names for account {}: {}",
+                acc_id, e
+            )
+        })?;
 
         let mut existing_set: std::collections::HashSet<String> =
             existing_names.into_iter().map(|(n,)| n).collect();
@@ -583,6 +665,7 @@ pub async fn sync_playlists(
         JOIN services s ON s.id = a.service_id
         LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
         WHERE a.is_active = 1
+          AND p.deleted_at IS NULL
           AND (? = 'all' OR LOWER(s.name) = LOWER(?))
         GROUP BY s.name
         ORDER BY s.name
