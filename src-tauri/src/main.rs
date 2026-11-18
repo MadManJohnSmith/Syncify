@@ -1171,8 +1171,6 @@ fn main() {
             commands::player_set_volume,
             commands::player_set_rate,
             commands::player_mpris_update,
-            // Fase 1 del player: estadísticas de reproducción local
-            commands::record_local_play,
             // #131 (P00): cola de reproducción persistente en SQLite
             commands::playback_queue_get,
             commands::playback_queue_enqueue,

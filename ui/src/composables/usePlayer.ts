@@ -16,23 +16,29 @@
  * composable is a view over those commands. The old localStorage key
  * `syncify.playerState.v1` is discarded without migration.
  *
+ * Since #132 (P01) the backend also decides the next track and credits the
+ * listen: on the natural end of a track it advances the queue itself
+ * (`repeat one/all` and the shuffle order are resolved in Rust, over the
+ * persisted aggregate) and notifies through `player:advanced`; it accumulates
+ * the 30 real seconds and calls its own crediting once per session. This
+ * composable no longer times playback and no longer advances on `ended` —
+ * it syncs its projection from the backend event.
+ *
  * Phase rules:
  * - Restoring after a restart ALWAYS resolves again with
  *   `player_load_track`: the persisted state never stores `file_path`, the
  *   full track DTO, or engine state. The engine loads the track paused at
  *   the saved position.
- * - Listen crediting uses 30 s of real playback accumulated per
- *   tick; never `position >= 30`. The restored position does not credit
- *   previous time.
  * - Importing this module fires no playback: restoration
  *   is lazy (`restoreFromPersistence`) and the status bar player invokes it on mount.
  * - Engine events carry the load `seq`: everything from an already replaced
  *   track is discarded.
  */
 import { computed, ref } from 'vue'
-import { getTrackMetadata, recordLocalPlay, type TrackMetadataWithSources } from '../api/library'
+import { getTrackMetadata, type TrackMetadataWithSources } from '../api/library'
 import {
     onMprisAction,
+    onPlayerAdvanced,
     onPlayerEnded,
     onPlayerStreamState,
     onPlayerTick,
@@ -44,6 +50,7 @@ import {
     playerSetRate,
     playerSetVolume,
     playerStop,
+    type PlayerAdvanced,
     type PlayerEngineState,
     type PlayerStreamQuality,
 } from '../api/player'
@@ -88,21 +95,10 @@ export interface PlaybackQueueEntry {
     track?: PlayerTrack;
 }
 
-/** Listen pending confirmation from the backend. */
-export interface PendingListen {
-    trackId: number;
-    listenSessionId: string;
-    attempts: number;
-}
-
 // ---------------------------------------------------------------------------
 // Constants and utilities
 // ---------------------------------------------------------------------------
 
-export const LISTEN_THRESHOLD_SEC = 30;
-const LISTEN_MAX_ATTEMPTS = 5;
-const LISTEN_BACKOFF_BASE_MS = 1000;
-const LISTEN_BACKOFF_CAP_MS = 16000;
 const HISTORY_LIMIT = 100;
 /**
  * Esquema antiguo de localStorage de reproducción (#131): se descarta sin
@@ -239,7 +235,6 @@ const shuffle = ref(false);
 const repeat = ref<RepeatMode>('off');
 const volume = ref(1);
 const muted = ref(false);
-const pendingListens = ref<PendingListen[]>([]);
 
 /** Pre-shuffle base order of the pending entries (entryIds). Not reactive: the mutations keep it in sync. */
 let baseOrder: string[] = [];
@@ -325,118 +320,10 @@ function stripEntry(e: PlaybackQueueEntry): QueueEntryRef {
 }
 
 // ---------------------------------------------------------------------------
-// Listen crediting (30 real seconds per tick)
+// Listen crediting: owned by the backend since P01 (#132). Rust accumulates
+// the 30 real seconds in its ticker and credits once per session; the UI
+// never times playback.
 // ---------------------------------------------------------------------------
-
-let listenSessionId: string | null = null;
-let listenTrackId: number | null = null;
-let listenAccumSec = 0;
-/** One pending entry per listen session: it is created only once when the threshold is crossed. */
-let listenScheduled = false;
-let tickWallMs: number | null = null;
-let tickMediaSec: number | null = null;
-
-function beginListenSession(trackId: number): void {
-    listenSessionId = uuidV4();
-    listenTrackId = trackId;
-    listenAccumSec = 0;
-    listenScheduled = false;
-    tickWallMs = null;
-    tickMediaSec = null;
-}
-
-function resetListenSession(): void {
-    listenSessionId = null;
-    listenTrackId = null;
-    listenAccumSec = 0;
-    listenScheduled = false;
-    tickWallMs = null;
-    tickMediaSec = null;
-}
-
-function creditListenTick(): void {
-    if (!listenSessionId || listenTrackId === null || current.value === null) return;
-    const eligible = engineState === 'playing';
-    if (!eligible) {
-        // Pause/buffering: the tick does not credit; the accumulated time is kept
-        // and the baseline re-anchors on the next eligible tick.
-        tickWallMs = null;
-        tickMediaSec = null;
-        return;
-    }
-    const now = Date.now();
-    if (tickWallMs !== null && tickMediaSec !== null) {
-        const dtWall = (now - tickWallMs) / 1000;
-        const dtMedia = positionSec.value - tickMediaSec;
-        const rate = Number.isFinite(playbackRate.value) && playbackRate.value > 0 ? playbackRate.value : 1;
-        if (Number.isFinite(dtWall) && Number.isFinite(dtMedia) && dtWall >= 0 && dtMedia >= 0) {
-            listenAccumSec += Math.min(dtWall, dtMedia / rate);
-        }
-        // Invalid delta (seek, currentTime jump): the tick does not credit but
-        // does not wipe the accumulated time either; the re-anchor below keeps it from dragging on.
-    }
-    tickWallMs = now;
-    tickMediaSec = positionSec.value;
-    if (!listenScheduled && listenAccumSec >= LISTEN_THRESHOLD_SEC) {
-        listenScheduled = true;
-        scheduleListen(listenTrackId, listenSessionId);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Pending listens: single send per session, capped retries
-// ---------------------------------------------------------------------------
-
-const listenInFlight = new Set<string>();
-let listenRetryTimer: ReturnType<typeof setTimeout> | null = null;
-
-function discardListen(p: PendingListen): void {
-    pendingListens.value = pendingListens.value.filter(x => x.listenSessionId !== p.listenSessionId);
-}
-
-function scheduleRetry(): void {
-    if (listenRetryTimer !== null) return;
-    const retryable = pendingListens.value.filter(p => p.attempts < LISTEN_MAX_ATTEMPTS);
-    if (retryable.length === 0) return;
-    const minAttempts = Math.min(...retryable.map(p => p.attempts));
-    const delayMs = Math.min(LISTEN_BACKOFF_CAP_MS, LISTEN_BACKOFF_BASE_MS * 2 ** Math.max(0, minAttempts - 1));
-    listenRetryTimer = setTimeout(() => {
-        listenRetryTimer = null;
-        void flushPendingListens();
-    }, delayMs);
-}
-
-function scheduleListen(trackId: number, sessionId: string): void {
-    pendingListens.value = [...pendingListens.value, { trackId, listenSessionId: sessionId, attempts: 0 }];
-    void flushPendingListens();
-}
-
-async function flushPendingListens(): Promise<void> {
-    for (const p of [...pendingListens.value]) {
-        if (listenInFlight.has(p.listenSessionId)) continue;
-        if (p.attempts >= LISTEN_MAX_ATTEMPTS) {
-            // Cap of 5 attempts reached: it is discarded and logged.
-            console.warn(`[player] discarding listen for track ${p.trackId} after ${p.attempts} attempts`);
-            discardListen(p);
-            continue;
-        }
-        listenInFlight.add(p.listenSessionId);
-        p.attempts += 1;
-        try {
-            await recordLocalPlay(p.trackId, p.listenSessionId);
-            pendingListens.value = pendingListens.value.filter(x => x.listenSessionId !== p.listenSessionId);
-        } catch (err) {
-            const msg = messageOf(err);
-            console.warn(`[player] record_local_play failed (attempt ${p.attempts}) for track ${p.trackId}: ${msg}`);
-            // Definitive (deleted track/invalid UUID) or cap of 5 attempts: discard.
-            if (isDefinitiveLibraryError(msg) || p.attempts >= LISTEN_MAX_ATTEMPTS) discardListen(p);
-            // Transient below the cap: keep the pending entry; scheduleRetry programs the backoff.
-        } finally {
-            listenInFlight.delete(p.listenSessionId);
-        }
-    }
-    scheduleRetry();
-}
 
 // ---------------------------------------------------------------------------
 // MediaSession (feature detection by symbol, clean degradation)
@@ -595,7 +482,6 @@ function bindEngineEvents(): void {
         if (tick.durationSec !== null && tick.durationSec > 0) {
             durationSec.value = tick.durationSec;
         }
-        creditListenTick();
         updateMediaSessionPosition();
     }).catch((err: unknown) => {
         console.warn(`[player] could not subscribe to player:tick: ${messageOf(err)}`);
@@ -617,12 +503,18 @@ function bindEngineEvents(): void {
         if (seq !== engineSeq) return;
         engineState = 'stopped';
         isPlaying.value = false;
-        // On natural end the standard expects 'paused'; if playback advances,
-        // the next 'playing' tick returns it to 'playing'.
+        // On natural end the standard expects 'paused'. The BACKEND decides
+        // the next track now (#132): if it advances, `player:advanced`
+        // reinstates the playing state; if it does not (repeat off, empty
+        // queue), the track stays stopped here — the UI never advances.
         setMediaSessionPlaybackState('paused');
-        void advanceTrack(true);
     }).catch((err: unknown) => {
         console.warn(`[player] could not subscribe to player:ended: ${messageOf(err)}`);
+    });
+    void onPlayerAdvanced(advanced => {
+        syncFromBackendAdvance(advanced);
+    }).catch((err: unknown) => {
+        console.warn(`[player] could not subscribe to player:advanced: ${messageOf(err)}`);
     });
     void onMprisAction(payload => {
         // Misma delegación que los handlers de MediaSession: la UI es la dueña
@@ -677,6 +569,50 @@ function removePending(entryId: string): void {
 }
 
 /**
+ * Sincroniza la proyección de la UI con un avance decidido por el backend
+ * (#132): el motor ya carga la pista nueva (generación mayor), la cabeza de
+ * la cola quedó consumida y la pista anterior archivada en el historial —
+ * ambos los refleja aquí el agregado local. Un evento con `seq <= engineSeq`
+ * es el eco de una generación ya sustituida (la UI cargó otra pista después)
+ * y se descarta. Los metadatos se proyectan perezosos: la reproducción no
+ * espera a la IPC de biblioteca.
+ */
+async function syncFromBackendAdvance(advanced: PlayerAdvanced): Promise<void> {
+    if (advanced.seq <= engineSeq) return;
+    const previous = currentEntry.value;
+    engineSeq = advanced.seq;
+    loadedPath = `backend:${advanced.trackId}`;
+    engineState = 'playing';
+    isPlaying.value = true;
+    setMediaSessionPlaybackState('playing');
+    if (mediaSessionHandlersCleared) bindMediaSessionHandlers();
+    isLoadingSource.value = false;
+    isBuffering.value = false;
+    streamQuality.value = null;
+    streamError.value = null;
+    error.value = null;
+    positionSec.value = 0;
+    durationSec.value = 0;
+    if (previous && previous.entryId !== advanced.entryId) {
+        pushHistory(previous);
+        removePending(advanced.entryId);
+    }
+    currentEntry.value = { entryId: advanced.entryId, trackId: advanced.trackId };
+    try {
+        const meta = await getTrackMetadata(advanced.trackId);
+        if (advanced.seq !== engineSeq) return;
+        const track = projectMetadata(meta);
+        if (currentEntry.value?.entryId === advanced.entryId) {
+            currentEntry.value = { ...currentEntry.value, track };
+            updateMediaSessionMetadata(track);
+            syncMprisState(track);
+        }
+    } catch (err) {
+        console.warn(`[player] metadata of advanced track ${advanced.trackId}: ${messageOf(err)}`);
+    }
+}
+
+/**
  * Result of `ensureProjection` for a pending entry without a projection:
  * the validated track, 'dead' (ID gone → discard on the fly) or 'error'
  * (unclassifiable failure → keep the head and stop advancing).
@@ -727,7 +663,6 @@ async function resolveAndPlay(track: PlayerTrack, transition: Transition): Promi
         setMediaSessionPlaybackState('playing');
         positionSec.value = 0;
         durationSec.value = result.durationSec ?? 0;
-        beginListenSession(track.id);
         // Metadata once playback start is confirmed. If stop()
         // unregistered the MediaSession handlers, re-register them here: the
         // initial bind from bindEngineEvents does not repeat (module guard) and
@@ -782,16 +717,12 @@ async function advanceFromHead(transition: Transition): Promise<AdvanceResult> {
 }
 
 /**
- * What happens when the queue runs out (the only role of `repeat`): the queue always
- * advances on `ended` while there are pending entries, in any mode.
+ * What happens when a MANUAL advance (next with an empty queue) runs out of
+ * pending entries: only `repeat all` rebuilds the cycle there. The natural
+ * end of a track — with every repeat mode and the shuffle order — is resolved
+ * by the backend since #132; the UI never advances on `ended`.
  */
-async function handleExhausted(auto: boolean, transition: Transition): Promise<void> {
-    if (auto && repeat.value === 'one' && currentEntry.value && current.value) {
-        // Repeat-one loop: new listen token and currentTime = 0; it does not
-        // duplicate the history (it is the same track continuing).
-        await resolveAndPlay(current.value, transition);
-        return;
-    }
+async function handleExhausted(transition: Transition): Promise<void> {
     if (repeat.value === 'all') {
         // Rebuilds the cycle from the live entries (history in playback
         // order + current). Walking a full cycle plays every entry
@@ -814,13 +745,13 @@ async function handleExhausted(auto: boolean, transition: Transition): Promise<v
     // repeat off (or manual next() with no pending entries): no-op.
 }
 
-async function advanceTrack(auto: boolean): Promise<void> {
+async function advanceTrack(): Promise<void> {
     const transition = beginTransition();
     bindEngineEvents();
     const result = await advanceFromHead(transition);
     if (transition.aborted) return;
     if (result !== 'empty') return;
-    await handleExhausted(auto, transition);
+    await handleExhausted(transition);
 }
 
 /** Immediate playback of a specific track (the previous one moves to the history). */
@@ -842,18 +773,15 @@ async function playTrack(track: PlayerTrack): Promise<void> {
 }
 
 /**
- * Resumes engine playback (shared by playIdle/toggle). Resuming after a
- * restore starts the listen session here: the restored position does not
- * credit previous listening time.
+ * Resumes engine playback (shared by playIdle/toggle). The listen session is
+ * owned by the backend (#132): the restored position never credits previous
+ * listening time because the backend accumulator starts at 0 per load.
  */
 async function resumeEngine(): Promise<void> {
     await playerResume();
     engineState = 'playing';
     isPlaying.value = true;
     setMediaSessionPlaybackState('playing');
-    if (currentEntry.value && !listenSessionId) {
-        beginListenSession(currentEntry.value.trackId);
-    }
 }
 
 /**
@@ -880,7 +808,7 @@ async function playIdle(): Promise<void> {
         return;
     }
     if (queue.value.length > 0) {
-        await advanceTrack(false);
+        await advanceTrack();
     }
 }
 
@@ -1020,7 +948,7 @@ function moveEntry(entryId: string, toIndex: number): void {
 function next(): void {
     // next() ignores repeat-one: it jumps to the pending entries; with the queue exhausted,
     // repeat 'all' rebuilds and plays, and 'off'/'one' are no-ops.
-    void advanceTrack(false);
+    void advanceTrack();
 }
 
 async function previous(): Promise<void> {
@@ -1106,7 +1034,6 @@ function stop(): void {
     queue.value = [];
     baseOrder = [];
     history.value = [];
-    resetListenSession();
     clearMediaSession();
     syncMprisState();
     isLoadingSource.value = false;
@@ -1292,7 +1219,7 @@ export function usePlayer() {
         isBuffering, streamQuality, streamError,
         upNext,
         // New state (phase 1)
-        queue, history, shuffle, repeat, volume, muted, pendingListens,
+        queue, history, shuffle, repeat, volume, muted,
         // Previous actions
         play, playNext, toggle, stop, seek, setRate,
         // New actions (phase 1)

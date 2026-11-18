@@ -65,6 +65,17 @@ export interface PlayerTrackLoadResult extends PlayerLoadResult {
     stream: PlayerStreamInfo | null;
 }
 
+/**
+ * Payload de `player:advanced` (P01, #132): el backend decidió la siguiente
+ * pista tras el fin natural de la anterior y la cargó en el motor. La UI
+ * sincroniza su proyección con este evento; no avanza por su cuenta.
+ */
+export interface PlayerAdvanced {
+    seq: number;
+    trackId: number;
+    entryId: string;
+}
+
 /** Payload de `player:stream-state` (backend camelCase). */
 export interface PlayerStreamState extends PlayerStreamQuality {
     seq: number;
@@ -148,6 +159,20 @@ export function onPlayerEnded(cb: (seq: number) => void): Promise<UnlistenFn> {
     return listen<{ seq: number }>(TauriEvents.PLAYER_ENDED, (event) => {
         cb(event.payload.seq);
     });
+}
+
+/** Suscripción a `player:advanced`: el backend avanzó de pista por su cuenta. */
+export function onPlayerAdvanced(cb: (advanced: PlayerAdvanced) => void): Promise<UnlistenFn> {
+    return listen<{ seq: number; track_id: number; entry_id: string }>(
+        TauriEvents.PLAYER_ADVANCED,
+        (event) => {
+            cb({
+                seq: event.payload.seq,
+                trackId: event.payload.track_id,
+                entryId: event.payload.entry_id,
+            });
+        },
+    );
 }
 
 /**

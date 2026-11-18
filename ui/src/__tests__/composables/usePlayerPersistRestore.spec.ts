@@ -35,6 +35,7 @@ vi.mock('../../api/player', () => ({
     onPlayerTick: vi.fn(),
     onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
+    onPlayerAdvanced: vi.fn(),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
 }));
@@ -75,6 +76,7 @@ function configureEngineMocks(): void {
         return Promise.resolve(() => {});
     });
     engine().onPlayerStreamState.mockReset().mockResolvedValue(() => {});
+    engine().onPlayerAdvanced.mockReset().mockResolvedValue(() => {});
     engine().onPlayerEnded.mockReset().mockResolvedValue(() => {});
 }
 
@@ -116,9 +118,6 @@ function backend(overrides: Record<string, (args?: Record<string, unknown>) => u
                 file_path: `/lib/${trackId}.flac`,
                 sources: [],
             });
-        }
-        if (cmd === 'record_local_play') {
-            return Promise.resolve({ track_id: args?.trackId, play_count: 1, last_played: null, counted: true });
         }
         return Promise.resolve(undefined);
     });
@@ -335,7 +334,7 @@ describe('usePlayer — persistencia en el backend y restauración (#131)', () =
         }
     });
 
-    it('reanudar tras restaurar arranca una sesión nueva: el acumulado empieza en 0', async () => {
+    it('la UI no cronometra (#132): los ticks de posición jamás invocan record_local_play', async () => {
         backend({
             playback_queue_get: () => Promise.resolve(snapshot({
                 current: { entry_id: 'e-cur', track_id: 7, kind: 'current', position: 0 },
@@ -354,16 +353,13 @@ describe('usePlayer — persistencia en el backend y restauración (#131)', () =
         expect(engine().playerResume).toHaveBeenCalled();
         expect(player.isPlaying.value).toBe(true);
 
-        // Pese a posición 120: 119 ticks → 29,75 s → nada.
+        // 200 ticks (50 s simulados) sobre la posición restaurada: la
+        // acreditación es del BACKEND (P01) — la UI no llama al comando
+        // (que ya ni siquiera existe como IPC).
         tick(120);
-        for (let i = 1; i <= 119; i++) tick(120 + i * 0.25);
+        for (let i = 1; i <= 200; i++) tick(120 + i * 0.25);
         await flushPromises();
         expect(mockInvoke().mock.calls.filter(c => c[0] === 'record_local_play')).toHaveLength(0);
-        tick(150);
-        await flushPromises();
-        const calls = mockInvoke().mock.calls.filter(c => c[0] === 'record_local_play');
-        expect(calls).toHaveLength(1);
-        expect(calls[0]?.[1]?.trackId).toBe(7);
     });
 
     it('la pista actual desaparecida arranca sin current conservando la cola', async () => {

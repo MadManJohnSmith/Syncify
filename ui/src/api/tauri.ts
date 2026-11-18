@@ -293,6 +293,8 @@ export const TauriEvents = {
     PLAYER_MPRIS_ACTION: 'player:mpris-action',
     // Fase 2: estado de la caché de streaming (buffer, calidad obtenida)
     PLAYER_STREAM_STATE: 'player:stream-state',
+    // P01 (#132): el backend decidió la siguiente pista tras el fin natural
+    PLAYER_ADVANCED: 'player:advanced',
 } as const;
 
 export type TauriEventName = typeof TauriEvents[keyof typeof TauriEvents];

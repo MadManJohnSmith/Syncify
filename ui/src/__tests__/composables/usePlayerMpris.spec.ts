@@ -23,6 +23,7 @@ vi.mock('../../api/player', () => ({
     onPlayerTick: vi.fn(),
     onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
+    onPlayerAdvanced: vi.fn(),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
 }));
@@ -55,6 +56,7 @@ function configureEngineMocks(): void {
         return Promise.resolve(() => {});
     });
     engine.onPlayerStreamState.mockReset().mockResolvedValue(() => {});
+    engine.onPlayerAdvanced.mockReset().mockResolvedValue(() => {});
     engine.onPlayerEnded.mockReset().mockImplementation(() => Promise.resolve(() => {}));
     engine.onMprisAction.mockReset().mockImplementation((cb) => {
         mprisCb = cb;
