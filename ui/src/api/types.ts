@@ -1162,6 +1162,21 @@ export interface MigrationOptions {
     download_matched: boolean;
 }
 
+/** Collections the migration flow tracks (M00 capability matrix). */
+export type MigrationCollection = 'tracks' | 'albums' | 'artists' | 'playlists';
+
+/** One matrix cell: whether a destination declares a collection. */
+export interface MigrationCollectionSupport {
+    collection: MigrationCollection;
+    supported: boolean;
+}
+
+/** One matrix row: a destination and the support of every collection. */
+export interface MigrationDestinationCapability {
+    service: string;
+    collections: MigrationCollectionSupport[];
+}
+
 export interface MigrationPreviewResult {
     total_tracks: number;
     matched_tracks: number;

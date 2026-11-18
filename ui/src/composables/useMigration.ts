@@ -10,6 +10,7 @@ import {
     getMigrationDetails,
     getMigrationItemsByStatus,
     getMigrationDestinations,
+    getMigrationCapabilities,
     previewMigration,
     startMigration,
     cancelMigration,
@@ -31,6 +32,7 @@ import type {
     MigrationOptions,
     MigrationPreviewResult,
     MigrationProgress,
+    MigrationDestinationCapability,
     DestinationTrackMatch
 } from '../api/types';
 
@@ -72,6 +74,10 @@ export function useMigration() {
 
     // Destination services the backend engine supports (data-driven list)
     const supportedDestinations = ref<string[]>([]);
+
+    // Capability matrix destination x collection (M00): what the engine
+    // declares per destination; the wizard offers only what is declared.
+    const capabilities = ref<MigrationDestinationCapability[]>([]);
 
     // Event listener cleanup
     let progressUnlisten: UnlistenFn | null = null;
@@ -140,6 +146,18 @@ export function useMigration() {
         } catch (e) {
             console.error('Failed to load migration destinations:', e);
             supportedDestinations.value = [];
+        }
+    }
+
+    /** Load the capability matrix the wizard gates its offering on (M00). */
+    async function loadCapabilities(): Promise<void> {
+        try {
+            capabilities.value = await getMigrationCapabilities();
+        } catch (e) {
+            console.error('Failed to load migration capabilities:', e);
+            // An undeclared engine offers nothing: the wizard shows every
+            // collection as not available until the matrix answers.
+            capabilities.value = [];
         }
     }
 
@@ -464,6 +482,7 @@ export function useMigration() {
         progress,
         searchResults,
         supportedDestinations,
+        capabilities,
         defaultOptions,
 
         // Actions
@@ -471,6 +490,7 @@ export function useMigration() {
         loadHistory,
         loadTemplates,
         loadSupportedDestinations,
+        loadCapabilities,
         loadJobDetails,
         loadJobItemsByStatus,
         preview,

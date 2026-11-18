@@ -59,12 +59,12 @@
 | Aspecto | Estado |
 |---|---|
 | Modo servicio → servicio | ✅ activo. `preview_migration` cuenta **matches reales** contra el catálogo del destino y no escribe nada (job, items); sin cuenta de destino se niega en vez de devolver la estimación `× 0.85` retirada |
-| Destinos | ✅ los 6. `MIGRATION_DESTINATION_SERVICES` (`src-tauri/src/commands/migration.rs`) es la lista única, y `get_migration_destinations` la sirve a la UI: añadir un destino es backend, no cambio de interfaz |
+| Destinos y colecciones | ✅ los 6 destinos, con matriz de capacidad destino × colección en código (M00, #165): `MIGRATION_CAPABILITIES` (`src-tauri/src/commands/migration.rs`) es la tabla única — una macro genera de ella `MIGRATION_DESTINATION_SERVICES` y el comando `get_migration_capabilities` la sirve a la UI. Capacidad real hoy: pistas en los 6 destinos, playlists solo en qobuz/tidal (`supports_playlist_creation`); álbumes y artistas no se declaran en ninguna fila porque el motor aún no tiene camino de transferencia para ellos. `start_migration` rechaza iniciar una colección no declarada (`validate_migration_options_supported`) y el wizard muestra lo no declarado como no disponible |
 | Sin cliente de destino | `start_migration` no declara transferencia de ninguna pista — tampoco de las emparejadas a mano. Nada fabrica un éxito |
 | Emparejamientos manuales | `find_manual_match` recupera el último matching manual de la misma ruta origen → destino, así que lo revisado en una pasada sirve en la siguiente |
 | Alcance del trabajo | ✅ respeta las playlists seleccionadas (BD-6) y contabiliza por fila de `migration_items` (BD-7), con `source_playlist_id`, `source_playlist_name` y `error_message` |
 | `library_items` | ✅ poblada en continuo por los triggers de `migrations/0086_library_items_continuous_sync.sql` (identidad en `track_sources`) y `migrations/0087_library_items_artist_link_sync.sql` (link de artistas, el segundo punto de escritura del metadato), ya desde `migrations/0085_alignment_audit.sql` (BD-4): los tres comandos que la leen ven datos |
-| Cobertura | `tests/migration_service_mode_test.rs`, `tests/migration_job_scope_and_accounting_test.rs`, `tests/library_items_continuous_sync_test.rs` |
+| Cobertura | `tests/migration_service_mode_test.rs`, `tests/migration_job_scope_and_accounting_test.rs`, `tests/library_items_continuous_sync_test.rs`; matriz y gating en `commands::migration::migration_tests` y `ui/src/__tests__/views/MigrationCapabilityGating.spec.ts` |
 
 ## Identidad
 

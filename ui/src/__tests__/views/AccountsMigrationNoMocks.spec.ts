@@ -326,6 +326,18 @@ describe('MigrationView wizard — real state only (post-audit 3.2)', () => {
 
   type Handler = (cmd: string, args?: Record<string, unknown>) => unknown
 
+  /** The capability matrix the backend declares (M00): tracks everywhere,
+   * playlists only where the engine can create and fill them. */
+  const capabilities = ['qobuz', 'tidal', 'spotify', 'deezer', 'soundcloud'].map(service => ({
+    service,
+    collections: [
+      { collection: 'tracks', supported: true },
+      { collection: 'albums', supported: false },
+      { collection: 'artists', supported: false },
+      { collection: 'playlists', supported: service === 'qobuz' || service === 'tidal' },
+    ],
+  }))
+
   /** Service statuses the backend would report for a user with spotify/qobuz/tidal connected. */
   const connectedStatuses = [
     { name: 'spotify', connected: true, account_email: 'user@example.com', library_count: 10, favorites_count: 8, playlists_count: 2, last_synced: null, credentials_invalid: false },
@@ -383,6 +395,7 @@ describe('MigrationView wizard — real state only (post-audit 3.2)', () => {
       if (cmd in overrides) return overrides[cmd]
       if (cmd === 'get_service_statuses') return connectedStatuses
       if (cmd === 'get_migration_destinations') return ['qobuz', 'tidal', 'spotify', 'deezer', 'soundcloud']
+      if (cmd === 'get_migration_capabilities') return capabilities
       if (cmd === 'get_migration_history') return []
       if (cmd === 'get_migration_templates') return []
       return []
@@ -657,6 +670,7 @@ describe('MigrationView wizard — real state only (post-audit 3.2)', () => {
       }
       if (cmd === 'get_service_statuses') return connectedStatuses
       if (cmd === 'get_migration_destinations') return ['qobuz', 'tidal', 'spotify', 'deezer', 'soundcloud']
+      if (cmd === 'get_migration_capabilities') return capabilities
       if (cmd === 'preview_migration') return { total_tracks: 100, matched_tracks: 90, unmatched_tracks: 10, playlists: [] }
       return []
     })

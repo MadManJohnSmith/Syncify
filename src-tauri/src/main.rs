@@ -1312,6 +1312,7 @@ fn main() {
             commands::get_migration_items_by_status,
             commands::preview_migration,
             commands::get_migration_destinations,
+            commands::get_migration_capabilities,
             commands::start_migration,
             commands::cancel_migration,
             commands::retry_failed_items,
