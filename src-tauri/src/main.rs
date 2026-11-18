@@ -1006,6 +1006,8 @@ fn main() {
             commands::get_health_checks,
             commands::get_duplicate_stats,
             commands::query_library,
+            commands::get_library_track_detail,
+            commands::delete_track_audio,
             commands::reset_database,
             commands::search_tracks,
             commands::search_library,

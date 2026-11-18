@@ -1485,7 +1485,179 @@ export const libraryApi = {
     recalculateAlbumTotalTracks,
     purgeOrphanEmptyAlbums,
     reconcileDownloadsFromStorage,
+    getTrackDetail,
+    deleteTrackAudio,
 };
+
+// ==============================================
+// TRACK DETAIL (L04, issue #101)
+// ==============================================
+// Panel lateral de detalle: UNA llamada IPC con el Track canónico, sus
+// TrackSource por servicio, sus LibraryItem por cuenta y colección y la
+// descarga. Las facetas de cuarentena y duplicados son contrato pendiente
+// (#72/#73): el backend las devuelve null y la vista muestra la sección
+// deshabilitada con su motivo — no se simulan.
+
+export interface TrackDetailSource {
+    serviceId: number;
+    serviceName: string;
+    serviceTrackId: string | null;
+    format: string | null;
+    bitDepth: number | null;
+    sampleRate: number | null;
+    bitrate: number | null;
+    qualityScore: number | null;
+    available: boolean;
+    availabilityStatus: string;
+    availabilityReason: string | null;
+    lastChecked: string | null;
+}
+
+export interface TrackDetailMembership {
+    accountId: number;
+    displayName: string | null;
+    serviceName: string;
+    collection: 'favorite' | 'playlist';
+    collectionId: number | null;
+    collectionName: string | null;
+    addedAt: string | null;
+}
+
+export interface TrackDetailDownload {
+    status: string;
+    effectiveService: string | null;
+    filePath: string | null;
+    fileFormat: string | null;
+    bitDepth: number | null;
+    sampleRate: number | null;
+    downloadedAt: string | null;
+}
+
+export interface TrackDetail {
+    track: LibraryTrack;
+    sources: TrackDetailSource[];
+    memberships: TrackDetailMembership[];
+    download: TrackDetailDownload | null;
+    /** `null` hasta #72/L09 (no hay tabla de cuarentena). */
+    quarantine: null;
+    /** `null` hasta #73/L10 (identidad ISRC∪huella). */
+    duplicateGroup: null;
+}
+
+/** Error tipado del panel: una pista inexistente no es una fila vacía. */
+export type TrackDetailError =
+    | { kind: 'track_not_found'; trackId: number }
+    | { kind: 'database'; message: string };
+
+export interface DeleteTrackAudioResult {
+    queueEntriesDeleted: number;
+    downloadDeleted: boolean;
+    audioFileDeleted: boolean;
+}
+
+/**
+ * El comando devuelve el error tipado como objeto con `kind`; invokeCommand
+ * envuelve lo que no es string/Error en TauriError con el original en
+ * `details`. Normaliza ambos caminos al tipo discriminado.
+ */
+export function normalizeTrackDetailError(error: unknown): TrackDetailError {
+    const raw: unknown = error !== null && typeof error === 'object' && 'kind' in error
+        ? error
+        : (error as { details?: unknown } | null | undefined)?.details;
+    if (raw !== null && typeof raw === 'object' && (raw as Record<string, unknown>).kind === 'track_not_found') {
+        return { kind: 'track_not_found', trackId: asNumber((raw as Record<string, unknown>).trackId) };
+    }
+    const message = error instanceof Error ? error.message : asString(error as string | undefined, 'Unknown error');
+    return { kind: 'database', message };
+}
+
+function normalizeTrackDetailSource(item: unknown): TrackDetailSource {
+    const rec = asRecord(item) ?? {};
+    return {
+        serviceId: asNumber(rec.serviceId ?? rec.service_id),
+        serviceName: asString(rec.serviceName ?? rec.service_name, ''),
+        serviceTrackId: (rec.serviceTrackId ?? rec.service_track_id) === undefined || (rec.serviceTrackId ?? rec.service_track_id) === null ? null : asString(rec.serviceTrackId ?? rec.service_track_id),
+        format: rec.format === undefined || rec.format === null ? null : asString(rec.format),
+        bitDepth: optionalNumber(rec.bitDepth ?? rec.bit_depth) ?? null,
+        sampleRate: optionalNumber(rec.sampleRate ?? rec.sample_rate) ?? null,
+        bitrate: optionalNumber(rec.bitrate) ?? null,
+        qualityScore: optionalNumber(rec.qualityScore ?? rec.quality_score) ?? null,
+        available: rec.available === true,
+        availabilityStatus: asString(rec.availabilityStatus ?? rec.availability_status, 'unknown_unchecked'),
+        availabilityReason: (rec.availabilityReason ?? rec.availability_reason) === undefined || (rec.availabilityReason ?? rec.availability_reason) === null ? null : asString(rec.availabilityReason ?? rec.availability_reason),
+        lastChecked: (rec.lastChecked ?? rec.last_checked) === undefined || (rec.lastChecked ?? rec.last_checked) === null ? null : asString(rec.lastChecked ?? rec.last_checked),
+    };
+}
+
+function normalizeTrackDetailMembership(item: unknown): TrackDetailMembership {
+    const rec = asRecord(item) ?? {};
+    const collection = asString(rec.collection, 'favorite');
+    return {
+        accountId: asNumber(rec.accountId ?? rec.account_id),
+        displayName: (rec.displayName ?? rec.display_name) === undefined || (rec.displayName ?? rec.display_name) === null ? null : asString(rec.displayName ?? rec.display_name),
+        serviceName: asString(rec.serviceName ?? rec.service_name, ''),
+        collection: collection === 'playlist' ? 'playlist' : 'favorite',
+        collectionId: optionalNumber(rec.collectionId ?? rec.collection_id) ?? null,
+        collectionName: (rec.collectionName ?? rec.collection_name) === undefined || (rec.collectionName ?? rec.collection_name) === null ? null : asString(rec.collectionName ?? rec.collection_name),
+        addedAt: (rec.addedAt ?? rec.added_at) === undefined || (rec.addedAt ?? rec.added_at) === null ? null : asString(rec.addedAt ?? rec.added_at),
+    };
+}
+
+function normalizeTrackDetailDownload(rec: unknown): TrackDetailDownload | null {
+    const d = asRecord(rec);
+    if (!d) return null;
+    return {
+        status: asString(d.status, 'not_downloaded'),
+        effectiveService: (d.effectiveService ?? d.effective_service) === undefined || (d.effectiveService ?? d.effective_service) === null ? null : asString(d.effectiveService ?? d.effective_service),
+        filePath: (d.filePath ?? d.file_path) === undefined || (d.filePath ?? d.file_path) === null ? null : asString(d.filePath ?? d.file_path),
+        fileFormat: (d.fileFormat ?? d.file_format) === undefined || (d.fileFormat ?? d.file_format) === null ? null : asString(d.fileFormat ?? d.file_format),
+        bitDepth: optionalNumber(d.bitDepth ?? d.bit_depth) ?? null,
+        sampleRate: optionalNumber(d.sampleRate ?? d.sample_rate) ?? null,
+        downloadedAt: (d.downloadedAt ?? d.downloaded_at) === undefined || (d.downloadedAt ?? d.downloaded_at) === null ? null : asString(d.downloadedAt ?? d.downloaded_at),
+    };
+}
+
+/**
+ * L04 (issue #101): detalle de pista en UNA llamada para el panel lateral.
+ * El rechazo es un `TrackDetailError` tipado (`kind: 'track_not_found'`
+ * para una pista inexistente).
+ */
+export async function getTrackDetail(trackId: number): Promise<TrackDetail> {
+    try {
+        const raw = asRecord(await invokeCommand<unknown>('get_library_track_detail', { trackId }));
+        const page = normalizeLibraryPage({ tracks: raw?.track ? [raw.track] : [], total: raw?.track ? 1 : 0 }, 0, 1);
+        if (!page.tracks[0]) {
+            // El backend nunca responde con la faceta vacía para un id que
+            // existe (es error tipado allí); por blindaje local, una
+            // respuesta sin Track se rechaza igual.
+            throw { kind: 'track_not_found', trackId } satisfies TrackDetailError;
+        }
+        return {
+            track: page.tracks[0],
+            sources: asArray(raw?.sources).map(normalizeTrackDetailSource),
+            memberships: asArray(raw?.memberships).map(normalizeTrackDetailMembership),
+            download: normalizeTrackDetailDownload(raw?.download),
+            quarantine: null,
+            duplicateGroup: null,
+        };
+    } catch (error) {
+        throw normalizeTrackDetailError(error);
+    }
+}
+
+/**
+ * L04 (issue #101): borrar el audio de una pista con confirmación previa en
+ * la vista. Elimina solo el Download, sus entradas de cola y el fichero;
+ * nunca el Track, sus TrackSource ni su pertenencia.
+ */
+export async function deleteTrackAudio(trackId: number): Promise<DeleteTrackAudioResult> {
+    const raw = asRecord(await invokeCommand<unknown>('delete_track_audio', { trackId }));
+    return {
+        queueEntriesDeleted: asNumber(raw?.queueEntriesDeleted ?? raw?.queue_entries_deleted),
+        downloadDeleted: raw?.downloadDeleted === true || raw?.download_deleted === true,
+        audioFileDeleted: raw?.audioFileDeleted === true || raw?.audio_file_deleted === true,
+    };
+}
 
 
 
