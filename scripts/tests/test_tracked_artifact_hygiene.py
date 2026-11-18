@@ -56,9 +56,14 @@ ALLOWED_TRACKED_TXT = (
     "requirements.txt",
     "scripts/requirements.txt",
     "src-tauri/tests/fixtures/playlists_import/sample.txt",
-    # Fuente única de las 11 globs SEC-011 (una por línea), consumida por el
-    # ensamblado Linux con rsync --exclude-from (#244); Windows la adopta en #247.
+    # Fuente única de las 11 globs SEC-011 (una por línea), consumida por los
+    # dos ensamblados: Linux con rsync --exclude-from (#244) y Windows desde
+    # #247 (assemble_portable.ps1).
     "scripts/ci/exclusions.txt",
+    # Plantilla del LEEME que assemble_portable.ps1 copia tal cual a la raíz
+    # del portable Windows (#247): el texto vive en fichero, no en un
+    # here-string del workflow.
+    "scripts/ci/portable/LEEME.txt",
 )
 
 # Directories that are build output or dependencies, never repository content.
@@ -207,13 +212,22 @@ class SweepArtifactHygieneTests(unittest.TestCase):
         self.assertTrue(
             (REPO_ROOT / source).is_file(), f"the allowlisted source is gone: {source}"
         )
-        consumer = (REPO_ROOT / "scripts/ci/assemble_raw.sh").read_text(
+        linux_consumer = (REPO_ROOT / "scripts/ci/assemble_raw.sh").read_text(
             encoding="utf-8"
         )
         self.assertIn(
             "--exclude-from",
-            consumer,
-            "no assembly script applies the exclusions source any more; "
+            linux_consumer,
+            "the Linux assembler no longer applies the exclusions source; "
+            "drop it from the allowlist instead of keeping a dead exemption",
+        )
+        windows_consumer = (REPO_ROOT / "scripts/ci/assemble_portable.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            source,
+            windows_consumer,
+            "the Windows portable assembler no longer applies the exclusions source; "
             "drop it from the allowlist instead of keeping a dead exemption",
         )
 

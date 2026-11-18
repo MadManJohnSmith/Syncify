@@ -10,10 +10,9 @@
 #   - Linux: scripts/ci/assemble_raw.sh (rsync --exclude-from) para el
 #     tarball crudo. Desde que la fuente es comun, Linux gana `*.pyc`
 #     (antes su lista inline no lo tenia: SEC-011 detecto el desajuste).
-#   - Windows: el portable adoptara este mismo fichero en #247; hasta
-#     entonces la lista gemela vive inline en
-#     .github/workflows/build-windows.yml (la adopta el mismo ticket que
-#     borra esa copia, para que el desajuste no tenga ventana).
+#   - Windows: scripts/ci/assemble_portable.ps1 para el portable (#247),
+#     que filtra la copia y purga recursivamente con esta misma lista. La
+#     copia inline del workflow murio al adoptarla.
 #
 # Las 11 globs canonicas: no reordenar sin motivo; el orden es el del
 # congelador original y hace los diffs legibles.
