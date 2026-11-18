@@ -1,8 +1,9 @@
 # Matriz de resolución de letras: 12 fuentes configurables sobre 10 redes
 
 **Estado:** vigente — reescrito contra el árbol.
-**Última revisión:** 2026-11-14 (spike LY00, issue #178: sondeos en red de los
-endpoints de las 12 fuentes; evidencia fechada en §4). Catálogo y despacho en
+**Última revisión:** 2026-11-18 (LY02/#183: selección secuencial con mejora en §2.1–2.2).
+La revisión de red es del 2026-11-14 (spike LY00, issue #178: sondeos de los endpoints de
+las 12 fuentes; evidencia fechada en §4). Catálogo y despacho en
 `src-tauri/src/download/lyrics.rs`, migraciones `src-tauri/migrations/0013_lyrics_provider_settings.sql`,
 `src-tauri/migrations/0014_lyrics_config.sql` y `src-tauri/migrations/0100_lyrics_provider_catalog.sql`,
 capa de ajustes (`src-tauri/src/commands/lyrics.rs`, `src-tauri/src/commands/settings.rs`) y UI
@@ -45,22 +46,27 @@ UltraStar USDB, Kugou, QQ Music, NetEase, LyricsPlus, LRCLIB y Tekstowo.pl.
   (`priority`, `provider_id`).
 - `fetch_source(id, artist, track, duration)`: match de los 12 `provider_id` contra su fetcher;
   un id desconocido devuelve error.
-- `fetch_all_sources`: descarga automática — recorre las fuentes ordenadas y devuelve la primera
-  que la política acepta; si ninguna la acepta, error.
-- `search_all_providers`: búsqueda interactiva — misma política, devuelve **todas** las aceptadas
-  (líneas ordenadas por `start_time_ms`). Ambas entradas se invocan desde comandos de
-  `src-tauri/src/commands/lyrics.rs`.
+- `fetch_all_sources`: descarga automática — recorrido secuencial con mejora (LY02/#183,
+  `syncify_lyrics_domain::SequentialSelection`): para en la primera candidata que alcanza
+  `min_sync_level`, pero mientras la mejor vista esté por debajo sigue sondeando; al agotar la
+  lista devuelve la de mayor **Nivel de sincronía**. Un error, rate-limit o rechazo de una fuente
+  solo la salta: nunca aborta la cascada. Si ninguna fuente entrega contenido válido, error.
+- `search_all_providers`: búsqueda interactiva — misma política de contenido e idioma, filtra por
+  el objetivo `min_sync_level` y devuelve **todas** las aceptadas (líneas ordenadas por
+  `start_time_ms`). Ambas entradas se invocan desde comandos de `src-tauri/src/commands/lyrics.rs`.
 - `orchestrate_resolution` envuelve `fetch_all_sources` y mide tiempos. Su doc-comment dice
   «(16 tiers)»: es un comentario residual erróneo; el despacho real tiene 12 brazos.
 
-### 2.2 Política de aceptación (`policy_accepts`)
+### 2.2 Política de contenido (`content_matches_policy`) y objetivo de sincronía
 
 1. `is_valid_lyrics`: rechaza placeholders (solo el título, o cabeceras 作词/作曲 sin contenido).
-2. `min_sync_level` del usuario: `word`/`syllable` exige rango 3 (elrc no vacío o sync type
-   `KARAOKE_WORD_SYNCED`/`WORD_SYNCED`); `line` exige rango 2 (`LINE_SYNCED` o líneas con
-   contenido); cualquier otro valor acepta desde rango 1.
-3. `preferred_language`: vacío, `original` o `any` aceptan cualquier idioma; otro valor exige que
+2. `preferred_language`: vacío, `original` o `any` aceptan cualquier idioma; otro valor exige que
    `detect_language_heuristic` detecte ese idioma.
+3. `min_sync_level` es el **objetivo** de la cascada automática: `word`/`syllable` apunta al rango
+   más fino (elrc no vacío o sync type `KARAOKE_WORD_SYNCED`/`WORD_SYNCED`), `line` a rango de
+   línea (`LINE_SYNCED` o líneas con contenido) y cualquier otro valor a plano. Alcanzarlo detiene
+   el sondeo; por debajo se conserva como mejor candidata provisional. La búsqueda interactiva
+   (`search_all_providers`) mantiene el filtro estricto: no ofrece resultados bajo el objetivo.
 
 ### 2.3 Configuración de usuario (prioridad y habilitado por fuente)
 

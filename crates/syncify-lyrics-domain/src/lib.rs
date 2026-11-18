@@ -937,3 +937,12 @@ pub use header::{
     clean_lyrics_header, strip_lyrics_header, strip_lyrics_header_with, AmbiguousHeaderLine,
     HeaderCleanOptions, HeaderCleanReport, HeaderLineReason, RemovedHeaderLine,
 };
+
+// ---------------------------------------------------------------------------
+// LY02 (#183) — sequential resolution selection with improvement.
+//
+// Declared at the END of the file for the same reason as `header`: adding it at
+// the top would shift every line number cited by `docs/auditoria/` and tests.
+pub mod selection;
+
+pub use selection::{SelectionOutcome, SequentialSelection, SourceOutcome, SyncLevel};
