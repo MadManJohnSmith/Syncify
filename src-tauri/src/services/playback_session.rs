@@ -278,7 +278,10 @@ pub(crate) fn begin_listen_session(core: &mut PlayerCore, track_id: i64) {
     core.listen_session_id = Some(uuid::Uuid::new_v4().hyphenated().to_string());
     core.listen_accum_sec = 0.0;
     core.listen_credited = false;
-    core.listen_anchor = None;
+    // La carga deja el motor en 0 (load_path_into_core hace seek a cero): el
+    // primer tick ya cuenta su tramo. Anclar en None perdería ese primer
+    // tramo y retrasaría el umbral un tick.
+    core.listen_anchor = Some(0.0);
 }
 
 /// Un paso de la acumulación de escucha (P01). El incremento viene del propio

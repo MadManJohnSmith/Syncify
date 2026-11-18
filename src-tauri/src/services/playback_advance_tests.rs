@@ -53,6 +53,7 @@ fn write_wav_file(path: &Path, seconds: f64) -> f64 {
     bytes.extend_from_slice(b"fmt ");
     bytes.extend_from_slice(&16u32.to_le_bytes());
     bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
     bytes.extend_from_slice(&WAV_SAMPLE_RATE.to_le_bytes());
     bytes.extend_from_slice(&(WAV_SAMPLE_RATE * 2).to_le_bytes());
     bytes.extend_from_slice(&2u16.to_le_bytes());
@@ -551,11 +552,9 @@ async fn la_velocidad_acredita_segundos_de_reloj_no_de_medio() {
     // A 2×, el medio avanza 0,5 s por tick; el crédito acumula 0,25 s reales
     // por tick: 30 s de reloj (120 ticks), NO 15 s (60 ticks) ni 60 de medio.
     assert!(
-        !play_seconds(&state, &clock, 14.75),
-        "29,5 s de reloj: nada"
+        !play_seconds(&state, &clock, 29.75),
+        "29,75 s de reloj: nada"
     );
-    let out = tick_step(&state, &clock, 0.25);
-    assert!(out.listen_credit.is_none(), "29,75 s de reloj: nada aún");
     let out = tick_step(&state, &clock, 0.25);
     assert!(out.listen_credit.is_some(), "30 s de reloj acreditan");
 }
