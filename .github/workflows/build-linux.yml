@@ -87,8 +87,8 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
-      - name: Configurar toolchain Rust estable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Configurar toolchain Rust 1.98.1
+        uses: dtolnay/rust-toolchain@1.98.1
 
       - name: Cache de artefactos Rust
         uses: Swatinem/rust-cache@v2
