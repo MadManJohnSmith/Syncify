@@ -362,6 +362,163 @@ async fn dimension_calidad() {
     assert!(ids(&pool, query).await.is_empty());
 }
 
+/// L14 (#109): fixture de los cinco estados + los tres buckets de calidad.
+/// T1 descargada Hi-Res, T2 descargada CD, T3 descargada Lossy, T4 en cola,
+/// T5 descargándose, T6 fallida, T7 sin descarga ni cola.
+async fn seed_download_states() -> SqlitePool {
+    let pool = fresh_pool().await;
+    sqlx::query(
+        "INSERT INTO accounts (id, service_id, display_name, email) VALUES (1, 1, 'A1', 'a1@x')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO artists (id, name) VALUES (1, 'State Artist')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO albums (id, title) VALUES (1, 'States')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (id, title, album_id, duration_ms, created_at) VALUES \
+         (1, 'Downloaded Hi-Res', 1, 100000, '2026-01-01T09:00:00Z'), \
+         (2, 'Downloaded CD', 1, 100000, '2026-01-01T09:00:00Z'), \
+         (3, 'Downloaded Lossy', 1, 100000, '2026-01-01T09:00:00Z'), \
+         (4, 'Queued', 1, 100000, '2026-01-01T09:00:00Z'), \
+         (5, 'Downloading', 1, 100000, '2026-01-01T09:00:00Z'), \
+         (6, 'Failed', 1, 100000, '2026-01-01T09:00:00Z'), \
+         (7, 'Idle', 1, 100000, '2026-01-01T09:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO library_entries (account_id, track_id, added_at, is_liked) VALUES \
+         (1, 1, '2026-01-01T10:00:00Z', 1), (1, 2, '2026-01-01T10:00:00Z', 1), \
+         (1, 3, '2026-01-01T10:00:00Z', 1), (1, 4, '2026-01-01T10:00:00Z', 1), \
+         (1, 5, '2026-01-01T10:00:00Z', 1), (1, 6, '2026-01-01T10:00:00Z', 1), \
+         (1, 7, '2026-01-01T10:00:00Z', 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO downloads (track_id, source_service_id, file_path, file_format, bit_depth, sample_rate) VALUES \
+         (1, 1, ?, 'FLAC', 24, 96000), \
+         (2, 1, ?, 'FLAC', 16, 44100), \
+         (3, 1, ?, 'MP3', NULL, NULL)",
+    )
+    .bind(real_download_file("state-t1"))
+    .bind(real_download_file("state-t2"))
+    .bind(real_download_file("state-t3"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO download_queue (track_id, status) VALUES \
+         (4, 'queued'), (5, 'downloading'), (6, 'failed')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool
+}
+
+#[tokio::test]
+async fn cinco_estados_de_descarga_en_la_fila_y_en_el_filtro() {
+    let pool = seed_download_states().await;
+
+    let mut query = q();
+    query.limit = Some(50);
+    let result = query_library(&pool, query).await.unwrap();
+    let by_id: std::collections::HashMap<i64, _> =
+        result.tracks.iter().map(|t| (t.id, t)).collect();
+    assert_eq!(by_id.len(), 7);
+    let status = |id: i64| by_id[&id].download_status.as_deref().unwrap();
+    assert_eq!(status(1), "downloaded");
+    assert_eq!(status(2), "downloaded");
+    assert_eq!(status(3), "downloaded");
+    assert_eq!(status(4), "queued");
+    assert_eq!(status(5), "downloading");
+    assert_eq!(status(6), "failed");
+    assert_eq!(status(7), "not_downloaded");
+
+    // Calidad efectiva del fichero: formato + profundidad/frecuencia reales.
+    // Una pista sin descarga no declara calidad efectiva.
+    assert_eq!(
+        by_id[&1].download_quality.as_deref(),
+        Some("FLAC 24/96"),
+        "hi-res"
+    );
+    assert_eq!(
+        by_id[&2].download_quality.as_deref(),
+        Some("FLAC 16/44.1"),
+        "cd"
+    );
+    assert_eq!(by_id[&3].download_quality.as_deref(), Some("MP3"));
+    assert_eq!(by_id[&4].download_quality, None);
+    assert_eq!(by_id[&5].download_quality, None);
+    assert_eq!(by_id[&6].download_quality, None);
+    assert_eq!(by_id[&7].download_quality, None);
+
+    // Cada estado es una dimensión filtrable; el contador «downloaded» sigue
+    // contando solo las descargadas.
+    let cases = [
+        (DownloadStatusFilter::Downloaded, vec![1, 2, 3]),
+        (DownloadStatusFilter::Queued, vec![4]),
+        (DownloadStatusFilter::Downloading, vec![5]),
+        (DownloadStatusFilter::Failed, vec![6]),
+        (DownloadStatusFilter::NotDownloaded, vec![7]),
+    ];
+    for (filter, expected) in cases {
+        let mut query = q();
+        query.download_statuses = vec![filter];
+        let mut got = ids(&pool, query).await;
+        got.sort_unstable();
+        assert_eq!(got, expected, "filter={filter:?}");
+    }
+
+    // Los cinco estados juntos cubren toda la biblioteca sin solaparse.
+    let mut query = q();
+    query.download_statuses = vec![
+        DownloadStatusFilter::Downloaded,
+        DownloadStatusFilter::Queued,
+        DownloadStatusFilter::Downloading,
+        DownloadStatusFilter::Failed,
+        DownloadStatusFilter::NotDownloaded,
+    ];
+    assert_eq!(query_library(&pool, query).await.unwrap().total, 7);
+
+    let result = query_library(&pool, q()).await.unwrap();
+    assert_eq!(result.counts.as_ref().unwrap().downloaded, 3);
+}
+
+#[tokio::test]
+async fn filtro_de_calidad_por_bucket_de_la_descarga() {
+    let pool = seed_download_states().await;
+    let expected = [
+        (QualityBucketFilter::HiRes, vec![1]),
+        (QualityBucketFilter::CdQuality, vec![2]),
+        (QualityBucketFilter::Lossy, vec![3]),
+    ];
+    for (bucket, expected_ids) in expected {
+        let mut query = q();
+        query.quality_buckets = vec![bucket];
+        let mut got = ids(&pool, query).await;
+        got.sort_unstable();
+        assert_eq!(got, expected_ids, "bucket={bucket:?}");
+    }
+
+    // OR dentro de la dimensión: dos buckets devuelven sus pistas, no una.
+    let mut query = q();
+    query.quality_buckets = vec![QualityBucketFilter::HiRes, QualityBucketFilter::Lossy];
+    let mut got = ids(&pool, query).await;
+    got.sort_unstable();
+    assert_eq!(got, vec![1, 3]);
+}
+
 #[tokio::test]
 async fn texto_se_combina_con_los_filtros() {
     let pool = seed().await;

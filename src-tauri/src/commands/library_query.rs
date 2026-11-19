@@ -45,6 +45,13 @@
 //! Los caracteres especiales de FTS se escapan y el último token va en modo
 //! prefijo (escritura incremental). Con texto vacío se usa el orden elegido.
 //!
+//! Descargas y calidad (L14, issue #109): la fila resuelve en la MISMA
+//! consulta de página los cinco estados de descarga (`downloaded`, `queued`,
+//! `downloading`, `failed`, `not_downloaded`) y la calidad efectiva del
+//! fichero (`FLAC 24/96`). El filtro `download_statuses` usa la misma
+//! expresión que la fila ([`DOWNLOAD_STATUS_SQL`]) y `quality_buckets` la
+//! misma clasificación que el dashboard; no hay una consulta por pista.
+//!
 //! Detalle de pista (L04, issue #101): [`get_track_detail`] devuelve en UNA
 //! llamada IPC el Track canónico (misma proyección que la lista, más
 //! MusicBrainz), sus TrackSource por servicio, sus pertenencias por cuenta y
@@ -116,13 +123,17 @@ pub enum QuarantineMode {
     Include,
 }
 
-/// Estado de descarga reconocido por el filtro. Misma clasificación que
-/// `get_library` / `verify_page_files`.
+/// Estado de descarga reconocido por el filtro (L14, #109): los cinco estados
+/// del badge de biblioteca. La clasificación vive en [`DOWNLOAD_STATUS_SQL`]
+/// y la comparte la cobertura de álbum (`library_albums.rs`): una sola regla,
+/// no una copia por consulta.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DownloadStatusFilter {
     Downloaded,
     Queued,
+    Downloading,
+    Failed,
     NotDownloaded,
 }
 
@@ -131,6 +142,8 @@ impl DownloadStatusFilter {
         match self {
             DownloadStatusFilter::Downloaded => "downloaded",
             DownloadStatusFilter::Queued => "queued",
+            DownloadStatusFilter::Downloading => "downloading",
+            DownloadStatusFilter::Failed => "failed",
             DownloadStatusFilter::NotDownloaded => "not_downloaded",
         }
     }
@@ -302,12 +315,34 @@ const PRIMARY_ARTIST_NAME_SQL: &str = "(SELECT a2.name FROM track_artists ta2 \
 /// Título del álbum canónico de la pista.
 const ALBUM_TITLE_SQL: &str = "(SELECT al2.title FROM albums al2 WHERE al2.id = t.album_id)";
 
-/// Estado de descarga como subescalar (mismas reglas que `get_library`):
-/// descargado si hay `downloads.file_path`, en cola si hay cola activa.
-const DOWNLOAD_STATUS_SQL: &str = "(CASE \
+/// Estado de descarga como subescalar (L14, #109): los cinco estados del
+/// badge. Descargado manda sobre la cola: si el ledger `downloads` tiene
+/// fichero, la pista está descargada aunque quede una fila de cola vieja.
+/// Después, el estado activo de la cola (`downloading` antes que `queued`) y
+/// el último fallo. `cancelled`/`complete` sin ledger no son un estado de
+/// descarga: la pista queda `not_downloaded`.
+///
+/// La regla es ÚNICA: el filtro de la consulta de pistas, la fila y la
+/// cobertura de álbum (`library_albums.rs`) leen esta misma expresión.
+pub(crate) const DOWNLOAD_STATUS_SQL: &str = "(CASE \
     WHEN EXISTS (SELECT 1 FROM downloads d WHERE d.track_id = t.id AND d.file_path IS NOT NULL) THEN 'downloaded' \
-    WHEN EXISTS (SELECT 1 FROM download_queue dq WHERE dq.track_id = t.id AND dq.status IN ('queued', 'downloading')) THEN 'queued' \
+    WHEN EXISTS (SELECT 1 FROM download_queue dq WHERE dq.track_id = t.id AND dq.status = 'downloading') THEN 'downloading' \
+    WHEN EXISTS (SELECT 1 FROM download_queue dq WHERE dq.track_id = t.id AND dq.status = 'queued') THEN 'queued' \
+    WHEN EXISTS (SELECT 1 FROM download_queue dq WHERE dq.track_id = t.id AND dq.status = 'failed') THEN 'failed' \
     ELSE 'not_downloaded' END)";
+
+/// Calidad efectiva de la descarga (L14, #109): formato + profundidad y
+/// frecuencia reales del fichero (`FLAC 24/96`, `MP3`). Sale de la MISMA
+/// fila `downloads` que el estado; no hay consulta por pista. `NULL` si la
+/// pista no está descargada: una pista en cola no declara una calidad que
+/// todavía no tiene.
+pub(crate) const DOWNLOAD_QUALITY_SQL: &str = "(CASE \
+    WHEN NOT EXISTS (SELECT 1 FROM downloads d WHERE d.track_id = t.id AND d.file_path IS NOT NULL) THEN NULL \
+    ELSE (SELECT NULLIF(TRIM( \
+        CASE WHEN d.file_format IS NOT NULL AND TRIM(d.file_format) != '' THEN d.file_format || ' ' ELSE '' END || \
+        CASE WHEN d.bit_depth IS NOT NULL AND d.sample_rate IS NOT NULL \
+             THEN d.bit_depth || '/' || printf('%g', d.sample_rate / 1000.0) ELSE '' END \
+    ), '') FROM downloads d WHERE d.track_id = t.id AND d.file_path IS NOT NULL LIMIT 1) END)";
 
 /// Bucket de calidad (misma clasificación que `get_audio_quality_distribution`
 /// y el deep-link FE-10; `downloads.track_id` es UNIQUE, así que la
@@ -779,6 +814,7 @@ const ROW_COLUMNS_SQL: &str = "
         {QUALITY} as quality,
         {QUALITY_BUCKET} as quality_bucket,
         {DOWNLOAD_STATUS} as download_status,
+        {DOWNLOAD_QUALITY} as download_quality,
         {METADATA_SCORE} as metadata_score,
         CASE
             WHEN l.sync_level IN ('syllable', 'word') THEN 'synced'
@@ -809,6 +845,7 @@ fn page_rows_sql() -> String {
         .replace("{QUALITY}", QUALITY_SQL)
         .replace("{QUALITY_BUCKET}", QUALITY_BUCKET_SQL)
         .replace("{DOWNLOAD_STATUS}", DOWNLOAD_STATUS_SQL)
+        .replace("{DOWNLOAD_QUALITY}", DOWNLOAD_QUALITY_SQL)
         .replace("{METADATA_SCORE}", METADATA_SCORE_SQL)
 }
 

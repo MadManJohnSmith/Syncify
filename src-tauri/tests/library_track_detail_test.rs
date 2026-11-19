@@ -306,13 +306,40 @@ async fn borrar_audio_elimina_solo_el_download() {
         .await
         .unwrap();
 
+    // L14 (#109): la evidencia de edición (ledger de 0097) existe antes del
+    // borrado. La migración solo rellena las filas que ya existían al
+    // migrar; esta evidencia se siembra como la escribiría el importador.
+    sqlx::query(
+        "INSERT INTO edition_provider_items (id, service_id, service_track_id, provenance) VALUES \
+         (9001, 1, 'sp-1', 'test'), (9002, 2, 'qb-1', 'test')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO edition_item_tracks (item_id, track_id, validation_status, provenance) VALUES \
+         (9001, 1, 'observed', 'test'), (9002, 1, 'observed', 'test')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (evidence_before,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM edition_item_tracks eit \
+         JOIN edition_provider_items epi ON epi.id = eit.item_id \
+         WHERE eit.track_id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(evidence_before, 2, "dos TrackSource de T1 en la evidencia");
+
     let summary = delete_track_audio_inner(&pool, 1).await.unwrap();
     assert_eq!(summary.queue_entries_deleted, 0);
     assert!(summary.download_deleted);
     assert!(summary.audio_file_deleted);
     assert!(!std::path::Path::new(&file_path).exists());
 
-    // El Track, sus TrackSource y su pertenencia NUNCA se tocan.
+    // El Track, sus TrackSource, su pertenencia y la evidencia NUNCA se tocan.
     let (title,): (String,) = sqlx::query_as("SELECT title FROM tracks WHERE id = 1")
         .fetch_one(&pool)
         .await
@@ -330,6 +357,15 @@ async fn borrar_audio_elimina_solo_el_download() {
             .await
             .unwrap();
     assert_eq!(memberships, 1);
+    let (evidence_after,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM edition_item_tracks eit \
+         JOIN edition_provider_items epi ON epi.id = eit.item_id \
+         WHERE eit.track_id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(evidence_after, evidence_before, "la evidencia se conserva");
 
     // La cola ajena no se toca: T2 sigue en cola.
     let (queued,): (i64,) =

@@ -11,6 +11,10 @@
 //! - artista principal (álbum, con el artista primario más frecuente de sus
 //!   pistas como respaldo), año, pistas distintas vivas, descargadas y
 //!   cobertura;
+//! - L14 (#109): los cinco estados de descarga de esas pistas, agregados con
+//!   la MISMA expresión que la fila de pistas
+//!   ([`crate::commands::library_query::DOWNLOAD_STATUS_SQL`]) — la regla no
+//!   se duplica;
 //! - cuentas y servicios de esas pistas, agregados en UNA consulta para
 //!   todos los álbumes de la página (no una por álbum: sin N+1);
 //! - filtro de cobertura (`complete`/`partial`/`none`) y orden por título,
@@ -20,15 +24,18 @@
 //!
 //! La cobertura es `descargadas / pistas distintas`: [`album_coverage`]
 //! devuelve `None` cuando el total es cero — no se inventa un porcentaje.
-//! «Descargada» usa la misma clasificación que la lista de pistas
-//! (`downloads.file_path` no nulo); una descarga en cola no cuenta como
-//! cobertura.
+//! «Descargada» usa la misma clasificación que la lista de pistas; una
+//! descarga en cola, descargando o fallida no cuenta como cobertura, pero la
+//! fila del álbum expone su contador para que la UI muestre el mismo estado
+//! que el badge de la pista.
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tauri::State;
 
-use crate::commands::library_query::{filter_where, LibraryQuery, LibrarySortKey, SortDirection};
+use crate::commands::library_query::{
+    filter_where, LibraryQuery, LibrarySortKey, SortDirection, DOWNLOAD_STATUS_SQL,
+};
 use crate::AppState;
 
 /// Página por defecto de la lista de álbumes (misma que la de pistas).
@@ -127,6 +134,14 @@ pub struct LibraryAlbumRow {
     pub track_count: i64,
     /// De esas pistas, las que tienen descarga con fichero.
     pub downloaded_count: i64,
+    /// L14 (#109): pistas en cola (esperando al worker).
+    pub queued_count: i64,
+    /// L14 (#109): pistas descargándose ahora.
+    pub downloading_count: i64,
+    /// L14 (#109): pistas con la última descarga fallida.
+    pub failed_count: i64,
+    /// L14 (#109): pistas sin descarga ni cola.
+    pub not_downloaded_count: i64,
     /// `downloaded_count / track_count`; `None` si el total es cero.
     pub coverage: Option<f64>,
     pub accounts: Vec<AlbumAccountBadge>,
@@ -168,11 +183,13 @@ fn album_track_filter(query: &LibraryAlbumQuery) -> LibraryQuery {
 
 /// CTE que materializa las pistas vivas del filtro y agrega por álbum.
 fn album_rows_cte(track_where: &str) -> String {
+    let download_status = DOWNLOAD_STATUS_SQL;
     format!(
         "WITH matched AS ( \
              SELECT t.id AS track_id, t.album_id AS album_id, \
                     NULLIF(t.library_added_at, '') AS library_added_at, \
-                    NULLIF(t.release_year, 0) AS release_year \
+                    NULLIF(t.release_year, 0) AS release_year, \
+                    {download_status} AS download_status \
              FROM tracks t \
              WHERE ({track_where}) AND t.album_id IS NOT NULL \
          ), album_rows AS ( \
@@ -197,10 +214,11 @@ fn album_rows_cte(track_where: &str) -> String {
                      MAX(m.release_year) \
                  ) AS release_year, \
                  COUNT(DISTINCT m.track_id) AS track_count, \
-                 COUNT(DISTINCT CASE WHEN EXISTS ( \
-                     SELECT 1 FROM downloads d \
-                     WHERE d.track_id = m.track_id AND d.file_path IS NOT NULL \
-                 ) THEN m.track_id END) AS downloaded_count, \
+                 COUNT(DISTINCT CASE WHEN m.download_status = 'downloaded' THEN m.track_id END) AS downloaded_count, \
+                 COUNT(DISTINCT CASE WHEN m.download_status = 'queued' THEN m.track_id END) AS queued_count, \
+                 COUNT(DISTINCT CASE WHEN m.download_status = 'downloading' THEN m.track_id END) AS downloading_count, \
+                 COUNT(DISTINCT CASE WHEN m.download_status = 'failed' THEN m.track_id END) AS failed_count, \
+                 COUNT(DISTINCT CASE WHEN m.download_status = 'not_downloaded' THEN m.track_id END) AS not_downloaded_count, \
                  MAX(m.library_added_at) AS date_added, \
                  al.cover_art_url AS cover_art_url \
              FROM matched m \
@@ -278,6 +296,10 @@ struct AlbumRowBase {
     release_year: Option<i64>,
     track_count: i64,
     downloaded_count: i64,
+    queued_count: i64,
+    downloading_count: i64,
+    failed_count: i64,
+    not_downloaded_count: i64,
     date_added: Option<String>,
     cover_art_url: Option<String>,
 }
@@ -329,7 +351,8 @@ pub async fn query_library_albums_inner(
     // Página agregada y ordenada en servidor.
     let page_sql = format!(
         "{cte} SELECT album_id, title, artist_name, release_year, track_count, \
-         downloaded_count, date_added, cover_art_url \
+         downloaded_count, queued_count, downloading_count, failed_count, \
+         not_downloaded_count, date_added, cover_art_url \
          FROM album_rows{coverage_filter} ORDER BY {order} LIMIT {limit} OFFSET {offset}"
     );
     let mut page_query = sqlx::query_as::<_, AlbumRowBase>(&page_sql);
@@ -351,6 +374,10 @@ pub async fn query_library_albums_inner(
             release_year: row.release_year,
             track_count: row.track_count,
             downloaded_count: row.downloaded_count,
+            queued_count: row.queued_count,
+            downloading_count: row.downloading_count,
+            failed_count: row.failed_count,
+            not_downloaded_count: row.not_downloaded_count,
             accounts: Vec::new(),
             services: Vec::new(),
             date_added: row.date_added,

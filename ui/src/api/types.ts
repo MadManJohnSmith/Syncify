@@ -45,7 +45,8 @@ export interface LibraryTrack {
     sources?: TrackSourceAvailability[]; // Detailed per-source availability
     quality: string | null;          // e.g. "24/96", "16/44.1", "320kbps"
     quality_bucket?: string | null;  // FE-10: 'Hi-Res (24-bit+)' | 'CD Quality' | 'Lossy' (get_library only)
-    download_status: string | null;  // "downloaded", "queued", "not_downloaded"
+    download_status: string | null;  // "downloaded" | "queued" | "downloading" | "failed" | "not_downloaded"
+    download_quality?: string | null; // L14: calidad efectiva del fichero, p. ej. "FLAC 24/96" (query_library)
     metadata_score: number | null;   // 0-100 based on field completeness
     lyrics_type: LyricsType | null;  // "synced", "timed", "plain", "unsynced", "none"
     cover_art_url: string | null;    // Album artwork URL
@@ -106,7 +107,8 @@ export type QuarantineMode = 'exclude' | 'only' | 'include';
 
 export type CollectionFilter = 'favorite' | 'playlist' | 'album' | 'artist';
 
-export type DownloadStatusFilter = 'downloaded' | 'queued' | 'not_downloaded';
+/** Los cinco estados del badge de descarga (L14, #109). */
+export type DownloadStatusFilter = 'downloaded' | 'queued' | 'downloading' | 'failed' | 'not_downloaded';
 
 /** Etiquetas del bucket de calidad, idénticas al deep-link FE-10 del dashboard. */
 export type QualityBucketFilter = 'hi_res' | 'cd_quality' | 'lossy';
@@ -221,6 +223,11 @@ export interface LibraryAlbumRow {
     /** Pistas distintas con pertenencia viva en el filtro. */
     trackCount: number;
     downloadedCount: number;
+    /** L14 (#109): los otros estados del mismo badge de descarga. */
+    queuedCount: number;
+    downloadingCount: number;
+    failedCount: number;
+    notDownloadedCount: number;
     /** `downloadedCount / trackCount`; `null` si el total es cero. */
     coverage: number | null;
     accounts: LibraryAlbumAccountBadge[];

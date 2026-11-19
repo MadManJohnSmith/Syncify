@@ -203,10 +203,13 @@ describe('LibraryView panel lateral de detalle (L04, #101)', () => {
         expect(text).toContain('favorite');
         expect(text).toContain('A2');
         expect(text).toContain('playlist: A2 list');
-        // Descarga: estado, servicio efectivo y ruta.
+        // Descarga: estado, servicio efectivo, calidad efectiva y ruta (L14).
         expect(text).toContain('downloaded');
         expect(text).toContain('qobuz');
-        expect(text).toContain('/music/qobuz/Target Track.flac');
+        const quality = document.querySelector('[data-testid="track-detail-download-quality"]');
+        expect(quality?.textContent).toContain('FLAC · 24/96');
+        const path = document.querySelector('[data-testid="track-detail-download-path"]');
+        expect(path?.textContent).toContain('/music/qobuz/Target Track.flac');
         // Cuarentena y duplicados deshabilitados con su motivo (#72/#73):
         // secciones presentes, sin datos inventados.
         expect(document.querySelector('[data-testid="track-detail-quarantine-disabled"]')).not.toBeNull();

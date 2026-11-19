@@ -7,6 +7,11 @@
  * servidor (`query_library_albums`); la lista se virtualiza con el kernel
  * compartido y solo pide la página siguiente al acercarse al final. No se
  * cargan todos los álbumes ni se filtra en el cliente.
+ *
+ * L14 (#109): la fila muestra los contadores de los cinco estados de descarga
+ * que agrega el servidor con la misma regla que el badge de pista. La
+ * cobertura sigue siendo `downloadedCount / trackCount` y `null` con total
+ * cero: cola, descarga en curso y fallo no se inventan como cobertura.
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -391,9 +396,34 @@ onMounted(async () => {
                 <span v-if="album.releaseYear"> · {{ album.releaseYear }}</span>
               </p>
             </div>
-            <div class="w-32 text-xs text-text-secondary shrink-0">
+            <div class="w-40 text-xs text-text-secondary shrink-0 space-y-1">
               <p>{{ album.trackCount }} track{{ album.trackCount === 1 ? '' : 's' }}</p>
-              <p>{{ album.downloadedCount }} downloaded</p>
+              <p data-testid="album-downloaded-count">{{ album.downloadedCount }} downloaded</p>
+              <!-- L14 (#109): los mismos cinco estados que el badge de la
+                   pista; los contadores salen de la consulta de la página,
+                   no de una consulta por álbum. -->
+              <div class="flex items-center gap-1 flex-wrap" data-testid="album-download-states">
+                <span
+                  v-if="album.queuedCount > 0"
+                  class="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 text-[10px] font-semibold"
+                  data-testid="album-state-queued"
+                >{{ album.queuedCount }} queued</span>
+                <span
+                  v-if="album.downloadingCount > 0"
+                  class="px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[10px] font-semibold"
+                  data-testid="album-state-downloading"
+                >{{ album.downloadingCount }} downloading</span>
+                <span
+                  v-if="album.failedCount > 0"
+                  class="px-1.5 py-0.5 rounded bg-error/10 text-error text-[10px] font-semibold"
+                  data-testid="album-state-failed"
+                >{{ album.failedCount }} failed</span>
+                <span
+                  v-if="album.notDownloadedCount > 0"
+                  class="px-1.5 py-0.5 rounded bg-gray-100 dark:bg-surface-highlight text-text-secondary text-[10px] font-semibold"
+                  data-testid="album-state-not-downloaded"
+                >{{ album.notDownloadedCount }} not downloaded</span>
+              </div>
             </div>
             <div class="w-28 shrink-0" data-testid="album-coverage">
               <div class="h-1.5 rounded-full bg-gray-200 dark:bg-surface-highlight overflow-hidden">

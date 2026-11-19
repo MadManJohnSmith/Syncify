@@ -644,6 +644,26 @@
             <span class="material-symbols-outlined text-[16px]">folder</span>
             <span class="flex-1 text-left">Show in Folder</span>
           </button>
+          <!-- L14 (#109): re-descarga por la cola existente. -->
+          <button
+            v-if="contextMenu.track?.downloadStatus === 'downloaded'"
+            @click="contextMenu.track && handleReDownload(contextMenu.track)"
+            class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors"
+            data-testid="context-re-download"
+          >
+            <span class="material-symbols-outlined text-[16px]">refresh</span>
+            <span class="flex-1 text-left">Re-download</span>
+          </button>
+          <!-- L14 (#109): borrar audio (no la pista) con confirmación. -->
+          <button
+            v-if="contextMenu.track?.downloadStatus === 'downloaded' || contextMenu.track?.downloadStatus === 'failed'"
+            @click="deleteAudioFromContextMenu"
+            class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-warning hover:bg-warning/10 transition-colors"
+            data-testid="context-delete-audio"
+          >
+            <span class="material-symbols-outlined text-[16px]">audiotrack</span>
+            <span class="flex-1 text-left">Delete audio</span>
+          </button>
           
           <div class="menu-separator h-px bg-line my-1"></div>
           
@@ -895,8 +915,14 @@
                 <span :class="['material-symbols-outlined text-[16px]', getLyricsTypeIcon(track.lyricsType).class]" :title="getLyricsTypeIcon(track.lyricsType).title">{{ getLyricsTypeIcon(track.lyricsType).icon }}</span>
               </div>
 
-              <!-- DL (Effective Provider or Status) -->
-              <div v-else-if="col.id === 'dl'" :class="['track-cell w-14 text-center shrink-0 flex items-center justify-center', col.hideBreakpoint || '']">
+              <!-- DL (Effective Provider or one of the five download states, L14 #109) -->
+              <div
+                v-else-if="col.id === 'dl'"
+                :class="['track-cell w-14 text-center shrink-0 flex items-center justify-center', col.hideBreakpoint || '']"
+                data-testid="track-download-badge"
+                :data-download-status="track.downloadStatus"
+                :title="downloadStatusLabel(track.downloadStatus)"
+              >
                 <template v-if="track.downloadStatus === 'downloaded'">
                   <span 
                     v-if="track.downloadedFrom" 
@@ -913,27 +939,33 @@
                     check_circle
                   </span>
                 </template>
-                <template v-else-if="track.downloadStatus === 'downloading' || track.downloadStatus === 'queued'">
-                  <span class="material-symbols-outlined text-[18px] text-primary animate-spin" title="Downloading...">progress_activity</span>
+                <template v-else-if="track.downloadStatus === 'downloading'">
+                  <span class="material-symbols-outlined text-[18px] text-primary animate-spin" :title="downloadStatusLabel('downloading')">progress_activity</span>
+                </template>
+                <template v-else-if="track.downloadStatus === 'queued'">
+                  <span class="material-symbols-outlined text-[18px] text-amber-500" :title="downloadStatusLabel('queued')">schedule</span>
                 </template>
                 <template v-else-if="track.downloadStatus === 'failed'">
-                  <span class="material-symbols-outlined text-[18px] text-error" title="Download failed">error</span>
+                  <span class="material-symbols-outlined text-[18px] text-error" :title="downloadStatusLabel('failed')">error</span>
                 </template>
                 <template v-else-if="track.downloadStatus === 'stale'">
                   <span class="material-symbols-outlined text-[18px] text-warning" title="File stale or missing">warning</span>
                 </template>
                 <template v-else>
-                  <span class="text-xs text-gray-400 font-mono" title="Not downloaded">—</span>
+                  <span class="text-xs text-gray-400 font-mono" :title="downloadStatusLabel('not_downloaded')">—</span>
                 </template>
               </div>
 
-              <!-- Quality (ONLY IF DOWNLOADED / LOCAL FILE EXISTS) -->
+              <!-- Quality: effective file quality when downloaded (L14 #109) -->
               <div v-else-if="col.id === 'quality'" :class="['track-cell w-20 text-center shrink-0 flex items-center justify-center', col.hideBreakpoint || '']">
                 <span 
-                  v-if="track.downloadStatus === 'downloaded' && track.quality && track.quality !== '—'" 
-                  :class="['text-[11px] font-medium tracking-wide px-2 py-0.5 rounded-full border', getQualityStyle(track.quality)]"
+                  v-if="track.downloadStatus === 'downloaded' && effectiveQuality(track) !== '—'"
+                  :class="['text-[11px] font-medium tracking-wide px-2 py-0.5 rounded-full border', getQualityStyle(effectiveQuality(track))]"
+                  data-testid="track-quality-badge"
+                  :data-quality="effectiveQuality(track)"
+                  :title="`Effective quality: ${effectiveQuality(track)}`"
                 >
-                  {{ track.quality }}
+                  {{ effectiveQuality(track) }}
                 </span>
                 <span v-else class="text-xs text-gray-400 font-mono" title="Not downloaded">—</span>
               </div>
@@ -1151,7 +1183,18 @@
                     <p class="text-sm font-medium text-ink truncate">{{ row.track.title }}</p>
                     <p class="text-xs text-text-secondary truncate">{{ row.track.artist }} · {{ row.track.album }}</p>
                   </div>
-                  <span v-if="row.track.downloadStatus === 'downloaded'" class="text-success"><span class="material-symbols-outlined text-[16px]">check_circle</span></span>
+                  <span
+                    class="shrink-0"
+                    data-testid="track-download-badge"
+                    :data-download-status="row.track.downloadStatus"
+                    :title="downloadStatusLabel(row.track.downloadStatus)"
+                  >
+                    <span v-if="row.track.downloadStatus === 'downloaded'" class="material-symbols-outlined text-[16px] text-success">check_circle</span>
+                    <span v-else-if="row.track.downloadStatus === 'downloading'" class="material-symbols-outlined text-[16px] text-primary animate-spin">progress_activity</span>
+                    <span v-else-if="row.track.downloadStatus === 'queued'" class="material-symbols-outlined text-[16px] text-amber-500">schedule</span>
+                    <span v-else-if="row.track.downloadStatus === 'failed'" class="material-symbols-outlined text-[16px] text-error">error</span>
+                    <span v-else class="text-xs text-gray-400 font-mono">—</span>
+                  </span>
                   <span class="text-xs text-text-secondary font-mono">{{ row.track.duration }}</span>
                 </div>
               </div>
@@ -1249,13 +1292,13 @@
                   <dt class="text-text-secondary">Service</dt>
                   <dd>{{ detailData.download.effectiveService }}</dd>
                 </template>
-                <template v-if="detailData.download.fileFormat">
+                <template v-if="detailDownloadQuality(detailData.download)">
                   <dt class="text-text-secondary">Quality</dt>
-                  <dd>{{ [detailData.download.fileFormat, detailData.download.bitDepth && detailData.download.sampleRate ? `${detailData.download.bitDepth}/${detailData.download.sampleRate}` : null].filter(Boolean).join(' · ') }}</dd>
+                  <dd data-testid="track-detail-download-quality">{{ detailDownloadQuality(detailData.download) }}</dd>
                 </template>
                 <template v-if="detailData.download.filePath">
                   <dt class="text-text-secondary">Path</dt>
-                  <dd class="break-all font-mono text-[10px]">{{ detailData.download.filePath }}</dd>
+                  <dd class="break-all font-mono text-[10px]" data-testid="track-detail-download-path">{{ detailData.download.filePath }}</dd>
                 </template>
               </dl>
             </section>
@@ -1276,8 +1319,8 @@
                 <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-play" @click="panelTrack && handleTrackPlay(panelTrack)">
                   <span class="material-symbols-outlined text-[16px]">play_arrow</span> Play
                 </button>
-                <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-download" @click="panelTrack && handleDownload(panelTrack)">
-                  <span class="material-symbols-outlined text-[16px]">download</span> {{ detailData.download?.status === 'downloaded' ? 'Re-download' : 'Download' }}
+                <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-download" @click="panelTrack && handlePanelDownload(panelTrack, panelHasDownload)">
+                  <span class="material-symbols-outlined text-[16px]">download</span> {{ panelHasDownload ? 'Re-download' : 'Download' }}
                 </button>
                 <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-favorite" @click="panelFavorite">
                   <span :class="['material-symbols-outlined text-[16px]', panelTrack?.isFavorite ? 'material-symbols-filled text-red-500' : '']">{{ panelTrack?.isFavorite ? 'favorite' : 'favorite_border' }}</span> {{ panelTrack?.isFavorite ? 'Unfavorite' : 'Favorite' }}
@@ -1496,7 +1539,13 @@ const contextMenu = ref<{
 // identidad ISRC/huella de L10 (#73).
 const filterPills: Array<{ id: string; label: string; disabled?: boolean; reason?: string }> = [
   { id: 'all', label: 'All Items' },
+  // L14 (#109): los cinco estados del badge, cada uno filtrable. «Not
+  // Downloaded» es la ausencia de descarga y de cola, no un cajón que mezcle
+  // los otros cuatro estados.
   { id: 'downloaded', label: 'Downloaded' },
+  { id: 'queued', label: 'Queued' },
+  { id: 'downloading', label: 'Downloading' },
+  { id: 'failed', label: 'Failed' },
   { id: 'notDownloaded', label: 'Not Downloaded' },
   { id: 'favorites', label: 'Favorites' },
   { id: 'flac', label: 'Hi-Res (FLAC)' },
@@ -1685,6 +1734,8 @@ interface Track {
   availabilitySummary: string | null
   quality: string
   qualityBucket?: string | null
+  /** L14 (#109): calidad efectiva del fichero descargado (p. ej. "FLAC 24/96"). */
+  downloadQuality: string | null
   downloadStatus: 'downloaded' | 'queued' | 'downloading' | 'failed' | 'stale' | 'not_downloaded'
   metadataScore: number
   bpm: number | null
@@ -1739,6 +1790,7 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
     availabilitySummary: item.availability_summary || null,
     quality: item.quality || '—',
     qualityBucket: item.quality_bucket ?? null,
+    downloadQuality: item.download_quality ?? null,
     downloadStatus: (item.download_status ?? 'not_downloaded') as Track['downloadStatus'],
     metadataScore: item.metadata_score ?? 0,
     bpm: item.bpm,
@@ -1825,7 +1877,10 @@ function currentLibraryState(): LibraryUrlState {
   // OR dentro de la dimensión de estado de descarga.
   const downloadStatuses: DownloadStatusFilter[] = [];
   if (filters.includes('downloaded')) downloadStatuses.push('downloaded');
-  if (filters.includes('notDownloaded')) downloadStatuses.push('queued', 'not_downloaded');
+  if (filters.includes('queued')) downloadStatuses.push('queued');
+  if (filters.includes('downloading')) downloadStatuses.push('downloading');
+  if (filters.includes('failed')) downloadStatuses.push('failed');
+  if (filters.includes('notDownloaded')) downloadStatuses.push('not_downloaded');
   // OR dentro de la dimensión de calidad (buckets del servidor, mismas
   // etiquetas que el deep-link FE-10 del dashboard). Orden canónico del
   // contrato para que el round-trip URL → vista → URL sea estable.
@@ -1965,7 +2020,10 @@ function applyUrlState(): boolean {
 function filtersFromState(state: LibraryUrlState, legacyLabel: string | null): string[] {
   const filters: string[] = [];
   if (state.downloadStatuses.includes('downloaded')) filters.push('downloaded');
-  if (state.downloadStatuses.some((s) => s !== 'downloaded')) filters.push('notDownloaded');
+  if (state.downloadStatuses.includes('queued')) filters.push('queued');
+  if (state.downloadStatuses.includes('downloading')) filters.push('downloading');
+  if (state.downloadStatuses.includes('failed')) filters.push('failed');
+  if (state.downloadStatuses.includes('not_downloaded')) filters.push('notDownloaded');
   if (state.favoritesOnly) filters.push('favorites');
   let buckets = state.qualityBuckets;
   if (legacyLabel !== null) {
@@ -2392,6 +2450,38 @@ async function handleAddToQueue(track: Track) {
   await handleDownload(track);
 }
 
+/** L14 (#109): re-descargar una pista ya descargada. Reutiliza la única
+ * ruta de re-descarga existente (`force_redownload_tracks`: limpia el
+ * Download y las filas de cola de esa pista y la vuelve a encolar por
+ * `perform_add_to_queue`). No es una segunda cola. */
+async function handleReDownload(track: Track) {
+  closeContextMenu()
+  try {
+    await loadEffectivePrefs()
+    const queued = await queueApi.forceRedownloadTracks([track.id], 50, effectiveMaxQualityLabel())
+    if (queued < 1) {
+      toast.error('Could not re-download', `No source could be re-queued for "${track.title}".`)
+      return
+    }
+    track.downloadStatus = 'queued'
+    track.downloadQuality = null
+    toast.success(`Re-download queued for "${track.title}"`)
+  } catch (error: any) {
+    console.error('Failed to re-download:', error)
+    toast.error(`Failed to re-download: ${String(error?.message || error || '')}`)
+  }
+}
+
+/** Acción del panel: «Download» encola una pista sin fichero y «Re-download»
+ * usa la ruta de re-descarga para una pista ya descargada. */
+async function handlePanelDownload(track: Track, alreadyDownloaded: boolean) {
+  if (alreadyDownloaded || track.downloadStatus === 'downloaded') {
+    await handleReDownload(track)
+    return
+  }
+  await handleDownload(track)
+}
+
 async function handleDownload(track: Track) {
   try {
     await loadEffectivePrefs()
@@ -2779,6 +2869,24 @@ function getServiceIcon(service: string): string {
     'Local': 'L',
   };
   return short[canonical] || canonical.charAt(0).toUpperCase() || '?';
+}
+
+/** L14 (#109): etiqueta accesible de los cinco estados de descarga. */
+function downloadStatusLabel(status: Track['downloadStatus']): string {
+  switch (status) {
+    case 'downloaded': return 'Downloaded'
+    case 'queued': return 'Queued for download'
+    case 'downloading': return 'Downloading'
+    case 'failed': return 'Download failed'
+    case 'stale': return 'File stale or missing'
+    default: return 'Not downloaded'
+  }
+}
+
+/** Calidad efectiva del fichero; si el backend aún no la proyecta (filas
+ * antiguas o fixtures), cae al formato que ya mostraba la columna. */
+function effectiveQuality(track: Track): string {
+  return track.downloadQuality || track.quality || '—'
 }
 
 function getQualityStyle(quality: string): string {
@@ -3389,6 +3497,18 @@ async function focusTrackFromQuery() {
 // tipado (`track_not_found`), no una fila vacía.
 const detailTrackId = ref<number | null>(null)
 const detailData = ref<TrackDetail | null>(null)
+
+/** L14 (#109): calidad efectiva del panel = formato + profundidad/frecuencia
+ * reales del fichero. No decide calidad ni fallback: solo muestra lo que el
+ * Download ya tiene. */
+function detailDownloadQuality(download: NonNullable<TrackDetail['download']>): string {
+  const parts: string[] = []
+  if (download.fileFormat) parts.push(download.fileFormat)
+  if (download.bitDepth !== null && download.sampleRate !== null) {
+    parts.push(`${download.bitDepth}/${download.sampleRate / 1000}`)
+  }
+  return parts.join(' · ')
+}
 const detailError = ref<TrackDetailError | null>(null)
 const detailLoading = ref(false)
 const detailPlaylistChoice = ref<number | null>(null)
@@ -3399,6 +3519,12 @@ let detailQuerySeq = 0
 /** La fila canónica del panel, mapeada al Track de la vista para reusar los
  * manejadores existentes (play, descarga, favorito, abrir ficha). */
 const panelTrack = computed<Track | null>(() => (detailData.value ? mapToTrack(detailData.value.track, 0) : null))
+/** L14 (#109): hay Download aunque el fichero se haya verificado como
+ * ausente (fila `downloads` presente): la acción correcta es re-descargar. */
+const panelHasDownload = computed<boolean>(() => {
+  const download = detailData.value?.download
+  return !!download && (download.status === 'downloaded' || !!download.filePath)
+})
 
 async function openTrackDetail(trackId: number) {
   detailTrackId.value = trackId
@@ -3465,15 +3591,39 @@ async function panelDeleteAudio() {
   const trackId = detailTrackId.value
   const track = panelTrack.value
   if (trackId === null || !track) return
+  const deleted = await confirmDeleteAudio(track)
+  if (deleted) await refreshPanelAndList()
+}
+
+/** L14 (#109): borrado de audio por pista y con confirmación. Elimina solo
+ * el Download, sus entradas de cola y el fichero; el Track, sus TrackSource,
+ * su pertenencia y la evidencia de edición se conservan (lo garantiza el
+ * backend de L04, reutilizado aquí). */
+async function deleteAudioFromContextMenu() {
+  const track = contextMenu.value.track
+  closeContextMenu()
+  if (!track) return
+  const deleted = await confirmDeleteAudio(track)
+  if (!deleted) return
+  if (detailTrackId.value === track.id) await refreshTrackDetail()
+  await loadLibrary()
+}
+
+async function confirmDeleteAudio(track: Track): Promise<boolean> {
   const confirmed = window.confirm(`Delete downloaded audio for "${track.title}"? The track, its sources and memberships are kept.`)
-  if (!confirmed) return
+  if (!confirmed) return false
   try {
-    const summary = await libraryApi.deleteTrackAudio(trackId)
+    const summary = await libraryApi.deleteTrackAudio(track.id)
+    track.downloadStatus = 'not_downloaded'
+    track.downloadQuality = null
+    track.downloadedFrom = null
+    track.filePath = null
     toast.success('Audio deleted', `Download removed${summary.audioFileDeleted ? ' and file deleted' : ''}`)
+    return true
   } catch (error) {
     toast.error('Failed to delete audio', String(error))
+    return false
   }
-  await refreshPanelAndList()
 }
 
 // Lifecycle

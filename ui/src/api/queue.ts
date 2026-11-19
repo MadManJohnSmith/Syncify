@@ -107,6 +107,9 @@ export async function forceRedownloadTracks(
         priority,
         qualityPreference: qualityPreference ? normalizeQuality(qualityPreference) : undefined,
     });
+    // L14 (#109): la pista pasa a «queued» y su Download desaparece; la
+    // caché de páginas de la biblioteca deja de servir la fila anterior.
+    invalidateLibraryPages('download');
     return typeof queued === 'number' ? queued : 0;
 }
 
