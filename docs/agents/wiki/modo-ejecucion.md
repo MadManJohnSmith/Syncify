@@ -403,6 +403,15 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   hijo y sin PRs abiertos, el carril llega a entregar. Regla operativa:
   rotar de uno en uno, y no lanzar el siguiente hasta cerrar el anterior.
   Fuente: interrupciones encadenadas de #102/#116/#135/#91/#121.
+- **2026-11-19, capacidad de carriles ampliada (vigente)**: orden del
+  propietario — hasta **dos subagentes** con
+  `opencode-go/deepseek-v4.1-flash` y **dos** con
+  `builtin:zai-start-plan\GLM-5.3-Flash` a la vez. Suplanta la rotación
+  de un solo hijo del 2026-11-18. Condición operativa que no se relaja:
+  reparto de superficies sin ficheros compartidos (los claims de
+  `AGENTS.md` se resuelven al fusionar, como siempre) y vigilancia de la
+  cascada de interrupciones; si reaparece, se vuelve a rotación. Fuente:
+  orden del propietario en la sesión del 2026-11-19.
 - **2026-11-18, WIP rescatable tras interrupción**: los hijos cortados
   suelen dejar commits o cambios sin commitear en su worktree; revisar
   `git status`/`git log` antes de relanzar. Así se terminaron #133, #120,
