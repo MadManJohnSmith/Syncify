@@ -244,8 +244,15 @@ describe('LibraryView — estado en la URL (integración)', () => {
         await flushPromises();
         await flushPromises();
         expect(router.currentRoute.value.query.dl).toBeUndefined();
-        const last = queries[queries.length - 1] as Record<string, unknown>;
-        expect(last.downloadStatuses).toEqual([]);
+        // L13 (#110): el estado anterior ya está en la caché de páginas; el
+        // retroceso no necesita otra consulta. La consulta del filtro vacío
+        // existe (la hizo el montaje) y la vista vuelve a mostrar sus filas.
+        const emptyStatusQueries = queries.filter((query) => {
+            const statuses = (query as { downloadStatuses?: unknown }).downloadStatuses;
+            return Array.isArray(statuses) && statuses.length === 0;
+        });
+        expect(emptyStatusQueries.length).toBeGreaterThanOrEqual(1);
+        expect(wrapper.text()).toContain('One');
     });
 
     it('escribir texto actualiza la URL con replace (una entrada, no una por tecla)', async () => {

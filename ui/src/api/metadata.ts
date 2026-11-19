@@ -5,6 +5,7 @@
  */
 
 import { invokeCommand } from './tauri';
+import { invalidateLibraryPages } from '@/composables/libraryCacheInvalidation';
 import { asArray, asNumber, asString, asRecord, pick, pickArray, pickNumber, optionalNumber, optionalString } from './normalize';
 import type {
     LibraryTrack,
@@ -197,10 +198,13 @@ export async function updateTrackMetadata(trackId: number, metadata: Partial<{
     label: string;
     coverArtUrl: string;
 }>): Promise<LibraryTrack> {
-    return invokeCommand<LibraryTrack>('update_track_metadata', {
+    const updated = await invokeCommand<LibraryTrack>('update_track_metadata', {
         trackId,
         metadata
     });
+    // L13 (#110): una edición de metadatos cambia la fila y los contadores.
+    invalidateLibraryPages('metadata');
+    return updated;
 }
 
 // ==============================================
@@ -347,10 +351,12 @@ export async function matchMusicBrainz(params: {
  * Apply a MusicBrainz match to a track
  */
 export async function applyMusicBrainzMatch(trackId: number, recordingId: string): Promise<boolean> {
-    return invokeCommand<boolean>('apply_musicbrainz_match', {
+    const applied = await invokeCommand<boolean>('apply_musicbrainz_match', {
         trackId,
         recordingId
     });
+    invalidateLibraryPages('metadata');
+    return applied;
 }
 
 /**
@@ -406,6 +412,8 @@ export async function enrichMetadataMusicBrainz(limit?: number): Promise<{
     failed: number;
 }> {
     const raw = await invokeCommand<unknown>('enrich_metadata_musicbrainz', { limit });
+    // L13 (#110): el enriquecimiento escribe metadatos en la biblioteca.
+    invalidateLibraryPages('metadata');
     return {
         total: pickNumber(raw, ['total']),
         enriched: pickNumber(raw, ['enriched']),
@@ -419,6 +427,7 @@ export async function enrichMetadataMusicBrainz(limit?: number): Promise<{
  */
 export async function enrichGenreLastfm(): Promise<string> {
     const raw = await invokeCommand<unknown>('enrich_genre_lastfm');
+    invalidateLibraryPages('metadata');
     return typeof raw === 'string' ? raw : '';
 }
 

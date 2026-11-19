@@ -5,6 +5,7 @@
  */
 
 import { invokeCommand } from './tauri';
+import { invalidateLibraryPages } from '@/composables/libraryCacheInvalidation';
 import { asArray, asNumber, asRecord, asString } from './normalize';
 import type { Playlist, PlaylistTrack, ImportResult } from './types';
 
@@ -105,6 +106,7 @@ export async function createPlaylist(params: {
         name: params.name,
         description: params.description ?? null,
     });
+    invalidateLibraryPages('playlist');
 
     let id: number | null = null;
     if (typeof raw === 'number') {
@@ -151,14 +153,17 @@ export async function updatePlaylist(params: {
     description?: string;
     is_public?: boolean;
 }): Promise<Playlist> {
-    return invokeCommand<Playlist>('update_playlist', params);
+    const playlist = await invokeCommand<Playlist>('update_playlist', params);
+    invalidateLibraryPages('playlist');
+    return playlist;
 }
 
 /**
  * Delete a playlist
  */
 export async function deletePlaylist(id: number): Promise<void> {
-    return invokeCommand<void>('delete_playlist', { id });
+    await invokeCommand<void>('delete_playlist', { id });
+    invalidateLibraryPages('playlist');
 }
 
 /**
@@ -169,6 +174,7 @@ export async function addTracksToPlaylist(playlistId: number, trackIds: number[]
         playlistId,
         trackIds,
     });
+    invalidateLibraryPages('playlist');
     return trackIds.length;
 }
 
@@ -180,6 +186,7 @@ export async function removeTracksFromPlaylist(playlistId: number, trackIds: num
         playlistId,
         trackIds,
     });
+    invalidateLibraryPages('playlist');
     return typeof res === 'number' ? res : trackIds.length;
 }
 
@@ -187,10 +194,11 @@ export async function removeTracksFromPlaylist(playlistId: number, trackIds: num
  * Reorder tracks in a playlist
  */
 export async function reorderPlaylistTracks(playlistId: number, positions: { trackId: number; newPosition: number }[]): Promise<void> {
-    return invokeCommand<void>('reorder_playlist_tracks', {
+    await invokeCommand<void>('reorder_playlist_tracks', {
         playlistId,
         positions
     });
+    invalidateLibraryPages('playlist');
 }
 
 // ==============================================
@@ -214,6 +222,7 @@ export async function importPlaylists(service: string): Promise<ImportResult> {
     } else {
         throw new Error(`Unsupported playlist service: ${service}`);
     }
+    invalidateLibraryPages('playlist');
     return normalizeImportResult(raw);
 }
 
@@ -252,6 +261,7 @@ export interface SyncPlaylistsResult {
  */
 export async function syncPlaylists(service?: string): Promise<SyncPlaylistsResult> {
     const raw = await invokeCommand<unknown>('sync_playlists', { service });
+    invalidateLibraryPages('playlist');
     const rec = asRecord(raw);
     const servicesRaw = Array.isArray(rec?.services) ? rec?.services : [];
     const services: PlaylistServiceSummary[] = servicesRaw.map(s => {
@@ -340,11 +350,13 @@ export async function createSmartPlaylist(params: {
     rulesJson: string;
     accountId?: number;
 }): Promise<Playlist> {
-    return invokeCommand<Playlist>('create_smart_playlist', {
+    const playlist = await invokeCommand<Playlist>('create_smart_playlist', {
         name: params.name,
         rulesJson: params.rulesJson,
         accountId: params.accountId ?? 1,
     });
+    invalidateLibraryPages('playlist');
+    return playlist;
 }
 
 // ==============================================
@@ -414,6 +426,7 @@ export interface PlaylistSanitizationStats {
  */
 export async function sanitizePlaylists(): Promise<PlaylistSanitizationStats> {
     const raw = await invokeCommand<unknown>('sanitize_playlists');
+    invalidateLibraryPages('playlist');
     const rec = asRecord(raw);
     return {
         duplicate_tracks_purged: asNumber(rec?.duplicate_tracks_purged),
@@ -464,6 +477,7 @@ export async function importPlaylistFromFile(params: {
         name: params.name ?? null,
         accountId: params.accountId ?? null,
     });
+    invalidateLibraryPages('playlist');
     const rec = asRecord(raw);
     return {
         playlistId: asNumber(rec?.playlistId),

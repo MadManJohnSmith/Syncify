@@ -289,8 +289,16 @@ describe('LibraryHeaderChips — cinco chips de estado (L03 #100)', () => {
         await wrapper.find('[data-testid="library-chip-downloaded"]').trigger('click');
         await flushPromises();
         await flushPromises();
-        const last2 = queries[queries.length - 1] as { downloadStatuses?: string[] };
-        expect(last2.downloadStatuses).toEqual([]);
+        // L13 (#110): volver al filtro anterior se sirve de la caché de
+        // páginas — no hay una consulta nueva. Lo que debe volver es el
+        // estado: la URL queda sin la dimensión y las filas son las del
+        // filtro vacío (la primera página ya pedida).
+        const emptyStatusQueries = queries.filter((query) => {
+            const statuses = (query as { downloadStatuses?: string[] }).downloadStatuses;
+            return Array.isArray(statuses) && statuses.length === 0;
+        });
+        expect(emptyStatusQueries.length).toBeGreaterThanOrEqual(1);
         expect(router.currentRoute.value.query.dl).toBeUndefined();
+        expect(wrapper.text()).toContain('One');
     });
 });

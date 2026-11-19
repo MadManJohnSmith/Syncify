@@ -5,6 +5,7 @@
  */
 
 import { invokeCommand } from './tauri';
+import { invalidateLibraryPages } from '@/composables/libraryCacheInvalidation';
 import { asArray, asNumber, asString, asBoolean, asRecord, pick, pickArray, pickNumber, optionalNumber } from './normalize';
 import type { LibraryTrack, LibraryPage, LibraryStats, Playlist, SearchResult, AlbumDetail, ArtistDetail, TopArtist, TopGenre, QualityBucket, TrackSourceAvailability, TrackPreflightResult } from './types';
 import type {
@@ -93,14 +94,19 @@ export async function getFavoriteTracks(offset?: number, limit?: number): Promis
  * Toggle favorite status of a track
  */
 export async function toggleTrackFavorite(trackId: number): Promise<boolean> {
-    return invokeCommand<boolean>('toggle_favorite', { trackId });
+    const state = await invokeCommand<boolean>('toggle_favorite', { trackId });
+    // L13 (#110): el favorito cambia la fila y el contador de la biblioteca.
+    invalidateLibraryPages('favorite');
+    return state;
 }
 
 /**
  * Set favorite status of a track explicitly
  */
 export async function setTrackFavorite(trackId: number, isFavorite: boolean): Promise<boolean> {
-    return invokeCommand<boolean>('set_track_favorite', { trackId, isFavorite });
+    const state = await invokeCommand<boolean>('set_track_favorite', { trackId, isFavorite });
+    invalidateLibraryPages('favorite');
+    return state;
 }
 
 /**
@@ -302,12 +308,15 @@ export async function runLibraryAction(
     expectedTotal?: number | null,
     expectedEligible?: number | null
 ): Promise<LibraryActionSummary> {
-    return invokeCommand<LibraryActionSummary>('run_library_action', {
+    const summary = await invokeCommand<LibraryActionSummary>('run_library_action', {
         selection,
         action,
         expectedTotal: expectedTotal ?? null,
         expectedEligible: expectedEligible ?? null,
     });
+    // L13 (#110): el lote puede cambiar favoritos, playlists o descargas.
+    invalidateLibraryPages('library-action');
+    return summary;
 }
 
 /**
@@ -364,7 +373,10 @@ export interface MbDumpProgress {
  * al terminar; el progreso llega por el evento MB_DUMP_PROGRESS.
  */
 export async function importMbDump(dumpPath: string): Promise<MbDumpImportCounts> {
-    return invokeCommand<MbDumpImportCounts>('import_mb_dump', { dumpPath });
+    const counts = await invokeCommand<MbDumpImportCounts>('import_mb_dump', { dumpPath });
+    // L13 (#110): el catálogo importado enriquece las pistas ya listadas.
+    invalidateLibraryPages('import');
+    return counts;
 }
 
 /**
@@ -419,7 +431,9 @@ export async function getPlaylistTracks(
  * @returns Success message with count of tracks added
  */
 export async function addToPlaylist(playlistId: number, trackIds: number[]): Promise<string> {
-    return invokeCommand<string>('add_to_playlist', { playlistId, trackIds });
+    const result = await invokeCommand<string>('add_to_playlist', { playlistId, trackIds });
+    invalidateLibraryPages('playlist');
+    return result;
 }
 
 /**
@@ -435,6 +449,7 @@ export async function createPlaylist(
     description?: string
 ): Promise<number> {
     const id = await invokeCommand<unknown>('create_playlist', { accountId, name, description });
+    invalidateLibraryPages('playlist');
     return typeof id === 'number' ? id : 0;
 }
 
@@ -548,7 +563,8 @@ export async function syncLocalLibrary(
  * Remove a single track from the library
  */
 export async function removeTrack(trackId: number): Promise<void> {
-    return invokeCommand<void>('remove_track', { trackId });
+    await invokeCommand<void>('remove_track', { trackId });
+    invalidateLibraryPages('manual');
 }
 
 /**
@@ -564,6 +580,7 @@ export async function stopLibraryWatcher(directory: string): Promise<boolean> {
  */
 export async function bulkRemoveTracks(trackIds: number[]): Promise<number> {
     const removed = await invokeCommand<unknown>('bulk_remove_tracks', { trackIds });
+    invalidateLibraryPages('manual');
     return typeof removed === 'number' ? removed : 0;
 }
 
@@ -572,7 +589,9 @@ export async function bulkRemoveTracks(trackIds: number[]): Promise<number> {
  * @returns The new favorite state (true = favorited)
  */
 export async function toggleFavorite(trackId: number): Promise<boolean> {
-    return invokeCommand<boolean>('toggle_favorite', { trackId });
+    const state = await invokeCommand<boolean>('toggle_favorite', { trackId });
+    invalidateLibraryPages('favorite');
+    return state;
 }
 
 /**
@@ -1825,6 +1844,7 @@ export async function getTrackDetail(trackId: number): Promise<TrackDetail> {
  */
 export async function deleteTrackAudio(trackId: number): Promise<DeleteTrackAudioResult> {
     const raw = asRecord(await invokeCommand<unknown>('delete_track_audio', { trackId }));
+    invalidateLibraryPages('download');
     return {
         queueEntriesDeleted: asNumber(raw?.queueEntriesDeleted ?? raw?.queue_entries_deleted),
         downloadDeleted: raw?.downloadDeleted === true || raw?.download_deleted === true,

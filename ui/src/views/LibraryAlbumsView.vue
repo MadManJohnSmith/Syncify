@@ -8,7 +8,7 @@
  * compartido y solo pide la página siguiente al acercarse al final. No se
  * cargan todos los álbumes ni se filtra en el cliente.
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { queryLibraryAlbums } from '@/api/library'
 import { getAccounts, getServices } from '@/api/accounts'
@@ -18,12 +18,16 @@ import type {
   LibraryAlbumQuery,
   LibraryAlbumRow,
   LibraryAlbumSortKey,
+  LibraryAlbumsResult,
   Service,
   SortDirection,
 } from '@/api/types'
 import LibraryTabs from '@/components/LibraryTabs.vue'
 import TrackCover from '@/components/TrackCover.vue'
 import { useVirtualWindow } from '@/composables/useVirtualWindow'
+import { pageQueryKey, usePagedQueryCache } from '@/composables/usePagedQueryCache'
+import { onLibraryPagesInvalidated } from '@/composables/libraryCacheInvalidation'
+import { useLibraryCacheInvalidation } from '@/composables/useLibraryCacheInvalidation'
 
 defineOptions({ name: 'LibraryAlbumsView' })
 
@@ -101,6 +105,14 @@ function buildQuery(offset: number): LibraryAlbumQuery {
   }
 }
 
+// L13 (#110): caché de páginas por clave y deduplicación de peticiones en
+// vuelo. La invalidación es explícita por evento; no hay TTL.
+const albumPages = usePagedQueryCache<LibraryAlbumQuery, LibraryAlbumsResult>({
+  keyOf: pageQueryKey,
+  fetchPage: queryLibraryAlbums,
+})
+useLibraryCacheInvalidation()
+
 let requestSeq = 0
 
 async function loadPage(refresh: boolean): Promise<void> {
@@ -114,11 +126,13 @@ async function loadPage(refresh: boolean): Promise<void> {
   }
 
   try {
-    const result = await queryLibraryAlbums(buildQuery(offset))
+    const result = await albumPages.load(buildQuery(offset))
     if (seq !== requestSeq) return
-    albums.value = refresh ? result.albums : albums.value.concat(result.albums)
-    total.value = result.total
-    hasMore.value = result.hasMore
+    // Una invalidación en vuelo no se pinta: el evento ya programó la recarga.
+    if (result.generation !== albumPages.generation.value) return
+    albums.value = refresh ? result.page.albums : albums.value.concat(result.page.albums)
+    total.value = result.page.total
+    hasMore.value = result.page.hasMore
   } catch (e) {
     if (seq !== requestSeq) return
     error.value = e instanceof Error ? e.message : String(e)
@@ -139,6 +153,25 @@ function reload(): void {
   resetVirtualScroll()
   void loadPage(true)
 }
+
+let reloadTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleReload(): void {
+  if (reloadTimer) clearTimeout(reloadTimer)
+  reloadTimer = setTimeout(() => {
+    reloadTimer = null
+    reload()
+  }, 350)
+}
+
+const offLibraryInvalidated = onLibraryPagesInvalidated(() => {
+  albumPages.invalidate()
+  scheduleReload()
+})
+
+onUnmounted(() => {
+  offLibraryInvalidated()
+  if (reloadTimer) clearTimeout(reloadTimer)
+})
 
 /** Texto y orden comparten URL con la pestaña de pistas (L03). Cuenta,
  * servicio y cobertura son propios de esta lista y no se escriben. */
