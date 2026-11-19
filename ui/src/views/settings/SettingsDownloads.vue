@@ -75,7 +75,7 @@
           <span class="material-symbols-outlined text-primary text-[22px]">high_quality</span>
           Audio Quality Preferences
         </h3>
-        <p class="text-xs text-text-secondary mt-0.5">Maximum audio quality cap and preferred file format across streaming providers</p>
+        <p class="text-xs text-text-secondary mt-0.5">Maximum audio quality cap across streaming providers</p>
       </div>
 
       <div class="p-5 rounded-xl border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark space-y-4">
@@ -95,31 +95,13 @@
             <div class="relative">
               <select
                 v-model="selectedGlobalQuality"
+                data-testid="quality-preset-select"
                 class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none appearance-none cursor-pointer"
               >
+                <option value="inherit">Inherit the global ceiling</option>
                 <option value="hires">Hi-Res Lossless (24-bit / 96kHz+ FLAC)</option>
                 <option value="lossless">Lossless CD Quality (16-bit / 44.1kHz FLAC)</option>
                 <option value="high">High Quality (320 kbps MP3 / AAC)</option>
-                <option value="normal">Standard (128-256 kbps)</option>
-              </select>
-              <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-500">
-                <span class="material-symbols-outlined text-[18px]">expand_more</span>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Preferred Format</label>
-            <div class="relative">
-              <select
-                v-model="selectedGlobalFormat"
-                class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none appearance-none cursor-pointer"
-              >
-                <option value="flac">FLAC (Free Lossless Audio Codec)</option>
-                <option value="alac">ALAC (Apple Lossless)</option>
-                <option value="mp3">MP3 (MPEG Audio Layer III)</option>
-                <option value="aac">AAC (Advanced Audio Coding)</option>
-                <option value="ogg">Ogg Vorbis</option>
               </select>
               <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-500">
                 <span class="material-symbols-outlined text-[18px]">expand_more</span>
@@ -180,11 +162,11 @@
             <select 
               v-model="downloadSettings.folderSettings.fallback_action"
               @change="handleFallbackActionChange"
+              data-testid="fallback-action-select"
               class="w-full px-3.5 py-2.5 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary focus:border-transparent outline-none appearance-none cursor-pointer"
             >
               <option value="try_next">Try next available service (Fallback enabled)</option>
               <option value="skip">Skip track (Strict source quality matching only)</option>
-              <option value="prompt">Prompt user for action</option>
             </select>
             <div class="absolute inset-y-0 right-0 flex items-center px-3 pointer-events-none text-gray-500">
               <span class="material-symbols-outlined text-[20px]">expand_more</span>
@@ -438,7 +420,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
-import { settingsApi } from '@/api/settings'
+import { settingsApi, normalizeServiceQuality } from '@/api/settings'
 import { useToast, confirm } from '@/composables/useToast'
 
 const downloadSettings = useDownloadSettings()
@@ -642,11 +624,13 @@ async function handleResetPath() {
 
 async function handleApplyQualityPreset() {
   const confirmed = await confirm(
-    `Apply the ${selectedGlobalQuality.value} (${selectedGlobalFormat.value}) preset to all connected services? Quality preferences will be updated within each service's limits.`,
+    `Apply the ${selectedGlobalQuality.value} preset to all connected services? Quality preferences will be updated within each service's limits.`,
     { title: 'Apply Quality Preset', variant: 'warning' }
   )
   if (!confirmed) return
-  await downloadSettings.updateGlobalQuality(selectedGlobalQuality.value, selectedGlobalFormat.value)
+  // El formato no se ofrece: el worker entrega el del proveedor. Se conserva
+  // el valor existente de cada servicio en vez de sobrescribirlo.
+  await downloadSettings.updateGlobalQuality(selectedGlobalQuality.value)
   toast.success('Preset applied', `Set ${selectedGlobalQuality.value} for connected services`)
   triggerSavingFeedback()
 }
@@ -698,7 +682,7 @@ onMounted(async () => {
     }
     const qobuzPref = downloadSettings.getQualityForService('qobuz') || downloadSettings.qualityPreferences.value[0]
     if (qobuzPref) {
-      selectedGlobalQuality.value = qobuzPref.max_quality || 'hires'
+      selectedGlobalQuality.value = normalizeServiceQuality(qobuzPref.max_quality)
       selectedGlobalFormat.value = qobuzPref.preferred_format || 'flac'
     }
 

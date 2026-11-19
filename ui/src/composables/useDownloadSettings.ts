@@ -10,7 +10,9 @@ import {
     type DownloadSettingsDto,
     type EffectiveDownloadPreferences,
     deriveStagingRoot,
-    determinePathStatus
+    determinePathStatus,
+    normalizeFallbackAction,
+    normalizeServiceQuality
 } from '@/api/settings'
 import { useEventBus } from '@/composables/useEventBus'
 import type {
@@ -114,7 +116,7 @@ const concurrentDownloads = computed({
 const fallbackAction = computed({
     get: () => folderSettings.fallback_action || 'try_next',
     set: (val: string) => {
-        folderSettings.fallback_action = val
+        folderSettings.fallback_action = normalizeFallbackAction(val)
     }
 })
 
@@ -220,7 +222,7 @@ async function loadFromBackendInner() {
                 folderSettings.artist_separator = effective.artistSeparator
                 folderSettings.replace_spaces_with = effective.replaceSpacesWith
                 folderSettings.max_path_length = effective.maxPathLength
-                folderSettings.fallback_action = effective.fallbackAction
+                folderSettings.fallback_action = normalizeFallbackAction(effective.fallbackAction)
 
                 downloadDto.library_root = effective.downloadPath
                 downloadDto.staging_root = effective.stagingPath
@@ -270,6 +272,7 @@ async function loadFromBackendInner() {
         // Update folder settings
         if (folder) {
             Object.assign(folderSettings, folder)
+            folderSettings.fallback_action = normalizeFallbackAction(folderSettings.fallback_action)
         }
 
         // Update audio processing settings
@@ -346,11 +349,13 @@ async function setMaxConcurrent(max: number) {
     await settingsApi.saveSetting('dl_concurrent_downloads', clamped.toString())
 }
 
-// Update fallback action (e.g. 'try_next', 'skip', 'prompt')
+// Update fallback action. Only the two values the worker applies are accepted;
+// the retired `prompt` folds into the default `try_next`.
 async function updateFallbackAction(action: string) {
-    folderSettings.fallback_action = action
+    const normalized = normalizeFallbackAction(action)
+    folderSettings.fallback_action = normalized
     try {
-        const updated = await settingsApi.updateFallbackAction(action)
+        const updated = await settingsApi.updateFallbackAction(normalized)
         if (updated) Object.assign(folderSettings, updated)
     } catch (e) {
         console.error('Failed to update fallback action:', e)
@@ -408,7 +413,8 @@ async function updateGlobalQuality(maxQuality: string, preferredFormat?: string)
     isUpdatingGlobalQuality.value = true
     try {
         const knownServices = ['qobuz', 'tidal', 'spotify', 'deezer', 'apple_music', 'soundcloud']
-        const format = preferredFormat || (maxQuality === 'hires' || maxQuality === 'lossless' ? 'flac' : 'mp3')
+        const normalizedQuality = normalizeServiceQuality(maxQuality)
+        const format = preferredFormat || (normalizedQuality === 'hires' || normalizedQuality === 'lossless' ? 'flac' : 'mp3')
         
         const updatedList: QualityPreference[] = []
         for (const svc of knownServices) {
@@ -419,7 +425,7 @@ async function updateGlobalQuality(maxQuality: string, preferredFormat?: string)
 
             const updated = await settingsApi.updateQualityPreference(
                 svc,
-                maxQuality,
+                normalizedQuality,
                 targetFormat,
                 fallbackQuality,
                 fallbackFormat

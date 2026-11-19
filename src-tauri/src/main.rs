@@ -1269,6 +1269,9 @@ fn main() {
             commands::update_service_sync_settings,
             commands::get_service_import_preferences,
             commands::update_service_import_preferences,
+            // D09 (#121): cuenta preferida por servicio (tabla de D00).
+            commands::get_service_preferred_accounts,
+            commands::set_service_preferred_account,
             // Sprint 2: Downloads + File Settings
             commands::get_quality_preferences,
             commands::update_quality_preference,

@@ -1004,6 +1004,89 @@ async fn preflight_proposal_matches_execution_decision() {
     );
 }
 
+/// 20bis. D09 (#121): precedencia de cuenta — preferida del job, preferida del
+/// servicio, entitlement/evidencia, activa e id. La preferencia del job se
+/// aplica solo a esa resolución: `service_preferred_accounts` no cambia.
+#[tokio::test]
+async fn account_precedence_job_then_service_then_entitlement_then_active_then_id() {
+    let db = create_test_db().await;
+    // 601: preferida del servicio, sin streaming (entitled = 0), activa.
+    add_account(&db, 601, 2, "service-pref@qobuz.com", true, false, Some(0)).await;
+    // 602: con streaming, inactiva.
+    add_account(&db, 602, 2, "entitled@qobuz.com", false, false, Some(1)).await;
+    // 603/604: sin dato de entitlement, activas; el id mayor desempata.
+    add_account(&db, 603, 2, "unknown-a@qobuz.com", true, false, None).await;
+    add_account(&db, 604, 2, "unknown-b@qobuz.com", true, false, None).await;
+
+    let track_id: i64 = sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('T') RETURNING id")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    add_source(&db, track_id, 2, "q_21", "FLAC", 16, 44100).await;
+
+    sqlx::query(
+        "INSERT INTO service_preferred_accounts (service_name, account_id) VALUES ('qobuz', 601)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let resolve = |preferred_account_id: Option<i64>| {
+        let db = db.clone();
+        async move {
+            resolve_download_plan(
+                &db,
+                &DownloadIntent {
+                    canonical_track_id: track_id,
+                    preferred_account_id,
+                    ..Default::default()
+                },
+                &ResolutionExclusions::default(),
+            )
+            .await
+            .unwrap()
+            .primary()
+            .unwrap()
+            .account
+            .as_ref()
+            .unwrap()
+            .account_id
+        }
+    };
+
+    // Preferida del servicio antes que entitlement/activa.
+    assert_eq!(resolve(None).await, 601);
+
+    // Preferida del job antes que la del servicio.
+    assert_eq!(resolve(Some(603)).await, 603);
+
+    // La preferencia del job no reescribe la preferencia global.
+    let persisted: i64 = sqlx::query_scalar(
+        "SELECT account_id FROM service_preferred_accounts WHERE service_name = 'qobuz'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        persisted, 601,
+        "job override must not mutate the service default"
+    );
+
+    // Sin preferencias: entitlement (streaming) antes que activa.
+    sqlx::query("DELETE FROM service_preferred_accounts")
+        .execute(&db)
+        .await
+        .unwrap();
+    assert_eq!(resolve(None).await, 602);
+
+    // Sin entitlement confirmado: activa manda y, con empate, el id mayor.
+    sqlx::query("UPDATE accounts SET streaming_entitled = 0 WHERE id = 602")
+        .execute(&db)
+        .await
+        .unwrap();
+    assert_eq!(resolve(None).await, 604);
+}
+
 /// 20. Reinicio/cancelación: tras un fallo clasificado el plan excluye el intento
 /// y produce una decisión DISTINTA (no reintenta lo mismo); la cancelación, en
 /// cambio, nunca produce nueva decisión.
