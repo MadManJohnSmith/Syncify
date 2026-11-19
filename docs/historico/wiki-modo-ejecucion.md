@@ -10,8 +10,8 @@ tracker y en los handoffs.
 # Modo de ejecución
 
 Cómo se ejecuta el trabajo en este proyecto. Decisión del propietario, no
-preferencia del agente. Relacionadas: [`entorno.md`](entorno.md) y
-[`protocolo-pr.md`](protocolo-pr.md).
+preferencia del agente. Relacionadas: [`entorno.md`](../agents/wiki/entorno.md)
+y [`protocolo-pr.md`](../agents/wiki/protocolo-pr.md).
 
 ## Por issue, un subagente por issue (vigente)
 

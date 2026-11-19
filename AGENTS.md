@@ -19,7 +19,8 @@ App de escritorio (Tauri 2) para sincronizar y descargar música. Cinco superfic
 
 Desde la raíz. El target de Rust va **fuera del repo** y es **uno por
 checkout**: `/tmp` es un tmpfs de 12 GB en esta máquina y un target compartido
-entre worktrees inventa errores de tipos de otro árbol (`entorno.md`).
+entre worktrees inventa errores de tipos de otro árbol
+(`docs/agents/wiki/entorno.md`).
 
 ```bash
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/syncify-target-$(basename "$PWD")}"
