@@ -1639,14 +1639,39 @@ async function disconnectService(serviceId: string, accountId?: number) {
 
   authLoading.value = serviceId
   try {
-    // Desconectar never deletes the account or its library/playlists, including Spotify.
-    await accountsApi.logoutService(serviceId, id)
+    // Cerrar sesión (issue #91, ADR-0007 decisión 9): borra credencial y
+    // perfil cifrado de ESA cuenta, conserva la cuenta y su biblioteca y la
+    // deja «sin sesión» hasta reautenticar. Nunca borra la fila ni sus datos.
+    const summary = await accountsApi.logoutAccount(id)
+    applyLoggedOutAccount(summary.account_id)
     await fetchData()
-    showToast(`Disconnected from ${serviceId}`, 'success')
+    showToast(`Disconnected from ${serviceId}: account and library kept, reconnect to sync again`, 'success')
   } catch (e) {
     showToast(`Failed to disconnect: ${e}`, 'error')
   } finally {
     authLoading.value = null
+  }
+}
+
+/**
+ * Refleja el cierre de sesión en la lista ya cargada antes de que el backend
+ * vuelva a contestar: la tarjeta muestra «Reauth» y deja de aparecer activa
+ * sin esperar a una recarga (criterio del issue #91).
+ */
+function applyLoggedOutAccount(accountId: number) {
+  const account = rawAccounts.value.find(a => a.id === accountId)
+  if (!account) return
+  account.is_active = false
+  account.credentials_invalid = true
+  account.invalid_reason = 'logged_out'
+  account.last_auth_error = 'Session closed by the user'
+  account.credential_state = {
+    kind: 'none',
+    has_password: false,
+    has_cookie: false,
+    has_token: false,
+    has_credential: false,
+    auto_refreshable: false,
   }
 }
 

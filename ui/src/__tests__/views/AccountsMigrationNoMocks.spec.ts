@@ -91,7 +91,7 @@ describe('[TASK-23] AccountsView & MigrationView Honest State (No Mocks)', () =>
           { id: 11, service_id: 1, service_name: 'spotify', is_active: true, display_name: 'Active' },
         ]
         if (cmd === 'get_service_statuses') return [{ name: 'spotify', connected: true, credentials_invalid: false, library_count: 0, favorites_count: 0, playlists_count: 0, last_synced: null }]
-        if (cmd === 'logout_service') return { success: true, data: { account_id: 10 }, error: null }
+        if (cmd === 'logout_account') return { account_id: 10, service_id: 1, service: 'spotify', state: 'enabled', is_active: false, new_active_account_id: 11, remaining_accounts: 1, profiles_deleted: 1 }
         return null
       })
       const wrapper = mount(AccountsView, { global: { stubs: { SpotifyApiConfigCard: true } } })
@@ -100,7 +100,7 @@ describe('[TASK-23] AccountsView & MigrationView Honest State (No Mocks)', () =>
       expect(accountRow).toBeDefined()
       await accountRow!.findAll('button').find(button => button.text() === 'Disconnect')!.trigger('click')
       await flushPromises()
-      expect(calls.find(call => call.cmd === 'logout_service')?.args).toEqual({ service: 'spotify', accountId: 10 })
+      expect(calls.find(call => call.cmd === 'logout_account')?.args).toEqual({ accountId: 10 })
       expect(calls.filter(call => call.cmd === 'remove_account')).toHaveLength(0)
       wrapper.unmount()
     })
