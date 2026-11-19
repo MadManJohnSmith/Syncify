@@ -122,26 +122,36 @@ describe('ArtistDetailView', () => {
         mockInvoke((cmd, args) => {
             if (cmd === 'get_artist') return artistWithMoreTracks;
             if (cmd === 'query_library_artist_tracks') {
-                queries.push(args?.query);
+                const query = args?.query as { offset: number };
+                queries.push(query);
+                const tracks = query.offset === 2
+                    ? [{
+                        id: 103,
+                        title: 'Joint',
+                        album: 'Abbey Road',
+                        albumId: 10,
+                        durationMs: 240000,
+                        collaborators: ['Guest Vocalist'],
+                        sources: [
+                            { serviceId: 2, serviceName: 'qobuz' },
+                            { serviceId: 1, serviceName: 'spotify' },
+                        ],
+                    }]
+                    : [{
+                        id: 104,
+                        title: 'Later',
+                        album: 'Abbey Road',
+                        albumId: 10,
+                        durationMs: 200000,
+                        collaborators: [],
+                        sources: [{ serviceId: 1, serviceName: 'spotify' }],
+                    }];
                 return {
-                    tracks: [
-                        {
-                            id: 103,
-                            title: 'Joint',
-                            album: 'Abbey Road',
-                            albumId: 10,
-                            durationMs: 240000,
-                            collaborators: ['Guest Vocalist'],
-                            sources: [
-                                { serviceId: 2, serviceName: 'qobuz' },
-                                { serviceId: 1, serviceName: 'spotify' },
-                            ],
-                        },
-                    ],
+                    tracks,
                     total: 7,
-                    offset: 2,
+                    offset: query.offset,
                     limit: 100,
-                    hasMore: true,
+                    hasMore: query.offset + tracks.length < 7,
                 };
             }
             return null;
@@ -155,21 +165,26 @@ describe('ArtistDetailView', () => {
         await tracksTab!.trigger('click');
         await flushPromises();
 
-        // Primera página = top_tracks (2 de 7); el resto se pide al servidor.
-        expect(wrapper.findAll('[data-testid="artist-track-row"]')).toHaveLength(2);
-        expect(queries).toHaveLength(0);
-
-        await wrapper.find('[data-testid="artist-tracks-scroll"]').trigger('scroll');
-        await flushPromises();
-        await flushPromises();
-
+        // Primera página = top_tracks (2 de 7). Al abrir la pestaña se pide
+        // UNA página más (5 filas no desbordan el viewport y no habría scroll
+        // para pedir el resto); no se cargan las 7 de golpe.
+        expect(queries).toHaveLength(1);
         expect(queries[0]).toEqual({ artistId: 42, offset: 2, limit: 100 });
-        const rows = wrapper.findAll('[data-testid="artist-track-row"]');
+        let rows = wrapper.findAll('[data-testid="artist-track-row"]');
         expect(rows).toHaveLength(3);
         const joint = rows.find((row) => row.attributes('data-track-id') === '103');
         expect(joint?.text()).toContain('feat. Guest Vocalist');
         expect(joint?.find('[data-testid="artist-track-sources"]').text()).toContain('qobuz');
         expect(joint?.find('[data-testid="artist-track-sources"]').text()).toContain('spotify');
+
+        // El scroll sigue paginando en servidor: offset de lo ya cargado.
+        await wrapper.find('[data-testid="artist-tracks-scroll"]').trigger('scroll');
+        await flushPromises();
+        await flushPromises();
+
+        expect(queries[queries.length - 1]).toEqual({ artistId: 42, offset: 3, limit: 100 });
+        rows = wrapper.findAll('[data-testid="artist-track-row"]');
+        expect(rows).toHaveLength(4);
     });
 
     it('handles SourceIdentityMissing error on artist download gracefully', async () => {

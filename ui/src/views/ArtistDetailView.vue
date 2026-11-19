@@ -231,7 +231,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getArtist, queryLibraryArtistTracks, toggleArtistFavorite } from '@/api/library'
 import { addToQueue, addBatchToQueue } from '@/api/queue'
@@ -491,6 +491,18 @@ async function loadArtist() {
     isLoading.value = false
   }
 }
+
+/**
+ * `top_tracks` ES la primera página de la consulta del detalle (L08), y son
+ * solo cinco filas: si el viewport no desborda con cinco, no hay scroll y el
+ * resto de páginas no llegaría a pedirse nunca. Al abrir la pestaña se pide
+ * UNA página más; el scroll sigue paginando el resto (no se cargan todas).
+ */
+watch(activeTab, (tab) => {
+  if (tab === 'tracks' && hasMoreTracks.value) {
+    void loadMoreTracks()
+  }
+})
 
 onMounted(() => {
   loadArtist()
