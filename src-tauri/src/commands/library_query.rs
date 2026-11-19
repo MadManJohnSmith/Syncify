@@ -652,6 +652,13 @@ fn inline_ids(ids: &[i64]) -> String {
         .join(", ")
 }
 
+/// WHERE del filtro de la consulta, sin paginación ni orden, para el runner
+/// de acciones por lotes (L05, #102). Es la MISMA traducción que usa
+/// [`query_library`]: el runner no reimplementa filtros ni pertenencia.
+pub(crate) fn filter_where(query: &LibraryQuery) -> Result<(String, Vec<String>), String> {
+    build_where(query, Dimension::All)
+}
+
 /// Cláusula ORDER BY. Con búsqueda activa: ISRC exacto delante (si el texto
 /// tiene forma de ISRC), relevancia bm25 después (título > artista > álbum >
 /// género > ISRC) y los desempates estables de siempre. Sin búsqueda: nulos/

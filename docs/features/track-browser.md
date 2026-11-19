@@ -37,6 +37,15 @@ situ, `selectOnly` reemplaza si no está, `selectAll` reemplaza con las filas
 visibles, y `preserve` mantiene solo ids vivos tras cada recarga. El contador es
 derivado: no hay contadores incrementales paralelos.
 
+**L05 (#102, 2026-11-18):** `LibraryView` añade un segundo modo, «todo el filtro»
++ exclusiones. La casilla de cabecera selecciona el total del servidor (no la
+página cargada) y el contador se deriva de ese total menos las exclusiones; los
+ids explícitos siguen siendo el otro modo. El modo filtro vive en la vista porque
+`useTrackBrowser` no conoce filtros de biblioteca y `selectAll` conserva su
+semántica de ids para `MetadataView`. Las acciones por lotes pasan por
+`preview_library_action` + `run_library_action` (bloques de 500, eventos
+agregados).
+
 ## Paridad congelada (deuda de homogenización)
 
 La extracción preservó el comportamiento exacto de cada clon. Las divergencias son

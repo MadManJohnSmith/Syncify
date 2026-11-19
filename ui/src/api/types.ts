@@ -173,6 +173,86 @@ export interface LibraryQueryResult extends LibraryPage {
     counts: LibraryQueryCounts | null;
 }
 
+// ==========================================================================
+// Acciones por lotes (L05, issue #102). Espejo de
+// `commands/library_actions.rs`.
+// ==========================================================================
+
+/**
+ * Selección con dos modos explícitos. `ids` es literal; `filter` es «todo el
+ * filtro» (el servidor ignora offset/limit) menos `excludedIds`.
+ */
+export type LibrarySelection =
+    | { mode: 'ids'; ids: number[] }
+    | { mode: 'filter'; query: LibraryQuery; excludedIds: number[] };
+
+/**
+ * Acciones por lotes. Las destructivas (`delete_audio`, `restore`,
+ * `quarantine_touch`) existen solo en el contrato del servidor para rechazarlas:
+ * son por pista y con confirmación, nunca por lote.
+ */
+export type LibraryBatchAction =
+    | {
+          action: 'queue_download';
+          priority?: number | null;
+          qualityPreference?: string | null;
+          allowFallback?: boolean | null;
+      }
+    | { action: 'set_favorite'; favorite: boolean; accountId?: number | null }
+    | { action: 'add_to_playlist'; playlistId: number };
+
+export interface LibraryActionOmission {
+    /** Clave estable (`already_downloaded`, `already_queued`, ...). */
+    reason: string;
+    message: string;
+    count: number;
+}
+
+export interface LibraryActionPreview {
+    action: string;
+    label: string;
+    selectionMode: string;
+    total: number;
+    eligible: number;
+    omitted: number;
+    omissions: LibraryActionOmission[];
+}
+
+export interface LibraryActionBlockError {
+    block: number;
+    message: string;
+    tracks: number;
+}
+
+export interface LibraryActionSummary {
+    action: string;
+    label: string;
+    selectionMode: string;
+    total: number;
+    processed: number;
+    eligible: number;
+    succeeded: number;
+    failed: number;
+    skipped: number;
+    omissions: LibraryActionOmission[];
+    blocks: number;
+    blocksFailed: number;
+    errors: LibraryActionBlockError[];
+    /** `true` si el servidor recalculó porque la biblioteca cambió. */
+    recalculated: boolean;
+}
+
+export interface LibraryActionProgress {
+    action: string;
+    total: number;
+    processed: number;
+    succeeded: number;
+    failed: number;
+    skipped: number;
+    blocksDone: number;
+    blocksTotal: number;
+}
+
 export interface LibraryStats {
     total_tracks: number;
     total_artists: number;
