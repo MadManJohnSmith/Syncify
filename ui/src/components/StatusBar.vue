@@ -388,6 +388,7 @@ import { useGlobalTasks } from '../composables/useGlobalTasks'
 import { useEventBus, TauriEvents } from '../composables/useEventBus'
 import { useToast } from '../composables/useToast'
 import { usePlayer } from '../composables/usePlayer'
+import { registerPlaybackShortcuts } from '../composables/useKeyboardShortcuts'
 import { getStorageStats, type StorageStats } from '../api/storage'
 import { getServiceStatuses } from '../api/accounts'
 import { saveSetting } from '../api/settings'
@@ -498,6 +499,8 @@ function formatTime(sec: number): string {
 let storageInterval: ReturnType<typeof setInterval> | undefined
 let etaInterval: ReturnType<typeof setInterval> | undefined
 let unlistenDownloadProgress: (() => void) | undefined
+/** P04 (#135): removes the window playback shortcuts registered on mount. */
+let unregisterPlaybackShortcuts: (() => void) | undefined
 const isRefreshing = ref(false)
 
 // BP-02: this panel is for BACKGROUND processes. An in-progress download is a
@@ -846,6 +849,30 @@ onMounted(async () => {
   window.addEventListener('online', checkOnline)
   window.addEventListener('offline', checkOnline)
 
+  // P04 (#135): playback shortcuts for the whole window. The actions are the
+  // ones of the mini player and of the queue: each mutation persists through
+  // the backend commands (position, volume, modes) and advancing is decided
+  // by the backend aggregate (#131/#132). This bar is the shell's player mount
+  // point, so the shortcuts live exactly as long as it does.
+  unregisterPlaybackShortcuts = registerPlaybackShortcuts({
+    toggle: () => player.toggle(),
+    seekBy: seconds => {
+      // No loaded track: do not persist an orphan position.
+      if (!player.current.value) return
+      player.seek(player.positionSec.value + seconds)
+    },
+    next: () => player.next(),
+    previous: () => { void player.previous() },
+    changeVolume: delta => {
+      // Raising or lowering the volume unmutes, like the system players.
+      if (player.muted.value) player.setMuted(false)
+      player.setVolume(player.volume.value + delta)
+    },
+    toggleMute: () => player.setMuted(!player.muted.value),
+    toggleShuffle: () => player.toggleShuffle(),
+    cycleRepeat: () => player.cycleRepeat(),
+  })
+
   // PL-08: deleting NowPlayingBar lost its caller. Restoring
   // queue/volume/position lived in its onMounted; without it the saved state
   // was never recovered. Now the player of this bar does it, since it
@@ -877,6 +904,8 @@ onUnmounted(() => {
   document.removeEventListener('click', handleOutsideClick)
   window.removeEventListener('online', checkOnline)
   window.removeEventListener('offline', checkOnline)
+  unregisterPlaybackShortcuts?.()
+  unregisterPlaybackShortcuts = undefined
 
   if (unlistenDownloadProgress) {
     unlistenDownloadProgress()
