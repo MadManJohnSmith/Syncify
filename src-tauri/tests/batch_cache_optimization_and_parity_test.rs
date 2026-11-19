@@ -218,6 +218,7 @@ fn test_download_phase_timings_structure() {
         quality_decision: None,
         channels: None,
         bitrate: None,
+        account_id: None,
     };
 
     let json = serde_json::to_string(&res).unwrap();

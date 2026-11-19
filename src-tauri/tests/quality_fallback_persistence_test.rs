@@ -77,6 +77,7 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
         let q_eval = QualityPolicy::evaluate_stream_resolution(
             "LOSSLESS", "320", "AAC", 16, 44100.0, "tidal", "tidal", true,  // strict_quality
             false, // allow_lossy_fallback = false
+            320,
         );
         assert_eq!(q_eval.decision, QualityDecisionKind::RejectedQuality);
         assert!(!q_eval.retryable);
@@ -140,6 +141,7 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
             "tidal",
             false, // strict_quality
             true,  // allow_lossy_fallback = true
+            320,
         );
         assert_eq!(
             q_eval.decision,
@@ -211,7 +213,7 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
     // =========================================================================
     {
         let q_eval = QualityPolicy::evaluate_stream_resolution(
-            "24-192", "24-192", "FLAC", 24, 192000.0, "qobuz", "qobuz", true, false,
+            "24-192", "24-192", "FLAC", 24, 192000.0, "qobuz", "qobuz", true, false, 320,
         );
         assert_eq!(q_eval.decision, QualityDecisionKind::CompletedExactQuality);
         assert!(!q_eval.provider_fallback_used);
@@ -255,7 +257,7 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
     // =========================================================================
     {
         let q_eval = QualityPolicy::evaluate_stream_resolution(
-            "LOSSLESS", "16-44", "FLAC", 16, 44100.0, "spotify", "qobuz", false, true,
+            "LOSSLESS", "16-44", "FLAC", 16, 44100.0, "spotify", "qobuz", false, true, 320,
         );
         assert_eq!(
             q_eval.decision,
@@ -313,6 +315,7 @@ async fn test_quality_fallback_real_db_persistence_matrix() {
             "tidal",
             false,
             true,
+            320,
         );
         assert_eq!(
             q_eval.decision,

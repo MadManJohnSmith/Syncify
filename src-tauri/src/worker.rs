@@ -291,6 +291,21 @@ fn sqlite_utc_timestamp(at: std::time::Instant) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+/// Formato por extensión cuando la inspección física no pudo leer el fichero:
+/// la misma heurística que `mark_complete` usa para etiquetar sin inspector.
+fn extension_format(file_path: &str) -> String {
+    let lower = file_path.to_lowercase();
+    if lower.ends_with(".mp3") {
+        "MP3".to_string()
+    } else if lower.ends_with(".m4a") || lower.ends_with(".aac") {
+        "AAC".to_string()
+    } else if lower.ends_with(".opus") {
+        "OPUS".to_string()
+    } else {
+        "FLAC".to_string()
+    }
+}
+
 /// Punto 3: ¿procede intentar una resolución viva por ISRC cuando el resolver
 /// no encontró ninguna fuente descargable?
 ///
@@ -755,6 +770,118 @@ impl DownloadWorker {
         }
     }
 
+    /// D05 (#117): gate de verificación de entrega antes de `complete`.
+    ///
+    /// Combina la verificación física del fichero (duración dentro de
+    /// tolerancia frente al catálogo, tags releídos, portada válida cuando se
+    /// pidió incrustarla) con la política de calidad estricta: una decisión
+    /// `RejectedQuality` de la política compartida, o una entrega física por
+    /// debajo de lo pedido bajo la política estricta, rechaza la entrega.
+    ///
+    /// Un `Err(motivo)` NO marca `complete` y NO escribe el ledger de
+    /// `downloads`: el llamador persiste el fallo de verificación en la fila.
+    /// La inspección es IO síncrona y corre en el pool de blocking (S222).
+    /// Público como seam de prueba: los tests de verificación de entrega lo
+    /// ejercitan sin red, igual que el registro de proveedores.
+    pub async fn verify_delivery_before_complete(
+        &self,
+        queue_id: i64,
+        res: &crate::download::DownloadResult,
+        expected: crate::download::verification::ExpectedDelivery,
+        require_cover: bool,
+        strict_quality: bool,
+        extra_tolerance_secs: f64,
+    ) -> Result<(), String> {
+        let file_path = std::path::PathBuf::from(&res.file_path);
+        let gate = {
+            let file_path = file_path.clone();
+            let expected = expected.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::download::verification::verify_delivery(
+                    &file_path,
+                    &expected,
+                    require_cover,
+                    extra_tolerance_secs,
+                )
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("D05: verificación de entrega cancelada: {e}");
+                Err(vec!["delivery verification task was cancelled".to_string()])
+            })
+        };
+        if let Err(failures) = gate {
+            return Err(failures.join("; "));
+        }
+
+        // La calidad física entregada manda (issue #111: «la calidad entregada
+        // manda sobre la anunciada»). Bajo política estricta, por debajo de lo
+        // pedido la entrega se rechaza; con fallback permitido se completa y
+        // `mark_complete` declara la caída.
+        if let Some(qd) = &res.quality_decision {
+            if qd.decision == syncify_core_domain::quality::QualityDecisionKind::RejectedQuality {
+                return Err(qd.reason.clone().unwrap_or_else(|| qd.decision.to_string()));
+            }
+        }
+        if strict_quality {
+            let phys = tokio::task::spawn_blocking(move || {
+                crate::download::audio_inspector::inspect_physical_audio_file(&file_path)
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("D05: inspección física cancelada en el gate: {e}");
+                None
+            });
+            let (bd, sr, fmt) = phys
+                .as_ref()
+                .map(|p| (p.bit_depth, p.sample_rate, p.format.clone()))
+                .unwrap_or_else(|| {
+                    (
+                        res.bit_depth,
+                        res.sample_rate,
+                        extension_format(&res.file_path),
+                    )
+                });
+            let physical_tier = syncify_core_domain::quality::classify_audio_tier(
+                Some(bd),
+                Some(sr),
+                res.bitrate,
+                Some(&fmt),
+            );
+            let requested = self
+                .requested_quality_for_queue(queue_id)
+                .await
+                .unwrap_or_else(|| "lossless".to_string());
+            let inferior = syncify_core_domain::quality::QualityPolicy::is_quality_inferior(
+                Some(&requested),
+                Some(physical_tier.as_str()),
+                Some(&fmt),
+                Some(bd as i64),
+            );
+            if inferior {
+                return Err(format!(
+                    "RejectedQuality: requested {} but delivered {} under strict quality policy",
+                    requested, physical_tier
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// La calidad pedida original de la fila (la misma fuente que usa
+    /// `mark_complete` para declarar el shortfall).
+    async fn requested_quality_for_queue(&self, queue_id: i64) -> Option<String> {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT requested_quality FROM download_queue WHERE id = ?",
+        )
+        .bind(queue_id)
+        .fetch_optional(&self.db)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+    }
+
     /// Mark item as complete
     pub async fn mark_complete(&self, queue_id: i64, res: &crate::download::DownloadResult) {
         // Q4: una entrega es la respuesta definitiva del proveedor; cierra el
@@ -884,6 +1011,23 @@ impl DownloadWorker {
                     queue_id,
                     "[Worker] Dropping completion: queue row disappeared"
                 );
+                return;
+            }
+        }
+
+        // D05 (#117): una decisión `RejectedQuality` de la política de calidad
+        // no se promociona a `complete`: se marca el fallo y el ledger NO se
+        // escribe. El gate del worker (`verify_delivery_before_complete`)
+        // rechaza antes en producción; esta defensa cubre llamadas directas.
+        if let Some(qd) = &res.quality_decision {
+            if qd.decision == syncify_core_domain::quality::QualityDecisionKind::RejectedQuality {
+                let err_msg = format!(
+                    "RejectedQuality: {}",
+                    qd.reason.clone().unwrap_or_else(|| qd.decision.to_string())
+                );
+                tracing::warn!(queue_id, "{}", err_msg);
+                self.mark_permanent_failure(queue_id, "failed", &err_msg)
+                    .await;
                 return;
             }
         }
@@ -1023,16 +1167,25 @@ impl DownloadWorker {
             .map(|m| m.len() as i64)
             .ok();
         let effective_srv = res.effective_service.as_deref().unwrap_or(&res.service);
+        // D05 (#117): el ledger atribuye la entrega a la cuenta que la sirvió.
+        // La cuenta del `ProviderDelivery` (`res.account_id`) manda; el
+        // `resolved_account_id` de la fila es el fallback para rutas que no
+        // pasan por el gateway.
+        let delivering_account_id = res
+            .account_id
+            .or(entitlement_owner.as_ref().and_then(|(_, account)| *account));
         let ledger_written = match sqlx::query(
             r#"
             INSERT INTO downloads (
                 track_id, source_service_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, downloaded_at,
                 origin_service, origin_service_track_id, effective_service, effective_service_track_id, fallback_reason, match_method, match_confidence,
-                requested_quality, effective_quality, requested_format, effective_format, quality_decision, provider_fallback_used, quality_fallback_used, decision_reason
+                requested_quality, effective_quality, requested_format, effective_format, quality_decision, provider_fallback_used, quality_fallback_used, decision_reason,
+                account_id
             )
             SELECT track_id, (SELECT id FROM services WHERE LOWER(name) = LOWER(?)), ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
                    ?, ?, ?, ?, ?, ?, ?,
-                   ?, ?, ?, ?, ?, ?, ?, ?
+                   ?, ?, ?, ?, ?, ?, ?, ?,
+                   ?
             FROM download_queue WHERE id = ?
             ON CONFLICT(track_id) DO UPDATE SET
                 file_path = excluded.file_path,
@@ -1055,6 +1208,7 @@ impl DownloadWorker {
                 provider_fallback_used = excluded.provider_fallback_used,
                 quality_fallback_used = excluded.quality_fallback_used,
                 decision_reason = excluded.decision_reason,
+                account_id = excluded.account_id,
                 downloaded_at = CURRENT_TIMESTAMP
             "#,
         )
@@ -1079,6 +1233,7 @@ impl DownloadWorker {
         .bind(if prov_fb { 1i64 } else { 0i64 })
         .bind(qual_fallback)
         .bind(&dec_reason)
+        .bind(delivering_account_id)
         .bind(queue_id)
         .execute(&self.db)
         .await
@@ -1820,6 +1975,22 @@ impl DownloadWorker {
         let is_allowed_fallback = allow_fb.unwrap_or(0) != 0;
         let is_smart_studio = smart_studio.unwrap_or(0) != 0;
 
+        // D05 (#117): `fallback_action` de Ajustes manda de verdad en el
+        // worker, que hoy lo ignoraba. 'skip' = estricto: la calidad pedida
+        // no disponible falla; 'try_next' (default) degrada con aviso
+        // declarado. El job sin `allow_fallback` es estricto por sí mismo:
+        // la política efectiva es la conjunción de ambos.
+        let fallback_action_raw: Option<(String,)> =
+            sqlx::query_as("SELECT fallback_action FROM folder_settings WHERE id = 1")
+                .fetch_optional(&self.db)
+                .await
+                .ok()
+                .flatten();
+        let strict_from_settings = fallback_action_raw
+            .as_ref()
+            .is_some_and(|(v,)| v.trim().eq_ignore_ascii_case("skip"));
+        let strict_quality = strict_from_settings || !is_allowed_fallback;
+
         if !is_allowed_fallback
             && !is_smart_studio
             && (s_track_id.is_none() || s_track_id.as_deref().unwrap_or("").trim().is_empty())
@@ -1915,7 +2086,7 @@ impl DownloadWorker {
             destination_service: destination_service.clone(),
             source_service: s_name.clone(),
             requested_quality: q_pref.clone(),
-            strict_quality: !is_allowed_fallback,
+            strict_quality,
             allow_fallback: is_allowed_fallback,
             locked_track_source_id,
             preferred_account_id,
@@ -2157,6 +2328,25 @@ impl DownloadWorker {
                 None
             }
         });
+        // D05: lo que el catálogo promete para el gate de verificación se
+        // captura antes de que `track_meta` se mueva a la rama primaria.
+        let expected_delivery = crate::download::verification::ExpectedDelivery {
+            title: effective_title.clone(),
+            artist: effective_artist.clone(),
+            album: track_meta
+                .as_ref()
+                .and_then(|meta| meta.album_name.clone())
+                .filter(|album| !album.trim().is_empty()),
+            track_number: track_meta
+                .as_ref()
+                .and_then(|meta| meta.track_number)
+                .map(i64::from),
+            disc_number: track_meta
+                .as_ref()
+                .and_then(|meta| meta.disc_number)
+                .map(i64::from),
+            catalog_duration_ms: track_meta.as_ref().and_then(|meta| meta.duration_ms),
+        };
         let result: Result<crate::download::DownloadResult, String> = if let Some(meta) = track_meta
         {
             // Create download request with locked source identity
@@ -2189,7 +2379,7 @@ impl DownloadWorker {
                 artifact_policy,
                 smart_studio_origin: is_smart_studio,
                 allow_fallback: is_allowed_fallback,
-                strict_quality: !is_allowed_fallback,
+                strict_quality,
                 resolution_plan,
             };
 
@@ -2238,7 +2428,7 @@ impl DownloadWorker {
                 artifact_policy,
                 smart_studio_origin: smart_studio.unwrap_or(0) != 0,
                 allow_fallback: allow_fb.unwrap_or(0) != 0,
-                strict_quality: allow_fb.unwrap_or(0) == 0,
+                strict_quality,
                 // Mismo plan que la rama primaria: esta rama solo se alcanza
                 // cuando la fila de pista no tiene metadatos (`track_meta` fue
                 // None), así que el resolutor no tenía nada que resolver.
@@ -2282,10 +2472,24 @@ impl DownloadWorker {
                 // here; the only exclusion path in the trimmer is an explicit flag
                 // (see services::silence_trimmer). A future schema column can be wired
                 // into `process_file_with_config(.., gapless_exempt)` in one line.
-                crate::download::DownloadOrchestrator::trim_downloaded_track_silence(
-                    &mut download_result,
-                )
-                .await;
+                let trim_report =
+                    crate::download::DownloadOrchestrator::trim_downloaded_track_silence(
+                        &mut download_result,
+                    )
+                    .await;
+                // D05: el silencio recortado es una diferencia legítima frente
+                // a la duración del catálogo; el gate lo absorbe en su
+                // tolerancia en vez de fallar un fichero correcto.
+                let trim_tolerance_secs = trim_report
+                    .as_ref()
+                    .filter(|report| report.trimmed)
+                    .and_then(|report| {
+                        report
+                            .duration_ms_before
+                            .zip(report.duration_ms_after)
+                            .map(|(before, after)| before.saturating_sub(after) as f64 / 1000.0)
+                    })
+                    .unwrap_or(0.0);
 
                 // BD-9: the physical file is now at its final library path. Record it
                 // as the expected output so a crash before/inside mark_complete is
@@ -2306,6 +2510,50 @@ impl DownloadWorker {
                         "FileVerificationFailed: Downloaded audio file not found on disk or empty at '{}'",
                         file_path
                     );
+                    tracing::error!(queue_id, "{}", err_msg);
+                    self.mark_permanent_failure(queue_id, "failed", &err_msg)
+                        .await;
+                    self.emit_progress(DownloadProgressEvent {
+                        queue_id,
+                        track_id,
+                        title: effective_title.clone(),
+                        artist: effective_artist.clone(),
+                        status: "failed".to_string(),
+                        progress_percent: 0.0,
+                        message: Some(err_msg.clone()),
+                        bytes_downloaded: 0,
+                        total_bytes: None,
+                        percent: None,
+                        instant_kbps: 0.0,
+                        average_kbps: 0.0,
+                        phase: "failed".to_string(),
+                        terminal: true,
+                        phase_timings: None,
+                    });
+                    if let Some(ref j) = journal {
+                        j.fail(&err_msg, true).await;
+                    }
+                    return;
+                }
+
+                // D05 (#117): gate de verificación de entrega ANTES de
+                // `complete`. Duración física dentro de tolerancia frente al
+                // catálogo, tags releídos y portada válida (cuando se pidió
+                // incrustarla); la política de calidad estricta rechaza aquí
+                // la entrega por debajo de lo pedido. Si falla: fallo de
+                // verificación y el ledger de `downloads` NO se escribe.
+                let delivery_gate = self
+                    .verify_delivery_before_complete(
+                        queue_id,
+                        &download_result,
+                        expected_delivery,
+                        embed_artwork,
+                        strict_quality,
+                        trim_tolerance_secs,
+                    )
+                    .await;
+                if let Err(reason) = delivery_gate {
+                    let err_msg = format!("DeliveryVerificationFailed: {}", reason);
                     tracing::error!(queue_id, "{}", err_msg);
                     self.mark_permanent_failure(queue_id, "failed", &err_msg)
                         .await;

@@ -3437,6 +3437,7 @@ where
         "tidal",
         !allow_fallback,
         allow_fallback,
+        320, // matriz Tidal: el piso lossy global de esta ruta de streaming sigue siendo 320
     );
 
     // Prevent UNIQUE constraint collision on downloads.file_path if another track formerly occupied it
@@ -3615,6 +3616,7 @@ where
         "tidal",
         !allow_fallback,
         allow_fallback,
+        320, // matriz Tidal: el piso lossy global de esta ruta de streaming sigue siendo 320
     );
     let download_result_str = q_eval.decision.to_string();
 

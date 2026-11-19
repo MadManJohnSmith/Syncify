@@ -2267,11 +2267,13 @@ impl DownloadOrchestrator {
                             }
                         }
 
-                        // 2. Probar Tidal a 320 kbps (verificando suelo mínimo de 320 kbps)
-                        if QualityPolicy::is_below_minimum_floor(
+                        // 2. Probar Tidal a 320 kbps (D05: el suelo lo decide la
+                        // matriz por proveedor, no el 320 global en duro)
+                        if syncify_core_domain::quality::is_below_provider_floor(
+                            "tidal",
+                            false,
+                            None,
                             fallback_match.candidate_audio_quality.as_deref(),
-                            None,
-                            None,
                         ) {
                             let floor_err = format!(
                                         "RejectedQuality: Tidal candidate quality '{:?}' is below the 320 kbps minimum floor",

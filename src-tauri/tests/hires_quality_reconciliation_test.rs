@@ -169,6 +169,7 @@ fn test_orchestrator_reconciliation_and_post_download_gate() {
         quality_decision: None,
         channels: Some(2),
         bitrate: None,
+        account_id: None,
     };
 
     let req_hires = DownloadRequest {
@@ -220,6 +221,7 @@ fn test_orchestrator_reconciliation_and_post_download_gate() {
         quality_decision: None,
         channels: Some(2),
         bitrate: None,
+        account_id: None,
     };
 
     DownloadOrchestrator::reconcile_physical_audio_quality(&mut res_24, &req_hires);

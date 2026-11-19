@@ -17,7 +17,7 @@ use syncify_core_domain::quality::{QualityDecisionKind, QualityPolicy};
 #[test]
 fn test_case_1_tidal_lossless_flac_strict_succeeds_exact() {
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless", "lossless", "FLAC", 16, 44100.0, "tidal", "tidal", true, false,
+        "lossless", "lossless", "FLAC", 16, 44100.0, "tidal", "tidal", true, false, 320,
     );
 
     assert_eq!(
@@ -34,7 +34,7 @@ fn test_case_1_tidal_lossless_flac_strict_succeeds_exact() {
 #[test]
 fn test_case_2_tidal_lossless_aac_strict_rejected() {
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", true, false,
+        "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", true, false, 320,
     );
 
     assert_eq!(decision.decision, QualityDecisionKind::RejectedQuality);
@@ -50,7 +50,7 @@ fn test_case_2_tidal_lossless_aac_strict_rejected() {
 #[test]
 fn test_case_3_tidal_lossless_aac_opt_in_completed_with_quality_fallback() {
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", false, true,
+        "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", false, true, 320,
     );
 
     assert_eq!(
@@ -70,7 +70,7 @@ fn test_case_3_tidal_lossless_aac_opt_in_completed_with_quality_fallback() {
 #[test]
 fn test_case_4_qobuz_hires_flac_strict_succeeds_exact() {
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "hires", "hires", "FLAC", 24, 96000.0, "qobuz", "qobuz", true, false,
+        "hires", "hires", "FLAC", 24, 96000.0, "qobuz", "qobuz", true, false, 320,
     );
 
     assert_eq!(
@@ -85,7 +85,7 @@ fn test_case_4_qobuz_hires_flac_strict_succeeds_exact() {
 #[test]
 fn test_case_5_qobuz_lossless_flac_strict_succeeds_exact() {
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless", "lossless", "FLAC", 16, 44100.0, "qobuz", "qobuz", true, false,
+        "lossless", "lossless", "FLAC", 16, 44100.0, "qobuz", "qobuz", true, false, 320,
     );
 
     assert_eq!(
@@ -100,7 +100,7 @@ fn test_case_5_qobuz_lossless_flac_strict_succeeds_exact() {
 #[test]
 fn test_case_6_deezer_lossless_mp3_strict_rejected() {
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless", "high", "MP3", 16, 44100.0, "deezer", "deezer", true, false,
+        "lossless", "high", "MP3", 16, 44100.0, "deezer", "deezer", true, false, 320,
     );
 
     assert_eq!(decision.decision, QualityDecisionKind::RejectedQuality);
@@ -115,7 +115,7 @@ fn test_case_6_deezer_lossless_mp3_strict_rejected() {
 #[test]
 fn test_case_7_spotify_source_to_qobuz_lossless_flac_completed_with_provider_fallback() {
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless", "lossless", "FLAC", 16, 44100.0, "spotify", "qobuz", true, false,
+        "lossless", "lossless", "FLAC", 16, 44100.0, "spotify", "qobuz", true, false, 320,
     );
 
     assert_eq!(
@@ -130,7 +130,7 @@ fn test_case_7_spotify_source_to_qobuz_lossless_flac_completed_with_provider_fal
 #[test]
 fn test_case_8_spotify_source_to_tidal_lossless_aac_strict_rejected() {
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless", "high", "AAC", 16, 44100.0, "spotify", "tidal", true, false,
+        "lossless", "high", "AAC", 16, 44100.0, "spotify", "tidal", true, false, 320,
     );
 
     assert_eq!(decision.decision, QualityDecisionKind::RejectedQuality);
@@ -145,7 +145,7 @@ fn test_case_8_spotify_source_to_tidal_lossless_aac_strict_rejected() {
 #[test]
 fn test_case_9_spotify_source_to_tidal_lossless_aac_opt_in_both_fallbacks() {
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless", "high", "AAC", 16, 44100.0, "spotify", "tidal", false, true,
+        "lossless", "high", "AAC", 16, 44100.0, "spotify", "tidal", false, true, 320,
     );
 
     assert_eq!(
@@ -174,7 +174,7 @@ fn test_case_10_preflight_no_provider_outcome() {
 fn test_case_11_hires_requested_but_cd_delivered_emits_shortfall() {
     // Mitigates C7 / F3.5: Hi-Res requested, physical FLAC STREAMINFO verified 16-bit / 44.1kHz
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "hires", "lossless", "FLAC", 16, 44100.0, "tidal", "tidal", true, false,
+        "hires", "lossless", "FLAC", 16, 44100.0, "tidal", "tidal", true, false, 320,
     );
 
     assert_eq!(

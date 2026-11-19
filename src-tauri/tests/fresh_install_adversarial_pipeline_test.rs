@@ -798,7 +798,7 @@ fn test_07_c6_native_audio_tier_computation_and_no_downgrade() {
 fn test_08_c7_streaminfo_quality_shortfall_detection() {
     // Hi-Res requested ("hires"), stream resolution provides FLAC 16-bit / 44.1kHz (CD quality)
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "hires", "lossless", "FLAC", 16, 44100.0, "tidal", "tidal", true, false,
+        "hires", "lossless", "FLAC", 16, 44100.0, "tidal", "tidal", true, false, 320,
     );
 
     assert_eq!(

@@ -38,6 +38,7 @@ fn test_strict_quality_rejection_consistency_between_preflight_and_downloader() 
         target_service,
         strict_quality,
         allow_lossy_fallback,
+        320,
     );
 
     // Both must be RejectedQuality
@@ -97,6 +98,7 @@ fn test_opt_in_fallback_consistency_between_preflight_and_downloader() {
         target_service,
         strict_quality,
         allow_lossy_fallback,
+        320,
     );
 
     // Preflight is ReadyQualityFallback, Downloader is CompletedWithQualityFallback
@@ -151,6 +153,7 @@ fn test_exact_hires_consistency_between_preflight_and_downloader() {
         target_service,
         strict_quality,
         allow_lossy_fallback,
+        320,
     );
 
     assert_eq!(preflight.decision, QualityDecisionKind::ReadyExactQuality);
