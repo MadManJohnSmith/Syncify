@@ -8,7 +8,7 @@
 
 **Migración declarada:** [#62](https://github.com/MadManJohnSmith/Syncify/issues/62) — inicio de sesión dentro del webview de la app; la sonda de Deezer es [#63](https://github.com/MadManJohnSmith/Syncify/issues/63).
 
-**Último cambio:** 2026-11-14 — re-derivación completa contra el árbol (D-04a, issue #58); archivos: `src-tauri/src/commands/auth.rs`, `scripts/auth_bridge.py`, `scripts/services/bridge_protocol.py`, `src-tauri/src/commands/settings.rs`. Previo: 2026-10-25 — re-revisión de comportamiento; archivos: `src-tauri/src/commands/auth.rs`, `src-tauri/src/commands/service.rs`, `src-tauri/src/services/spotify.rs`
+**Último cambio:** 2026-11-19 — módulo de refresco de credenciales (`src-tauri/src/commands/account_refresh.rs`, issue #95). Previo: 2026-11-14 — re-derivación completa contra el árbol (D-04a, issue #58); archivos: `src-tauri/src/commands/auth.rs`, `scripts/auth_bridge.py`, `scripts/services/bridge_protocol.py`, `src-tauri/src/commands/settings.rs`. Previo: 2026-10-25 — re-revisión de comportamiento; archivos: `src-tauri/src/commands/auth.rs`, `src-tauri/src/commands/service.rs`, `src-tauri/src/services/spotify.rs`
 **Leer antes de modificar:** `src-tauri/src/crypto.rs`, `migrations/0031_add_credentials_invalid.sql`
 **Archivos core:**
 - `scripts/auth_bridge.py`
@@ -108,6 +108,41 @@ Histórico: el fallback ya no lee `scripts/.gui_credentials_cache.json`. Ese JSO
 Antes de guardar credenciales de Tidal, `start_auth_and_save` garantiza que el payload lleve expiración (`inject_tidal_expiry`): conserva la que ya traiga el payload; si no trae, usa la expiry cacheada en BD (`load_tidal_db_cached_token_expiry`) y, si no hay ninguna, un piso conservador de +4h. Sin expiración, `TidalGuiCredentials::is_expired()` trataría cada login recién hecho como caducado y forzaría un refresh OAuth en el primer uso.
 
 ---
+
+### Refresco de credenciales por cuenta (ADR-0007 decisión 14)
+
+El módulo `src-tauri/src/commands/account_refresh.rs` unifica la política de
+refresco sobre las credenciales cifradas de `accounts`:
+
+- **Proactivo**: si el payload publica la expiración (`expires_at`, o el alias
+  `token_expiry` de Tidal), se refresca ANTES de usar la credencial cuando
+  `now >= expires_at - 300` (mismo buffer que `get_or_refresh_spotify_token` y
+  el `is_expired` de `TidalGuiCredentials`).
+- **Reactivo**: sin vencimiento publicado, el primer 401/403 dispara UN
+  intento de refresco (`handle_credential_rejection`); con vencimiento
+  publicado, el 401/403 marca directamente (el proactivo ya actuó antes del
+  uso).
+- **Sin bucle**: una cuenta con `credentials_invalid = 1` no recibe intentos
+  (`RefreshOutcome::NeedsReauth` / `RejectionOutcome::AlreadyMarked`); solo
+  reautenticar la desbloquea.
+- **Sin envenenar por caída**: un fallo TEMPORAL de transporte (red, 5xx,
+  respuesta ilegible) NO marca la cuenta (`RetryLater`), la misma distinción
+  S185 que aplica `resolve_and_refresh_gui_credentials_for_account` a Tidal.
+  Solo el rechazo del grant (400/401/403 al refresco) o un refresco imposible
+  marcan reautenticación, vía `mark_account_credentials_invalid` (que sanea
+  el motivo y emite `auth-state-updated`).
+- **Artefacto seguro**: la persistencia (`apply_refreshed_credentials`) es un
+  `UPDATE ... WHERE id` — nunca duplica cuentas — y solo escribe tras un
+  transporte exitoso; el payload de Tidal se construye por fusión, así que
+  campos ajenos al struct (`session_id`) sobreviven al refresco.
+
+Los puntos de entrada (`refresh_account_credential`, `handle_credential_rejection`)
+reciben el reloj inyectado y un transporte (`CredentialRefreshTransport`) para
+probarse con reloj y tokens falsos, sin red
+(`src-tauri/tests/account_credential_refresh_test.rs`). La adopción en el
+pipeline de descarga y en el sync queda para sus carriles: Spotify y Tidal ya
+refrescan proactivamente antes de cada uso en sus caminos actuales, y el sync
+y las descargas ya marcan al 401/403.
 
 ## Campos críticos en DB
 
