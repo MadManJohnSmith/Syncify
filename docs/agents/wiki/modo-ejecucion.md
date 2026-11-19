@@ -393,3 +393,18 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   (`run_manual_*`, `perform_set_shuffle`, métodos de `PlayerState`); `-D
   warnings` en Windows los marca uno a uno. Fuente: jobs Windows de #317 y
   commits `9d3988c`/`807cac3`.
+- **2026-11-18/19, segunda tanda fusionada**: A03 #89 (#326), M00 #165
+  (#325), A05 #91 (#327), P04 #135 (#328), D04 #116 (#329), L05 #102
+  (#330) y D09 #121 (#331); L07 #104 quedó en PR #332. Fuente: `git log
+  dev` y merges de la sesión.
+- **2026-11-18, un solo hijo vivo a la vez con deepseek**: con varios
+  carriles abiertos, cada notificación de fin de uno interrumpe el turno
+  del padre y tumba a los demás (cascada de `interrupted`). Con un único
+  hijo y sin PRs abiertos, el carril llega a entregar. Regla operativa:
+  rotar de uno en uno, y no lanzar el siguiente hasta cerrar el anterior.
+  Fuente: interrupciones encadenadas de #102/#116/#135/#91/#121.
+- **2026-11-18, WIP rescatable tras interrupción**: los hijos cortados
+  suelen dejar commits o cambios sin commitear en su worktree; revisar
+  `git status`/`git log` antes de relanzar. Así se terminaron #133, #120,
+  #154, #247, #91, #135 y #116 sin repetir el trabajo. Fuente: rescates
+  de la sesión.
