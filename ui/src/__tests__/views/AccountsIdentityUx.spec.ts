@@ -8,6 +8,10 @@
  *  - No password, cookie or token is ever rendered, and LAST_AUTH_ERROR (which
  *    can carry provider-specific secret material) is not echoed into the DOM.
  *  - The active account is visible on the card without opening a <details>.
+ *  - The email is shown masked (ADR-0007 decision 7): the full address never
+ *    reaches the DOM because api/accounts.ts masks it at the IPC boundary.
+ *  - Rows are ordered alphabetically by label within a service (ADR-0007
+ *    decision 16): the order does not depend on which account is active.
  *  - SettingsServices uses the same identity function, so labels cannot diverge.
  */
 
@@ -20,6 +24,7 @@ import {
   formatAccountLabel,
   isOpaqueIdentityString,
   pickPrimaryAccount,
+  orderedAccounts,
   NO_IDENTITY_LABEL,
   describeCredentialState,
   credentialStateIcon,
@@ -258,7 +263,64 @@ describe('account identity resolution (pure helpers)', () => {
   })
 })
 
+describe('account ordering (ADR-0007 decision 16)', () => {
+  it('orders accounts alphabetically by label, regardless of which one is active', () => {
+    const accounts = [
+      { id: 1, display_name: 'Zeta', email: null, is_active: true },
+      { id: 2, display_name: 'alpha', email: null, is_active: false },
+    ]
+    expect(orderedAccounts(accounts).map(a => a.id)).toEqual([2, 1])
+  })
+
+  it('keeps the same order when the active account changes: the order is stable with use', () => {
+    const accounts = [
+      { id: 1, display_name: 'Beta', email: null, is_active: true },
+      { id: 2, display_name: 'Alfa', email: null, is_active: false },
+    ]
+    expect(orderedAccounts(accounts).map(a => a.id)).toEqual([2, 1])
+    const flipped = accounts.map(a => ({ ...a, is_active: !a.is_active }))
+    expect(orderedAccounts(flipped).map(a => a.id)).toEqual([2, 1])
+  })
+
+  it('breaks ties by row id so label twins get a total, refresh-proof order', () => {
+    const accounts = [
+      { id: 9, display_name: null, email: null, is_active: false },
+      { id: 4, display_name: null, email: null, is_active: true },
+    ]
+    expect(orderedAccounts(accounts).map(a => a.id)).toEqual([4, 9])
+  })
+
+  it('never drops rows and never mutates the input array', () => {
+    const accounts = [
+      { id: 2, display_name: 'B', email: null, is_active: false },
+      { id: 1, display_name: 'A', email: null, is_active: false },
+    ]
+    const snapshot = [...accounts]
+    const ordered = orderedAccounts(accounts)
+    expect(accounts).toEqual(snapshot)
+    expect(ordered.map(a => a.id)).toEqual([1, 2])
+    expect(ordered).toHaveLength(2)
+  })
+
+  it('handles null and empty lists', () => {
+    expect(orderedAccounts(null)).toEqual([])
+    expect(orderedAccounts([])).toEqual([])
+  })
+})
+
 describe('AccountsView — identity cards', () => {
+  it('shows the email masked and never the full address (ADR-0007 decision 7)', async () => {
+    installBackend()
+    const wrapper = await mountAccounts()
+
+    const html = wrapper.html()
+    expect(html).toContain('an•••@spotify.com')
+    expect(html).toContain('lu•••@spotify.com')
+    expect(html).not.toContain('ana@spotify.com')
+    expect(html).not.toContain('luis@spotify.com')
+    wrapper.unmount()
+  })
+
   it('shows the active account identity without opening a details element', async () => {
     installBackend()
     const wrapper = await mountAccounts()
@@ -268,7 +330,7 @@ describe('AccountsView — identity cards', () => {
     expect(row.attributes('data-active')).toBe('true')
     // Not inside a collapsed <details>.
     expect(row.element.closest('details')).toBeNull()
-    expect(row.text()).toContain('Ana Spotify (ana@spotify.com)')
+    expect(row.text()).toContain('Ana Spotify (an•••@spotify.com)')
     expect(row.text()).toContain('Active')
     wrapper.unmount()
   })
@@ -278,7 +340,7 @@ describe('AccountsView — identity cards', () => {
     const wrapper = await mountAccounts()
 
     const row = wrapper.find('[data-testid="account-row-100"]')
-    const occurrences = row.text().split('ana@spotify.com').length - 1
+    const occurrences = row.text().split('an•••@spotify.com').length - 1
     expect(occurrences).toBe(1)
     wrapper.unmount()
   })
@@ -288,10 +350,10 @@ describe('AccountsView — identity cards', () => {
     const wrapper = await mountAccounts()
 
     const row = wrapper.find('[data-testid="account-row-100"]')
-    expect(row.text()).toContain('ana@spotify.com')
+    expect(row.text()).toContain('an•••@spotify.com')
     expect(row.text()).not.toContain('Spotify User')
     // The email is the whole label: it must not be repeated below it.
-    expect(row.text().split('ana@spotify.com').length - 1).toBe(1)
+    expect(row.text().split('an•••@spotify.com').length - 1).toBe(1)
     wrapper.unmount()
   })
 
@@ -303,7 +365,7 @@ describe('AccountsView — identity cards', () => {
     expect(row.text()).toContain('Ana')
     // Exactly one occurrence of the email on the primary row: it must not be
     // repeated both as the label and as the secondary line.
-    expect(row.text().split('ana@spotify.com').length - 1).toBe(1)
+    expect(row.text().split('an•••@spotify.com').length - 1).toBe(1)
     wrapper.unmount()
   })
 
@@ -358,7 +420,7 @@ describe('AccountsView — identity cards', () => {
 
     const secondary = wrapper.find('[data-testid="account-row-101"]')
     expect(secondary.attributes('data-active')).toBe('false')
-    expect(secondary.text()).toContain('Luis Spotify (luis@spotify.com)')
+    expect(secondary.text()).toContain('Luis Spotify (lu•••@spotify.com)')
     const useButton = secondary.findAll('button').find(b => b.text() === 'Use this account')
     expect(useButton).toBeDefined()
     wrapper.unmount()
@@ -424,7 +486,7 @@ describe('SettingsServices — same identity function, no divergence', () => {
 
     const row = wrapper.find('[data-testid="settings-account-row-100"]')
     expect(row.exists()).toBe(true)
-    expect(row.text()).toContain('Ana Spotify (ana@spotify.com)')
+    expect(row.text()).toContain('Ana Spotify (an•••@spotify.com)')
     expect(row.text()).toContain('Active')
     wrapper.unmount()
   })
@@ -458,8 +520,8 @@ describe('SettingsServices — same identity function, no divergence', () => {
     const wrapper = await mountSettingsServices()
 
     const row = wrapper.find('[data-testid="settings-account-row-100"]')
-    expect(row.text()).toContain('ana@spotify.com')
-    expect(row.text().split('ana@spotify.com').length - 1).toBeGreaterThanOrEqual(1)
+    expect(row.text()).toContain('an•••@spotify.com')
+    expect(row.text().split('an•••@spotify.com').length - 1).toBeGreaterThanOrEqual(1)
     wrapper.unmount()
   })
 })
@@ -493,7 +555,7 @@ describe('advanced settings modal keeps multi-account management', () => {
 
     expect(overlay!.querySelectorAll('[data-testid^="settings-account-row-"]').length).toBe(2)
     const row100 = overlay!.querySelector('[data-testid="settings-account-row-100"]')
-    expect(row100?.textContent).toContain('Ana Spotify (ana@spotify.com)')
+    expect(row100?.textContent).toContain('Ana Spotify (an•••@spotify.com)')
     expect(row100?.textContent).toContain('Active')
     const row101 = overlay!.querySelector('[data-testid="settings-account-row-101"]')
     expect(row101?.textContent).toContain('Use this')
@@ -818,18 +880,24 @@ describe('Qobuz streaming entitlement (QOBUZ-ENT)', () => {
 })
 
 describe('active-account UI', () => {
-  it('puts the active row first and marks all secondary rows as not active', async () => {
-    // Backend order is deliberately wrong: the active account is last.
-    installBackend()
+  it('orders rows by label, not by active state, and marks exactly one row active', async () => {
+    // ADR-0007 decision 16: the order is alphabetical and does not change with
+    // use — the ACTIVE account here sorts LAST, after the secondary one.
+    installBackend(
+      buildAccounts([
+        { display_name: 'Zulu Zot', is_active: true },
+        { display_name: 'Ana Primera', is_active: false },
+      ]),
+    )
     const wrapper = await mountAccounts()
 
     const rows = wrapper.findAll('[data-testid^="account-row-"]')
     expect(rows.map(r => r.attributes('data-testid'))).toEqual([
-      'account-row-100',
       'account-row-101',
+      'account-row-100',
     ])
-    expect(rows[0].attributes('data-active')).toBe('true')
-    expect(rows[1].attributes('data-active')).toBe('false')
+    expect(rows[0].attributes('data-active')).toBe('false')
+    expect(rows[1].attributes('data-active')).toBe('true')
     // Only ONE row is marked active.
     expect(rows.filter(r => r.text().includes('Active')).length).toBe(1)
     wrapper.unmount()
@@ -842,7 +910,7 @@ describe('active-account UI', () => {
     // The card lists the primary row directly (no disclosure needed).
     const card = wrapper.find('.service-card')
     expect(card.find('[data-testid="account-row-100"]').exists()).toBe(true)
-    expect(card.text()).toContain('Ana Spotify (ana@spotify.com)')
+    expect(card.text()).toContain('Ana Spotify (an•••@spotify.com)')
     wrapper.unmount()
   })
 })
@@ -881,7 +949,7 @@ describe('duplicate label rendering (all account surfaces)', () => {
     const wrapper = await mountAccounts()
     for (const testId of ['account-row-100', 'account-row-101']) {
       const row = wrapper.find(`[data-testid="${testId}"]`)
-      const instance = testId === 'account-row-100' ? 'ana@spotify.com' : 'luis@spotify.com'
+      const instance = testId === 'account-row-100' ? 'an•••@spotify.com' : 'lu•••@spotify.com'
       expect(row.text().split(instance).length - 1).toBe(1)
     }
     wrapper.unmount()
@@ -892,7 +960,7 @@ describe('duplicate label rendering (all account surfaces)', () => {
     const wrapper = await mountAccounts()
     for (const testId of ['account-row-100', 'account-row-101']) {
       const row = wrapper.find(`[data-testid="${testId}"]`)
-      const instance = testId === 'account-row-100' ? 'ana@spotify.com' : 'luis@spotify.com'
+      const instance = testId === 'account-row-100' ? 'an•••@spotify.com' : 'lu•••@spotify.com'
       expect(row.text().split(instance).length - 1).toBe(1)
     }
     wrapper.unmount()
@@ -921,7 +989,7 @@ describe('duplicate label rendering (all account surfaces)', () => {
     const description = describeCredentialState(buildAccounts()[0])
     const withoutDescription = account.text().replace(description, '')
     // Removing the credential line must leave exactly one identity + the email.
-    expect(withoutDescription.split('ana@spotify.com').length - 1).toBe(1)
+    expect(withoutDescription.split('an•••@spotify.com').length - 1).toBe(1)
     expect(account.find('[data-testid="account-credential-state-100"]').exists()).toBe(true)
     wrapper.unmount()
   })

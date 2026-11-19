@@ -8,7 +8,7 @@ import { invokeCommand } from './tauri';
 
 export const debugDeezerCookieProbe = (): Promise<string> =>
     invokeCommand('debug_deezer_cookie_probe');
-import { asArray, asNumber, asRecord } from './normalize';
+import { asArray, asNumber, asRecord, maskEmail } from './normalize';
 import type {
     Service,
     Account,
@@ -51,10 +51,18 @@ export async function getServices(): Promise<Service[]> {
 
 /**
  * Get service statuses (legacy)
+ *
+ * ADR-0007 decision 7: `account_email` is masked here, at the IPC boundary, so
+ * no view or export can render the full address. Masking is in place to keep
+ * the array identity callers rely on.
  */
 export async function getServiceStatuses(): Promise<ServiceStatus[]> {
     const raw = await invokeCommand<unknown>('get_service_statuses');
-    return asArray<ServiceStatus>(raw);
+    const statuses = asArray<ServiceStatus>(raw);
+    for (const status of statuses) {
+        if (status) status.account_email = maskEmail(status.account_email);
+    }
+    return statuses;
 }
 
 // ==============================================
@@ -63,10 +71,18 @@ export async function getServiceStatuses(): Promise<ServiceStatus[]> {
 
 /**
  * Get all connected accounts
+ *
+ * ADR-0007 decision 7: every `email` is masked here, at the IPC boundary, so
+ * the full address never reaches UI state, cards or exported reports. Identity
+ * resolution downstream works on the masked form.
  */
 export async function getAccounts(): Promise<Account[]> {
     const raw = await invokeCommand<unknown>('get_accounts');
-    return asArray<Account>(raw);
+    const accounts = asArray<Account>(raw);
+    for (const account of accounts) {
+        if (account) account.email = maskEmail(account.email);
+    }
+    return accounts;
 }
 
 /**
