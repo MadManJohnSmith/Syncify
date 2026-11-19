@@ -265,6 +265,9 @@ export const TauriEvents = {
 
     // Library events
     LIBRARY_UPDATED: 'library-updated',
+    // L05 (#102): avance por bloque y resumen agregado de acciones por lotes.
+    LIBRARY_ACTION_PROGRESS: 'library-action-progress',
+    LIBRARY_ACTION_FINISHED: 'library-action-finished',
 
     // Lyrics & Artwork events
     LYRICS_FETCH_PROGRESS: 'lyrics-fetch-progress',

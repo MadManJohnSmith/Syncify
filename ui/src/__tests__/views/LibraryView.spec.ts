@@ -1182,23 +1182,46 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
 
         // Check Availability button is NOT present in the batch selection bar
         expect(batchBar.text()).not.toContain('Check Availability');
-        // Contains Download and Remove
+        // L05 (#102): la casilla de cabecera selecciona TODO el filtro (2), no
+        // solo la página, y en ese modo no se ofrecen acciones destructivas.
+        expect(batchBar.text()).toContain('All 2 matching tracks');
         expect(batchBar.text()).toContain('Download');
-        expect(batchBar.text()).toContain('Remove');
+        expect(batchBar.text()).not.toContain('Remove');
+
+        // Con ids explícitos sí está disponible «Remove» (por selección).
+        await batchBar.findAll('button').find(b => b.text().includes('Clear Selection'))!.trigger('click');
+        await flushPromises();
+        const rowCheckboxes = wrapper.findAll('input[type="checkbox"]');
+        await rowCheckboxes[1].trigger('click');
+        await flushPromises();
+        expect(wrapper.find('.batch-bar').text()).toContain('Remove');
     });
 
-    it('Q-04: batch download button reports in-flight state and recovers', async () => {
+    it('Q-04: batch action reports in-flight state and recovers', async () => {
         const mockTracks = [
             createTestTrack({ id: 1, title: 'Track One' }),
         ];
-        let resolveEnqueue: ((v: unknown) => void) | null = null;
-        let calls = 0;
+        let resolveRun: ((v: unknown) => void) | null = null;
+        let previewCalls = 0;
+        let runCalls = 0;
 
         mockInvoke((cmd) => {
             if (cmd === 'query_library') return { tracks: mockTracks, total: 1, offset: 0, limit: 100, has_more: false };
-            if (cmd === 'enqueue_tracks') {
-                calls += 1;
-                return new Promise((res) => { resolveEnqueue = res; });
+            if (cmd === 'preview_library_action') {
+                previewCalls += 1;
+                return {
+                    action: 'queue_download',
+                    label: 'Add to download queue',
+                    selectionMode: 'filter',
+                    total: 1,
+                    eligible: 1,
+                    omitted: 0,
+                    omissions: [],
+                };
+            }
+            if (cmd === 'run_library_action') {
+                runCalls += 1;
+                return new Promise((res) => { resolveRun = res; });
             }
             return null;
         });
@@ -1210,28 +1233,52 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
 
         const downloadButton = wrapper.findAll('.batch-bar button').find(b => b.text().includes('Download'))!;
         expect(downloadButton.exists()).toBe(true);
-        expect(downloadButton.text()).not.toContain('Enqueuing');
+        expect(downloadButton.text()).not.toContain('Working');
         expect((downloadButton.element as HTMLButtonElement).disabled).toBe(false);
 
-        // Click: while the request is in flight the button says so and is
-        // disabled, and a second click cannot fire a second request.
+        // L05 (#102): el click previsualiza; ejecutar exige confirmar el
+        // recuento exacto en el diálogo.
         await downloadButton.trigger('click');
         await flushPromises();
-        expect(calls).toBe(1);
+        expect(previewCalls).toBe(1);
+        expect(runCalls).toBe(0);
+        expect(wrapper.find('[data-testid="library-bulk-confirm"]').text()).toContain('1 of 1 selected tracks');
 
-        const busy = wrapper.findAll('.batch-bar button').find(b => b.text().includes('Enqueuing'))!;
+        const runButton = wrapper.findAll('[data-testid="library-bulk-confirm"] button').find(b => b.text().includes('Run on 1'))!;
+        expect(runButton.exists()).toBe(true);
+        await runButton.trigger('click');
+        await flushPromises();
+        expect(runCalls).toBe(1);
+
+        const busy = wrapper.findAll('[data-testid="library-bulk-confirm"] button').find(b => b.text().includes('Running…'))!;
         expect(busy.exists()).toBe(true);
         expect((busy.element as HTMLButtonElement).disabled).toBe(true);
-        expect(busy.attributes('aria-busy')).toBe('true');
+        const barBusy = wrapper.findAll('.batch-bar button').find(b => b.text().includes('Working…'))!;
+        expect((barBusy.element as HTMLButtonElement).disabled).toBe(true);
         await busy.trigger('click');
         await flushPromises();
-        expect(calls).toBe(1);
+        expect(runCalls).toBe(1);
 
         // Resolve: the selection is cleared, so the bar goes away entirely and
         // the pending state cannot linger.
-        resolveEnqueue!({ selected: 1, eligible: 1, enqueued: 1, excluded_preflight: 0, skip_reasons: [] });
+        resolveRun!({
+            action: 'queue_download',
+            label: 'Add to download queue',
+            selectionMode: 'filter',
+            total: 1,
+            processed: 1,
+            eligible: 1,
+            succeeded: 1,
+            failed: 0,
+            skipped: 0,
+            omissions: [],
+            blocks: 1,
+            blocksFailed: 0,
+            errors: [],
+            recalculated: false,
+        });
         await flushPromises();
-        expect(wrapper.findAll('.batch-bar button').some(b => b.text().includes('Enqueuing'))).toBe(false);
+        expect(wrapper.findAll('.batch-bar button').some(b => b.text().includes('Working'))).toBe(false);
         expect(wrapper.find('.batch-bar').exists()).toBe(false);
         wrapper.unmount();
     });

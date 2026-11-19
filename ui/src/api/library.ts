@@ -7,7 +7,15 @@
 import { invokeCommand } from './tauri';
 import { asArray, asNumber, asString, asBoolean, asRecord, pick, pickArray, pickNumber, optionalNumber } from './normalize';
 import type { LibraryTrack, LibraryPage, LibraryStats, Playlist, SearchResult, AlbumDetail, ArtistDetail, TopArtist, TopGenre, QualityBucket, TrackSourceAvailability, TrackPreflightResult } from './types';
-import type { LibraryQuery, LibraryQueryCounts, LibraryQueryResult } from './types';
+import type {
+    LibraryQuery,
+    LibraryQueryCounts,
+    LibraryQueryResult,
+    LibrarySelection,
+    LibraryBatchAction,
+    LibraryActionPreview,
+    LibraryActionSummary,
+} from './types';
 
 // ==============================================
 // SCAN TYPES
@@ -127,6 +135,36 @@ export async function queryLibrary(query: LibraryQuery): Promise<LibraryQueryRes
         ...normalizeLibraryPage(raw, query.offset, query.limit ?? undefined),
         counts: normalizedCounts,
     };
+}
+
+/**
+ * Vista previa de una acción por lotes (L05, #102): recuento elegible y
+ * motivos de omisión agregados por acción. No escribe nada.
+ */
+export async function previewLibraryAction(
+    selection: LibrarySelection,
+    action: LibraryBatchAction
+): Promise<LibraryActionPreview> {
+    return invokeCommand<LibraryActionPreview>('preview_library_action', { selection, action });
+}
+
+/**
+ * Ejecuta una acción por lotes. El servidor vuelve a resolver la selección y
+ * recalcula la elegibilidad; `expectedTotal`/`expectedEligible` solo sirven
+ * para que el resumen declare `recalculated` si el sync cambió la biblioteca.
+ */
+export async function runLibraryAction(
+    selection: LibrarySelection,
+    action: LibraryBatchAction,
+    expectedTotal?: number | null,
+    expectedEligible?: number | null
+): Promise<LibraryActionSummary> {
+    return invokeCommand<LibraryActionSummary>('run_library_action', {
+        selection,
+        action,
+        expectedTotal: expectedTotal ?? null,
+        expectedEligible: expectedEligible ?? null,
+    });
 }
 
 /**
@@ -1422,6 +1460,8 @@ export async function reconcileDownloadsFromStorage(musicDirOverride?: string): 
 export const libraryApi = {
     getLibrary,
     queryLibrary,
+    previewLibraryAction,
+    runLibraryAction,
     getFavoriteTracks,
     getFavoritesTracks,
     getFavoritesAlbums,

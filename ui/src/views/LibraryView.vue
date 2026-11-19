@@ -342,27 +342,33 @@
           </div>
         </div>
         
-        <!-- Bulk Actions -->
-        <div v-if="selectedCount > 0" class="flex items-center gap-2">
+        <!-- Bulk Actions (L05, #102): selección de ids o de todo el filtro -->
+        <div v-if="selectedCount > 0" class="flex items-center gap-2 relative">
           <button 
             @click="showBulkMenu = !showBulkMenu"
             class="flex items-center gap-2 px-3 py-2 bg-primary text-on-accent rounded-lg text-xs font-semibold shadow-lg shadow-primary/20 hover:bg-primary-hover transition-colors relative"
           >
             <span class="material-symbols-outlined text-[16px]">checklist</span>
-            <span>{{ selectedCount }} selected</span>
+            <span>{{ selectAllMatching ? `All ${selectedCount} matching` : `${selectedCount} selected` }}</span>
             <span class="material-symbols-outlined text-[14px]">expand_more</span>
           </button>
-          <div v-if="showBulkMenu" class="absolute top-full right-0 mt-1 w-48 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg shadow-xl z-20 py-1">
-            <button @click="downloadSelectedTracks" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
-              <span class="material-symbols-outlined text-[16px]">download</span> Download
-            </button>
-            <button @click="downloadSelectedTracks" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
+          <div v-if="showBulkMenu" class="absolute top-full right-0 mt-1 w-56 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg shadow-xl z-20 py-1">
+            <button @click="openBulkDownload" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
               <span class="material-symbols-outlined text-[16px]">download</span> Add to Downloads
             </button>
-            <hr class="my-1 border-gray-200 dark:border-border-dark">
-            <button @click="handleBulkRemove" class="w-full px-3 py-2 text-left text-xs hover:bg-error/10 transition-colors flex items-center gap-2 text-error">
-              <span class="material-symbols-outlined text-[16px]">delete</span> Remove
+            <button @click="openBulkFavorite(true)" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
+              <span class="material-symbols-outlined text-[16px]">favorite</span> Mark as Favorite
             </button>
+            <button @click="openBulkFavorite(false)" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
+              <span class="material-symbols-outlined text-[16px]">heart_minus</span> Remove from Favorites
+            </button>
+            <hr class="my-1 border-gray-200 dark:border-border-dark">
+            <button v-if="!selectAllMatching" @click="handleBulkRemove" class="w-full px-3 py-2 text-left text-xs hover:bg-error/10 transition-colors flex items-center gap-2 text-error">
+              <span class="material-symbols-outlined text-[16px]">delete</span> Remove from library
+            </button>
+            <p v-else class="px-3 py-2 text-[10px] text-text-secondary leading-snug">
+              Destructive actions are per-track only when selecting all matching tracks.
+            </p>
           </div>
         </div>
       </div>
@@ -421,34 +427,100 @@
       </button>
     </div>
 
-    <!-- Batch Selection Bar (floating overlay - L-11) -->
+    <!-- Batch Selection Bar (floating overlay - L-11 / L05 #102) -->
     <Transition name="slide-down">
       <div
         v-if="selectedCount > 0"
-        class="batch-bar fixed inset-x-8 max-w-xl mx-auto z-40 flex items-center gap-4 px-6 py-3.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl shadow-2xl"
+        class="batch-bar fixed inset-x-8 max-w-3xl mx-auto z-40 flex items-center gap-3 px-6 py-3.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl shadow-2xl"
         style="bottom: calc(var(--status-bar-h, 48px) + 16px)"
       >
-        <span class="text-accent font-bold text-sm whitespace-nowrap">{{ selectedCount }} track{{ selectedCount !== 1 ? 's' : '' }} selected</span>
-        <div class="flex-1 flex items-center justify-center gap-3 flex-wrap">
+        <div class="flex flex-col gap-0.5 whitespace-nowrap">
+          <span class="text-accent font-bold text-sm">
+            {{ selectAllMatching ? `All ${selectedCount} matching tracks` : `${selectedCount} track${selectedCount !== 1 ? 's' : ''} selected` }}
+          </span>
           <button
-            @click="downloadSelectedTracks"
-            :disabled="isEnqueuingSelection"
-            :aria-busy="isEnqueuingSelection"
+            v-if="selectAllMatching"
+            @click="selectLoadedPageOnly"
+            class="text-[10px] text-text-secondary hover:text-primary text-left transition-colors cursor-pointer"
+          >
+            Select the loaded page instead
+          </button>
+        </div>
+        <div class="flex-1 flex items-center justify-center gap-2 flex-wrap">
+          <button
+            @click="openBulkDownload"
+            :disabled="isBulkRunning"
+            :aria-busy="isBulkRunning"
             class="px-3.5 py-1.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-xs font-semibold shadow-md transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
           >
-            <span class="material-symbols-outlined text-[16px]">{{ isEnqueuingSelection ? 'progress_activity' : 'download' }}</span>
-            {{ isEnqueuingSelection ? 'Enqueuing…' : 'Download' }}
+            <span class="material-symbols-outlined text-[16px]">{{ isBulkRunning ? 'progress_activity' : 'download' }}</span>
+            {{ isBulkRunning ? 'Working…' : 'Download' }}
           </button>
-          <button @click="handleBulkRemove" class="px-3.5 py-1.5 bg-transparent hover:bg-error/20 text-error border border-error/50 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer">
+          <button @click="openBulkFavorite(true)" :disabled="isBulkRunning" class="px-3.5 py-1.5 bg-transparent hover:bg-primary/10 text-primary border border-primary/40 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-60">
+            <span class="material-symbols-outlined text-[16px]">favorite</span>
+            Favorite
+          </button>
+          <select
+            v-model="bulkPlaylistId"
+            :disabled="isBulkRunning"
+            class="max-w-[9rem] px-2 py-1.5 bg-gray-100 dark:bg-surface-highlight border border-gray-300 dark:border-gray-600 rounded-lg text-xs text-ink"
+            aria-label="Playlist for the batch action"
+          >
+            <option :value="null" disabled>Playlist…</option>
+            <option v-for="playlist in playlists" :key="playlist.id" :value="playlist.id">{{ playlist.name }}</option>
+          </select>
+          <button @click="openBulkAddToPlaylist" :disabled="isBulkRunning || bulkPlaylistId === null" class="px-3 py-1.5 bg-transparent hover:bg-primary/10 text-primary border border-primary/40 rounded-lg text-xs font-semibold transition-all cursor-pointer disabled:opacity-50">
+            Add
+          </button>
+          <button v-if="!selectAllMatching" @click="handleBulkRemove" class="px-3.5 py-1.5 bg-transparent hover:bg-error/20 text-error border border-error/50 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer">
             <span class="material-symbols-outlined text-[16px]">delete</span>
             Remove
           </button>
         </div>
-        <button @click="clearSelection" class="text-ink-2 hover:text-ink text-xs transition-colors cursor-pointer whitespace-nowrap">
-          Clear Selection
-        </button>
+        <div class="flex flex-col items-end gap-0.5 whitespace-nowrap">
+          <span v-if="bulkProgress" class="text-[10px] text-text-secondary">
+            {{ bulkProgress.processed }}/{{ bulkProgress.total }} · block {{ bulkProgress.blocksDone }}/{{ bulkProgress.blocksTotal || '?' }}
+          </span>
+          <button @click="clearSelection" class="text-ink-2 hover:text-ink text-xs transition-colors cursor-pointer whitespace-nowrap">
+            Clear Selection
+          </button>
+        </div>
       </div>
     </Transition>
+
+    <!-- Confirmación de acción por lotes: recuento exacto ANTES de ejecutar -->
+    <div
+      v-if="bulkDialog"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+      data-testid="library-bulk-confirm"
+      @click.self="bulkDialog = null"
+    >
+      <div class="w-full max-w-lg rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-2xl p-5 space-y-3">
+        <h3 class="text-sm font-bold text-ink">{{ bulkDialog.preview.label }}</h3>
+        <p class="text-sm text-ink">
+          <strong>{{ bulkDialog.preview.eligible }}</strong> of
+          <strong>{{ bulkDialog.preview.total }}</strong> selected tracks are eligible.
+        </p>
+        <ul v-if="bulkDialog.preview.omissions.length" class="text-xs text-text-secondary space-y-1 max-h-40 overflow-y-auto">
+          <li v-for="omission in bulkDialog.preview.omissions" :key="omission.reason">
+            {{ omission.count }} · {{ omission.message }}
+          </li>
+        </ul>
+        <p class="text-[11px] text-text-secondary">
+          The server re-checks the selection when it runs. If sync changed the library, the summary is recalculated.
+        </p>
+        <div class="flex justify-end gap-2 pt-1">
+          <button @click="bulkDialog = null" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold border border-gray-300 dark:border-gray-600 text-ink">Cancel</button>
+          <button
+            @click="confirmBulkAction"
+            :disabled="isBulkRunning"
+            class="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-primary hover:bg-primary-hover text-on-accent disabled:opacity-60"
+          >
+            {{ isBulkRunning ? 'Running…' : `Run on ${bulkDialog.preview.eligible}` }}
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- Context Menu (Viewport Clamped) -->
     <Teleport to="body">
@@ -699,9 +771,15 @@
       <template v-else-if="viewMode === 'list' && groupBy === 'none'">
         <!-- Header Row -->
         <div class="track-list flex items-center gap-2 px-3 py-3 border-b border-gray-200 dark:border-border-dark text-[11px] font-bold text-text-secondary uppercase tracking-wider shrink-0 bg-shell/50 rounded-t-xl backdrop-blur-sm sticky top-0 z-10 select-none">
-          <!-- Selection Checkbox -->
+          <!-- Selection Checkbox: «todo el filtro», no solo la página cargada -->
           <div class="w-10 text-center shrink-0">
-            <input type="checkbox" @change="toggleSelectAll" class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
+            <input
+              type="checkbox"
+              :checked="allMatchingSelected"
+              :title="selectAllMatching ? 'Clear the selection' : 'Select all tracks matching the current filter'"
+              @change="toggleSelectAll"
+              class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600"
+            >
           </div>
 
           <!-- Dynamic Draggable Columns: # | Title | Time | Services | Meta | Lyrics | DL | Quality -->
@@ -752,14 +830,14 @@
                 :class="[
                   'track-row flex items-center gap-2 px-3 py-2 border-b border-gray-100 dark:border-border-dark/50 last:border-0 transition-all group cursor-pointer box-border',
                   track.isPlaying ? 'bg-primary/5 border-l-4 border-l-primary' : 'hover:bg-gray-50 dark:hover:bg-surface-highlight/30',
-                  selection.isSelected(track.id) ? 'bg-accent-soft' : '',
+                  isTrackSelected(track.id) ? 'bg-accent-soft' : '',
                   (virtualStartIndex + index) % 2 === 1 ? 'bg-surface/30' : '',
                   highlightedTrackId === track.id ? 'bg-primary/10 ring-1 ring-inset ring-primary' : ''
                 ]"
               >
                 <!-- Checkbox Cell -->
                 <div class="track-cell w-10 flex justify-center shrink-0">
-                  <input type="checkbox" :checked="selection.isSelected(track.id)" @click.stop="selection.toggle(track.id)" class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
+                  <input type="checkbox" :checked="isTrackSelected(track.id)" @click.stop="toggleTrackSelection(track.id)" class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
                 </div>
 
                 <!-- Dynamic Cells based on Columns Order -->
@@ -1326,8 +1404,20 @@
 defineOptions({ name: 'LibraryView' })
 import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRouter, useRoute, type LocationQueryValue } from 'vue-router'
-import { libraryApi, queryLibrary, enqueueTracks, reconcileQueue, importMbDump, getMbDumpImportState, type TrackDetail, type TrackDetailError, type MbDumpImportState, type MbDumpProgress }  from '@/api/library'
-import type { LibraryQuery, LibraryQueryCounts, LibraryQueryResult, LibrarySortKey, DownloadStatusFilter, QualityBucketFilter } from '@/api/types'
+import { libraryApi, queryLibrary, reconcileQueue, importMbDump, getMbDumpImportState, type TrackDetail, type TrackDetailError, type MbDumpImportState, type MbDumpProgress }  from '@/api/library'
+import type {
+  LibraryQuery,
+  LibraryQueryCounts,
+  LibraryQueryResult,
+  LibrarySortKey,
+  DownloadStatusFilter,
+  QualityBucketFilter,
+  LibrarySelection,
+  LibraryBatchAction,
+  LibraryActionPreview,
+  LibraryActionProgress,
+  LibraryActionSummary,
+} from '@/api/types'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch, queueApi } from '@/api/queue'
 import { playlistsApi } from '@/api/playlists'
 import { metadataApi } from '@/api/metadata'
@@ -1852,7 +1942,7 @@ function currentLibraryState(): LibraryUrlState {
 }
 
 /** Contrato LibraryQuery: el estado de la vista se traduce a dimensiones. */
-function buildLibraryQuery(offset: number, limit: number): LibraryQuery {
+function buildLibraryQuery(offset: number, limit: number | null): LibraryQuery {
   const state = currentLibraryState();
   return {
     text: state.text || null,
@@ -2076,12 +2166,43 @@ const browser = useTrackBrowser<LibraryTrack, Track>({
 });
 
 const selection = browser.selection;
-const selectedCount = selection.selectedCount;
 const tracks = browser.rows;
 const totalTracks = browser.total;
 const currentOffset = browser.currentOffset;
 const hasMore = browser.hasMore;
 const isLoadingMore = browser.isLoadingMore;
+
+// L05 (#102): la selección tiene dos modos. En «todo el filtro» el contador
+// sale del total del servidor (no de la página cargada) menos las exclusiones;
+// en ids explícitos sale de los ids marcados. Nunca se mezclan.
+const selectAllMatching = ref(false);
+const excludedIds = ref<number[]>([]);
+const excludedIdSet = computed(() => new Set(excludedIds.value));
+const selectedCount = computed(() =>
+  selectAllMatching.value
+    ? Math.max(0, totalTracks.value - excludedIdSet.value.size)
+    : selection.selectedCount.value
+);
+const allMatchingSelected = computed(
+  () => selectAllMatching.value && excludedIds.value.length === 0
+);
+
+function isTrackSelected(id: number): boolean {
+  return selectAllMatching.value ? !excludedIdSet.value.has(id) : selection.isSelected(id);
+}
+
+function toggleTrackSelection(id: number): void {
+  if (!selectAllMatching.value) {
+    selection.toggle(id);
+    return;
+  }
+  const index = excludedIds.value.indexOf(id);
+  if (index === -1) {
+    excludedIds.value.push(id);
+  } else {
+    excludedIds.value.splice(index, 1);
+  }
+}
 
 
 /** Failure of the last load; distinguishes "empty library" from "could not read". */
@@ -2095,7 +2216,7 @@ async function loadLibrary() {
   // recarga parte de selección vacía (solo con carga exitosa; el contador
   // derivado no puede quedar huérfano como antes quedaba el incremental).
   if (browser.loadError.value === null) {
-    selection.clear();
+    clearSelection();
   }
 }
 
@@ -2228,7 +2349,7 @@ async function addTrackToPlaylist(playlistId: number, trackId: number) {
 // Track selection & downloads. La selección vive en el composable por ids
 // (ADR-0025, decisión 3): el contador se deriva de los ids, no se lleva a mano.
 function handleTrackClick(track: Track) {
-  selection.toggle(track.id);
+  toggleTrackSelection(track.id);
 }
 
 const { play, playNext, enqueue, toggle: togglePlayback, current: playerCurrent } = usePlayer();
@@ -2358,77 +2479,131 @@ async function handleDownload(track: Track) {
   }
 }
 
-const isEnqueuingSelection = ref(false)
+// L05 (#102): TODA acción por lotes pasa por preview + run_library_action.
+// La selección se envía como ids explícitos o como «todo el filtro» con
+// exclusiones; el servidor resuelve, bloquea en 500 y agrega el resumen.
+const isBulkRunning = ref(false)
+const bulkDialog = ref<{ action: LibraryBatchAction; preview: LibraryActionPreview } | null>(null)
+const bulkPlaylistId = ref<number | null>(null)
+const bulkProgress = ref<LibraryActionProgress | null>(null)
 
-async function downloadSelectedTracks() {
-  if (isEnqueuingSelection.value) return
-  const selectedTracks = tracks.value.filter(t => selection.isSelected(t.id))
-  if (selectedTracks.length === 0) return
-
-  isEnqueuingSelection.value = true
-  try {
-    await loadEffectivePrefs()
-    const trackIds = selectedTracks.map(t => t.id)
-    const allowDowngrade = isDowngradeAllowed()
-    const res = await enqueueTracks(
-      trackIds,
-      50,
-      effectiveMaxQualityLabel(),
-      undefined,
-      !allowDowngrade,
-      allowDowngrade,
-      true,
-      true
-    )
-
-    const selected = res?.selected ?? trackIds.length
-    const eligible = res?.eligible ?? 0
-    const enqueued = res?.enqueued ?? 0
-    const excluded = res?.excluded_preflight ?? 0
-    const reasons = res?.skip_reasons ?? []
-
-    const enqueuedTracks = Array.isArray(res?.tracks) ? res.tracks : []
-    const enqueuedSet = new Set(
-      enqueuedTracks
-        .filter((t: any) => t?.is_eligible)
-        .map((t: any) => t?.track_id)
-    )
-
-    selectedTracks.forEach(t => {
-      if (enqueuedSet.has(t.id) || (enqueuedSet.size === 0 && enqueued > 0)) {
-        t.downloadStatus = 'queued'
-      }
-    })
-
-    if (enqueued > 0) {
-      const breakdownMsg = excluded > 0 && reasons.length > 0
-        ? ` (${excluded} excluded: ${reasons[0]})`
-        : excluded > 0
-        ? ` (${excluded} excluded)`
-        : ''
-      toast.success(
-        'Tracks Enqueued',
-        `Enqueued ${enqueued} of ${selected} tracks into download queue${breakdownMsg}.`
-      )
-    } else {
-      const firstReason = reasons.length > 0 ? `: ${reasons[0]}` : ''
-      toast.info(
-        'No Eligible Tracks',
-        `0 of ${selected} tracks enqueued${firstReason}.`
-      )
+function currentSelection(): LibrarySelection {
+  if (selectAllMatching.value) {
+    return {
+      mode: 'filter',
+      // offset/limit no intervienen: el servidor selecciona todo el filtro.
+      query: buildLibraryQuery(0, null),
+      excludedIds: [...excludedIds.value],
     }
+  }
+  return { mode: 'ids', ids: [...selection.selectedIds.value] }
+}
+
+function bulkDownloadAction(): LibraryBatchAction {
+  return {
+    action: 'queue_download',
+    priority: 50,
+    qualityPreference: effectiveMaxQualityLabel(),
+    allowFallback: isDowngradeAllowed(),
+  }
+}
+
+function omissionSummary(omissions: Array<{ count: number; message: string }>): string {
+  return omissions
+    .filter((omission) => omission.count > 0)
+    .map((omission) => `${omission.count} ${omission.message.toLowerCase()}`)
+    .join(', ')
+}
+
+async function openBulkAction(action: LibraryBatchAction) {
+  if (isBulkRunning.value) return
+  const selection = currentSelection()
+  try {
+    const preview = await libraryApi.previewLibraryAction(selection, action)
+    if (preview.total === 0) {
+      toast.info('Nothing selected', 'The current selection has no tracks.')
+      return
+    }
+    if (preview.eligible === 0) {
+      const reasons = omissionSummary(preview.omissions)
+      toast.info(
+        'No eligible tracks',
+        `0 of ${preview.total} selected tracks can run.${reasons ? ` ${reasons}.` : ''}`
+      )
+      return
+    }
+    bulkDialog.value = { action, preview }
+  } catch (error) {
+    console.error('Failed to preview library action:', error)
+    toast.error('Could not preview the action', String(error))
+  }
+}
+
+async function openBulkDownload() {
+  showBulkMenu.value = false
+  await loadEffectivePrefs()
+  await openBulkAction(bulkDownloadAction())
+}
+
+async function openBulkFavorite(favorite: boolean) {
+  showBulkMenu.value = false
+  await openBulkAction({ action: 'set_favorite', favorite })
+}
+
+async function openBulkAddToPlaylist() {
+  showBulkMenu.value = false
+  if (bulkPlaylistId.value === null) return
+  await openBulkAction({ action: 'add_to_playlist', playlistId: bulkPlaylistId.value })
+}
+
+async function confirmBulkAction() {
+  const dialog = bulkDialog.value
+  if (!dialog || isBulkRunning.value) return
+  const selection = currentSelection()
+  if (selection.mode === 'ids' && selection.ids.length === 0) {
+    bulkDialog.value = null
+    return
+  }
+
+  isBulkRunning.value = true
+  try {
+    const summary: LibraryActionSummary = await libraryApi.runLibraryAction(
+      selection,
+      dialog.action,
+      dialog.preview.total,
+      dialog.preview.eligible
+    )
+    const details = [
+      `${summary.succeeded} succeeded`,
+      `${summary.failed} failed`,
+      `${summary.skipped} omitted`,
+    ].join(' · ')
+    const reasons = omissionSummary(summary.omissions)
+    const recalculated = summary.recalculated
+      ? ' The library changed while previewing; the summary was recalculated.'
+      : ''
+    const message = `${details}.${reasons ? ` ${reasons}.` : ''}${recalculated}`
+    if (summary.failed > 0) {
+      toast.error('Batch action finished with failures', message)
+    } else {
+      toast.success('Batch action finished', message)
+    }
+    bulkDialog.value = null
     clearSelection()
     showBulkMenu.value = false
-  } catch (error: any) {
-    console.error('Failed to queue bulk download:', error)
-    const errStr = String(error?.message || error || '')
-    toast.error(`Failed to download selection: ${errStr}`)
+    await loadLibrary()
+  } catch (error) {
+    console.error('Failed to run library action:', error)
+    toast.error('Batch action failed', String(error))
   } finally {
-    isEnqueuingSelection.value = false
+    isBulkRunning.value = false
+    bulkProgress.value = null
   }
 }
 
 function clearSelection() {
+  selectAllMatching.value = false
+  excludedIds.value = []
   selection.clear()
 }
 
@@ -2596,6 +2771,14 @@ async function handleRemoveFromLibrary(track: Track) {
 }
 
 async function handleBulkRemove() {
+  if (selectAllMatching.value) {
+    // Acción destructiva: no se ofrece en «seleccionar todo».
+    toast.info(
+      'Per-track action',
+      'Removing tracks is not offered for all matching tracks. Select the tracks explicitly.'
+    );
+    return;
+  }
   const selectedTracks = tracks.value.filter(t => selection.isSelected(t.id));
   if (selectedTracks.length === 0) return;
 
@@ -2606,7 +2789,7 @@ async function handleBulkRemove() {
     const ids = selectedTracks.map(t => t.id);
     const removed = await libraryApi.bulkRemoveTracks(ids);
     tracks.value = tracks.value.filter(t => !selection.isSelected(t.id));
-    selection.clear();
+    clearSelection();
     showBulkMenu.value = false;
     await reconcilePlaylistCounts();
     toast.success('Tracks removed', `${removed} tracks removed from library`);
@@ -2704,13 +2887,21 @@ function getLyricsTypeIcon(type: string): { icon: string; class: string; title: 
 }
 
 function toggleSelectAll() {
-  // Misma semántica que antes: si todo lo cargado está seleccionado se vacía,
-  // si no, la selección pasa a ser exactamente las filas actuales.
-  if (tracks.value.every(t => selection.isSelected(t.id))) {
-    selection.clear()
-  } else {
-    selection.selectAll(tracks.value)
+  // L05 (#102): la casilla de cabecera selecciona TODO el filtro, no la página
+  // cargada (el total lo da el servidor). Si ya está todo seleccionado, vacía.
+  if (selectAllMatching.value || (selectedCount.value > 0 && tracks.value.every(t => isTrackSelected(t.id)))) {
+    clearSelection()
+    return
   }
+  selectAllMatching.value = true
+  excludedIds.value = []
+}
+
+/** Cambia de «todo el filtro» a los ids de las filas ya cargadas. */
+function selectLoadedPageOnly() {
+  selectAllMatching.value = false
+  excludedIds.value = []
+  selection.selectAll(tracks.value)
 }
 
 // L01 (#98): filtros, búsqueda y orden viven EN SERVIDOR (query_library:
@@ -2984,26 +3175,26 @@ function handleKeydown(event: KeyboardEvent) {
 
   if (event.key === 'd' || event.key === 'D') {
     if (selectedCount.value > 0) {
-      downloadSelectedTracks()
+      void openBulkDownload()
     } else if (contextMenu.value.track) {
       handleDownload(contextMenu.value.track)
     }
   } else if (event.key === 'q' || event.key === 'Q') {
     // FE-9: "Add to Downloads" — same enqueue path as D (download queue).
     if (selectedCount.value > 0) {
-      downloadSelectedTracks()
+      void openBulkDownload()
     } else if (contextMenu.value.track) {
       void handleAddToQueue(contextMenu.value.track)
     }
   } else if (event.key === 'n' || event.key === 'N') {
     // FE-9: "Play Next" on the context track or the first selected track.
-    const nextTarget = contextMenu.value.track ?? tracks.value.find(t => selection.isSelected(t.id))
+    const nextTarget = contextMenu.value.track ?? tracks.value.find(t => isTrackSelected(t.id))
     if (nextTarget) void handlePlayNext(nextTarget)
   } else if (event.key === 'f' || event.key === 'F') {
     if (contextMenu.value.track) {
       handleToggleFavorite(contextMenu.value.track)
     } else {
-      const selected = tracks.value.find(t => selection.isSelected(t.id))
+      const selected = tracks.value.find(t => isTrackSelected(t.id))
       if (selected) handleToggleFavorite(selected)
     }
   } else if (event.key === ' ' || event.code === 'Space') {
@@ -3280,6 +3471,14 @@ onMounted(async () => {
   })
   eventBus.on(TauriEvents.DOWNLOAD_PROGRESS, async () => {
     fetchQueueStats()
+  })
+  // L05 (#102): los eventos del runner son agregados (uno por bloque / final);
+  // la barra de lote muestra el avance sin una fila por pista.
+  eventBus.on(TauriEvents.LIBRARY_ACTION_PROGRESS, (progress: LibraryActionProgress) => {
+    bulkProgress.value = progress
+  })
+  eventBus.on(TauriEvents.LIBRARY_ACTION_FINISHED, () => {
+    bulkProgress.value = null
   })
 })
 

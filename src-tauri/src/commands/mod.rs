@@ -47,6 +47,11 @@ pub use library::*;
 /// `library.rs`. La serie L02-L12 del spec #96 extiende ESTE módulo.
 pub mod library_query;
 
+/// L05 (issue #102): selección por ids / «todo el filtro», vista previa y
+/// runner de acciones por lotes en bloques de 500 con eventos agregados.
+pub mod library_actions;
+pub use library_actions::*;
+
 pub mod logging;
 pub use logging::*;
 

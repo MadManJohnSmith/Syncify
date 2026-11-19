@@ -1006,6 +1006,9 @@ fn main() {
             commands::get_health_checks,
             commands::get_duplicate_stats,
             commands::query_library,
+            // L05 (#102): vista previa y runner de acciones por lotes.
+            commands::preview_library_action,
+            commands::run_library_action,
             commands::get_library_track_detail,
             commands::delete_track_audio,
             commands::reset_database,
