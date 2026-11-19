@@ -397,115 +397,26 @@ pub async fn logout_service(
         return bridge_logout(&service).await;
     };
 
-    // Clearing credentials, deactivating this row and handing over the active
-    // slot (if a viable sister exists) happen in ONE transaction. With no
+    // Clearing credentials, deactivating this row, stopping its downloads and
+    // handing over the active slot (if a viable sister exists) happen in ONE
+    // transaction. The work lives in `perform_logout_account` so this legacy
+    // entry point and `logout_account` (issue #91) cannot diverge. With no
     // credentialed successor, the service has zero active accounts after logout.
-    let mut tx = state
-        .db
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|e| format!("Failed to begin logout for {}: {}", service, e))?;
+    //
+    // Cerrar sesión borra también el perfil cifrado del webview (issue #86,
+    // ADR-0007 decisión 9): archivo y fila, conservando la cuenta y su
+    // biblioteca. Sin perfil no hay webview que reutilizar y la reautenticación
+    // abre uno nuevo.
+    let summary = crate::commands::accounts::perform_logout_account(&state.db, target_id).await?;
+    let remaining = summary.remaining_accounts;
+    let successor = summary.new_active_account_id;
 
-    let was_active: Option<i64> = sqlx::query_scalar("SELECT is_active FROM accounts WHERE id = ?")
-        .bind(target_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to read account {}: {}", target_id, e))?;
-
-    sqlx::query(
-        r#"
-        UPDATE accounts
-        SET credentials_json = NULL,
-            credentials = NULL,
-            credentials_invalid = 1,
-            invalid_reason = 'logged_out',
-            last_auth_error = 'Session closed by the user',
-            last_auth_error_at = ?,
-            is_active = 0
-        WHERE id = ?
-        "#,
-    )
-    .bind(chrono::Utc::now().to_rfc3339())
-    .bind(target_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("Failed to clear {} account credentials: {}", service, e))?;
-
-    let remaining: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE service_id = ? AND id != ? AND credentials_json IS NOT NULL AND IFNULL(credentials_invalid, 0) = 0")
-            .bind(service_id)
-            .bind(target_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| format!("Failed to count remaining accounts: {}", e))?;
-
-    // A previously logged-out sister remains in the database for its library,
-    // but must NEVER be resurrected as the active account by a later logout.
-    // Choose only a sister with stored, non-invalidated credentials. If none
-    // exists, the service has zero active accounts until a new login/activation.
-    let viable_successor: Option<i64> = if remaining > 0 && was_active.unwrap_or(0) != 0 {
-        sqlx::query_scalar(
-            "SELECT id FROM accounts
-             WHERE service_id = ? AND id != ?
-               AND credentials_json IS NOT NULL
-               AND IFNULL(credentials_invalid, 0) = 0
-             ORDER BY id DESC LIMIT 1",
-        )
-        .bind(service_id)
-        .bind(target_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to pick the next {} account: {}", service, e))?
-    } else {
-        None
-    };
-    let successor: Option<i64> = if let Some(successor) = viable_successor {
-        // Deactivate every other row and then activate the successor, so the
-        // service never keeps two active rows even if it arrived with residues.
-        sqlx::query("UPDATE accounts SET is_active = 0 WHERE service_id = ? AND id != ?")
-            .bind(service_id)
-            .bind(successor)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("Failed to deactivate sibling accounts: {}", e))?;
-
-        sqlx::query("UPDATE accounts SET is_active = 1 WHERE id = ?")
-            .bind(successor)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("Failed to activate account {}: {}", successor, e))?;
-
-        tracing::info!(
-            "[Auth] {} account {} logged out; account {} is now the active one",
-            service,
-            target_id,
-            successor
-        );
-
-        Some(successor)
-    } else {
-        None
-    };
-
-    tx.commit()
-        .await
-        .map_err(|e| format!("Failed to commit logout for {}: {}", service, e))?;
-
-    // Cerrar sesión borra el perfil cifrado del webview (issue #86, ADR-0007
-    // decisión 9): archivo y fila, conservando la cuenta y su biblioteca. El
-    // logout ya dejó la fila «sin sesión»; sin perfil no hay webview que
-    // reutilizar y la reautenticación abre uno nuevo.
-    if let Err(e) =
-        crate::commands::account_profiles::delete_profiles_for_account(&state.db, target_id).await
-    {
-        tracing::warn!(
-            "Failed to delete webview profile of account {}: {}",
-            target_id,
-            e
-        );
-    }
-
-    crate::commands::emit_auth_state_updated_for_account(&service, "logout", Some(target_id), None);
+    crate::commands::emit_auth_state_updated_for_account(
+        &service,
+        "logout",
+        Some(summary.account_id),
+        None,
+    );
 
     if remaining > 0 {
         // At least one other authenticated account can still use the shared

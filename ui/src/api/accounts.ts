@@ -150,6 +150,30 @@ export async function deleteAccount(id: number, deleteAudio: boolean): Promise<A
     });
 }
 
+/** Result of `logout_account` (issue #91, ADR-0007 decision 9). */
+export interface AccountLogoutSummary {
+    account_id: number;
+    service_id: number;
+    service: string;
+    /** Lifecycle state kept intact: logging out is not disabling or archiving. */
+    state: AccountLifecycleState;
+    is_active: boolean;
+    /** Sister account that inherited the active slot, when there was one. */
+    new_active_account_id: number | null;
+    remaining_accounts: number;
+    /** Profiles (row and encrypted archive) removed for this account. */
+    profiles_deleted: number;
+}
+
+/**
+ * Log out one account: delete its stored credential and encrypted webview
+ * profile, keep the account row and its library, and leave the account
+ * "logged out" so sync and downloads stop until it is re-authenticated.
+ */
+export async function logoutAccount(id: number): Promise<AccountLogoutSummary> {
+    return invokeCommand<AccountLogoutSummary>('logout_account', { accountId: id });
+}
+
 /** Summary returned by `reset_account_sync_data`. */
 export interface AccountSyncResetSummary {
     account_id: number;
@@ -572,6 +596,7 @@ export const accountsApi = {
     addAccount,
     removeAccount,
     setAccountState,
+    logoutAccount,
     deleteAccount,
     resetAccountSyncData,
     refreshAccountIdentities,

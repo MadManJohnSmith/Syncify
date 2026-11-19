@@ -1245,6 +1245,7 @@ fn main() {
             commands::add_account,
             commands::remove_account,
             commands::set_account_state,
+            commands::logout_account,
             commands::delete_account,
             commands::reset_account_sync_data,
             commands::refresh_account_identities,
