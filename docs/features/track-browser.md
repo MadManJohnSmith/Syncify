@@ -1,6 +1,7 @@
 # Navegador de pistas — comportamiento de las listas
 
-**Estado de revisión:** 2026-11-07 (ADR-0025, rama `p7/track-browser`).
+**Estado de revisión:** 2026-11-19 (L13, issue #110: caché de páginas,
+virtualización de grid y grupos, invalidación por evento).
 
 Una sola maquinaria sirve las listas de pistas de la UI. Este documento dice cómo
 se comporta una lista; las vistas solo declaran su fuente.
@@ -16,6 +17,11 @@ se comporta una lista; las vistas solo declaran su fuente.
 - **`DownloadsView`** usa el kernel directamente: su cola muta filas en vivo con
   eventos de progreso y reordena por drag, y no comparte tipo de fila con las otras
   dos, así que no entra al contrato del composable.
+- **`ui/src/composables/usePagedQueryCache.ts`** — caché de páginas por clave,
+  deduplicación en vuelo y token de secuencia (L13, #110).
+- **`ui/src/composables/libraryCacheInvalidation.ts`** y
+  **`useLibraryCacheInvalidation.ts`** — señal síncrona de invalidación y matriz
+  de eventos que la dispara.
 
 ## Fuentes declaradas
 
@@ -76,11 +82,46 @@ en mount). `LibraryAlbumsView` y `LibraryArtistsView` comparten `q`, `sort` y
 servicio y cobertura (álbumes) o cuenta y servicio (artistas) son estado local de
 cada lista.
 
+## Caché de páginas e invalidación (L13, #110)
+
+`ui/src/composables/usePagedQueryCache.ts` guarda páginas por clave de consulta
+(sin `offset`, con `limit`) y deduplica peticiones en vuelo: dos cargas
+simultáneas de la misma clave y página comparten una sola consulta. Cada
+`invalidate()` incrementa una generación; una respuesta que empezó antes del
+evento no se guarda y llega marcada con la generación vieja, para que la vista
+la descarte. No hay TTL: la invalidación es explícita.
+
+`ui/src/composables/libraryCacheInvalidation.ts` es la señal síncrona que
+recorren los wrappers de la API después de confirmar una mutación (favorito,
+playlist, metadatos, descarga, acción por lotes, importación de catálogo).
+`ui/src/composables/useLibraryCacheInvalidation.ts` traduce los eventos de la app:
+`library-updated`, `import-complete`, `sync-complete`, `sync-run-finished`,
+`favorites_sync_completed` y `download_progress` SOLO cuando el estado es
+terminal. La cuarentena (#72/L09) todavía no existe; cuando llegue debe emitir
+`library-updated` o llamar a `invalidateLibraryPages('quarantine')`.
+
+`useTrackBrowser` añade un token de secuencia de carga: una recarga descarta la
+página de `loadMore` que estaba en vuelo, en vez de concatenarla a la consulta
+nueva. En las pestañas de álbumes (L07) y artistas (L08) la misma caché envuelve
+`query_library_albums` / `query_library_artists`; una invalidación invalida y
+relee con debounce de 350 ms.
+
+La cabecera de `LibraryView` conserva los contadores de la primera página: al
+paginar (`offset > 0`) el servidor responde `counts: null` y la vista no los
+toca. Los cambios de filtro y orden se coalescen en un microtask (una ráfaga de
+clics deja una consulta) y la búsqueda mantiene el debounce de 250 ms.
+
 ## Agrupación
 
-Agrupar por artista/álbum/género/calidad es de `LibraryView`, no está virtualizada
-y no vive en el composable. Si algún día se virtualiza, es un diseño propio (los
-grupos solo son completos cuando acabó la paginación).
+Agrupar por artista/álbum/género/calidad es de `LibraryView`, no vive en el
+composable y no filtra ni ordena: los grupos aparecen en el orden en que el
+servidor devuelve las filas y las pistas conservan ese orden (sin
+`localeCompare` ni comparador de «fecha añadida»). Los grupos se aplanan en
+cabeceras (64 px) y pistas (52 px) y se virtualizan con el modo variable de
+`useVirtualWindow`; el grid se virtualiza por filas de baldosas y solo pinta la
+ventana visible con overscan. Los grupos solo son completos cuando acabó la
+paginación, pero el scroll pide la página siguiente cerca del final como en la
+lista.
 
 ## Pruebas
 
@@ -88,5 +129,12 @@ grupos solo son completos cuando acabó la paginación).
   tres configs (índices, footer, throttle, reset, viewport vacío).
 - `ui/src/__tests__/composables/useTrackBrowser.spec.ts` — caracterización de
   paginación, fuentes, FTS y selección.
+- `ui/src/__tests__/composables/usePagedQueryCache.spec.ts` — caché por clave,
+  deduplicación en vuelo y token de secuencia.
+- `ui/src/__tests__/views/LibraryViewPerformance.spec.ts` — regresión del caso
+  319 llamadas: un scroll de 4 minutos pide una página por límite, una ráfaga
+  de filtros deja una consulta, la caché evita repetir una clave visitada, los
+  contadores no se recalculan al paginar, grid/grupos renderizan solo la
+  ventana y el panel consulta una vez al abrirse.
 - Los specs de vistas (`ui/src/__tests__/views/`) cubren el comportamiento de
   mount; `DownloadsViewQueue.spec.ts` fija R11 (la cola no es ref profundo).

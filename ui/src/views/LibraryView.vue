@@ -757,7 +757,7 @@
       </div>
 
       <!-- EMPTY STATE: No Filter Results -->
-      <div v-else-if="filteredTracks.length === 0 && !isLoading" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
+      <div v-else-if="tracks.length === 0 && !isLoading" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
         <span class="material-symbols-outlined text-[60px] text-gray-400 dark:text-gray-600 mb-6">filter_list_off</span>
         <h3 class="text-xl font-bold text-ink mb-2">No tracks match your filters</h3>
         <p class="text-text-secondary mb-6">Try adjusting your search or filters</p>
@@ -970,7 +970,7 @@
               </div>
 
               <!-- End of List Indicator -->
-              <div v-else-if="!hasMore && tracks.length > 0 && virtualEndIndex >= filteredTracks.length" class="py-4 text-center text-sm text-text-secondary">
+              <div v-else-if="!hasMore && tracks.length > 0 && virtualEndIndex >= tracks.length" class="py-4 text-center text-sm text-text-secondary">
                 Showing all {{ totalTracks.toLocaleString() }} tracks
               </div>
             </div>
@@ -978,66 +978,84 @@
         </div>
       </template>
 
-      <!-- GRID VIEW -->
+      <!-- GRID VIEW (L13, #110): virtualizado por filas de baldosas. Solo se
+           renderiza la ventana visible con overscan; el alto de fila se deriva
+           del ancho de baldosa para no depender del layout del navegador. -->
       <template v-else-if="viewMode === 'grid' && groupBy === 'none'">
-        <div class="library-grid flex-1 overflow-y-auto custom-scrollbar" @scroll="handleScroll">
-          <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 2xl:grid-cols-6 gap-5 p-1">
-            <div 
-              v-for="album in groupedByAlbum" 
-              :key="album.id"
-              @click="handleAlbumClick(album.albumId || album.id)"
-              :class="[
-                'grid-tile group bg-white dark:bg-surface-dark rounded-xl overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 cursor-pointer hover:-translate-y-1',
-                album.isSelected ? 'ring-3 ring-primary' : ''
-              ]"
-            >
-              <!-- Image Area -->
-              <div class="tile-image relative aspect-square overflow-hidden bg-gray-200 dark:bg-gray-800">
-                <img v-if="album.coverUrl" :src="album.coverUrl" :alt="album.title" class="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" loading="lazy" />
-                <div v-else :class="['absolute inset-0 w-full h-full', album.artGradient]"></div>
-                
-                <!-- Grid Placeholder Icon -->
-                <div v-if="!album.coverUrl && !album.artGradient.includes('bg-')" class="absolute inset-0 flex items-center justify-center opacity-30">
-                  <span class="material-symbols-outlined text-[48px]">album</span>
-                </div>
-                
-                <!-- Top-left: Download status -->
-                <div class="absolute top-2 left-2 z-10">
-                  <span v-if="album.downloadStatus === 'downloaded'" class="w-6 h-6 rounded-full bg-success/90 text-white flex items-center justify-center shadow-lg">
-                    <span class="material-symbols-outlined text-[14px]">check</span>
-                  </span>
-                  <span v-else class="w-6 h-6 rounded-full bg-black/50 text-white flex items-center justify-center">
-                    <span class="material-symbols-outlined text-[14px]">cloud</span>
-                  </span>
-                </div>
-                
-                <!-- Top-right: Quality badge -->
-                <div class="absolute top-2 right-2">
-                  <span :class="['px-1.5 py-0.5 rounded text-[9px] font-bold shadow-lg', getQualityBadgeStyle(album.quality)]">
-                    {{ album.quality }}
-                  </span>
-                </div>
-                
-                <!-- Hover Overlay -->
-                <div class="tile-overlay absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-all duration-300 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100">
-                  <button @click.stop="handleAlbumPlay(album)" class="w-14 h-14 rounded-full bg-primary text-on-accent flex items-center justify-center shadow-xl transform scale-75 group-hover:scale-100 transition-transform duration-300" title="Play album">
-                    <span class="material-symbols-outlined text-[28px]">play_arrow</span>
-                  </button>
-                  <span class="absolute bottom-3 text-white text-xs font-medium">{{ album.trackCount }} track{{ album.trackCount !== 1 ? 's' : '' }}</span>
-                </div>
-              </div>
-              
-              <!-- Info Area -->
-              <div class="tile-info p-3 space-y-1">
-                <h4 class="text-sm font-semibold text-ink line-clamp-2 leading-tight">{{ album.title }}</h4>
-                <p class="text-xs text-text-secondary truncate">{{ album.artist }}</p>
-                <div class="flex items-center justify-between pt-1">
-                  <div class="flex items-center gap-1">
-                    <span v-for="service in album.services.slice(0, 3)" :key="service" :class="['w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold', getServiceStyle(service)]">
-                      {{ getServiceIcon(service) }}
-                    </span>
+        <div
+          ref="gridContainerRef"
+          class="library-grid flex-1 min-h-0 overflow-y-auto custom-scrollbar border-x border-b border-gray-200 dark:border-border-dark rounded-b-xl bg-white dark:bg-surface-dark relative"
+          style="contain: strict;"
+          data-testid="library-grid"
+          @scroll="handleGridScroll"
+        >
+          <div :style="{ height: totalGridHeight + 'px', position: 'relative', width: '100%' }">
+            <div :style="{ transform: `translateY(${gridOffsetY}px)`, position: 'absolute', top: 0, left: 0, right: 0 }">
+              <div
+                v-for="(gridRow, gridRowIndex) in visibleGridRows"
+                :key="gridRowIndex"
+                class="grid-row flex gap-5 px-1"
+                :style="{ height: (gridTileSize + GRID_INFO_PX) + 'px', marginBottom: GRID_GAP_PX + 'px' }"
+              >
+                <div
+                  v-for="album in gridRow"
+                  :key="album.key"
+                  @click="handleAlbumClick(album.albumId || album.id)"
+                  :class="[
+                    'grid-tile group bg-white dark:bg-surface-dark rounded-xl overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 cursor-pointer hover:-translate-y-1 shrink-0',
+                    album.isSelected ? 'ring-3 ring-primary' : ''
+                  ]"
+                  :style="{ width: gridTileSize + 'px', height: (gridTileSize + GRID_INFO_PX) + 'px' }"
+                >
+                  <!-- Image Area -->
+                  <div class="tile-image relative overflow-hidden bg-gray-200 dark:bg-gray-800" :style="{ height: gridTileSize + 'px' }">
+                    <img v-if="album.coverUrl" :src="album.coverUrl" :alt="album.title" class="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" loading="lazy" />
+                    <div v-else :class="['absolute inset-0 w-full h-full', album.artGradient]"></div>
+
+                    <!-- Grid Placeholder Icon -->
+                    <div v-if="!album.coverUrl && !album.artGradient.includes('bg-')" class="absolute inset-0 flex items-center justify-center opacity-30">
+                      <span class="material-symbols-outlined text-[48px]">album</span>
+                    </div>
+
+                    <!-- Top-left: Download status -->
+                    <div class="absolute top-2 left-2 z-10">
+                      <span v-if="album.downloadStatus === 'downloaded'" class="w-6 h-6 rounded-full bg-success/90 text-white flex items-center justify-center shadow-lg">
+                        <span class="material-symbols-outlined text-[14px]">check</span>
+                      </span>
+                      <span v-else class="w-6 h-6 rounded-full bg-black/50 text-white flex items-center justify-center">
+                        <span class="material-symbols-outlined text-[14px]">cloud</span>
+                      </span>
+                    </div>
+
+                    <!-- Top-right: Quality badge -->
+                    <div class="absolute top-2 right-2">
+                      <span :class="['px-1.5 py-0.5 rounded text-[9px] font-bold shadow-lg', getQualityBadgeStyle(album.quality)]">
+                        {{ album.quality }}
+                      </span>
+                    </div>
+
+                    <!-- Hover Overlay -->
+                    <div class="tile-overlay absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-all duration-300 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100">
+                      <button @click.stop="handleAlbumPlay(album)" class="w-14 h-14 rounded-full bg-primary text-on-accent flex items-center justify-center shadow-xl transform scale-75 group-hover:scale-100 transition-transform duration-300" title="Play album">
+                        <span class="material-symbols-outlined text-[28px]">play_arrow</span>
+                      </button>
+                      <span class="absolute bottom-3 text-white text-xs font-medium">{{ album.trackCount }} track{{ album.trackCount !== 1 ? 's' : '' }}</span>
+                    </div>
                   </div>
-                  <span :class="['w-2.5 h-2.5 rounded-full', album.metadataScore >= 90 ? 'bg-success' : album.metadataScore >= 70 ? 'bg-warning' : 'bg-error']"></span>
+
+                  <!-- Info Area: altura fija para que la ventana virtual sea exacta -->
+                  <div class="tile-info p-3 space-y-1 overflow-hidden" :style="{ height: GRID_INFO_PX + 'px' }">
+                    <h4 class="text-sm font-semibold text-ink line-clamp-2 leading-tight">{{ album.title }}</h4>
+                    <p class="text-xs text-text-secondary truncate">{{ album.artist }}</p>
+                    <div class="flex items-center justify-between pt-1">
+                      <div class="flex items-center gap-1">
+                        <span v-for="service in album.services.slice(0, 3)" :key="service" :class="['w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold', getServiceStyle(service)]">
+                          {{ getServiceIcon(service) }}
+                        </span>
+                      </div>
+                      <span :class="['w-2.5 h-2.5 rounded-full', album.metadataScore >= 90 ? 'bg-success' : album.metadataScore >= 70 ? 'bg-warning' : 'bg-error']"></span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1045,207 +1063,97 @@
         </div>
       </template>
 
-      <!-- GROUPED VIEW: By Artist -->
-      <template v-else-if="groupBy === 'artist'">
-        <div class="flex-1 overflow-y-auto custom-scrollbar space-y-6" @scroll="handleScroll">
-          <div v-for="artistGroup in groupedByArtist" :key="artistGroup.artist" class="group-section">
-            <!-- Group Header -->
-            <div 
-              @click="toggleGroupExpand(artistGroup.artist)"
-              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-surface border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors rounded-t-lg"
-            >
-              <div class="w-12 h-12 rounded-full bg-gradient-to-br from-primary to-purple-500 flex items-center justify-center text-white font-bold text-lg shrink-0">
-                {{ artistGroup.artist.charAt(0) }}
-              </div>
-              <div class="flex-1 min-w-0">
-                <h3 class="text-lg font-bold text-ink truncate">{{ artistGroup.artist }}</h3>
-                <p class="text-xs text-text-secondary">{{ artistGroup.tracks.length }} tracks</p>
-              </div>
-              <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(artistGroup.artist) ? 'rotate-180' : '']">expand_more</span>
-            </div>
-            
-            <!-- Group Tracks -->
-            <div v-if="expandedGroups.includes(artistGroup.artist)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
-              <div
-                v-for="(track, idx) in artistGroup.tracks"
-                :key="trackRowKey(track)"
-                :data-track-id="track.id"
-                :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
-                class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
-                @click="handleTrackClick(track)"
-                @contextmenu.prevent="openContextMenu($event, track)"
-              >
-                <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
-                <TrackCover
-                  :src="track.coverUrl"
-                  :item-id="track.id"
-                  :alt="track.album || track.title"
-                  size-class="w-10 h-10"
-                  rounded="rounded"
-                />
-                <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-ink truncate">{{ track.title }}</p>
-                  <p class="text-xs text-text-secondary truncate">{{ track.album }}</p>
-                </div>
-                <span v-if="track.downloadStatus === 'downloaded'" class="text-success"><span class="material-symbols-outlined text-[16px]">check_circle</span></span>
-                <span class="text-xs text-text-secondary font-mono">{{ track.duration }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </template>
+      <!-- GROUPED VIEWS (L13, #110): una sola rama para artista/álbum/género/
+           calidad. Las filas se aplanan en cabeceras y pistas con altura fija
+           por tipo y se virtualizan con el kernel variable: solo se pinta la
+           ventana visible. El orden de los grupos es el del servidor (sin
+           comparadores en JavaScript). -->
+      <template v-else-if="groupBy !== 'none'">
+        <div
+          ref="groupContainerRef"
+          class="flex-1 min-h-0 overflow-y-auto custom-scrollbar border-x border-b border-gray-200 dark:border-border-dark rounded-b-xl bg-white dark:bg-surface-dark relative"
+          style="contain: strict;"
+          data-testid="library-groups"
+          @scroll="handleGroupScroll"
+        >
+          <div :style="{ height: totalGroupHeight + 'px', position: 'relative', width: '100%' }">
+            <div :style="{ transform: `translateY(${groupOffsetY}px)`, position: 'absolute', top: 0, left: 0, right: 0 }">
+              <div v-for="row in visibleGroupRows" :key="row.id" :style="{ height: row.height + 'px' }" class="box-border">
+                <!-- Group header -->
+                <div
+                  v-if="row.rowType === 'header' && row.header"
+                  @click="toggleGroupExpand(row.groupKey)"
+                  class="group-header h-full flex items-center gap-4 px-4 border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors"
+                >
+                  <template v-if="row.groupKind === 'artist'">
+                    <div class="w-12 h-12 rounded-full bg-gradient-to-br from-primary to-purple-500 flex items-center justify-center text-white font-bold text-lg shrink-0">
+                      {{ row.header.label.charAt(0) }}
+                    </div>
+                  </template>
+                  <template v-else-if="row.groupKind === 'album' && row.header.album">
+                    <div :class="['w-12 h-12 rounded-lg shrink-0 overflow-hidden', !row.header.album.coverUrl && row.header.album.artGradient]">
+                      <img v-if="row.header.album.coverUrl" :src="row.header.album.coverUrl" :alt="row.header.label" class="w-full h-full object-cover" loading="lazy" />
+                    </div>
+                  </template>
+                  <template v-else-if="row.groupKind === 'genre'">
+                    <div class="w-12 h-12 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold shrink-0">
+                      <span class="material-symbols-outlined text-[22px]">category</span>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div :class="['w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-[10px] shrink-0', getQualityStyle(row.header.label)]">
+                      {{ row.header.label }}
+                    </div>
+                  </template>
 
-      <!-- GROUPED VIEW: By Album -->
-      <template v-else-if="groupBy === 'album'">
-        <div class="flex-1 overflow-y-auto custom-scrollbar space-y-6" @scroll="handleScroll">
-          <div v-for="albumGroup in groupedByAlbum" :key="albumGroup.id" class="group-section">
-            <!-- Group Header -->
-            <div 
-              @click="toggleGroupExpand(albumGroup.title)"
-              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-surface border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors rounded-t-lg"
-            >
-              <div :class="['w-12 h-12 rounded-lg shrink-0 overflow-hidden', !albumGroup.coverUrl && albumGroup.artGradient]">
-                <img v-if="albumGroup.coverUrl" :src="albumGroup.coverUrl" :alt="albumGroup.title" class="w-full h-full object-cover" loading="lazy" />
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2">
-                  <h3 class="text-base font-bold text-ink truncate">{{ albumGroup.title }}</h3>
-                  <button 
-                    v-if="albumGroup.albumId"
-                    @click.stop="handleAlbumClick(albumGroup.albumId)"
-                    class="px-2 py-0.5 rounded bg-primary/20 hover:bg-primary/30 text-primary text-xs font-medium flex items-center gap-1 transition-colors"
-                    title="View Album Details"
-                  >
-                    <span>View Album</span>
-                    <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
-                  </button>
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2">
+                      <h3 class="text-base font-bold text-ink truncate">{{ row.header.label }}</h3>
+                      <button
+                        v-if="row.groupKind === 'album' && row.header.album?.albumId"
+                        @click.stop="handleAlbumClick(row.header.album?.albumId)"
+                        class="px-2 py-0.5 rounded bg-primary/20 hover:bg-primary/30 text-primary text-xs font-medium flex items-center gap-1 transition-colors"
+                        title="View Album Details"
+                      >
+                        <span>View Album</span>
+                        <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
+                      </button>
+                    </div>
+                    <p class="text-xs text-text-secondary truncate">
+                      <template v-if="row.groupKind === 'album' && row.header.album">
+                        {{ row.header.album.artist }} · {{ row.header.album.trackCount }} track{{ row.header.album.trackCount !== 1 ? 's' : '' }}
+                      </template>
+                      <template v-else>{{ row.header.tracks.length }} track{{ row.header.tracks.length !== 1 ? 's' : '' }}</template>
+                    </p>
+                  </div>
+                  <span v-if="row.groupKind === 'album' && row.header.album" :class="['px-2 py-1 rounded text-xs font-bold', getQualityBadgeStyle(row.header.album.quality)]">{{ row.header.album.quality }}</span>
+                  <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(row.groupKey) ? 'rotate-180' : '']">expand_more</span>
                 </div>
-                <p class="text-sm text-text-secondary">{{ albumGroup.artist }} · {{ albumGroup.trackCount }} track{{ albumGroup.trackCount !== 1 ? 's' : '' }}</p>
-              </div>
-              <span :class="['px-2 py-1 rounded text-xs font-bold', getQualityBadgeStyle(albumGroup.quality)]">{{ albumGroup.quality }}</span>
-              <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(albumGroup.title) ? 'rotate-180' : '']">expand_more</span>
-            </div>
-            
-            <!-- Group Tracks -->
-            <div v-if="expandedGroups.includes(albumGroup.title)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
-              <div
-                v-for="(track, idx) in albumGroup.tracks"
-                :key="trackRowKey(track)"
-                :data-track-id="track.id"
-                :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
-                class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
-                @click="handleTrackClick(track)"
-                @contextmenu.prevent="openContextMenu($event, track)"
-              >
-                <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
-                <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-ink truncate">{{ track.title }}</p>
-                </div>
-                <div class="flex items-center gap-1">
-                  <span v-if="track.downloadStatus === 'downloaded'" class="text-success"><span class="material-symbols-outlined text-[16px]">check_circle</span></span>
-                </div>
-                <span class="text-xs text-text-secondary font-mono">{{ track.duration }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </template>
 
-      <!-- GROUPED VIEW: By Genre (Real Metadata Grouping) -->
-      <template v-else-if="groupBy === 'genre'">
-        <div class="flex-1 overflow-y-auto custom-scrollbar space-y-6" @scroll="handleScroll">
-          <div v-for="genreGroup in groupedByGenre" :key="genreGroup.genre" class="group-section">
-            <!-- Group Header -->
-            <div 
-              @click="toggleGroupExpand(genreGroup.genre)"
-              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-surface border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors rounded-t-lg"
-            >
-              <div class="w-12 h-12 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold shrink-0">
-                <span class="material-symbols-outlined text-[22px]">category</span>
-              </div>
-              <div class="flex-1 min-w-0">
-                <h3 class="text-lg font-bold text-ink truncate">{{ genreGroup.genre }}</h3>
-                <p class="text-xs text-text-secondary">{{ genreGroup.tracks.length }} track{{ genreGroup.tracks.length !== 1 ? 's' : '' }}</p>
-              </div>
-              <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(genreGroup.genre) ? 'rotate-180' : '']">expand_more</span>
-            </div>
-            
-            <!-- Group Tracks -->
-            <div v-if="expandedGroups.includes(genreGroup.genre)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
-              <div
-                v-for="(track, idx) in genreGroup.tracks"
-                :key="trackRowKey(track)"
-                :data-track-id="track.id"
-                :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
-                class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
-                @click="handleTrackClick(track)"
-                @contextmenu.prevent="openContextMenu($event, track)"
-              >
-                <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
-                <TrackCover
-                  :src="track.coverUrl"
-                  :item-id="track.id"
-                  :alt="track.album || track.title"
-                  size-class="w-10 h-10"
-                  rounded="rounded"
-                />
-                <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-ink truncate">{{ track.title }}</p>
-                  <p class="text-xs text-text-secondary truncate">{{ track.artist }} · {{ track.album }}</p>
+                <!-- Track row inside an expanded group -->
+                <div
+                  v-else-if="row.track"
+                  :data-track-id="row.track.id"
+                  :class="['group-track h-full flex items-center gap-3 px-4 border-b border-gray-100 dark:border-border-dark/50 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group', highlightedTrackId === row.track.id ? 'bg-primary/10' : '']"
+                  @click="handleTrackClick(row.track)"
+                  @contextmenu.prevent="openContextMenu($event, row.track)"
+                >
+                  <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ (row.trackIndex ?? 0) + 1 }}</span>
+                  <TrackCover
+                    v-if="row.groupKind !== 'album'"
+                    :src="row.track.coverUrl"
+                    :item-id="row.track.id"
+                    :alt="row.track.album || row.track.title"
+                    size-class="w-10 h-10"
+                    rounded="rounded"
+                  />
+                  <div class="flex-1 min-w-0">
+                    <p class="text-sm font-medium text-ink truncate">{{ row.track.title }}</p>
+                    <p class="text-xs text-text-secondary truncate">{{ row.track.artist }} · {{ row.track.album }}</p>
+                  </div>
+                  <span v-if="row.track.downloadStatus === 'downloaded'" class="text-success"><span class="material-symbols-outlined text-[16px]">check_circle</span></span>
+                  <span class="text-xs text-text-secondary font-mono">{{ row.track.duration }}</span>
                 </div>
-                <div class="flex items-center gap-1">
-                  <span v-if="track.downloadStatus === 'downloaded'" class="text-success"><span class="material-symbols-outlined text-[16px]">check_circle</span></span>
-                </div>
-                <span class="text-xs text-text-secondary font-mono">{{ track.duration }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </template>
-
-      <!-- GROUPED VIEW: By Quality -->
-      <template v-else-if="groupBy === 'quality'">
-        <div class="flex-1 overflow-y-auto custom-scrollbar space-y-6" @scroll="handleScroll">
-          <div v-for="qualityGroup in groupedByQuality" :key="qualityGroup.quality" class="group-section">
-            <!-- Group Header -->
-            <div 
-              @click="toggleGroupExpand(qualityGroup.quality)"
-              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-surface border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors rounded-t-lg"
-            >
-              <div :class="['w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-[10px] shrink-0', getQualityStyle(qualityGroup.quality)]">
-                {{ qualityGroup.quality }}
-              </div>
-              <div class="flex-1 min-w-0">
-                <h3 class="text-lg font-bold text-ink truncate">{{ qualityGroup.quality }}</h3>
-                <p class="text-xs text-text-secondary">{{ qualityGroup.tracks.length }} tracks</p>
-              </div>
-              <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(qualityGroup.quality) ? 'rotate-180' : '']">expand_more</span>
-            </div>
-            
-            <!-- Group Tracks -->
-            <div v-if="expandedGroups.includes(qualityGroup.quality)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
-              <div
-                v-for="(track, idx) in qualityGroup.tracks"
-                :key="trackRowKey(track)"
-                :data-track-id="track.id"
-                :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
-                class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
-                @click="handleTrackClick(track)"
-                @contextmenu.prevent="openContextMenu($event, track)"
-              >
-                <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
-                <TrackCover
-                  :src="track.coverUrl"
-                  :item-id="track.id"
-                  :alt="track.album || track.title"
-                  size-class="w-10 h-10"
-                  rounded="rounded"
-                />
-                <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-ink truncate">{{ track.title }}</p>
-                  <p class="text-xs text-text-secondary truncate">{{ track.artist }} · {{ track.album }}</p>
-                </div>
-                <span class="text-xs text-text-secondary font-mono">{{ track.duration }}</span>
               </div>
             </div>
           </div>
@@ -1428,6 +1336,9 @@ import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { usePlayer } from '@/composables/usePlayer'
 import { useVirtualWindow } from '@/composables/useVirtualWindow'
 import { useTrackBrowser } from '@/composables/useTrackBrowser'
+import { pageQueryKey, usePagedQueryCache } from '@/composables/usePagedQueryCache'
+import { invalidateLibraryPages, onLibraryPagesInvalidated } from '@/composables/libraryCacheInvalidation'
+import { useLibraryCacheInvalidation } from '@/composables/useLibraryCacheInvalidation'
 import { useEnrichmentProgress } from '@/composables/useEnrichmentProgress'
 import {
   buildLibraryUrlQuery,
@@ -1865,39 +1776,39 @@ const SEARCH_PAGE_SIZE = 100;
 // búsqueda y contadores; el renderer deja de filtrar, ordenar o sustituir la
 // lista por una búsqueda.
 
-// L02 (#99): token de secuencia de la consulta. Cada carga fresca (offset 0)
-// incrementa el token; una respuesta que llega tarde se descarta y devuelve
-// la página de la carga vigente, para que nunca pise los resultados de la
-// última consulta (el debounce 250 ms espacia las peticiones, no las ordena).
-let libraryQuerySeq = 0
-let latestQuerySeq = 0
-let latestQueryPage: Promise<LibraryQueryResult> | null = null
+// L02 (#99): el token de secuencia de la consulta vive en `useTrackBrowser`
+// (load/loadMore) desde L13 (#110). La caché de páginas deduplica peticiones
+// simultáneas de la misma clave: dos cargas seguidas de la misma consulta
+// comparten una sola consulta al servidor.
 
-async function loadQueryPage(offset: number, limit: number): Promise<LibraryQueryResult> {
-  return await libraryApi.queryLibrary(buildLibraryQuery(offset, limit));
-}
-
-async function fetchLibraryPage(offset: number, limit: number): Promise<LibraryQueryResult> {
-  if (offset !== 0) {
-    return loadQueryPage(offset, limit);
-  }
-  const seq = ++libraryQuerySeq;
-  latestQuerySeq = seq;
-  latestQueryPage = loadQueryPage(offset, limit).then((result) => {
-    if (seq !== latestQuerySeq) {
-      // Respuesta vieja: descartada. La carga vigente (último offset 0)
-      // decide lo que se pinta; si sigue en vuelo, se devuelve su página.
-      return latestQueryPage ?? result;
-    }
-    if (result.counts) {
-      libraryCounts.value = result.counts;
-    }
-    return result;
-  });
-  return latestQueryPage;
-}
+/** Caché de páginas por clave de consulta (L13, #110). Sin TTL: los eventos
+ * invalidan (sync, importación, favorito, playlist, descarga, metadatos,
+ * cuarentena). Una página ya leída no vuelve a pedirse. */
+const libraryPages = usePagedQueryCache<LibraryQuery, LibraryQueryResult>({
+  keyOf: pageQueryKey,
+  fetchPage: (query) => libraryApi.queryLibrary(query),
+})
 
 const libraryCounts = ref<LibraryQueryCounts | null>(null);
+
+async function fetchLibraryPage(offset: number, limit: number): Promise<LibraryQueryResult> {
+  const query = buildLibraryQuery(offset, limit)
+  const requestKey = pageQueryKey(query)
+  const result = await libraryPages.load(query)
+  // Contadores: solo de la primera página, solo si la clave pedida sigue
+  // siendo la del estado actual y solo si la generación no fue invalidada.
+  // Al paginar (offset > 0) no se recalculan: la cabecera conserva los de la
+  // consulta.
+  if (
+    offset === 0 &&
+    result.page.counts &&
+    result.generation === libraryPages.generation.value &&
+    requestKey === pageQueryKey(buildLibraryQuery(0, limit))
+  ) {
+    libraryCounts.value = result.page.counts;
+  }
+  return result.page
+}
 
 // ==============================================
 // L03 (#100): estado de la vista → LibraryQuery y → URL
@@ -2224,6 +2135,20 @@ function toggleTrackSelection(id: number): void {
 const isLoading = browser.isLoading;
 const loadError = browser.loadError;
 
+// L13 (#110): la vista sigue activa o cacheada por <KeepAlive>. La caché se
+// invalida siempre que una mutación de la app cambia la consulta; si la vista
+// está oculta, la recarga espera a onActivated (una sola consulta al volver).
+let viewActive = true
+let cacheDirty = false
+useLibraryCacheInvalidation()
+const offLibraryInvalidated = onLibraryPagesInvalidated(() => {
+  libraryPages.invalidate()
+  cacheDirty = true
+  if (viewActive) {
+    debouncedReloadLibrary()
+  }
+})
+
 // Load tracks from backend
 async function loadLibrary() {
   await browser.load();
@@ -2232,6 +2157,7 @@ async function loadLibrary() {
   // derivado no puede quedar huérfano como antes quedaba el incremental).
   if (browser.loadError.value === null) {
     clearSelection();
+    cacheDirty = false
   }
 }
 
@@ -2920,11 +2846,10 @@ function selectLoadedPageOnly() {
 }
 
 // L01 (#98): filtros, búsqueda y orden viven EN SERVIDOR (query_library:
-// orden con desempates NOCASE estables y nulos al final). El renderer solo
-// pagina; el nombre histórico queda como alias del template y de la ventana
-// virtual, y la optimización de prefijo ordenado (obsoleta) se retira.
-const filteredTracks = computed(() => tracks.value)
-
+// orden con desempates NOCASE estables y nulos al final). L13 (#110): el
+// renderer no filtra, no ordena y no conserva un alias «filtered»: las filas
+// que pinta son exactamente las páginas que devuelve el servidor.
+//
 // La dirección y la clave de orden son parte de la consulta: al cambiarlas
 // se pide la página de nuevo (la dirección afecta SOLO a la clave primaria
 // y los desempates los fija el servidor). L03 (#100): también viven en la
@@ -2935,11 +2860,12 @@ watch([sortBy, sortDirection], () => {
     return
   }
   syncUrlFromView(true)
-  loadLibrary()
+  scheduleLibraryReload()
 })
 
-// Ventana virtual: kernel compartido (useVirtualWindow, ADR-0025). Los
-// nombres históricos se conservan como alias; el template no cambia.
+// Ventana virtual de la lista: kernel compartido (useVirtualWindow,
+// ADR-0025). Filas de 56 px, overscan 10, throttle de 120 ms y footer de fin
+// de lista de 48 px.
 const {
   containerRef: listContainerRef,
   scrollTop: libraryScrollTop,
@@ -2951,7 +2877,7 @@ const {
   visibleItems: visibleTracks,
   handleScroll,
   reset: resetVirtualScroll,
-} = useVirtualWindow(filteredTracks, {
+} = useVirtualWindow(tracks, {
   rowHeight: ROW_HEIGHT,
   overscan: OVERSCAN,
   footerHeight: () => (!hasMore.value && tracks.value.length > 0 ? END_OF_LIST_FOOTER_PX : 0),
@@ -2959,7 +2885,7 @@ const {
   onScrollMeasured: maybeLoadMore,
 })
 
-watch([() => filteredTracks.value.length, searchQuery, () => activeFilters.value], () => {
+watch([() => tracks.value.length, searchQuery, () => activeFilters.value], () => {
   if (listContainerRef.value && libraryScrollTop.value > totalVirtualHeight.value) {
     resetVirtualScroll()
   }
@@ -2967,6 +2893,8 @@ watch([() => filteredTracks.value.length, searchQuery, () => activeFilters.value
 
 // Album interface for grid view
 interface Album {
+  /** Identidad estable del grupo (albumId real o título+artista). */
+  key: string
   id: number
   albumId?: number | null
   title: string
@@ -2982,33 +2910,26 @@ interface Album {
   tracks: Track[]
 }
 
-// Todo colapsado al entrar: los nombres de demo iniciales eran datos falsos.
+// L13 (#110): agrupar NO es filtrar ni ordenar. Los grupos se forman en el
+// orden en que el servidor devuelve las filas (Map conserva la primera
+// aparición) y las pistas dentro de cada grupo mantienen ese mismo orden. No
+// hay `localeCompare` ni comparador de «fecha añadida» en el renderer.
 const expandedGroups = ref<string[]>([])
 
-const groupedByArtist = computed(() => {
-  const groups: { artist: string; tracks: Track[] }[] = []
-  const artistMap = new Map<string, Track[]>()
-  
-  for (const track of filteredTracks.value) {
-    const existing = artistMap.get(track.artist)
-    if (existing) {
-      existing.push(track)
-    } else {
-      artistMap.set(track.artist, [track])
-    }
-  }
-  
-  artistMap.forEach((tracks, artist) => {
-    groups.push({ artist, tracks })
-  })
-  
-  return groups.sort((a, b) => a.artist.localeCompare(b.artist))
-})
+type GroupKind = 'artist' | 'album' | 'genre' | 'quality'
+
+interface GroupSection {
+  key: string
+  kind: GroupKind
+  label: string
+  tracks: Track[]
+  album?: Album
+}
 
 const groupedByAlbum = computed<Album[]>(() => {
   const albumMap = new Map<string, Track[]>()
-  
-  for (const track of filteredTracks.value) {
+
+  for (const track of tracks.value) {
     const key = track.albumId ? `id_${track.albumId}` : `${track.album}||${track.artist}`
     const existing = albumMap.get(key)
     if (existing) {
@@ -3017,17 +2938,18 @@ const groupedByAlbum = computed<Album[]>(() => {
       albumMap.set(key, [track])
     }
   }
-  
+
   const albums: Album[] = []
   let idCounter = 1
-  
-  albumMap.forEach((tracks) => {
-    const firstTrack = tracks[0]
+
+  albumMap.forEach((albumTracks, groupKey) => {
+    const firstTrack = albumTracks[0]
     const albumRealId = firstTrack.albumId ?? idCounter++
     const uniqueServices = new Set<string>()
-    tracks.forEach(t => t.services.forEach(s => uniqueServices.add(s)))
-    
+    albumTracks.forEach(t => t.services.forEach(s => uniqueServices.add(s)))
+
     albums.push({
+      key: groupKey,
       id: albumRealId,
       albumId: firstTrack.albumId ?? null,
       title: firstTrack.album,
@@ -3036,49 +2958,66 @@ const groupedByAlbum = computed<Album[]>(() => {
       artGradient: firstTrack.artGradient,
       services: Array.from(uniqueServices),
       quality: firstTrack.quality,
-      downloadStatus: tracks.every(t => t.downloadStatus === 'downloaded') ? 'downloaded' : 
-                      tracks.some(t => t.downloadStatus === 'queued') ? 'queued' : 'not_downloaded',
-      metadataScore: Math.round(tracks.reduce((sum, t) => sum + (t.metadataScore ?? 0), 0) / tracks.length),
-      trackCount: tracks.length,
+      downloadStatus: albumTracks.every(t => t.downloadStatus === 'downloaded') ? 'downloaded' :
+                      albumTracks.some(t => t.downloadStatus === 'queued') ? 'queued' : 'not_downloaded',
+      metadataScore: Math.round(albumTracks.reduce((sum, t) => sum + (t.metadataScore ?? 0), 0) / albumTracks.length),
+      trackCount: albumTracks.length,
       isSelected: false,
-      tracks: tracks
+      tracks: albumTracks
     })
   })
-  
-  return albums.sort((a, b) => a.title.localeCompare(b.title))
+
+  return albums
 })
 
-// Real Genre Grouping
-const groupedByGenre = computed(() => {
-  const groups: { genre: string; tracks: Track[] }[] = []
-  const genreMap = new Map<string, Track[]>()
-  
-  for (const track of filteredTracks.value) {
-    const g = track.genre ? track.genre.trim() : 'Unknown Genre'
-    const existing = genreMap.get(g)
+const groupedByArtist = computed<GroupSection[]>(() => {
+  const artistMap = new Map<string, Track[]>()
+  for (const track of tracks.value) {
+    const existing = artistMap.get(track.artist)
     if (existing) {
       existing.push(track)
     } else {
-      genreMap.set(g, [track])
+      artistMap.set(track.artist, [track])
     }
   }
-  
-  genreMap.forEach((tracks, genre) => {
-    groups.push({ genre, tracks })
-  })
-  
-  return groups.sort((a, b) => {
-    if (a.genre === 'Unknown Genre') return 1
-    if (b.genre === 'Unknown Genre') return -1
-    return a.genre.localeCompare(b.genre)
-  })
+  return Array.from(artistMap, ([artist, groupTracks]) => ({
+    key: `artist:${artist}`,
+    kind: 'artist' as const,
+    label: artist,
+    tracks: groupTracks,
+  }))
 })
 
-const groupedByQuality = computed(() => {
-  const groups: { quality: string; tracks: Track[] }[] = []
+const albumSections = computed<GroupSection[]>(() => groupedByAlbum.value.map(album => ({
+  key: `album:${album.key}`,
+  kind: 'album' as const,
+  label: album.title,
+  tracks: album.tracks,
+  album,
+})))
+
+const groupedByGenre = computed<GroupSection[]>(() => {
+  const genreMap = new Map<string, Track[]>()
+  for (const track of tracks.value) {
+    const genre = track.genre ? track.genre.trim() : 'Unknown Genre'
+    const existing = genreMap.get(genre)
+    if (existing) {
+      existing.push(track)
+    } else {
+      genreMap.set(genre, [track])
+    }
+  }
+  return Array.from(genreMap, ([genre, groupTracks]) => ({
+    key: `genre:${genre}`,
+    kind: 'genre' as const,
+    label: genre,
+    tracks: groupTracks,
+  }))
+})
+
+const groupedByQuality = computed<GroupSection[]>(() => {
   const qualityMap = new Map<string, Track[]>()
-  
-  for (const track of filteredTracks.value) {
+  for (const track of tracks.value) {
     const quality = (!track.quality || track.quality === '—') ? 'Unknown' : track.quality
     const existing = qualityMap.get(quality)
     if (existing) {
@@ -3087,16 +3026,131 @@ const groupedByQuality = computed(() => {
       qualityMap.set(quality, [track])
     }
   }
-  
-  qualityMap.forEach((tracks, quality) => {
-    groups.push({ quality, tracks })
-  })
-  
-  return groups.sort((a, b) => {
-    if (a.quality === 'Unknown') return 1
-    if (b.quality === 'Unknown') return -1
-    return b.quality.localeCompare(a.quality)
-  })
+  return Array.from(qualityMap, ([quality, groupTracks]) => ({
+    key: `quality:${quality}`,
+    kind: 'quality' as const,
+    label: quality,
+    tracks: groupTracks,
+  }))
+})
+
+const groupSections = computed<GroupSection[]>(() => {
+  switch (groupBy.value) {
+    case 'artist': return groupedByArtist.value
+    case 'album': return albumSections.value
+    case 'genre': return groupedByGenre.value
+    case 'quality': return groupedByQuality.value
+    default: return []
+  }
+})
+
+// Filas heterogéneas de la vista agrupada: una cabecera por grupo y, si está
+// expandido, una fila por pista. Alturas fijas por tipo: el kernel variable
+// usa los prefijos acumulados para saber qué ventana pintar.
+const GROUP_HEADER_HEIGHT = 64
+const GROUP_TRACK_HEIGHT = 52
+const GROUP_OVERSCAN = 8
+
+interface GroupDisplayRow {
+  id: string
+  rowType: 'header' | 'track'
+  groupKind: GroupKind
+  groupKey: string
+  height: number
+  header?: GroupSection
+  track?: Track
+  trackIndex?: number
+}
+
+const groupDisplayRows = computed<GroupDisplayRow[]>(() => {
+  const rows: GroupDisplayRow[] = []
+  for (const section of groupSections.value) {
+    rows.push({
+      id: `header:${section.key}`,
+      rowType: 'header',
+      groupKind: section.kind,
+      groupKey: section.key,
+      height: GROUP_HEADER_HEIGHT,
+      header: section,
+    })
+    if (expandedGroups.value.includes(section.key)) {
+      section.tracks.forEach((track, trackIndex) => {
+        rows.push({
+          id: `track:${section.key}:${track.id}`,
+          rowType: 'track',
+          groupKind: section.kind,
+          groupKey: section.key,
+          height: GROUP_TRACK_HEIGHT,
+          track,
+          trackIndex,
+        })
+      })
+    }
+  }
+  return rows
+})
+
+const {
+  containerRef: groupContainerRef,
+  totalHeight: totalGroupHeight,
+  offsetY: groupOffsetY,
+  visibleItems: visibleGroupRows,
+  handleScroll: handleGroupScroll,
+  reset: resetGroupScroll,
+} = useVirtualWindow(groupDisplayRows, {
+  rowHeight: GROUP_TRACK_HEIGHT,
+  rowHeightFor: (index) => groupDisplayRows.value[index]?.height ?? GROUP_TRACK_HEIGHT,
+  overscan: GROUP_OVERSCAN,
+  scrollThrottleMs: SCROLL_THROTTLE_MS,
+  onScrollMeasured: maybeLoadMore,
+})
+
+// Grid virtualizado: las columnas responden a los breakpoints del diseño
+// (mismos que el grid de Tailwind) y el alto de fila se deriva del ancho de
+// baldosa, para que la ventana visible no dependa de un `aspect-square`
+// calculado por el navegador.
+const GRID_GAP_PX = 20
+const GRID_INFO_PX = 92
+const GRID_HORIZONTAL_PADDING_PX = 72
+const GRID_OVERSCAN = 3
+
+const gridColumns = ref(2)
+const gridAvailableWidth = ref(1024)
+
+function updateGridMetrics() {
+  const width = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 1024
+  gridAvailableWidth.value = width
+  gridColumns.value = width >= 1536 ? 6 : width >= 1024 ? 5 : width >= 768 ? 4 : width >= 640 ? 3 : 2
+}
+updateGridMetrics()
+
+const gridTileSize = computed(() => Math.max(
+  120,
+  Math.floor((gridAvailableWidth.value - GRID_HORIZONTAL_PADDING_PX - GRID_GAP_PX * (gridColumns.value - 1)) / gridColumns.value)
+))
+const gridRowHeight = computed(() => gridTileSize.value + GRID_INFO_PX + GRID_GAP_PX)
+
+const gridRows = computed<Album[][]>(() => {
+  const rows: Album[][] = []
+  const albums = groupedByAlbum.value
+  for (let index = 0; index < albums.length; index += gridColumns.value) {
+    rows.push(albums.slice(index, index + gridColumns.value))
+  }
+  return rows
+})
+
+const {
+  containerRef: gridContainerRef,
+  totalHeight: totalGridHeight,
+  offsetY: gridOffsetY,
+  visibleItems: visibleGridRows,
+  handleScroll: handleGridScroll,
+} = useVirtualWindow(gridRows, {
+  rowHeight: gridRowHeight,
+  overscan: GRID_OVERSCAN,
+  footerHeight: () => (!hasMore.value && gridRows.value.length > 0 ? END_OF_LIST_FOOTER_PX : 0),
+  scrollThrottleMs: SCROLL_THROTTLE_MS,
+  onScrollMeasured: maybeLoadMore,
 })
 
 function toggleGroupExpand(groupName: string) {
@@ -3119,6 +3173,22 @@ function getQualityBadgeStyle(quality: string): string {
 }
 
 // Methods
+/**
+ * Recarga coalescida de la vista (L13, #110): una ráfaga síncrona de cambios
+ * de filtro/orden produce UNA consulta cuando el estado ya está asentado, no
+ * una por clic. La caché se encarga de que volver a un filtro ya visitado no
+ * consulte de nuevo.
+ */
+let reloadQueued = false
+function scheduleLibraryReload() {
+  if (reloadQueued) return
+  reloadQueued = true
+  void Promise.resolve().then(() => {
+    reloadQueued = false
+    void loadLibrary()
+  })
+}
+
 function toggleFilter(filterId: string) {
   // Piezas deshabilitadas con su motivo: no activan un filtro sin semántica.
   if (filterPills.find(f => f.id === filterId)?.disabled) return
@@ -3139,8 +3209,9 @@ function toggleFilter(filterId: string) {
 
   // Cualquier cambio de filtro cambia la consulta: se pide de nuevo al
   // servidor (los contadores vienen con la primera página) y se refleja en
-  // la URL (push: atrás recorre estados de filtro).
-  loadLibrary()
+  // la URL (push: atrás recorre estados de filtro). La recarga se coalesce:
+  // una ráfaga de clics deja una sola consulta.
+  scheduleLibraryReload()
   syncUrlFromView(true)
 }
 
@@ -3149,7 +3220,7 @@ function removeFilter(filterId: string) {
   if (activeFilters.value.length === 0) {
     activeFilters.value = ['all']
   }
-  loadLibrary()
+  scheduleLibraryReload()
   syncUrlFromView(true)
 }
 
@@ -3169,7 +3240,7 @@ function clearAllFilters() {
     suppressSearchWatcher = true
     searchQuery.value = ''
   }
-  loadLibrary()
+  scheduleLibraryReload()
   syncUrlFromView(true)
 }
 
@@ -3284,7 +3355,7 @@ async function focusTrackFromQuery() {
     pagesLoaded++
   }
 
-  const trackIdx = filteredTracks.value.findIndex(t => t.id === trackId)
+  const trackIdx = tracks.value.findIndex(t => t.id === trackId)
   if (trackIdx >= 0 && listContainerRef.value) {
     listContainerRef.value.scrollTop = Math.max(0, trackIdx * ROW_HEIGHT - (libraryViewportHeight.value / 2))
     libraryScrollTop.value = listContainerRef.value.scrollTop
@@ -3449,6 +3520,9 @@ async function startMbDumpImport() {
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
   window.addEventListener('keydown', handleKeydown)
+  // Si el viewport cambia de ancho, las columnas del grid cambian: el kernel
+  // recalcula la ventana con el nuevo alto de fila.
+  window.addEventListener('resize', updateGridMetrics)
 
   // L03 (#100): la URL es la fuente del estado inicial (deep-linking).
   // applyUrlState asigna sin disparar watchers suprimidos; la carga única
@@ -3469,16 +3543,16 @@ onMounted(async () => {
   const refreshDetailIfOpen = () => {
     if (detailTrackId.value !== null) void refreshTrackDetail()
   }
+  // La invalidación de caché y la recarga con debounce las dispara
+  // `useLibraryCacheInvalidation` (matriz de eventos, L13); aquí solo se
+  // refresca el panel abierto con la misma llamada única.
   eventBus.on(TauriEvents.LIBRARY_UPDATED, async () => {
-    debouncedReloadLibrary()
     refreshDetailIfOpen()
   })
   eventBus.on(TauriEvents.IMPORT_COMPLETE, async () => {
-    debouncedReloadLibrary()
     refreshDetailIfOpen()
   })
   eventBus.on(TauriEvents.SYNC_COMPLETE, async () => {
-    debouncedReloadLibrary()
     refreshDetailIfOpen()
   })
   eventBus.on(TauriEvents.MB_DUMP_PROGRESS, (progress: MbDumpProgress) => {
@@ -3548,16 +3622,31 @@ function stopQueueStatsInterval() {
 }
 
 onActivated(() => {
+  viewActive = true
   startQueueStatsInterval()
+  // Una mutación ocurrida mientras la vista estaba cacheada invalidó la
+  // caché; al volver se relee una vez en vez de mostrar filas viejas.
+  if (cacheDirty) {
+    void loadLibrary()
+  }
 })
 
 onDeactivated(() => {
+  viewActive = false
   stopQueueStatsInterval()
+  // Sin recargas en la sombra: si un evento invalidó la caché mientras la
+  // vista estaba oculta, `cacheDirty` hace la única recarga al volver.
+  if (reloadDebounceTimer) {
+    clearTimeout(reloadDebounceTimer)
+    reloadDebounceTimer = null
+  }
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', closeContextMenu)
   window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('resize', updateGridMetrics)
+  offLibraryInvalidated()
   stopQueueStatsInterval()
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)

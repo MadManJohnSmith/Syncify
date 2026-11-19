@@ -8,7 +8,7 @@
  * compartido y solo pide la página siguiente al acercarse al final. No se
  * cargan todos los artistas ni se filtra en el cliente.
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { queryLibraryArtists } from '@/api/library'
 import { getAccounts, getServices } from '@/api/accounts'
@@ -17,12 +17,16 @@ import type {
   LibraryArtistQuery,
   LibraryArtistRow,
   LibraryArtistSortKey,
+  LibraryArtistsResult,
   Service,
   SortDirection,
 } from '@/api/types'
 import LibraryTabs from '@/components/LibraryTabs.vue'
 import TrackCover from '@/components/TrackCover.vue'
 import { useVirtualWindow } from '@/composables/useVirtualWindow'
+import { pageQueryKey, usePagedQueryCache } from '@/composables/usePagedQueryCache'
+import { onLibraryPagesInvalidated } from '@/composables/libraryCacheInvalidation'
+import { useLibraryCacheInvalidation } from '@/composables/useLibraryCacheInvalidation'
 
 defineOptions({ name: 'LibraryArtistsView' })
 
@@ -91,6 +95,14 @@ function buildQuery(offset: number): LibraryArtistQuery {
   }
 }
 
+// L13 (#110): misma caché de páginas por clave, deduplicación en vuelo e
+// invalidación explícita por evento que la pestaña de álbumes y de pistas.
+const artistPages = usePagedQueryCache<LibraryArtistQuery, LibraryArtistsResult>({
+  keyOf: pageQueryKey,
+  fetchPage: queryLibraryArtists,
+})
+useLibraryCacheInvalidation()
+
 let requestSeq = 0
 
 async function loadPage(refresh: boolean): Promise<void> {
@@ -104,11 +116,13 @@ async function loadPage(refresh: boolean): Promise<void> {
   }
 
   try {
-    const result = await queryLibraryArtists(buildQuery(offset))
+    const result = await artistPages.load(buildQuery(offset))
     if (seq !== requestSeq) return
-    artists.value = refresh ? result.artists : artists.value.concat(result.artists)
-    total.value = result.total
-    hasMore.value = result.hasMore
+    // Una invalidación en vuelo no se pinta: el evento ya programó la recarga.
+    if (result.generation !== artistPages.generation.value) return
+    artists.value = refresh ? result.page.artists : artists.value.concat(result.page.artists)
+    total.value = result.page.total
+    hasMore.value = result.page.hasMore
   } catch (e) {
     if (seq !== requestSeq) return
     error.value = e instanceof Error ? e.message : String(e)
@@ -129,6 +143,25 @@ function reload(): void {
   resetVirtualScroll()
   void loadPage(true)
 }
+
+let reloadTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleReload(): void {
+  if (reloadTimer) clearTimeout(reloadTimer)
+  reloadTimer = setTimeout(() => {
+    reloadTimer = null
+    reload()
+  }, 350)
+}
+
+const offLibraryInvalidated = onLibraryPagesInvalidated(() => {
+  artistPages.invalidate()
+  scheduleReload()
+})
+
+onUnmounted(() => {
+  offLibraryInvalidated()
+  if (reloadTimer) clearTimeout(reloadTimer)
+})
 
 /** Texto y orden comparten URL con la pestaña de pistas (L03). Cuenta y
  * servicio son propios de esta lista y no se escriben. */

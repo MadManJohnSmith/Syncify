@@ -338,3 +338,72 @@ describe('useVirtualWindow — API mínima compartida', () => {
         expect(w.visibleItems.value[0]).toBe(source.value[1]);
     });
 });
+
+describe('useVirtualWindow — L13 (#110): alturas reactivas y filas heterogéneas', () => {
+    it('rowHeight como getter: el grid recalcula altura total y ventana al cambiar de columnas', async () => {
+        const items = ref(rows(30));
+        const rowHeight = ref(286);
+        const w = useVirtualWindow(items, { rowHeight, overscan: 3, initialViewportHeight: 800 });
+
+        expect(w.totalHeight.value).toBe(30 * 286);
+        expect(w.endIndex.value).toBe(Math.ceil(800 / 286) + 3);
+
+        rowHeight.value = 180; // más columnas → filas más bajas
+        await nextTick();
+        expect(w.totalHeight.value).toBe(30 * 180);
+        expect(w.endIndex.value).toBe(Math.ceil(800 / 180) + 3);
+    });
+
+    it('rowHeightFor: cabeceras de 64 px y pistas de 52 px con prefijos acumulados', () => {
+        const items = ref([
+            { kind: 'header' }, { kind: 'track' }, { kind: 'track' }, { kind: 'header' },
+        ]);
+        const heights = [64, 52, 52, 64];
+        const w = useVirtualWindow(items, {
+            rowHeight: 52,
+            rowHeightFor: (index) => heights[index],
+            overscan: 0,
+            initialViewportHeight: 100,
+        });
+
+        // offsets: [0, 64, 116, 168, 232]
+        expect(w.totalHeight.value).toBe(232);
+
+        w.scrollTop.value = 100; // dentro del primer tramo de pistas
+        expect(w.startIndex.value).toBe(1); // fila 1: offset 64 <= 100
+        expect(w.endIndex.value).toBe(4);   // fila 3 cruza 200 → entra completa
+        expect(w.offsetY.value).toBe(64);
+        expect(w.visibleItems.value.map(item => item.kind)).toEqual(['track', 'track', 'header']);
+    });
+
+    it('rowHeightFor con overscan recorta por ambos lados y no baja de 0', () => {
+        const items = ref(rows(10));
+        const w = useVirtualWindow(items, {
+            rowHeight: 50,
+            rowHeightFor: () => 50,
+            overscan: 2,
+            initialViewportHeight: 100,
+        });
+
+        w.scrollTop.value = 250;
+        expect(w.startIndex.value).toBe(3); // floor(250/50)=5, -2
+        expect(w.endIndex.value).toBe(10);  // indexAt(350)=7 → +1 +2 (tope 10)
+        expect(w.offsetY.value).toBe(150);
+    });
+
+    it('rowHeightFor con footer reactivo mantiene la altura total de la vista agrupada', async () => {
+        const items = ref([{ kind: 'header' }, { kind: 'track' }]);
+        const hasMore = ref(true);
+        const w = useVirtualWindow(items, {
+            rowHeight: 52,
+            rowHeightFor: (index) => (index === 0 ? 64 : 52),
+            overscan: 0,
+            footerHeight: () => (hasMore.value ? 0 : 48),
+        });
+
+        expect(w.totalHeight.value).toBe(116);
+        hasMore.value = false;
+        await nextTick();
+        expect(w.totalHeight.value).toBe(164);
+    });
+});

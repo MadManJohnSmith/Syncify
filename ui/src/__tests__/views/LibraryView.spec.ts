@@ -1058,10 +1058,10 @@ describe('LibraryView performance and UI improvements (PR-01, PR-02, L-11, L-12)
         await scroller.trigger('scroll');
         await flushPromises();
 
-        // Cargas offset 0: carga inicial (setup) + onMounted + recarga por el
-        // cambio de orden (L01: el orden es parte de la consulta). Luego el
-        // append en offset 2.
-        expect(calls).toEqual([0, 0, 0, 2]);
+        // L13 (#110): las dos cargas iniciales (setup + onMounted) de la
+        // MISMA clave comparten una sola petición deduplicada; el cambio de
+        // orden pide su página 0 y el append va a offset 2.
+        expect(calls).toEqual([0, 0, 2]);
         // L01: el orden lo fija el servidor — concatenar páginas conserva el
         // orden devuelto y no duplica ni pierde filas con datos estáticos.
         expect(wrapper.findAll('.track-row').map(row => Number(row.attributes('data-track-id')))).toEqual([2, 1, 3, 4]);
