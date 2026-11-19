@@ -187,6 +187,56 @@ describe('ArtistDetailView', () => {
         expect(rows).toHaveLength(4);
     });
 
+    it('reintenta la página siguiente tras un fallo de paginación', async () => {
+        let attempts = 0;
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_artist') return { ...mockArtist, tracks_total: 3 };
+            if (cmd === 'query_library_artist_tracks') {
+                attempts += 1;
+                if (attempts === 1) throw new Error('network down');
+                const query = args?.query as { offset: number };
+                return {
+                    tracks: [{
+                        id: 103,
+                        title: 'Joint',
+                        album: 'Abbey Road',
+                        albumId: 10,
+                        durationMs: 240000,
+                        collaborators: [],
+                        sources: [],
+                    }],
+                    total: 3,
+                    offset: query.offset,
+                    limit: 100,
+                    hasMore: false,
+                };
+            }
+            return null;
+        });
+
+        const wrapper = mount(ArtistDetailView);
+        await flushPromises();
+
+        await wrapper.findAll('button').find(b => b.text().includes('All Tracks'))!.trigger('click');
+        await flushPromises();
+
+        expect(wrapper.find('[data-testid="artist-tracks-error"]').exists()).toBe(true);
+        expect(attempts).toBe(1);
+
+        // El scroll no reintenta solo (evitaría un bucle con el error vivo).
+        await wrapper.find('[data-testid="artist-tracks-scroll"]').trigger('scroll');
+        await flushPromises();
+        expect(attempts).toBe(1);
+
+        // El botón explícito limpia el error y pide la página que faltaba.
+        await wrapper.find('[data-testid="artist-tracks-retry"]').trigger('click');
+        await flushPromises();
+
+        expect(attempts).toBe(2);
+        expect(wrapper.find('[data-testid="artist-tracks-error"]').exists()).toBe(false);
+        expect(wrapper.findAll('[data-testid="artist-track-row"]')).toHaveLength(3);
+    });
+
     it('handles SourceIdentityMissing error on artist download gracefully', async () => {
         mockInvoke((cmd) => {
             if (cmd === 'get_artist') return mockArtist;

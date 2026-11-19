@@ -56,7 +56,8 @@ pub enum LibraryArtistSortKey {
     /// Nombre del artista `NOCASE`.
     #[default]
     Name,
-    /// Pistas distintas vivas del artista (descendente por defecto).
+    /// Pistas distintas vivas del artista. La dirección la manda la
+    /// consulta (la UI la envía explícita); el `Default` global es asc.
     Tracks,
     /// Máximo `library_added_at` vivo de las pistas del artista.
     DateAdded,

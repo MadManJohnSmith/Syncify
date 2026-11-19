@@ -167,8 +167,16 @@
           class="flex-1 min-h-0 overflow-y-auto custom-scrollbar border-t border-gray-200 dark:border-border-dark"
           @scroll="handleScroll"
         >
-          <div v-if="tracksError" class="px-6 py-4 text-sm text-error" data-testid="artist-tracks-error">
-            Could not load more tracks: {{ tracksError }}
+          <div v-if="tracksError" class="px-6 py-4 text-sm text-error flex items-center justify-between gap-4" data-testid="artist-tracks-error">
+            <span>Could not load more tracks: {{ tracksError }}</span>
+            <button
+              type="button"
+              data-testid="artist-tracks-retry"
+              class="shrink-0 px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-lg text-ink hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors"
+              @click="retryTracks"
+            >
+              Try again
+            </button>
           </div>
           <div v-else-if="tracks.length === 0" class="text-center py-8 text-text-secondary" data-testid="artist-tracks-empty">
             <span class="material-symbols-outlined text-4xl mb-2">music_off</span>
@@ -353,6 +361,29 @@ async function loadMoreTracks(): Promise<void> {
 }
 
 /**
+ * Un fallo de paginación no puede dejar la lista muerta: el early-return de
+ * `loadMoreTracks` respeta `tracksError` para no reintentar en bucle desde el
+ * scroll, así que el reintento es explícito.
+ */
+function retryTracks(): void {
+  if (tracksLoadingMore.value) return
+  tracksError.value = null
+  void loadMoreTracks()
+}
+
+/**
+ * Pide la página extra solo cuando la pestaña de pistas está abierta. Se usa
+ * al entrar en la pestaña y también tras recargar el artista: un reintento
+ * con la pestaña ya activa no cambia `activeTab` y dejaría las cinco filas
+ * de `top_tracks` sin scroll para pedir el resto.
+ */
+function ensureExtraTracksPage(): void {
+  if (activeTab.value === 'tracks' && hasMoreTracks.value) {
+    void loadMoreTracks()
+  }
+}
+
+/**
  * `top_tracks` only brings the album title; the cover is resolved against the
  * albums already present in the same response, without querying again.
  */
@@ -481,6 +512,9 @@ async function loadArtist() {
       tracksError.value = null
       tracksLoadingMore.value = false
       resetVirtualTracks()
+      // Si el reintento ocurre con la pestaña de pistas ya activa, el watch
+      // no dispara: se pide aquí la página extra.
+      ensureExtraTracksPage()
     } else {
       error.value = 'Failed to load artist'
     }
@@ -498,10 +532,8 @@ async function loadArtist() {
  * resto de páginas no llegaría a pedirse nunca. Al abrir la pestaña se pide
  * UNA página más; el scroll sigue paginando el resto (no se cargan todas).
  */
-watch(activeTab, (tab) => {
-  if (tab === 'tracks' && hasMoreTracks.value) {
-    void loadMoreTracks()
-  }
+watch(activeTab, () => {
+  ensureExtraTracksPage()
 })
 
 onMounted(() => {
