@@ -69,6 +69,18 @@ aquí solo queda lo aprendido con fecha. Relacionadas:
   Fuente: dos muertes OOM del carril A86 en la sesión del 2026-11-17;
   `free -h` y `pgrep -a cargo` medidos.
 
+## Pines de herramientas y retención upstream
+
+- **2026-11-19, medido**: BtbN purga los autobuilds **diarios** de ffmpeg
+  (el pin `autobuild-2026-11-05` devolvía 404 catorce días después y tumbaba
+  el job Rust de Windows en 15 s), pero conserva las instantáneas
+  **mensuales** (la de 2024-12-31 seguía publicada). El pin pasó a
+  `autobuild-2026-10-31-12-59` (N-128227) con los SHA-256 medidos de
+  `win64-gpl.zip` y `linux64-gpl.tar.xz`; `test_dependency_manager_pins.py`
+  exige ahora día del mes >= 28 y la misma instantánea en ambas plataformas.
+  Al repinear, medir el SHA del asset descargado y comprobar que contiene
+  `ffmpeg`/`ffprobe`. Fuente: PR #335 (`924d169`), run 44534488480.
+
 ## Symlinks de entorno y staging
 
 - **2026-11-13, casi-error capturado antes de empujar**: los patrones de

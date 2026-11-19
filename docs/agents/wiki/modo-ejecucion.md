@@ -417,3 +417,18 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   `git status`/`git log` antes de relanzar. Así se terminaron #133, #120,
   #154, #247, #91, #135 y #116 sin repetir el trabajo. Fuente: rescates
   de la sesión.
+- **2026-11-19**: L08 #105 fusionado por squash en PR #334 (`22d92a6`),
+  issue cerrado citando el SHA. Tres commits (WIP, claims medidos y
+  reintento de paginación del detalle); la revisión independiente no
+  encontró bloqueantes y el pulido menor quedó en #336. Cifras medidas:
+  345 objetivos cargo, 150 ficheros / 1275 tests UI, 476 Python. Antes
+  se fusionó #335 (`924d169`), el repin de ffmpeg que desbloqueó el job
+  Rust de Windows. Fuente: `git log dev`, PRs #334/#335.
+- **2026-11-19, dependencias reales de la serie #96**: #106
+  (cuarentena) no era ejecutable: `sync_quarantine` no existe en el
+  árbol y #72 sigue abierto (depende de T02-T04 y #71). #108 depende de
+  #77 y #109 de la serie D. Carril desbloqueado elegido para el segundo
+  turno: #110 (L13), que solo depende de L01-L04. Lección: re-derivar
+  el grafo del tracker antes de seguir el orden de la cola del handoff.
+  Fuente: cuerpos de #106/#108/#109/#110/#72 y `grep sync_quarantine`
+  del 2026-11-19.
