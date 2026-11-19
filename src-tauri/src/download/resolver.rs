@@ -25,8 +25,12 @@
 //!   del orquestador (ISRC validado, controles de edición/duración, ambigüedad
 //!   falla cerrada). `SongLink` nunca es prueba de audio descargable.
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
+
+use crate::download::entitlements::{self, TrackEvidence};
 
 /// ED-03's bounded discovery policy. Adapters may feed observations, but this
 /// pure accumulator never fetches pages or interprets a single page as complete.
@@ -693,6 +697,14 @@ use syncify_core_domain::quality::{classify_audio_tier, AudioTier};
 /// servicios no puede producir una racha de reintentos sin acotar.
 pub const MAX_PLAN_CANDIDATES: usize = 12;
 
+/// Tope de destinos (servicios con adaptador) que un plan puede considerar por
+/// pista. Evita recorrer todos los servicios del catálogo.
+pub const MAX_PLAN_DESTINATIONS: usize = 3;
+
+/// Tope de cuentas por destino dentro de un plan. La preferencia es blanda,
+/// pero no puede convertirse en un sondeo de todas las cuentas del servicio.
+pub const MAX_ACCOUNTS_PER_DESTINATION: usize = 2;
+
 /// Tope de rondas de re-resolución tras un intento fallido.
 pub const MAX_RE_RESOLUTIONS: u32 = 4;
 
@@ -796,7 +808,17 @@ pub struct DownloadIntent {
     /// `tracks.id` canónico del ítem a resolver.
     pub canonical_track_id: i64,
     /// Servicio pedido explícitamente ('qobuz', 'tidal', ...).
+    ///
+    /// Es el lock histórico de la fila de cola: con `allow_fallback = false`
+    /// restringe la entrega a ese servicio. La preferencia de destino del job
+    /// viaja en `destination_service`; no son el mismo selector.
     pub requested_service: Option<String>,
+    /// Destino preferido del job ('qobuz', 'tidal', ...). Ordena sin encerrar:
+    /// con `allow_fallback = true` el resto de destinos sigue disponible.
+    pub destination_service: Option<String>,
+    /// Fuente de biblioteca del job (informativa). No filtra destinos: la
+    /// fuente dice de dónde salió la pista, no quién puede servirla.
+    pub source_service: Option<String>,
     /// Calidad pedida: etiqueta de cola ('hires'/'lossless'/'high'/'any') o
     /// cualquier grafía estilo API.
     pub requested_quality: Option<String>,
@@ -815,6 +837,8 @@ impl Default for DownloadIntent {
         Self {
             canonical_track_id: 0,
             requested_service: None,
+            destination_service: None,
+            source_service: None,
             requested_quality: None,
             strict_quality: false,
             allow_fallback: true,
@@ -880,6 +904,9 @@ pub enum ResolutionError {
     NoDownloadableSource { reason: String },
     /// No hay ninguna cuenta con credenciales resolubles para el servicio.
     NoActiveAccount { service_name: String },
+    /// La pista solo tiene fuentes de catálogo (Spotify/Apple Music) y ningún
+    /// destino con adaptador. Se omite; no es un fallo de descarga.
+    NoProvider { reason: String },
     /// Varias ediciones compiten y la política falla cerrada.
     AmbiguousSource { reason: String },
     /// La calidad del candidato no cumple el modo estricto.
@@ -973,16 +1000,39 @@ fn account_validity(row: &AccountRow) -> u8 {
     u8::from(row.credentials_invalid.unwrap_or(0) != 0)
 }
 
-/// Ordena cuentas con la MISMA política que
-/// `get_service_fallback_account_ids` (`accounts.rs:690-717`): inválidas al
-/// final, `sí > desconocido > no`, activas primero, más nuevas primero. Aquí se
-/// reimplementa la ordenación porque aquella devuelve solo ids y el plan además
-/// necesita el estado de entitlement de cada cuenta; el criterio es idéntico y
-/// está probado contra `accounts.rs` en los tests de este módulo.
-fn rank_accounts(mut rows: Vec<AccountRow>) -> Vec<CandidateAccount> {
+/// Ordena cuentas con la política de `get_service_fallback_account_ids`
+/// (`accounts.rs:690-717`) y las preferencias de D04:
+/// inválidas al final; después preferida del job, preferida del servicio,
+/// evidencia `granted` vigente, `sí > desconocido > no`, activas primero, más
+/// nuevas primero. Una cuenta con `denied` vigente no entra en la lista.
+fn rank_accounts(
+    mut rows: Vec<AccountRow>,
+    preferred_account_id: Option<i64>,
+    service_preferred_account_id: Option<i64>,
+    evidence: Option<(&TrackEvidence, &str)>,
+) -> Vec<CandidateAccount> {
+    rows.retain(|row| !evidence.is_some_and(|(facts, service)| facts.is_denied(service, row.id)));
     rows.sort_by(|a, b| {
+        let preference_rank = |id: i64| {
+            if Some(id) == preferred_account_id {
+                0
+            } else if Some(id) == service_preferred_account_id {
+                1
+            } else {
+                2
+            }
+        };
+        let evidence_rank = |id: i64| {
+            if evidence.is_some_and(|(facts, service)| facts.is_granted(service, id)) {
+                0
+            } else {
+                1
+            }
+        };
         account_validity(a)
             .cmp(&account_validity(b))
+            .then_with(|| preference_rank(a.id).cmp(&preference_rank(b.id)))
+            .then_with(|| evidence_rank(a.id).cmp(&evidence_rank(b.id)))
             .then_with(|| {
                 entitlement_rank(b.streaming_entitled).cmp(&entitlement_rank(a.streaming_entitled))
             })
@@ -1130,31 +1180,90 @@ fn service_cap_from_preferences(raw: Option<&str>) -> Option<u8> {
     crate::commands::settings::service_max_quality_rank(raw)
 }
 
-/// Ordena candidatos con la matriz de fallback aprobada por el usuario:
-/// CALIDAD descendente primero (24-bit/hires → 16-bit/lossless → lossy), y
-/// dentro de la misma calidad, el orden de servicios configurado
-/// (`service_preferences.priority`), `quality_score` y `bit_depth`.
-/// La edición fijada (`locked_track_source_id`) sigue mandando por encima.
-fn rank_candidates(candidates: &mut [PlanCandidate]) {
-    candidates.sort_by(|a, b| {
-        b.candidate_tier
-            .cmp(&a.candidate_tier)
+/// Fila de `track_sources` ya filtrada y con su tier calculado, antes de
+/// consultar cuentas. Ordenar las filas primero permite acotar los destinos
+/// ANTES de leer cuentas: nunca se recorren todas las cuentas de todos los
+/// servicios por pista.
+struct PreparedSource {
+    row: SourceRow,
+    tier: AudioTier,
+}
+
+/// Ordena destinos con la política de D04: destino preferido del job,
+/// evidencia `granted` vigente, calidad, prioridad de servicio configurada,
+/// `quality_score` y `bit_depth`. La edición fijada se coloca aparte antes de
+/// esta ordenación.
+fn rank_sources(
+    sources: &mut [PreparedSource],
+    preferred_destination: Option<&str>,
+    evidence: &TrackEvidence,
+) {
+    sources.sort_by(|a, b| {
+        if let Some(preferred) = preferred_destination {
+            let a_preferred = a.row.service_name.eq_ignore_ascii_case(preferred);
+            let b_preferred = b.row.service_name.eq_ignore_ascii_case(preferred);
+            if a_preferred != b_preferred {
+                return b_preferred.cmp(&a_preferred);
+            }
+        }
+
+        let a_evidence = evidence.has_granted_service(&a.row.service_name);
+        let b_evidence = evidence.has_granted_service(&b.row.service_name);
+        if a_evidence != b_evidence {
+            return b_evidence.cmp(&a_evidence);
+        }
+
+        b.tier
+            .cmp(&a.tier)
             .then_with(|| {
-                a.service_priority
+                a.row
+                    .service_priority
                     .unwrap_or(999)
-                    .cmp(&b.service_priority.unwrap_or(999))
+                    .cmp(&b.row.service_priority.unwrap_or(999))
             })
             .then_with(|| {
-                b.quality_score
+                b.row
+                    .quality_score
                     .unwrap_or(0)
-                    .cmp(&a.quality_score.unwrap_or(0))
+                    .cmp(&a.row.quality_score.unwrap_or(0))
             })
-            .then_with(|| b.bit_depth.unwrap_or(0).cmp(&a.bit_depth.unwrap_or(0)))
+            .then_with(|| {
+                b.row
+                    .bit_depth
+                    .unwrap_or(0)
+                    .cmp(&a.row.bit_depth.unwrap_or(0))
+            })
+            .then_with(|| a.row.id.cmp(&b.row.id))
     });
+}
+
+/// Conserva como máximo `MAX_PLAN_DESTINATIONS` servicios distintos, contando
+/// cada servicio una sola vez. La lista ya viene ordenada por preferencia.
+fn take_bounded_destinations(sources: Vec<PreparedSource>) -> Vec<PreparedSource> {
+    let mut seen = HashSet::new();
+    let mut kept = Vec::new();
+    for source in sources {
+        let service = source.row.service_name.to_ascii_lowercase();
+        if seen.contains(&service) {
+            kept.push(source);
+            continue;
+        }
+        if seen.len() >= MAX_PLAN_DESTINATIONS {
+            continue;
+        }
+        seen.insert(service);
+        kept.push(source);
+    }
+    kept
 }
 
 /// Lee `track_sources`, filtra y ordena, y adjunta a cada candidato el orden de
 /// cuentas. La edición fijada (`locked_track_source_id`) va primera siempre.
+///
+/// Los destinos se acotan ANTES de leer cuentas: como máximo
+/// `MAX_PLAN_DESTINATIONS` servicios distintos y, para cada uno,
+/// `MAX_ACCOUNTS_PER_DESTINATION` cuentas. Una pista no dispara consultas de
+/// cuentas para servicios que ni siquiera la tienen en `track_sources`.
 async fn build_candidates(
     db: &SqlitePool,
     intent: &DownloadIntent,
@@ -1184,7 +1293,39 @@ async fn build_candidates(
         reason: format!("reading track_sources: {e}"),
     })?;
 
-    let mut candidates: Vec<PlanCandidate> = Vec::with_capacity(rows.len());
+    let saw_source = !rows.is_empty();
+    let saw_downloadable = rows
+        .iter()
+        .any(|row| row.supports_download.unwrap_or(0) == 1 && row.available.unwrap_or(1) == 1);
+
+    let evidence = entitlements::load_track_evidence(db, intent.canonical_track_id)
+        .await
+        .map_err(|e| ResolutionError::DatabaseError {
+            reason: format!("reading download_entitlements: {e}"),
+        })?;
+
+    let service_preferred: HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
+        "SELECT service_name, account_id FROM service_preferred_accounts",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| ResolutionError::DatabaseError {
+        reason: format!("reading service_preferred_accounts: {e}"),
+    })?
+    .into_iter()
+    .map(|(service, account_id)| (service.to_ascii_lowercase(), account_id))
+    .collect();
+
+    // El destino preferido ordena. Con fallback prohibido se convierte en
+    // candado, igual que la preferencia explícita de servicio de la cola.
+    let preferred_destination = intent
+        .destination_service
+        .as_deref()
+        .or(intent.requested_service.as_deref())
+        .map(str::trim)
+        .filter(|service| !service.is_empty());
+
+    let mut prepared: Vec<PreparedSource> = Vec::with_capacity(rows.len());
     for row in rows {
         if row.supports_download.unwrap_or(0) != 1 || row.available.unwrap_or(1) != 1 {
             continue;
@@ -1201,13 +1342,11 @@ async fn build_candidates(
         if source_track_id.is_empty() {
             continue;
         }
-        // Con fallback permitido, el servicio solicitado ya no es un candado:
-        // todos los servicios descargables compiten y decide el orden
-        // (calidad descendente, luego `service_preferences.priority`). Con
-        // fallback prohibido la petición queda restringida a ese servicio.
-        if let Some(ref requested) = intent.requested_service {
-            if !intent.allow_fallback && !row.service_name.eq_ignore_ascii_case(requested) {
-                continue;
+        if !intent.allow_fallback {
+            if let Some(preferred) = preferred_destination {
+                if !row.service_name.eq_ignore_ascii_case(preferred) {
+                    continue;
+                }
             }
         }
         if exclusions.excludes_identity(row.service_id, source_track_id) {
@@ -1220,68 +1359,102 @@ async fn build_candidates(
             None,
             row.format.as_deref(),
         );
+        prepared.push(PreparedSource { row, tier });
+    }
 
-        let account_rows: Vec<AccountRow> = sqlx::query_as(
-            r#"
-            SELECT a.id, a.is_active, IFNULL(a.credentials_invalid, 0) as credentials_invalid,
-                   a.streaming_entitled
-            FROM accounts a
-            JOIN services s ON s.id = a.service_id
-            WHERE LOWER(s.name) = LOWER(?)
-              -- #85 ciclo de vida: una cuenta desactivada o archivada deja de
-              -- recibir descargas; ni primaria ni como fallback de hermanas.
-              AND a.state = 'enabled'
-            "#,
-        )
-        .bind(&row.service_name)
-        .fetch_all(db)
-        .await
-        .unwrap_or_default();
+    rank_sources(&mut prepared, preferred_destination, &evidence);
 
-        let mut ranked = rank_accounts(account_rows);
-        if let Some(pref) = intent.preferred_account_id {
-            if let Some(pos) = ranked.iter().position(|a| a.account_id == pref) {
-                let preferred = ranked.remove(pos);
-                ranked.insert(0, preferred);
-            }
+    // La edición fijada se aparta después de ordenar y antes de acotar destinos
+    // para que ninguna preferencia la deje fuera del plan.
+    if let Some(locked_id) = intent.locked_track_source_id {
+        if let Some(pos) = prepared
+            .iter()
+            .position(|source| source.row.id == locked_id)
+        {
+            let locked = prepared.remove(pos);
+            prepared.insert(0, locked);
         }
-        ranked.retain(|a| !exclusions.excludes_account(row.track_id, row.service_id, a.account_id));
-        if ranked.is_empty() {
+    }
+
+    let prepared = take_bounded_destinations(prepared);
+
+    // Una sola consulta de cuentas por servicio, aunque haya varias ediciones
+    // del mismo servicio en `track_sources`.
+    let mut accounts_by_service: HashMap<String, Vec<CandidateAccount>> = HashMap::new();
+    let mut candidates: Vec<PlanCandidate> = Vec::with_capacity(prepared.len());
+
+    for source in prepared {
+        let row = source.row;
+        let service_key = row.service_name.to_ascii_lowercase();
+        let ranked = if let Some(cached) = accounts_by_service.get(&service_key) {
+            cached.clone()
+        } else {
+            let account_rows: Vec<AccountRow> = sqlx::query_as(
+                r#"
+                SELECT a.id, a.is_active, IFNULL(a.credentials_invalid, 0) as credentials_invalid,
+                       a.streaming_entitled
+                FROM accounts a
+                JOIN services s ON s.id = a.service_id
+                WHERE LOWER(s.name) = LOWER(?)
+                  -- #85 ciclo de vida: una cuenta desactivada o archivada deja de
+                  -- recibir descargas; ni primaria ni como fallback de hermanas.
+                  AND a.state = 'enabled'
+                "#,
+            )
+            .bind(&row.service_name)
+            .fetch_all(db)
+            .await
+            .unwrap_or_default();
+
+            let ranked = rank_accounts(
+                account_rows,
+                intent.preferred_account_id,
+                service_preferred.get(&service_key).copied(),
+                Some((&evidence, row.service_name.as_str())),
+            );
+            accounts_by_service.insert(service_key.clone(), ranked.clone());
+            ranked
+        };
+
+        let mut usable: Vec<CandidateAccount> = ranked
+            .into_iter()
+            .filter(|account| {
+                !exclusions.excludes_account(row.track_id, row.service_id, account.account_id)
+            })
+            .take(MAX_ACCOUNTS_PER_DESTINATION)
+            .collect();
+        if usable.is_empty() {
             continue;
         }
 
-        let siblings: Vec<CandidateAccount> = ranked.iter().skip(1).cloned().collect();
+        let primary = usable.remove(0);
         candidates.push(PlanCandidate {
             service_id: row.service_id,
             service_name: row.service_name,
-            service_track_id: source_track_id.to_string(),
-            candidate_tier: tier,
+            service_track_id: row.service_track_id.trim().to_string(),
+            candidate_tier: source.tier,
             identity: CandidateIdentity {
                 track_source_id: row.id,
                 canonical_track_id: row.track_id,
                 isrc: row.isrc,
             },
-            account: Some(ranked.remove(0)),
-            sibling_accounts: siblings,
+            account: Some(primary),
+            sibling_accounts: usable,
             service_priority: row.service_priority,
             quality_score: row.quality_score,
             bit_depth: row.bit_depth,
         });
     }
 
-    rank_candidates(&mut candidates);
-
-    // La edición que el llamador fijó manda sobre el orden por prioridad.
-    if let Some(locked_id) = intent.locked_track_source_id {
-        if let Some(pos) = candidates
-            .iter()
-            .position(|c| c.identity.track_source_id == locked_id)
-        {
-            let locked = candidates.remove(pos);
-            candidates.insert(0, locked);
-        }
+    if candidates.is_empty() && saw_source && !saw_downloadable {
+        return Err(ResolutionError::NoProvider {
+            reason:
+                "Track only has catalogue sources (Spotify/Apple Music); no adapter destination"
+                    .to_string(),
+        });
     }
 
+    candidates.truncate(MAX_PLAN_CANDIDATES);
     Ok(candidates)
 }
 
@@ -1431,8 +1604,12 @@ pub fn expand_attempt_sequence(plan: &DownloadPlan) -> Vec<AttemptStep> {
     // El tope de rondas se mide sobre pasos, no sobre candidatos, porque cada
     // paso es una combinación (edición, cuenta) que puede fallar.
     let step_budget = MAX_RE_RESOLUTIONS as usize * MAX_PLAN_CANDIDATES;
+    // D04: ninguna pista puede acabar probando más de dos cuentas distintas por
+    // destino, aunque `track_sources` tenga varias ediciones del mismo servicio.
+    let mut accounts_per_destination: HashMap<String, HashSet<i64>> = HashMap::new();
     for candidate_index in 0..plan.candidates.len() {
         let candidate = &plan.candidates[candidate_index];
+        let service = candidate.service_name.to_ascii_lowercase();
         let account_slots = candidate
             .sibling_accounts
             .len()
@@ -1441,10 +1618,19 @@ pub fn expand_attempt_sequence(plan: &DownloadPlan) -> Vec<AttemptStep> {
             if steps.len() >= step_budget {
                 return steps;
             }
-            steps.push(AttemptStep {
+            let step = AttemptStep {
                 candidate_index,
                 account_index,
-            });
+            };
+            if let Some(account) = step.account(plan) {
+                let seen = accounts_per_destination.entry(service.clone()).or_default();
+                if !seen.contains(&account.account_id) && seen.len() >= MAX_ACCOUNTS_PER_DESTINATION
+                {
+                    continue;
+                }
+                seen.insert(account.account_id);
+            }
+            steps.push(step);
         }
     }
     steps

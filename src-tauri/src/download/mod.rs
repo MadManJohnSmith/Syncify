@@ -5,6 +5,8 @@ pub mod amazon;
 pub mod audio_inspector;
 // Q4 (#87): pausa compartida por proveedor para tormentas de transporte.
 pub mod breaker;
+// D04 (#116): evidencia de entrega por cuenta (granted/denied/stale).
+pub mod entitlements;
 pub mod http_client;
 pub mod identity;
 pub mod job;
@@ -36,6 +38,11 @@ pub use audio_inspector::{
     PhysicalAudioMetadata,
 };
 
+#[allow(unused_imports)]
+pub use entitlements::{
+    expire_stale, load_track_evidence, record_denied, record_granted, EntitlementState,
+    TrackEvidence, DENIED_TTL_HOURS, GRANTED_TTL_DAYS,
+};
 #[allow(unused_imports)]
 pub use job::{recover_interrupted_jobs, CancellationGuard, CancellationRegistry};
 #[allow(unused_imports)]

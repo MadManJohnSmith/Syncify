@@ -310,6 +310,7 @@ fn should_live_resolve_missing_source(
         && matches!(
             error,
             crate::download::ResolutionError::NoDownloadableSource { .. }
+                | crate::download::ResolutionError::NoProvider { .. }
         )
 }
 
@@ -857,6 +858,13 @@ impl DownloadWorker {
             }
         };
 
+        let entitlement_owner: Option<(i64, Option<i64>)> =
+            sqlx::query_as("SELECT track_id, resolved_account_id FROM download_queue WHERE id = ?")
+                .bind(queue_id)
+                .fetch_optional(&self.db)
+                .await
+                .unwrap_or(None);
+
         // A user cancel (or any terminal transition) that landed while the
         // transfer was in flight must never be overwritten by `complete`. The
         // queue row is the authoritative state, so the promotion is dropped
@@ -1086,6 +1094,31 @@ impl DownloadWorker {
             }
         };
 
+        // D04: una entrega correcta es evidencia reutilizable durante 30 días,
+        // con la calidad FÍSICA verificada en este mismo método.
+        if ledger_written && !effective_srv.trim().is_empty() {
+            if let Some((track_id, Some(account_id))) = entitlement_owner {
+                if let Err(error) = crate::download::entitlements::record_granted(
+                    &self.db,
+                    track_id,
+                    effective_srv,
+                    account_id,
+                    &eff_q,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        queue_id,
+                        track_id,
+                        account_id,
+                        service = %effective_srv,
+                        error = %error,
+                        "[Worker] Could not persist granted entitlement evidence"
+                    );
+                }
+            }
+        }
+
         // Synchronize tracks.audio_quality based on actual physical audio on disk
         let track_id_opt: Option<i64> =
             sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
@@ -1277,6 +1310,46 @@ impl DownloadWorker {
         }
     }
 
+    /// Cierra una fila sin destino con adaptador como omitida, no como fallo.
+    /// La pista queda fuera del trabajo pendiente y el job suma `skipped_count`
+    /// con el motivo `no_provider`.
+    async fn mark_no_provider(&self, queue_id: i64, job_id: Option<i64>, reason: &str) {
+        let updated = crate::db::write_or_log(
+            "worker_mark_no_provider",
+            sqlx::query(
+                "UPDATE download_queue SET status = 'cancelled', error_message = ?, \
+                 last_error = ?, failure_class = 'no_provider', next_attempt_at = NULL, \
+                 decision_reason = COALESCE(?, decision_reason) \
+                 WHERE id = ? AND status = 'downloading'",
+            )
+            .bind(reason)
+            .bind(reason)
+            .bind(reason)
+            .bind(queue_id)
+            .execute(&self.db),
+        )
+        .await;
+        if updated.is_some_and(|result| result.rows_affected() == 0) {
+            tracing::debug!(
+                queue_id,
+                "No-provider row was no longer downloading; skip not counted"
+            );
+            return;
+        }
+        if let Some(job_id) = job_id {
+            let recorded =
+                crate::download::jobs::record_skipped(&self.db, job_id, "no_provider", 1).await;
+            if let Err(error) = recorded {
+                tracing::warn!(
+                    queue_id,
+                    job_id,
+                    error = %error,
+                    "[Worker] Could not count no-provider skip on the job"
+                );
+            }
+        }
+    }
+
     /// Mark item as permanently failed (non-retryable: requires auth, rejected quality, ambiguous source, identity conflict)
     pub async fn mark_permanent_failure(&self, queue_id: i64, status: &str, error: &str) {
         let is_rejected_q = status == "rejected_quality"
@@ -1303,6 +1376,46 @@ impl DownloadWorker {
 
         let taxonomy = classify_operation_error(download_operation_type(None), "unknown", error);
         let failure_class = permanent_failure_class_for(error, &taxonomy);
+
+        // D04: un 401/403 o un rechazo de calidad es evidencia `denied` durante
+        // una hora para esa pista y cuenta. El resolver la lee y no vuelve a
+        // ofrecer esa cuenta; el fallo de la escritura no cambia el veredicto.
+        let evidence_error_class = if is_rejected_q {
+            Some("rejected_quality")
+        } else if is_auth {
+            Some("auth")
+        } else {
+            None
+        };
+        if let Some(error_class) = evidence_error_class {
+            let row: Option<(i64, Option<String>, Option<i64>)> = sqlx::query_as(
+                "SELECT track_id, service_name, resolved_account_id \
+                 FROM download_queue WHERE id = ? AND status = 'downloading'",
+            )
+            .bind(queue_id)
+            .fetch_optional(&self.db)
+            .await
+            .unwrap_or(None);
+            if let Some((track_id, Some(service_name), Some(account_id))) = row {
+                if let Err(record_error) = crate::download::entitlements::record_denied(
+                    &self.db,
+                    track_id,
+                    &service_name,
+                    account_id,
+                    error_class,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        queue_id,
+                        track_id,
+                        account_id,
+                        error = %record_error,
+                        "[Worker] Could not persist denied entitlement evidence"
+                    );
+                }
+            }
+        }
 
         if let Err(e) = sqlx::query(
             "UPDATE download_queue SET status = ?, error_message = ?, last_error = ?, retry_count = retry_count + 1, failure_class = ?, next_attempt_at = NULL, quality_decision = COALESCE(?, quality_decision), decision_reason = COALESCE(?, decision_reason) WHERE id = ? AND status = 'downloading'"
@@ -1606,12 +1719,18 @@ impl DownloadWorker {
             Option<String>, // quality_preference
             Option<i64>,    // smart_studio_origin
             Option<i64>,    // allow_fallback
+            Option<i64>,    // job_id
+            Option<String>, // destination_service (preferencia del job)
+            Option<i64>,    // preferred_account_id (override del job)
         )> = sqlx::query_as(
             r#"
-            SELECT service_name, service_track_id, service_album_id,
-                   target_title, target_artist, target_album, target_isrc,
-                   quality_preference, smart_studio_origin, allow_fallback
-            FROM download_queue WHERE id = ?
+            SELECT dq.service_name, dq.service_track_id, dq.service_album_id,
+                   dq.target_title, dq.target_artist, dq.target_album, dq.target_isrc,
+                   dq.quality_preference, dq.smart_studio_origin, dq.allow_fallback,
+                   dq.job_id, j.destination_service, j.preferred_account_id
+            FROM download_queue dq
+            LEFT JOIN download_jobs j ON j.id = dq.job_id
+            WHERE dq.id = ?
             "#,
         )
         .bind(queue_id)
@@ -1631,6 +1750,9 @@ impl DownloadWorker {
             q_pref,
             smart_studio,
             allow_fb,
+            job_id,
+            destination_service,
+            preferred_account_id,
         ) = queue_meta.unwrap_or((
             None,
             None,
@@ -1642,6 +1764,9 @@ impl DownloadWorker {
             None,
             Some(0),
             Some(0),
+            None,
+            None,
+            None,
         ));
 
         let effective_title = t_title.unwrap_or_else(|| title.to_string());
@@ -1779,12 +1904,21 @@ impl DownloadWorker {
 
         let resolver_intent = crate::download::DownloadIntent {
             canonical_track_id: track_id,
-            requested_service: s_name.clone(),
+            // Fuente y destino son selectores distintos (D04): la fila de cola
+            // aporta la identidad de la fuente; el destino preferido y la cuenta
+            // vienen del job. El lock histórico solo se aplica sin fallback.
+            requested_service: if is_allowed_fallback {
+                None
+            } else {
+                s_name.clone()
+            },
+            destination_service: destination_service.clone(),
+            source_service: s_name.clone(),
             requested_quality: q_pref.clone(),
             strict_quality: !is_allowed_fallback,
             allow_fallback: is_allowed_fallback,
             locked_track_source_id,
-            preferred_account_id: None,
+            preferred_account_id,
         };
         let (quality, resolution_plan, live_dispatch_identity) =
             match crate::download::resolve_download_plan(
@@ -1892,6 +2026,30 @@ impl DownloadWorker {
                             }
                         }
                         (quality, Some(plan), dispatch_identity)
+                    } else if let crate::download::ResolutionError::NoProvider { reason } =
+                        &resolution_error
+                    {
+                        // Una pista solo Spotify/Apple sin destino con adaptador
+                        // se omite: no es un fallo de descarga.
+                        self.mark_no_provider(queue_id, job_id, reason).await;
+                        self.emit_progress(DownloadProgressEvent {
+                            queue_id,
+                            track_id,
+                            title: effective_title.clone(),
+                            artist: effective_artist.clone(),
+                            status: "skipped".to_string(),
+                            progress_percent: 0.0,
+                            message: Some(reason.clone()),
+                            bytes_downloaded: 0,
+                            total_bytes: None,
+                            percent: None,
+                            instant_kbps: 0.0,
+                            average_kbps: 0.0,
+                            phase: "skipped".to_string(),
+                            terminal: true,
+                            phase_timings: None,
+                        });
+                        return;
                     } else if s_track_id
                         .as_deref()
                         .is_some_and(|id| !id.trim().is_empty())
@@ -1924,12 +2082,41 @@ impl DownloadWorker {
                 }
             };
 
-        // Punto 3: cuando el plan nació de una resolución viva, la petición debe
-        // viajar con ESA identidad (servicio + edición del candidato primario),
-        // no con la de la fila catálogo-solo: el orquestador despacha por
-        // `service_name` y el adaptador nativo exige que petición y plan
-        // coincidan. Sin resolución viva, la identidad de la fila no se toca.
-        let (s_name, s_track_id) = match live_dispatch_identity {
+        // D04: la cuenta elegida por el resolver se persiste en la fila para que
+        // la entrega y la evidencia (`download_entitlements`) sean atribuibles.
+        if let Some(account_id) = resolution_plan
+            .as_ref()
+            .and_then(|plan| plan.primary())
+            .and_then(|candidate| candidate.account.as_ref())
+            .map(|account| account.account_id)
+        {
+            let _ = crate::db::write_or_log(
+                "worker_persist_resolved_account",
+                sqlx::query(
+                    "UPDATE download_queue SET resolved_account_id = ? \
+                     WHERE id = ? AND status = 'downloading'",
+                )
+                .bind(account_id)
+                .bind(queue_id)
+                .execute(&self.db),
+            )
+            .await;
+        }
+
+        // Punto 3: la petición viaja con la identidad del candidato primario.
+        // Cubre la resolución viva por ISRC y también el destino preferido del
+        // job: el orquestador despacha por `service_name` y los adaptadores
+        // exigen que petición y plan coincidan.
+        let plan_dispatch_identity = resolution_plan
+            .as_ref()
+            .and_then(|plan| plan.primary())
+            .map(|candidate| {
+                (
+                    candidate.service_name.clone(),
+                    candidate.service_track_id.clone(),
+                )
+            });
+        let (s_name, s_track_id) = match live_dispatch_identity.or(plan_dispatch_identity) {
             Some((service_name, service_track_id)) => (Some(service_name), Some(service_track_id)),
             None => (s_name, s_track_id),
         };

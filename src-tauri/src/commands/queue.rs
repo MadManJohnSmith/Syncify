@@ -1243,6 +1243,8 @@ async fn evaluate_track_preflight_inner(
                 &crate::download::DownloadIntent {
                     canonical_track_id: track_id,
                     requested_service: eff_req_service.clone(),
+                    destination_service: eff_req_service.clone(),
+                    source_service: None,
                     requested_quality: requested_quality.map(|q| q.to_string()),
                     strict_quality,
                     allow_fallback,
