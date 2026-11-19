@@ -30,6 +30,9 @@ pub mod songlink;
 pub mod tidal;
 // DLX-01 (#42): cronología por pista como artefacto de medición.
 pub mod timeline;
+// D05 (#117): gate de verificación de entrega (duración, tags, portada)
+// antes de promocionar la fila a `complete` y escribir el ledger.
+pub mod verification;
 
 #[allow(unused_imports)]
 pub use audio_inspector::{
