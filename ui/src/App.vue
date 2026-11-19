@@ -226,6 +226,19 @@
           <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Library</span>
         </router-link>
 
+        <!-- P16 (#147): Favoritos como hub propio, pegado a Library. -->
+        <router-link
+          to="/favorites"
+          data-testid="nav-sidebar-favorites"
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-elevated !text-white"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          :title="sidebarCollapsed ? 'Favorites' : undefined"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0" :class="{ 'fill-1 text-primary': routePath === '/favorites' }">favorite</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Favorites</span>
+        </router-link>
+
         <router-link
           to="/playlists"
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
