@@ -41,7 +41,7 @@ fn test_quality_decision_json_serialization_all_variants() {
 #[test]
 fn test_quality_decision_payload_structure_matches_ui_expectations() {
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless", "high", "AAC", 16, 44100.0, "spotify", "tidal", false, true,
+        "lossless", "high", "AAC", 16, 44100.0, "spotify", "tidal", false, true, 320,
     );
 
     let json_str =
@@ -65,7 +65,7 @@ fn test_quality_decision_payload_structure_matches_ui_expectations() {
 #[test]
 fn test_rejected_quality_payload_structure() {
     let decision = QualityPolicy::evaluate_stream_resolution(
-        "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", true, false,
+        "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", true, false, 320,
     );
 
     let json_str =

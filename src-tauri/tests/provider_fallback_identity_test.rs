@@ -595,7 +595,7 @@ async fn test_11_quality_floor_enforcement_never_below_320() {
 
     // Stream resolution evaluation with quality below floor must be rejected even with allow_fallback=true
     let decision_low = QualityPolicy::evaluate_stream_resolution(
-        "lossless", "low", "AAC", 16, 44100.0, "tidal", "tidal", false, true,
+        "lossless", "low", "AAC", 16, 44100.0, "tidal", "tidal", false, true, 320,
     );
     assert_eq!(
         decision_low.decision,

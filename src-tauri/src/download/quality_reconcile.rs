@@ -71,6 +71,11 @@ pub fn reconcile_physical_audio_quality(res: &mut DownloadResult, request: &Down
         res.bitrate = verified_bitrate;
     }
 
+    // D05: el piso lossy es por proveedor (el servicio que ENTREGA decide),
+    // no el 320 global en duro. La capa free de la cuenta la aplica el
+    // adaptador (D11/D12) cuando resuelve la cuenta; aquí manda la matriz.
+    let lossy_floor_kbps =
+        syncify_core_domain::quality::provider_lossy_floor_kbps(&res.service, false);
     let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
         &request.quality,
         &quality_label,
@@ -81,6 +86,7 @@ pub fn reconcile_physical_audio_quality(res: &mut DownloadResult, request: &Down
         &res.service,
         request.strict_quality,
         request.allow_fallback,
+        lossy_floor_kbps,
     );
     res.quality_decision = Some(q_eval);
 }
