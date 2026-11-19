@@ -2508,6 +2508,8 @@ impl DownloadOrchestrator {
         let intent = crate::download::DownloadIntent {
             canonical_track_id: request.canonical_track_id.unwrap_or_default(),
             requested_service: request.service_name.clone(),
+            destination_service: None,
+            source_service: request.service_name.clone(),
             requested_quality: Some(request.quality.clone()),
             strict_quality: request.strict_quality,
             allow_fallback: request.allow_fallback,

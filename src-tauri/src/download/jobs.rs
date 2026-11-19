@@ -734,6 +734,50 @@ pub async fn run_job(
     Ok(outcome)
 }
 
+/// Suma una omisión ya decidida durante la ejecución (p. ej. `no_provider`) al
+/// contador del job y a su desglose. El encolado ya no ve esa pista: la fila de
+/// cola se cierra como omitida, nunca como fallo.
+pub async fn record_skipped(
+    db: &SqlitePool,
+    job_id: i64,
+    reason: &str,
+    count: i64,
+) -> Result<(), JobError> {
+    if count <= 0 {
+        return Ok(());
+    }
+    let current: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT skip_breakdown_json FROM download_jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_optional(db)
+            .await?;
+    let Some((current,)) = current else {
+        return Ok(());
+    };
+    let mut breakdown: serde_json::Map<String, serde_json::Value> = current
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or_default();
+    let previous = breakdown
+        .get(reason)
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    breakdown.insert(
+        reason.to_string(),
+        serde_json::Value::from(previous + count),
+    );
+    sqlx::query(
+        "UPDATE download_jobs SET skipped_count = skipped_count + ?, \
+         skip_breakdown_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    )
+    .bind(count)
+    .bind(serde_json::Value::Object(breakdown).to_string())
+    .bind(job_id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 pub async fn mark_job_failed(db: &SqlitePool, job_id: i64, error: &str) -> Result<(), JobError> {
     sqlx::query(
         "UPDATE download_jobs SET status = 'failed', error = ?, \

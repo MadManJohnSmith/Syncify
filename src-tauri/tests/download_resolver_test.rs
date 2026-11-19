@@ -631,7 +631,11 @@ async fn retries_are_bounded_and_never_repeat_a_combination() {
     .unwrap();
 
     let steps = expand_attempt_sequence(&plan);
-    assert_eq!(steps.len(), 3, "one edition, three accounts");
+    assert_eq!(
+        steps.len(),
+        2,
+        "one edition, three accounts: D04 acota a dos cuentas por destino"
+    );
 
     // Ningún par (edición, cuenta) se repite.
     let mut seen: Vec<(String, i64)> = Vec::new();
@@ -945,6 +949,8 @@ async fn preflight_proposal_matches_execution_decision() {
     let intent = DownloadIntent {
         canonical_track_id: track_id,
         requested_service: None,
+        destination_service: None,
+        source_service: None,
         requested_quality: Some("hires".to_string()),
         strict_quality: false,
         allow_fallback: true,
