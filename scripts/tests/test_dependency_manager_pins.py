@@ -95,12 +95,30 @@ class PinTableIntegrityTest(unittest.TestCase):
 
     def test_ffmpeg_urls_are_dated_releases(self):
         ffmpeg = dependency_manager.TOOL_URLS["ffmpeg"]
+        tags = {}
 
         for platform in ("windows", "linux"):
             url = ffmpeg[platform]
             self.assertIn("autobuild-20", url, f"ffmpeg/{platform} must pin a dated BtbN release")
             self.assertIn("ffmpeg-N-", url, f"ffmpeg/{platform} must pin an explicit build id")
             self.assertNotIn("/latest/", url)
+            tag = url.split("/releases/download/", 1)[1].split("/", 1)[0]
+            match = re.fullmatch(r"autobuild-\d{4}-\d{2}-(\d{2})-\d{2}-\d{2}", tag)
+            self.assertIsNotNone(match, f"ffmpeg/{platform} has an unexpected BtbN tag: {tag}")
+            # Monthly snapshots (the last day of the month) are the ones BtbN
+            # keeps; daily autobuilds are pruned after a couple of weeks and
+            # turned Windows CI red on 2026-11-19 (404 on the 2026-11-05 pin).
+            self.assertGreaterEqual(
+                int(match.group(1)),
+                28,
+                f"ffmpeg/{platform} must pin the monthly snapshot, not a daily one: {tag}",
+            )
+            tags[platform] = tag
+        self.assertEqual(
+            tags["windows"],
+            tags["linux"],
+            "one repin must move both platforms to the same BtbN snapshot",
+        )
         self.assertNotIn(
             "release-amd64-static",
             ffmpeg["linux"],

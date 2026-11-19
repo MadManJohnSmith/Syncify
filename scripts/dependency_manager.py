@@ -81,12 +81,14 @@ from services.bridge_protocol import BridgeFailure, run  # noqa: E402
 #
 # ffmpeg is pinned to a DATED BtbN release on Windows and Linux: "latest" is
 # rolling and its hash changes with every build, which would break the SHA-256
-# verification. The pins are the ones the release workflows carried when the
-# table absorbed them (BtbN autobuild 2026-11-05, N-128433). The Linux entry
-# used to be johnvansickle's rolling `ffmpeg-release-amd64-static` tarball with
-# a fixed hash — the same trap: the next upstream rebuild would fail the
-# integrity check forever. macOS is not a released platform, so its evermeet
-# entry stays as-is.
+# verification. Pin the MONTHLY snapshot (last day of the month), not a daily
+# autobuild: measured on 2026-11-19, the daily autobuild-2026-11-05 had been
+# pruned upstream (HTTP 404, Windows CI red) while the monthly snapshots back
+# to 2024-12-31 were still published. The Linux entry used to be
+# johnvansickle's rolling `ffmpeg-release-amd64-static` tarball with a fixed
+# hash — the same trap: the next upstream rebuild would fail the integrity
+# check forever. macOS is not a released platform, so its evermeet entry stays
+# as-is.
 #
 # ffprobe has NO row of its own: it travels inside the pinned ffmpeg archive
 # as a byproduct and is placed next to ffmpeg by `place_bundled_binaries`.
@@ -100,9 +102,9 @@ from services.bridge_protocol import BridgeFailure, run  # noqa: E402
 # runtime row has a darwin entry: macOS is not a published platform.
 TOOL_URLS = {
     "ffmpeg": {
-        "windows": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-05-12-48/ffmpeg-N-128433-gdb8537d8cc-win64-gpl.zip",
+        "windows": "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/ffmpeg-N-128227-g4811625b5f-win64-gpl.zip",
         "darwin": "https://evermeet.cx/ffmpeg/getrelease/zip",
-        "linux": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-05-12-48/ffmpeg-N-128433-gdb8537d8cc-linux64-gpl.tar.xz",
+        "linux": "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/ffmpeg-N-128227-g4811625b5f-linux64-gpl.tar.xz",
     },
     "fpcalc": {
         "windows": "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-windows-x86_64.zip",
@@ -133,11 +135,11 @@ TOOL_URLS = {
 # one-commit guarantee and is caught by test_dependency_manager_pins.py.
 KNOWN_SHA256_HASHES: Dict[str, Dict[str, str]] = {
     "ffmpeg": {
-        "windows": "6e20a5744f9863883484af1cb5dca91e7e01d9af43b58d97fce7344e34393702",
+        "windows": "3a5cdb3b83dd1b62b29d946d3655a14d787e5e81d947ad68202a1a400095d2f8",
         "darwin": "8a8c9e549983409fe6604b9aa665648b7a5def9407fe814c39c8b2ea7f64a48f",
         # SHA-256 of the pinned BtbN .tar.xz asset that carries both ffmpeg
         # and ffprobe for the packaged externalBin copies.
-        "linux": "759cc1547e23f77f324944e034d27654c383ddbc1117823c08b025db1cf5fa14",
+        "linux": "67929be39bbb696f41d3295686597a439aeac902f61d82be660ccc1453c1fdfb",
     },
     "fpcalc": {
         "windows": "36b478e16aa69f757f376645db0d436073a42c0097b6bb2677109e7835b59bbc",
