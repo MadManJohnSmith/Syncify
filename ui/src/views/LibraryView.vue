@@ -2121,9 +2121,12 @@ const headerChips = computed<HeaderChip[]>(() => [
     id: 'artists',
     label: 'Artists',
     icon: 'artist',
-    disabled: true,
-    reason: 'Pending: artist membership lands with L00 (#97) and the artists tab is completed by L08 (#105)',
-    count: null,
+    // L08 (#105): la pestaña de artistas ya existe. El chip cuenta artistas
+    // distintos con al menos una pista viva en el filtro (contador del
+    // servidor) y navega a la lista; no aplica una dimensión de pista.
+    disabled: false,
+    reason: 'Browse artists with at least one live track in the current filter',
+    count: libraryCounts.value?.artists ?? null,
     active: false,
   },
   {
@@ -2157,12 +2160,12 @@ const headerChips = computed<HeaderChip[]>(() => [
 
 function toggleHeaderChip(chip: HeaderChip) {
   if (chip.disabled) return;
-  if (chip.id === 'albums') {
-    // L07 (#104): la pestaña comparte texto y orden con la vista de pistas;
-    // el resto de dimensiones de pista no aplican a la lista de álbumes.
+  if (chip.id === 'albums' || chip.id === 'artists') {
+    // L07/L08: las pestañas comparten texto y orden con la vista de pistas;
+    // el resto de dimensiones de pista no aplican a esas listas.
     router.push({
-      path: '/library/albums',
-      query: libraryTabQuery('albums', route.query),
+      path: chip.id === 'albums' ? '/library/albums' : '/library/artists',
+      query: libraryTabQuery(chip.id, route.query),
     });
     return;
   }

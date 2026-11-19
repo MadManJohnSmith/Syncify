@@ -17,10 +17,10 @@ export const routes: RouteRecordRaw[] = [
     { path: '/dashboard', name: 'Dashboard', component: () => import('./views/DashboardView.vue') },
     { path: '/library', name: 'Library', component: () => import('./views/LibraryView.vue') },
     // L03 (#100): armazón de pestañas de la biblioteca (spec #96). L07 (#104)
-    // completa la de álbumes con su lista de servidor; artistas (L08) y
-    // duplicados (L10) siguen en el placeholder con su motivo.
+    // completa álbumes y L08 (#105) artistas con sus listas de servidor;
+    // duplicados (L10) sigue en el placeholder con su motivo.
     { path: '/library/albums', name: 'LibraryAlbums', component: () => import('./views/LibraryAlbumsView.vue'), meta: { libraryTab: 'albums' } },
-    { path: '/library/artists', name: 'LibraryArtists', component: () => import('./views/LibraryTabPlaceholder.vue'), meta: { libraryTab: 'artists' } },
+    { path: '/library/artists', name: 'LibraryArtists', component: () => import('./views/LibraryArtistsView.vue'), meta: { libraryTab: 'artists' } },
     { path: '/library/duplicates', name: 'LibraryDuplicates', component: () => import('./views/LibraryTabPlaceholder.vue'), meta: { libraryTab: 'duplicates' } },
     { path: '/playlists', name: 'Playlists', component: () => import('./views/PlaylistView.vue') },
     { path: '/downloads', name: 'Downloads', component: () => import('./views/DownloadsView.vue') },

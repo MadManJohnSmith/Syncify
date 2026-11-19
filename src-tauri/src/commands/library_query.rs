@@ -234,6 +234,10 @@ pub struct LibraryQueryCounts {
     /// #104): el contador de la cabecera no cuenta filas de `tracks` ni
     /// álbumes sin pistas vivas.
     pub albums: i64,
+    /// Artistas DISTINTOS con al menos una pista viva en el filtro (L08,
+    /// #105): pistas de `track_artists`, nunca ids de artista repetidos ni
+    /// artistas sin pistas vivas.
+    pub artists: i64,
     /// Pistas distintas con fuente en cada servicio (badges: track_sources).
     pub by_service: Vec<ServiceCount>,
     /// Pistas distintas por cuenta (pertenencias: library_entries +
@@ -995,6 +999,27 @@ async fn count_albums(db: &SqlitePool, query: &LibraryQuery) -> Result<i64, Stri
     Ok(count)
 }
 
+/// Artistas distintos con al menos una pista viva del filtro (L08, #105).
+/// Es el contador de la cabecera y `COUNT(DISTINCT ta.artist_id)` — no una
+/// fila por pista ni un artista sin pistas vivas.
+async fn count_artists(db: &SqlitePool, query: &LibraryQuery) -> Result<i64, String> {
+    let (where_sql, binds) = build_where(query, Dimension::All)?;
+    let sql = format!(
+        "SELECT COUNT(DISTINCT ta.artist_id) FROM tracks t \
+         JOIN track_artists ta ON ta.track_id = t.id \
+         WHERE {where_sql}"
+    );
+    let mut q = sqlx::query_as::<_, (i64,)>(&sql);
+    for bind in &binds {
+        q = q.bind(bind);
+    }
+    let (count,): (i64,) = q
+        .fetch_one(db)
+        .await
+        .map_err(|e| format!("query_library: error contando artistas: {e}"))?;
+    Ok(count)
+}
+
 /// Contadores de cabecera. Cada uno sobre el filtro SIN su propia dimensión.
 async fn build_counts(
     db: &SqlitePool,
@@ -1017,6 +1042,7 @@ async fn build_counts(
     )
     .await?;
     let albums = count_albums(db, query).await?;
+    let artists = count_artists(db, query).await?;
 
     // Por servicio (badges: track_sources), sin el propio filtro de servicios.
     let (where_svc, binds_svc) = build_where(query, Dimension::Services)?;
@@ -1084,6 +1110,7 @@ async fn build_counts(
         downloaded,
         in_playlists,
         albums,
+        artists,
         by_service,
         by_account,
     })

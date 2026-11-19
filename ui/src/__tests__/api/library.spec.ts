@@ -19,7 +19,9 @@ import {
     normalizeQualityPreference,
     syncLocalLibrary,
     getTrackMetadata,
-    queryLibraryAlbums
+    queryLibraryAlbums,
+    queryLibraryArtists,
+    queryLibraryArtistTracks
 } from '@/api/library';
 import { resetMocks, mockInvoke } from '../setup';
 
@@ -594,6 +596,116 @@ describe('libraryApi', () => {
 
             expect(result.albums[0].coverage).toBeNull();
             expect(result.albums[0].trackCount).toBe(0);
+        });
+    });
+
+    describe('queryLibraryArtists', () => {
+        const query = {
+            text: null,
+            serviceIds: [],
+            accountIds: [],
+            sort: 'name' as const,
+            direction: 'asc' as const,
+            offset: 0,
+            limit: 100,
+        };
+
+        it('calls query_library_artists and normalizes the artist page', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'query_library_artists') {
+                    return {
+                        artists: [{
+                            artistId: 3,
+                            name: 'Alpha Band',
+                            imageUrl: null,
+                            trackCount: 8,
+                            albumCount: 3,
+                            collaborationCount: 1,
+                            accounts: [{ accountId: 1, displayName: 'A1', serviceName: 'spotify' }],
+                            services: [{ serviceId: 2, serviceName: 'qobuz' }],
+                            dateAdded: '2026-05-01T10:00:00Z',
+                        }],
+                        total: 1,
+                        offset: 0,
+                        limit: 100,
+                        hasMore: false,
+                    };
+                }
+                return null;
+            });
+
+            const result = await queryLibraryArtists(query);
+
+            expect(invoke).toHaveBeenCalledWith('query_library_artists', { query });
+            expect(result.total).toBe(1);
+            expect(result.hasMore).toBe(false);
+            const artist = result.artists[0];
+            expect(artist.artistId).toBe(3);
+            expect(artist.trackCount).toBe(8);
+            expect(artist.albumCount).toBe(3);
+            expect(artist.collaborationCount).toBe(1);
+            expect(artist.accounts[0].displayName).toBe('A1');
+            expect(artist.services[0].serviceName).toBe('qobuz');
+        });
+    });
+
+    describe('queryLibraryArtistTracks', () => {
+        const query = { artistId: 1, offset: 0, limit: 100 };
+
+        it('calls query_library_artist_tracks and normalizes collaborators and sources', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'query_library_artist_tracks') {
+                    return {
+                        tracks: [{
+                            id: 11,
+                            title: 'Joint',
+                            album: 'Guest Album',
+                            albumId: 4,
+                            durationMs: 240000,
+                            collaborators: ['Guest Vocalist'],
+                            sources: [
+                                { serviceId: 2, serviceName: 'qobuz' },
+                                { serviceId: 1, serviceName: 'spotify' },
+                            ],
+                        }],
+                        total: 8,
+                        offset: 0,
+                        limit: 100,
+                        hasMore: true,
+                    };
+                }
+                return null;
+            });
+
+            const result = await queryLibraryArtistTracks(query);
+
+            expect(invoke).toHaveBeenCalledWith('query_library_artist_tracks', { query });
+            expect(result.total).toBe(8);
+            expect(result.hasMore).toBe(true);
+            const track = result.tracks[0];
+            expect(track.title).toBe('Joint');
+            expect(track.collaborators).toEqual(['Guest Vocalist']);
+            expect(track.sources.map((s) => s.serviceName)).toEqual(['qobuz', 'spotify']);
+        });
+
+        it('never invents collaborators when the server omits them', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'query_library_artist_tracks') {
+                    return {
+                        tracks: [{ id: 1, title: 'Solo', durationMs: 1000 }],
+                        total: 1,
+                        offset: 0,
+                        limit: 100,
+                        hasMore: false,
+                    };
+                }
+                return null;
+            });
+
+            const result = await queryLibraryArtistTracks(query);
+
+            expect(result.tracks[0].collaborators).toEqual([]);
+            expect(result.tracks[0].sources).toEqual([]);
         });
     });
 });

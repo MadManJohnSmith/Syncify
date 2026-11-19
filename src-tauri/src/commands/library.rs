@@ -759,7 +759,13 @@ pub struct LibraryArtistDetail {
     pub album_count: i64,
     pub track_count: i64,
     pub albums: Vec<ArtistAlbum>,
-    pub top_tracks: Vec<ArtistTrack>,
+    /// Primera página de [`query_library_artist_tracks_inner`] (L08, #105):
+    /// `top_tracks` ya NO es una consulta distinta; el resto de páginas del
+    /// detalle usa `query_library_artist_tracks`.
+    pub top_tracks: Vec<crate::commands::library_artists::ArtistTrackRow>,
+    /// Pistas vivas DISTINTAS del artista (independiente de `top_tracks`,
+    /// que solo trae la primera página).
+    pub tracks_total: i64,
     #[serde(default)]
     pub appearances: Vec<ArtistAppearanceTrack>,
 }
@@ -782,14 +788,6 @@ pub struct ArtistAlbum {
     pub cover_url: Option<String>,
     pub release_year: Option<i64>,
     pub track_count: i64,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, sqlx::FromRow, Clone, Debug)]
-pub struct ArtistTrack {
-    pub id: i64,
-    pub title: String,
-    pub album: Option<String>,
-    pub duration_ms: Option<i64>,
 }
 
 /// Retrieve artist details, albums, and top tracks
@@ -847,26 +845,16 @@ pub async fn fetch_artist(
     .await
     .map_err(|e| format!("Database error fetching albums: {}", e))?;
 
-    // Fetch top tracks
-    let top_tracks: Vec<ArtistTrack> = sqlx::query_as(
-        r#"
-        SELECT
-            t.id,
-            t.title,
-            al.title as album,
-            t.duration_ms
-        FROM tracks t
-        JOIN track_artists ta ON ta.track_id = t.id
-        LEFT JOIN albums al ON al.id = t.album_id
-        WHERE ta.artist_id = ?
-        ORDER BY (SELECT COUNT(*) FROM library_entries WHERE track_id = t.id) DESC, t.title ASC
-        LIMIT 5
-        "#,
+    // Primera página de la MISMA consulta que pagina el detalle (L08, #105):
+    // todas las pistas vivas del artista, no una consulta de «top 5» aparte.
+    let first_page = crate::commands::library_artists::query_library_artist_tracks_inner(
+        db,
+        crate::commands::library_artists::ArtistTracksQuery::first_page(
+            artist_id,
+            crate::commands::library_artists::TOP_TRACKS_LIMIT,
+        ),
     )
-    .bind(artist_id)
-    .fetch_all(db)
-    .await
-    .map_err(|e| format!("Database error fetching top tracks: {}", e))?;
+    .await?;
 
     let appearances = fetch_artist_appearances(db, artist_id)
         .await
@@ -880,7 +868,8 @@ pub async fn fetch_artist(
         album_count: artist.3,
         track_count: artist.4,
         albums,
-        top_tracks,
+        top_tracks: first_page.tracks,
+        tracks_total: first_page.total,
         appearances,
     })
 }

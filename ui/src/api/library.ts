@@ -14,6 +14,12 @@ import type {
     LibraryAlbumQuery,
     LibraryAlbumRow,
     LibraryAlbumsResult,
+    LibraryArtistQuery,
+    LibraryArtistRow,
+    LibraryArtistsResult,
+    ArtistTrackRow,
+    ArtistTracksQuery,
+    ArtistTracksResult,
     LibrarySelection,
     LibraryBatchAction,
     LibraryActionPreview,
@@ -116,6 +122,7 @@ export async function queryLibrary(query: LibraryQuery): Promise<LibraryQueryRes
               downloaded: asNumber(counts.downloaded),
               inPlaylists: asNumber(counts.inPlaylists, asNumber(counts.in_playlists)),
               albums: asNumber(counts.albums),
+              artists: asNumber(counts.artists),
               byService: asArray(counts.byService ?? counts.by_service).map((s) => {
                   const rec = asRecord(s) ?? {};
                   return {
@@ -181,6 +188,91 @@ export async function queryLibraryAlbums(query: LibraryAlbumQuery): Promise<Libr
     };
     return {
         albums: asArray(raw?.albums).map((album) => normalizeAlbum(album)),
+        total: asNumber(raw?.total),
+        offset: asNumber(raw?.offset, query.offset ?? 0),
+        limit: asNumber(raw?.limit, query.limit ?? 0),
+        hasMore: raw?.hasMore === true || raw?.has_more === true,
+    };
+}
+
+/**
+ * Consulta de la pestaña de artistas (L08, #105): una fila por artista con
+ * pistas vivas, álbumes, colaboraciones, cuentas y servicios. Comparte texto,
+ * filtros y paginación con `queryLibrary`, pero la agregación y el orden son
+ * de artista.
+ */
+export async function queryLibraryArtists(query: LibraryArtistQuery): Promise<LibraryArtistsResult> {
+    const raw = asRecord(await invokeCommand<unknown>('query_library_artists', { query }));
+    const nullableText = (value: unknown): string | null =>
+        typeof value === 'string' ? value : null;
+    const normalizeArtist = (artist: unknown): LibraryArtistRow => {
+        const rec = asRecord(artist) ?? {};
+        return {
+            artistId: asNumber(rec.artistId ?? rec.artist_id),
+            name: asString(rec.name, ''),
+            imageUrl: nullableText(rec.imageUrl ?? rec.image_url),
+            trackCount: asNumber(rec.trackCount ?? rec.track_count),
+            albumCount: asNumber(rec.albumCount ?? rec.album_count),
+            collaborationCount: asNumber(
+                rec.collaborationCount ?? rec.collaboration_count
+            ),
+            accounts: asArray(rec.accounts).map((account) => {
+                const a = asRecord(account) ?? {};
+                return {
+                    accountId: asNumber(a.accountId ?? a.account_id),
+                    displayName: nullableText(a.displayName ?? a.display_name),
+                    serviceName: asString(a.serviceName ?? a.service_name, ''),
+                };
+            }),
+            services: asArray(rec.services).map((service) => {
+                const s = asRecord(service) ?? {};
+                return {
+                    serviceId: asNumber(s.serviceId ?? s.service_id),
+                    serviceName: asString(s.serviceName ?? s.service_name, ''),
+                };
+            }),
+            dateAdded: nullableText(rec.dateAdded ?? rec.date_added),
+        };
+    };
+    return {
+        artists: asArray(raw?.artists).map((artist) => normalizeArtist(artist)),
+        total: asNumber(raw?.total),
+        offset: asNumber(raw?.offset, query.offset ?? 0),
+        limit: asNumber(raw?.limit, query.limit ?? 0),
+        hasMore: raw?.hasMore === true || raw?.has_more === true,
+    };
+}
+
+/**
+ * Página del detalle de un artista (L08, #105): TODAS sus pistas vivas, con
+ * colaboradores y fuentes por servicio. `top_tracks` de `get_artist` es la
+ * primera página de esta misma consulta.
+ */
+export async function queryLibraryArtistTracks(
+    query: ArtistTracksQuery
+): Promise<ArtistTracksResult> {
+    const raw = asRecord(await invokeCommand<unknown>('query_library_artist_tracks', { query }));
+    const nullableNumber = (value: unknown): number | null => optionalNumber(value) ?? null;
+    const normalizeTrack = (track: unknown): ArtistTrackRow => {
+        const rec = asRecord(track) ?? {};
+        return {
+            id: asNumber(rec.id),
+            title: asString(rec.title, ''),
+            album: typeof (rec.album) === 'string' ? (rec.album as string) : null,
+            albumId: nullableNumber(rec.albumId ?? rec.album_id),
+            durationMs: nullableNumber(rec.durationMs ?? rec.duration_ms),
+            collaborators: asArray(rec.collaborators).map((name) => asString(name, '')),
+            sources: asArray(rec.sources).map((source) => {
+                const s = asRecord(source) ?? {};
+                return {
+                    serviceId: asNumber(s.serviceId ?? s.service_id),
+                    serviceName: asString(s.serviceName ?? s.service_name, ''),
+                };
+            }),
+        };
+    };
+    return {
+        tracks: asArray(raw?.tracks).map((track) => normalizeTrack(track)),
         total: asNumber(raw?.total),
         offset: asNumber(raw?.offset, query.offset ?? 0),
         limit: asNumber(raw?.limit, query.limit ?? 0),
@@ -1512,6 +1604,8 @@ export const libraryApi = {
     getLibrary,
     queryLibrary,
     queryLibraryAlbums,
+    queryLibraryArtists,
+    queryLibraryArtistTracks,
     previewLibraryAction,
     runLibraryAction,
     getFavoriteTracks,

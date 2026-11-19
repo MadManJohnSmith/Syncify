@@ -113,6 +113,65 @@ describe('ArtistDetailView', () => {
         });
     });
 
+    it('pagina todas las pistas del artista y muestra colaboradores y fuentes', async () => {
+        const artistWithMoreTracks = {
+            ...mockArtist,
+            tracks_total: 7,
+        };
+        const queries: any[] = [];
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_artist') return artistWithMoreTracks;
+            if (cmd === 'query_library_artist_tracks') {
+                queries.push(args?.query);
+                return {
+                    tracks: [
+                        {
+                            id: 103,
+                            title: 'Joint',
+                            album: 'Abbey Road',
+                            albumId: 10,
+                            durationMs: 240000,
+                            collaborators: ['Guest Vocalist'],
+                            sources: [
+                                { serviceId: 2, serviceName: 'qobuz' },
+                                { serviceId: 1, serviceName: 'spotify' },
+                            ],
+                        },
+                    ],
+                    total: 7,
+                    offset: 2,
+                    limit: 100,
+                    hasMore: true,
+                };
+            }
+            return null;
+        });
+
+        const wrapper = mount(ArtistDetailView);
+        await flushPromises();
+
+        const tracksTab = wrapper.findAll('button').find(b => b.text().includes('All Tracks'));
+        expect(tracksTab?.text()).toContain('7');
+        await tracksTab!.trigger('click');
+        await flushPromises();
+
+        // Primera página = top_tracks (2 de 7); el resto se pide al servidor.
+        expect(wrapper.findAll('[data-testid="artist-track-row"]')).toHaveLength(2);
+        expect(queries).toHaveLength(0);
+
+        await wrapper.find('[data-testid="artist-tracks-scroll"]').trigger('scroll');
+        await flushPromises();
+        await flushPromises();
+
+        expect(queries[0]).toEqual({ artistId: 42, offset: 2, limit: 100 });
+        const rows = wrapper.findAll('[data-testid="artist-track-row"]');
+        expect(rows).toHaveLength(3);
+        const joint = rows.find((row) => row.attributes('data-track-id') === '103');
+        expect(joint?.text()).toContain('feat. Guest Vocalist');
+        expect(joint?.find('[data-testid="artist-track-sources"]').text()).toContain('qobuz');
+        expect(joint?.find('[data-testid="artist-track-sources"]').text()).toContain('spotify');
+    });
+
     it('handles SourceIdentityMissing error on artist download gracefully', async () => {
         mockInvoke((cmd) => {
             if (cmd === 'get_artist') return mockArtist;

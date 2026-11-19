@@ -52,6 +52,11 @@ pub mod library_query;
 pub mod library_albums;
 pub use library_albums::*;
 
+/// L08 (issue #105): pestaña de artistas — una fila por artista vivo,
+/// colaboraciones, cuentas/servicios y detalle de pistas paginado.
+pub mod library_artists;
+pub use library_artists::*;
+
 /// L05 (issue #102): selección por ids / «todo el filtro», vista previa y
 /// runner de acciones por lotes en bloques de 500 con eventos agregados.
 pub mod library_actions;
