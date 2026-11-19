@@ -3007,13 +3007,15 @@ function handleKeydown(event: KeyboardEvent) {
       if (selected) handleToggleFavorite(selected)
     }
   } else if (event.key === ' ' || event.code === 'Space') {
-    // FE-9: Space = Play/Pause as announced by the context menu and the
-    // shortcuts modal. With the menu open on an idle player it starts that
-    // track ("Play Now"); otherwise it toggles the current playback.
-    event.preventDefault()
+    // FE-9: with the context menu open on an idle player, Space starts that
+    // track ("Play Now"). General play/pause is a window shortcut since P04
+    // (#135): if the registry already dispatched it (preventDefault), it is
+    // not repeated here — two toggles would leave the transport as it was.
     if (contextMenu.value.visible && contextMenu.value.track && !playerCurrent.value) {
+      event.preventDefault()
       void handleTrackPlay(contextMenu.value.track)
-    } else {
+    } else if (!event.defaultPrevented) {
+      event.preventDefault()
       togglePlayback()
     }
   } else if (event.key === 'Escape') {
