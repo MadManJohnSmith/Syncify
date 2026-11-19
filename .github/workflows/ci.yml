@@ -33,13 +33,14 @@ jobs:
       with:
         base: ${{ github.event.pull_request.base.sha || github.event.before }}
         ref: ${{ github.sha }}
-        filters: "rust:\n  - 'src-tauri/**'\n  - 'crates/**'\n  - '.github/workflows/ci.yml'\nfrontend:\n  - 'ui/**'\n  - '.github/workflows/ci.yml'\npython:\n  - 'scripts/**'\n  - '.github/workflows/ci.yml'\n"
+        filters: "rust:\n  - 'src-tauri/**'\n  - 'crates/**'\n  - '.github/workflows/ci.yml'\nfrontend:\n  - 'ui/**'\n  - '.github/workflows/ci.yml'\npython:\n  - 'scripts/**'\n  - '.github/workflows/ci.yml'\ndocs:\n  - 'docs/**'\n  - '**.md'\n  - 'AGENTS.md'\n  - 'GLOSSARY.md'\n  - '.github/workflows/docs-check.yml'\n"
     - id: areas
       name: Resolver areas afectadas (fallback incluido)
       env:
         FILTER_RUST: ${{ steps.filter.outputs.rust }}
         FILTER_FRONTEND: ${{ steps.filter.outputs.frontend }}
         FILTER_PYTHON: ${{ steps.filter.outputs.python }}
+        FILTER_DOCS: ${{ steps.filter.outputs.docs }}
       run: python3 scripts/ci/resolve_areas.py
   rust:
     name: Rust (src-tauri · check · test · clippy · fmt)
@@ -301,3 +302,41 @@ jobs:
     - name: Suite unittest de scripts/
       if: contains(fromJSON(needs.changed.outputs.areas), 'python')
       run: python -m unittest discover -s scripts/tests -p 'test_*.py' -v
+  docs:
+    needs: changed
+    name: Docs (consistencia · claims · README)
+    # Las tres puertas de docs viven en scripts/tests/ y no necesitan la suite
+    # Python entera. El area `docs` existe para que un PR que solo toca
+    # docs/**.md, AGENTS.md o GLOSSARY.md no pague las dos patas de Rust y la
+    # de frontend; el toolchain Rust solo hace falta para `cargo metadata`
+    # con el que test_agents_claims mide los objetivos de test.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - name: Area sin cambios
+      if: "!contains(fromJSON(needs.changed.outputs.areas), 'docs')"
+      run: 'echo "Sin cambios en docs/ ni en los ficheros de claims: no hay nada que probar."
+
+        echo "El job aparece en verde para no bloquear el merge, pero no ejecuto nada."
+
+        '
+    - name: Checkout del repositorio
+      if: contains(fromJSON(needs.changed.outputs.areas), 'docs')
+      uses: actions/checkout@v4
+    - name: Configurar Python 3.11
+      if: contains(fromJSON(needs.changed.outputs.areas), 'docs')
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Instalar toolchain Rust fijado 1.98.1 (cargo metadata)
+      if: contains(fromJSON(needs.changed.outputs.areas), 'docs')
+      uses: dtolnay/rust-toolchain@1.98.1
+    - name: Consistencia de docs y referencias
+      if: contains(fromJSON(needs.changed.outputs.areas), 'docs')
+      run: python -m unittest discover -s scripts/tests -p 'test_docs_consistency.py' -v
+    - name: Cifras de los README
+      if: contains(fromJSON(needs.changed.outputs.areas), 'docs')
+      run: python -m unittest discover -s scripts/tests -p 'test_readme_claims.py' -v
+    - name: Cifras del AGENTS.md
+      if: contains(fromJSON(needs.changed.outputs.areas), 'docs')
+      run: python -m unittest discover -s scripts/tests -p 'test_agents_claims.py' -v

@@ -1,0 +1,9 @@
+# CodeRabbit: revisión automática de los PRs con base dev.
+# Sin este fichero el bot solo revisaba el branch por defecto (main) y los PRs
+# del repo van a dev: la revisión se saltaba con "Auto reviews are disabled on
+# base/target branches other than the default branch" (retro 2026-11-19, R2).
+reviews:
+  auto_review:
+    enabled: true
+    base_branches:
+    - dev
