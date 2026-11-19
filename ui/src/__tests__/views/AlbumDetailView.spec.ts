@@ -126,6 +126,28 @@ describe('AlbumDetailView', () => {
         expect(wrapper.exists()).toBe(true);
     });
 
+    it('renders every album track with the library actions (no paging/truncation)', async () => {
+        const manyTracks = Array.from({ length: 120 }, (_, index) => ({
+            id: 1000 + index,
+            title: `Track ${index + 1}`,
+            duration_ms: 180000,
+            track_number: index + 1,
+            disc_number: 1,
+            artist_name: 'Pink Floyd',
+        }));
+        mockInvoke((cmd) => {
+            if (cmd === 'get_album') return { ...mockAlbum, track_count: 120, tracks: manyTracks };
+            return null;
+        });
+
+        const wrapper = mount(AlbumDetailView);
+        await flushPromises();
+
+        expect(wrapper.findAll('button[title="Download Track"]')).toHaveLength(120);
+        // «Abrir ficha»: el detalle enlaza a la ficha completa de Metadata.
+        expect(wrapper.findAll('button[title="Show Metadata"]')).toHaveLength(120);
+    });
+
     it('renders clear feedback when album has no indexed tracks yet', async () => {
         const emptyAlbum = {
             id: 77,

@@ -1006,6 +1006,8 @@ fn main() {
             commands::get_health_checks,
             commands::get_duplicate_stats,
             commands::query_library,
+            // L07 (#104): pestaña de álbumes (una fila por álbum vivo).
+            commands::query_library_albums,
             // L05 (#102): vista previa y runner de acciones por lotes.
             commands::preview_library_action,
             commands::run_library_action,

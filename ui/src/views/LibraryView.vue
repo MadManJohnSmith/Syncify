@@ -105,11 +105,10 @@
 
     <!-- L03 (#100): chips de estado de la biblioteca. El chip Descargadas
          aplica y retira su filtro; su contador viene de los contadores que
-         L01 pide con la primera página (`libraryCounts`, calculados en
-         servidor SIN la condición del propio chip, para que el número
-         coincida con el total al aplicarlo). Álbumes, artistas, cuarentena
-         y duplicados quedan DESHABILITADOS con su motivo: no se simula una
-         dependencia que no existe (#97, #72, #73). -->
+         L01 pide con la primera página. L07 (#104) activa el chip Álbumes:
+         muestra los álbumes distintos con al menos una pista viva y navega a
+         su pestaña. Artistas, cuarentena y duplicados siguen deshabilitados
+         con su motivo (L08, #72, #73): no se simula una dependencia. -->
     <div class="library-chips px-8 py-2 flex items-center gap-2 flex-wrap shrink-0" data-testid="library-chips">
       <button
         v-for="chip in headerChips"
@@ -1433,6 +1432,7 @@ import { useEnrichmentProgress } from '@/composables/useEnrichmentProgress'
 import {
   buildLibraryUrlQuery,
   parseLibraryUrlQuery,
+  libraryTabQuery,
   LIBRARY_URL_KEYS,
   QUALITY_BUCKET_LABELS,
   type LibraryUrlState,
@@ -2087,10 +2087,10 @@ function filtersFromState(state: LibraryUrlState, legacyLabel: string | null): s
 // El contador de cada chip se calcula en servidor sobre el filtro actual
 // SIN la condición del propio chip (los contadores de L01 vienen con la
 // primera página y la vista los conserva al paginar): el número del chip
-// coincide con el total que se ve al aplicarlo. Los chips sin dependencia
-// (#97 pertenencia, #72 cuarentena, #73 duplicados) quedan deshabilitados
-// con su motivo — el contador que no existe se muestra como '—', nunca
-// inventado.
+// coincide con el total que se ve al aplicarlo. El chip Álbumes (L07, #104)
+// cuenta álbumes distintos con pistas vivas y navega a su lista. Artistas,
+// cuarentena y duplicados siguen deshabilitados con su motivo (#105, #72,
+// #73) — el contador que no existe se muestra como '—', nunca inventado.
 type HeaderChipId = 'albums' | 'artists' | 'downloaded' | 'quarantine' | 'duplicates';
 
 interface HeaderChip {
@@ -2109,9 +2109,12 @@ const headerChips = computed<HeaderChip[]>(() => [
     id: 'albums',
     label: 'Albums',
     icon: 'album',
-    disabled: true,
-    reason: 'Pending: album membership lands with L00 (#97) and the albums tab is completed by L07 (#104)',
-    count: null,
+    // L07 (#104): la pestaña de álbumes ya existe. El chip cuenta álbumes
+    // distintos con al menos una pista viva en el filtro (contador del
+    // servidor) y navega a la lista; no aplica una dimensión de pista.
+    disabled: false,
+    reason: 'Browse albums with at least one live track in the current filter',
+    count: libraryCounts.value?.albums ?? null,
     active: false,
   },
   {
@@ -2154,6 +2157,15 @@ const headerChips = computed<HeaderChip[]>(() => [
 
 function toggleHeaderChip(chip: HeaderChip) {
   if (chip.disabled) return;
+  if (chip.id === 'albums') {
+    // L07 (#104): la pestaña comparte texto y orden con la vista de pistas;
+    // el resto de dimensiones de pista no aplican a la lista de álbumes.
+    router.push({
+      path: '/library/albums',
+      query: libraryTabQuery('albums', route.query),
+    });
+    return;
+  }
   if (chip.id === 'downloaded') {
     toggleFilter('downloaded');
   }

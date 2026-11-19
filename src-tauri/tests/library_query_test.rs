@@ -634,3 +634,28 @@ async fn plan_de_consulta_incluye_la_pertenencia_viva() {
         "plan={plan}"
     );
 }
+
+// ==========================================================================
+// Contador de cabecera de álbumes (L07, #104)
+// ==========================================================================
+
+#[tokio::test]
+async fn contador_de_albumes_cuenta_distintos_con_pistas_vivas() {
+    let pool = seed().await;
+    let result = query_library(&pool, q()).await.unwrap();
+    let counts = result.counts.unwrap();
+
+    // El fixture tiene UN álbum con pistas vivas: Nightfall (T1). T3 entra
+    // por una pertenencia de álbum de L00 pero su fila `tracks` no tiene
+    // `album_id`; el contador cuenta álbumes distintos de la fila, no la
+    // colección de la pertenencia, y no lo inventa.
+    assert_eq!(counts.albums, 1, "counts={counts:?}");
+
+    // Un filtro que deja pistas sin álbum (T2/T5 en Qobuz) cuenta cero
+    // álbumes, no las pistas.
+    let mut query = q();
+    query.service_ids = vec![2];
+    let result = query_library(&pool, query).await.unwrap();
+    assert!(result.total > 0);
+    assert_eq!(result.counts.unwrap().albums, 0);
+}

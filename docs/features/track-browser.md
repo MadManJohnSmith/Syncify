@@ -22,6 +22,7 @@ se comporta una lista; las vistas solo declaran su fuente.
 | Vista | Fuente | Paginación | Selección |
 |---|---|---|---|
 | `LibraryView` | `query_library` (L01, issue #98: filtros, orden, búsqueda y contadores EN SERVIDOR; módulo `commands/library_query.rs`) | offset/limit 100 (máx 200) + `has_more` + contadores en la primera página | ids |
+| `LibraryAlbumsView` | `query_library_albums` (L07, issue #104: una fila por álbum vivo, cobertura, cuentas y servicios; módulo `commands/library_albums.rs`) | offset/limit 100 (máx 200) + `has_more` en servidor | sin selección |
 | `MetadataView` | `get_library(0,500)` o `get_tracks_needing_metadata(500)` según `filterType` | página única, sin `has_more` | ids |
 | `DownloadsView` | `get_queue` completa | sin paginación server-side; recorte client-side a 50 por sección y salto por posición | sin selección |
 
@@ -64,11 +65,13 @@ filtro de calidad de `LibraryView` compara el bucket en las tres. Deuda: el
 
 ## Rutas
 
-Las vistas **leen** la ruta y no la escriben (salvo el deep-link de
-`LibraryView`, que consume `?track=<id>` con `router.replace` paginando hasta 50
-páginas): `?filter=quality&quality=<bucket>` y `?filter=duplicates` (Library),
+Las vistas leen la ruta y pocas la escriben: el deep-link de `LibraryView`
+consume `?track=<id>` con `router.replace` paginando hasta 50 páginas;
+`?filter=quality&quality=<bucket>` y `?filter=duplicates` (Library),
 `?filter=needs_work` y `?trackId=` (Metadata), `?filter=failed` (Downloads, solo
-en mount).
+en mount). `LibraryAlbumsView` comparte `q`, `sort` y `dir` con la pestaña de
+pistas y los reescribe al cambiar texto u orden; cuenta, servicio y cobertura son
+estado local de la lista de álbumes.
 
 ## Agrupación
 
