@@ -1008,6 +1008,9 @@ fn main() {
             commands::query_library,
             // L07 (#104): pestaña de álbumes (una fila por álbum vivo).
             commands::query_library_albums,
+            // L08 (#105): pestaña de artistas y detalle paginado de pistas.
+            commands::query_library_artists,
+            commands::query_library_artist_tracks,
             // L05 (#102): vista previa y runner de acciones por lotes.
             commands::preview_library_action,
             commands::run_library_action,

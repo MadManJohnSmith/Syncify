@@ -20,7 +20,7 @@ const PLACEHOLDER_REASONS: Record<LibraryTabId, string> = {
   albums:
     'The albums tab has its own view since L07 (#104). This placeholder is not used for albums.',
   artists:
-    'The artists tab arrives with L08 (#105): a server-side query_library_artists with paginated detail and collaborations. The artist membership it builds on lands with L00 (#97). Nothing is simulated here.',
+    'The artists tab has its own view since L08 (#105). This placeholder is not used for artists.',
   duplicates:
     'The duplicates view arrives with L10 (#73): clusters over ISRC and acoustic fingerprint identity, with manual merge, record and undo. Nothing is simulated here.',
 }

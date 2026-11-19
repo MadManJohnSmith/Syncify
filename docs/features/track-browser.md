@@ -23,6 +23,8 @@ se comporta una lista; las vistas solo declaran su fuente.
 |---|---|---|---|
 | `LibraryView` | `query_library` (L01, issue #98: filtros, orden, búsqueda y contadores EN SERVIDOR; módulo `commands/library_query.rs`) | offset/limit 100 (máx 200) + `has_more` + contadores en la primera página | ids |
 | `LibraryAlbumsView` | `query_library_albums` (L07, issue #104: una fila por álbum vivo, cobertura, cuentas y servicios; módulo `commands/library_albums.rs`) | offset/limit 100 (máx 200) + `has_more` en servidor | sin selección |
+| `LibraryArtistsView` | `query_library_artists` (L08, issue #105: una fila por artista vivo, pistas, álbumes, colaboraciones, cuentas y servicios; módulo `commands/library_artists.rs`) | offset/limit 100 (máx 200) + `has_more` en servidor | sin selección |
+| `ArtistDetailView` | `get_artist` (primera página = `top_tracks`, 5) + `query_library_artist_tracks` (L08: todas las pistas vivas, paginadas con colaboradores y fuentes) | offset/limit 100 (máx 200) + `has_more` en servidor | sin selección |
 | `MetadataView` | `get_library(0,500)` o `get_tracks_needing_metadata(500)` según `filterType` | página única, sin `has_more` | ids |
 | `DownloadsView` | `get_queue` completa | sin paginación server-side; recorte client-side a 50 por sección y salto por posición | sin selección |
 
@@ -69,9 +71,10 @@ Las vistas leen la ruta y pocas la escriben: el deep-link de `LibraryView`
 consume `?track=<id>` con `router.replace` paginando hasta 50 páginas;
 `?filter=quality&quality=<bucket>` y `?filter=duplicates` (Library),
 `?filter=needs_work` y `?trackId=` (Metadata), `?filter=failed` (Downloads, solo
-en mount). `LibraryAlbumsView` comparte `q`, `sort` y `dir` con la pestaña de
-pistas y los reescribe al cambiar texto u orden; cuenta, servicio y cobertura son
-estado local de la lista de álbumes.
+en mount). `LibraryAlbumsView` y `LibraryArtistsView` comparten `q`, `sort` y
+`dir` con la pestaña de pistas y los reescriben al cambiar texto u orden; cuenta,
+servicio y cobertura (álbumes) o cuenta y servicio (artistas) son estado local de
+cada lista.
 
 ## Agrupación
 

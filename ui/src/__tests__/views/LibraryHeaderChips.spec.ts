@@ -10,9 +10,10 @@
  *   aplicarlo);
  * - Álbumes (L07, #104) cuenta álbumes distintos con pistas vivas y navega
  *   a su pestaña;
- * - los chips cuya dependencia no existe (#105 artistas, #72 cuarentena,
- *   #73 duplicados) van DESHABILITADOS con su motivo y su contador no se
- *   inventa ('—');
+ * - Artistas (L08, #105) cuenta artistas distintos con pistas vivas y navega
+ *   a su pestaña;
+ * - los chips cuya dependencia no existe (#72 cuarentena, #73 duplicados)
+ *   van DESHABILITADOS con su motivo y su contador no se inventa ('—');
  * - los contadores se conservan al paginar (no se recalculan con scroll).
  */
 import { describe, it, expect, beforeEach } from 'vitest'
@@ -63,6 +64,11 @@ async function mountLibrary(query: Record<string, string> = {}) {
                 path: '/library/albums',
                 name: 'LibraryAlbums',
                 component: { template: '<div data-testid="albums-stub" />' },
+            },
+            {
+                path: '/library/artists',
+                name: 'LibraryArtists',
+                component: { template: '<div data-testid="artists-stub" />' },
             },
         ],
     })
@@ -182,13 +188,37 @@ describe('LibraryHeaderChips — cinco chips de estado (L03 #100)', () => {
         expect(router.currentRoute.value.query.sort).toBe('title');
     });
 
+    it('el chip Artistas cuenta artistas distintos y navega a su pestaña', async () => {
+        mockInvoke((cmd) => {
+            if (cmd === 'query_library') {
+                return pageWithCounts([createTestTrack(1, 'One')], {
+                    total: 1, favorites: 0, downloaded: 0, inPlaylists: 0, albums: 4, artists: 9, byService: [], byAccount: [],
+                });
+            }
+            return null;
+        });
+
+        const { wrapper, router } = await mountLibrary({ q: 'amo', sort: 'title' });
+        const artists = wrapper.find('[data-testid="library-chip-artists"]');
+        expect(artists.attributes('disabled')).toBeUndefined();
+        expect(artists.text()).toContain('Artists');
+        expect(artists.text()).toContain('9');
+
+        await artists.trigger('click');
+        await flushPromises();
+        expect(router.currentRoute.value.path).toBe('/library/artists');
+        // Compatibles con la lista de artistas: texto y orden.
+        expect(router.currentRoute.value.query.q).toBe('amo');
+        expect(router.currentRoute.value.query.sort).toBe('title');
+    });
+
     it('los chips sin dependencia van deshabilitados con su motivo y no alteran la consulta', async () => {
         const queries: Record<string, unknown>[] = [];
         mockInvoke((cmd, args) => {
             if (cmd === 'query_library') {
                 queries.push((args?.query ?? {}) as Record<string, unknown>);
                 return pageWithCounts([createTestTrack(1, 'One')], {
-                    total: 1, favorites: 0, downloaded: 0, inPlaylists: 0, albums: 0, byService: [], byAccount: [],
+                    total: 1, favorites: 0, downloaded: 0, inPlaylists: 0, albums: 0, artists: 0, byService: [], byAccount: [],
                 });
             }
             return null;
@@ -201,16 +231,13 @@ describe('LibraryHeaderChips — cinco chips de estado (L03 #100)', () => {
         // motivo, contador no inventado.
         const quarantine = wrapper.find('[data-testid="library-chip-quarantine"]');
         const duplicates = wrapper.find('[data-testid="library-chip-duplicates"]');
-        const artists = wrapper.find('[data-testid="library-chip-artists"]');
-        for (const chip of [quarantine, duplicates, artists]) {
+        for (const chip of [quarantine, duplicates]) {
             expect(chip.attributes('disabled')).toBeDefined();
             expect(chip.attributes('title')).toBeTruthy();
             expect(chip.text()).toContain('—');
         }
         expect(quarantine.attributes('title')).toContain('#72');
         expect(duplicates.attributes('title')).toContain('#73');
-        // El carril de artistas es L08 (#105).
-        expect(artists.attributes('title')).toContain('#105');
 
         // Un click en un chip deshabilitado no filtra ni navega.
         await quarantine.trigger('click');

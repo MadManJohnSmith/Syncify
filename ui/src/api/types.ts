@@ -166,6 +166,8 @@ export interface LibraryQueryCounts {
     inPlaylists: number;
     /** Álbumes distintos con al menos una pista viva en el filtro (L07). */
     albums: number;
+    /** Artistas distintos con al menos una pista viva en el filtro (L08). */
+    artists: number;
     byService: LibraryServiceCount[];
     byAccount: LibraryAccountCount[];
 }
@@ -230,6 +232,92 @@ export interface LibraryAlbumRow {
 export interface LibraryAlbumsResult {
     albums: LibraryAlbumRow[];
     /** Álbumes distintos con al menos una pista viva en el filtro. */
+    total: number;
+    offset: number;
+    limit: number;
+    hasMore: boolean;
+}
+
+// ==========================================================================
+// Pestaña de artistas (L08, issue #105). Espejo de
+// `commands/library_artists.rs`.
+// ==========================================================================
+
+export type LibraryArtistSortKey = 'name' | 'tracks' | 'dateAdded';
+
+export interface LibraryArtistQuery {
+    text: string | null;
+    serviceIds: number[];
+    accountIds: number[];
+    sort: LibraryArtistSortKey;
+    direction: SortDirection;
+    offset: number;
+    /** Default 100, máximo 200 (recortado en servidor). */
+    limit: number | null;
+}
+
+export interface LibraryArtistAccountBadge {
+    accountId: number;
+    displayName: string | null;
+    serviceName: string;
+}
+
+export interface LibraryArtistServiceBadge {
+    serviceId: number;
+    serviceName: string;
+}
+
+export interface LibraryArtistRow {
+    artistId: number;
+    name: string;
+    imageUrl: string | null;
+    /** Pistas distintas con pertenencia viva en el filtro. */
+    trackCount: number;
+    /** Álbumes distintos de esas pistas. */
+    albumCount: number;
+    /** Pistas vivas del artista con al menos otro artista. */
+    collaborationCount: number;
+    accounts: LibraryArtistAccountBadge[];
+    services: LibraryArtistServiceBadge[];
+    dateAdded: string | null;
+}
+
+export interface LibraryArtistsResult {
+    artists: LibraryArtistRow[];
+    /** Artistas distintos con al menos una pista viva en el filtro. */
+    total: number;
+    offset: number;
+    limit: number;
+    hasMore: boolean;
+}
+
+/** Fuente de una pista del detalle de artista (cross-service visible). */
+export interface ArtistTrackSource {
+    serviceId: number;
+    serviceName: string;
+}
+
+/** Pista viva del detalle: colaboradores y fuentes por servicio. */
+export interface ArtistTrackRow {
+    id: number;
+    title: string;
+    album: string | null;
+    albumId: number | null;
+    durationMs: number | null;
+    collaborators: string[];
+    sources: ArtistTrackSource[];
+}
+
+export interface ArtistTracksQuery {
+    artistId: number;
+    offset: number;
+    /** Default 100, máximo 200 (recortado en servidor). */
+    limit: number | null;
+}
+
+export interface ArtistTracksResult {
+    tracks: ArtistTrackRow[];
+    /** Pistas distintas vivas del artista (independiente de la página). */
     total: number;
     offset: number;
     limit: number;
@@ -1139,7 +1227,10 @@ export interface ArtistDetail {
     album_count: number;
     track_count: number;
     albums: ArtistAlbum[];
-    top_tracks: ArtistTrack[];
+    /** Primera página de la misma consulta que pagina el detalle (L08). */
+    top_tracks: ArtistTrackRow[];
+    /** Pistas vivas distintas del artista (todas las páginas). */
+    tracks_total?: number;
 }
 
 export interface ArtistAlbum {
@@ -1148,13 +1239,6 @@ export interface ArtistAlbum {
     cover_url: string | null;
     release_year: number | null;
     track_count: number;
-}
-
-export interface ArtistTrack {
-    id: number;
-    title: string;
-    album: string | null;
-    duration_ms: number | null;
 }
 
 export interface AlbumDetail {

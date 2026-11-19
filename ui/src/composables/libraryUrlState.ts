@@ -274,7 +274,7 @@ export interface LibraryTabMeta {
 export const LIBRARY_TABS: readonly LibraryTabMeta[] = [
     { id: 'tracks', path: '/library', label: 'Tracks', completesWith: '' },
     { id: 'albums', path: '/library/albums', label: 'Albums', completesWith: '' },
-    { id: 'artists', path: '/library/artists', label: 'Artists', completesWith: 'L08 (#105)' },
+    { id: 'artists', path: '/library/artists', label: 'Artists', completesWith: '' },
     { id: 'duplicates', path: '/library/duplicates', label: 'Duplicates', completesWith: 'L10 (#73)' },
 ];
 
