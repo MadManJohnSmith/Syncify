@@ -3,9 +3,9 @@
  * la biblioteca.
  *
  * - /library sigue siendo la vista de pistas;
- * - /library/albums, /library/artists y /library/duplicates existen y
- *   muestran un placeholder deshabilitado CON SU MOTIVO (L07/L08/L10) —
- *   el contenido no se simula;
+ * - /library/albums ya es la lista real de L07 (#104); /library/artists y
+ *   /library/duplicates muestran un placeholder deshabilitado CON SU
+ *   MOTIVO (L08/L10) — el contenido no se simula;
  * - el cambio de pestaña conserva los filtros compatibles (texto y orden)
  *   y descarta los que no aplican;
  * - Playlists y descargas conservan sus vistas y rutas actuales.
@@ -50,6 +50,9 @@ function libraryHandler() {
     return (cmd: string) => {
         if (cmd === 'query_library') {
             return { tracks: [createTestTrack(1)], total: 1, offset: 0, limit: 100, has_more: false };
+        }
+        if (cmd === 'query_library_albums') {
+            return { albums: [], total: 0, offset: 0, limit: 100, hasMore: false };
         }
         return [];
     };
@@ -104,9 +107,8 @@ describe('LibraryTabRoutes — armazón de pestañas (L03 #100)', () => {
         expect(library.name).toBe('Library');
     });
 
-    it('cada pestaña muestra un placeholder con su motivo y sin contenido simulado', async () => {
+    it('las pestañas sin carril muestran un placeholder con su motivo y sin contenido simulado', async () => {
         const expectations: Array<[string, string]> = [
-            ['/library/albums', 'L07 (#104)'],
             ['/library/artists', 'L08 (#105)'],
             ['/library/duplicates', 'L10 (#73)'],
         ];
@@ -120,6 +122,13 @@ describe('LibraryTabRoutes — armazón de pestañas (L03 #100)', () => {
             expect(wrapper.findAll('.track-row').length).toBe(0);
             wrapper.unmount();
         }
+    });
+
+    it('/library/albums es la lista real de álbumes (L07), no el placeholder', async () => {
+        const { wrapper } = await mountAt('/library/albums');
+        expect(wrapper.find('[data-testid="library-tab-placeholder"]').exists()).toBe(false);
+        expect(wrapper.find('[data-testid="albums-filters"]').exists()).toBe(true);
+        expect(wrapper.find('[data-testid="library-albums-total"]').exists()).toBe(true);
     });
 
     it('la barra de pestañas marca la activa y enlaza las cuatro rutas', async () => {

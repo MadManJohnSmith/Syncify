@@ -8,9 +8,11 @@
  *   que L01 pide con la primera página (calculado en servidor SIN la
  *   condición del propio chip, para que el número coincida con el total al
  *   aplicarlo);
- * - los chips cuya dependencia no existe (#97 pertenencia de álbum/artista,
- *   #72 cuarentena, #73 duplicados) van DESHABILITADOS con su motivo y su
- *   contador no se inventa ('—');
+ * - Álbumes (L07, #104) cuenta álbumes distintos con pistas vivas y navega
+ *   a su pestaña;
+ * - los chips cuya dependencia no existe (#105 artistas, #72 cuarentena,
+ *   #73 duplicados) van DESHABILITADOS con su motivo y su contador no se
+ *   inventa ('—');
  * - los contadores se conservan al paginar (no se recalculan con scroll).
  */
 import { describe, it, expect, beforeEach } from 'vitest'
@@ -55,7 +57,14 @@ function pageWithCounts(tracks: LibraryTrack[], counts: Record<string, unknown>)
 async function mountLibrary(query: Record<string, string> = {}) {
     const router = createRouter({
         history: createMemoryHistory(),
-        routes: [{ path: '/library', name: 'Library', component: LibraryView }],
+        routes: [
+            { path: '/library', name: 'Library', component: LibraryView },
+            {
+                path: '/library/albums',
+                name: 'LibraryAlbums',
+                component: { template: '<div data-testid="albums-stub" />' },
+            },
+        ],
     })
     await router.push({ path: '/library', query })
     await router.isReady()
@@ -79,6 +88,7 @@ describe('LibraryHeaderChips — cinco chips de estado (L03 #100)', () => {
                     favorites: 8,
                     downloaded: 12,
                     inPlaylists: 5,
+                    albums: 7,
                     byService: [],
                     byAccount: [],
                 });
@@ -117,7 +127,7 @@ describe('LibraryHeaderChips — cinco chips de estado (L03 #100)', () => {
                         offset: 0,
                         limit: 100,
                         has_more: false,
-                        counts: { total: all.length, favorites: 0, downloaded: 12, inPlaylists: 0, byService: [], byAccount: [] },
+                        counts: { total: all.length, favorites: 0, downloaded: 12, inPlaylists: 0, albums: 0, byService: [], byAccount: [] },
                     };
                 }
                 return { tracks: filtered, total: filtered.length, offset: q.offset ?? 0, limit: 100, has_more: false };
@@ -148,13 +158,37 @@ describe('LibraryHeaderChips — cinco chips de estado (L03 #100)', () => {
         expect(wrapper.text()).toContain('2 Tracks');
     });
 
+    it('el chip Álbumes cuenta álbumes distintos y navega a su pestaña', async () => {
+        mockInvoke((cmd) => {
+            if (cmd === 'query_library') {
+                return pageWithCounts([createTestTrack(1, 'One')], {
+                    total: 1, favorites: 0, downloaded: 0, inPlaylists: 0, albums: 7, byService: [], byAccount: [],
+                });
+            }
+            return null;
+        });
+
+        const { wrapper, router } = await mountLibrary({ q: 'amo', sort: 'title' });
+        const albums = wrapper.find('[data-testid="library-chip-albums"]');
+        expect(albums.attributes('disabled')).toBeUndefined();
+        expect(albums.text()).toContain('Albums');
+        expect(albums.text()).toContain('7');
+
+        await albums.trigger('click');
+        await flushPromises();
+        expect(router.currentRoute.value.path).toBe('/library/albums');
+        // Compatibles con la lista de álbumes: texto y orden.
+        expect(router.currentRoute.value.query.q).toBe('amo');
+        expect(router.currentRoute.value.query.sort).toBe('title');
+    });
+
     it('los chips sin dependencia van deshabilitados con su motivo y no alteran la consulta', async () => {
         const queries: Record<string, unknown>[] = [];
         mockInvoke((cmd, args) => {
             if (cmd === 'query_library') {
                 queries.push((args?.query ?? {}) as Record<string, unknown>);
                 return pageWithCounts([createTestTrack(1, 'One')], {
-                    total: 1, favorites: 0, downloaded: 0, inPlaylists: 0, byService: [], byAccount: [],
+                    total: 1, favorites: 0, downloaded: 0, inPlaylists: 0, albums: 0, byService: [], byAccount: [],
                 });
             }
             return null;
@@ -167,18 +201,16 @@ describe('LibraryHeaderChips — cinco chips de estado (L03 #100)', () => {
         // motivo, contador no inventado.
         const quarantine = wrapper.find('[data-testid="library-chip-quarantine"]');
         const duplicates = wrapper.find('[data-testid="library-chip-duplicates"]');
-        const albums = wrapper.find('[data-testid="library-chip-albums"]');
         const artists = wrapper.find('[data-testid="library-chip-artists"]');
-        for (const chip of [quarantine, duplicates, albums, artists]) {
+        for (const chip of [quarantine, duplicates, artists]) {
             expect(chip.attributes('disabled')).toBeDefined();
             expect(chip.attributes('title')).toBeTruthy();
             expect(chip.text()).toContain('—');
         }
         expect(quarantine.attributes('title')).toContain('#72');
         expect(duplicates.attributes('title')).toContain('#73');
-        // La pertenencia de álbum/artista es de L00 (#97).
-        expect(albums.attributes('title')).toContain('#97');
-        expect(artists.attributes('title')).toContain('#97');
+        // El carril de artistas es L08 (#105).
+        expect(artists.attributes('title')).toContain('#105');
 
         // Un click en un chip deshabilitado no filtra ni navega.
         await quarantine.trigger('click');
@@ -211,7 +243,7 @@ describe('LibraryHeaderChips — cinco chips de estado (L03 #100)', () => {
             if (cmd === 'query_library') {
                 queries.push((args?.query ?? {}) as Record<string, unknown>);
                 return pageWithCounts([createTestTrack(1, 'One', 'downloaded')], {
-                    total: 1, favorites: 0, downloaded: 1, inPlaylists: 0, byService: [], byAccount: [],
+                    total: 1, favorites: 0, downloaded: 1, inPlaylists: 0, albums: 0, byService: [], byAccount: [],
                 });
             }
             return null;

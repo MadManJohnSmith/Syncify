@@ -146,6 +146,13 @@
               </div>
               <span class="text-sm text-text-secondary">{{ formatTrackDuration(track.duration_ms) }}</span>
               <button 
+                @click="showMetadata(track.id)"
+                class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight/50 rounded-full transition-colors text-text-secondary hover:text-primary"
+                title="Show Metadata"
+              >
+                <span class="material-symbols-outlined text-[18px]">edit_note</span>
+              </button>
+              <button
                 @click="downloadTrack(track.id, track.title)" 
                 class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight/50 rounded-full transition-colors text-text-secondary hover:text-primary"
                 title="Download Track"
@@ -228,6 +235,10 @@ async function playAlbum() {
       toast.error('Failed to queue tracks', errStr)
     }
   }
+}
+
+function showMetadata(trackId: number) {
+  router.push({ path: '/metadata', query: { trackId: String(trackId) } })
 }
 
 async function downloadTrack(trackId: number, title: string) {

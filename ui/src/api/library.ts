@@ -11,6 +11,9 @@ import type {
     LibraryQuery,
     LibraryQueryCounts,
     LibraryQueryResult,
+    LibraryAlbumQuery,
+    LibraryAlbumRow,
+    LibraryAlbumsResult,
     LibrarySelection,
     LibraryBatchAction,
     LibraryActionPreview,
@@ -112,6 +115,7 @@ export async function queryLibrary(query: LibraryQuery): Promise<LibraryQueryRes
               favorites: asNumber(counts.favorites),
               downloaded: asNumber(counts.downloaded),
               inPlaylists: asNumber(counts.inPlaylists, asNumber(counts.in_playlists)),
+              albums: asNumber(counts.albums),
               byService: asArray(counts.byService ?? counts.by_service).map((s) => {
                   const rec = asRecord(s) ?? {};
                   return {
@@ -134,6 +138,53 @@ export async function queryLibrary(query: LibraryQuery): Promise<LibraryQueryRes
     return {
         ...normalizeLibraryPage(raw, query.offset, query.limit ?? undefined),
         counts: normalizedCounts,
+    };
+}
+
+/**
+ * Consulta de la pestaña de álbumes (L07, #104): una fila por álbum con
+ * pistas vivas, cobertura, cuentas y servicios. Comparte texto, filtros y
+ * paginación con `queryLibrary`, pero la agregación y el orden son de álbum.
+ */
+export async function queryLibraryAlbums(query: LibraryAlbumQuery): Promise<LibraryAlbumsResult> {
+    const raw = asRecord(await invokeCommand<unknown>('query_library_albums', { query }));
+    const nullableText = (value: unknown): string | null =>
+        typeof value === 'string' ? value : null;
+    const normalizeAlbum = (album: unknown): LibraryAlbumRow => {
+        const rec = asRecord(album) ?? {};
+        return {
+            albumId: asNumber(rec.albumId ?? rec.album_id),
+            title: asString(rec.title, ''),
+            artistName: nullableText(rec.artistName ?? rec.artist_name),
+            releaseYear: optionalNumber(rec.releaseYear ?? rec.release_year) ?? null,
+            trackCount: asNumber(rec.trackCount ?? rec.track_count),
+            downloadedCount: asNumber(rec.downloadedCount ?? rec.downloaded_count),
+            coverage: optionalNumber(rec.coverage) ?? null,
+            accounts: asArray(rec.accounts).map((account) => {
+                const a = asRecord(account) ?? {};
+                return {
+                    accountId: asNumber(a.accountId ?? a.account_id),
+                    displayName: nullableText(a.displayName ?? a.display_name),
+                    serviceName: asString(a.serviceName ?? a.service_name, ''),
+                };
+            }),
+            services: asArray(rec.services).map((service) => {
+                const s = asRecord(service) ?? {};
+                return {
+                    serviceId: asNumber(s.serviceId ?? s.service_id),
+                    serviceName: asString(s.serviceName ?? s.service_name, ''),
+                };
+            }),
+            dateAdded: nullableText(rec.dateAdded ?? rec.date_added),
+            coverArtUrl: nullableText(rec.coverArtUrl ?? rec.cover_art_url),
+        };
+    };
+    return {
+        albums: asArray(raw?.albums).map((album) => normalizeAlbum(album)),
+        total: asNumber(raw?.total),
+        offset: asNumber(raw?.offset, query.offset ?? 0),
+        limit: asNumber(raw?.limit, query.limit ?? 0),
+        hasMore: raw?.hasMore === true || raw?.has_more === true,
     };
 }
 
@@ -1460,6 +1511,7 @@ export async function reconcileDownloadsFromStorage(musicDirOverride?: string): 
 export const libraryApi = {
     getLibrary,
     queryLibrary,
+    queryLibraryAlbums,
     previewLibraryAction,
     runLibraryAction,
     getFavoriteTracks,

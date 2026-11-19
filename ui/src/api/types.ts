@@ -164,6 +164,8 @@ export interface LibraryQueryCounts {
     favorites: number;
     downloaded: number;
     inPlaylists: number;
+    /** Álbumes distintos con al menos una pista viva en el filtro (L07). */
+    albums: number;
     byService: LibraryServiceCount[];
     byAccount: LibraryAccountCount[];
 }
@@ -171,6 +173,67 @@ export interface LibraryQueryCounts {
 export interface LibraryQueryResult extends LibraryPage {
     /** `null` al paginar: la vista conserva los de la primera página. */
     counts: LibraryQueryCounts | null;
+}
+
+// ==========================================================================
+// Pestaña de álbumes (L07, issue #104). Espejo de
+// `commands/library_albums.rs`.
+// ==========================================================================
+
+export type LibraryAlbumSortKey = 'dateAdded' | 'title' | 'artist' | 'year';
+
+/**
+ * Cobertura de descarga del álbum: todas las pistas, algunas o ninguna.
+ * La cobertura se calcula sobre las pistas vivas del filtro.
+ */
+export type AlbumCoverageFilter = 'complete' | 'partial' | 'none';
+
+export interface LibraryAlbumQuery {
+    text: string | null;
+    serviceIds: number[];
+    accountIds: number[];
+    coverage: AlbumCoverageFilter[];
+    sort: LibraryAlbumSortKey;
+    direction: SortDirection;
+    offset: number;
+    /** Default 100, máximo 200 (recortado en servidor). */
+    limit: number | null;
+}
+
+export interface LibraryAlbumAccountBadge {
+    accountId: number;
+    displayName: string | null;
+    serviceName: string;
+}
+
+export interface LibraryAlbumServiceBadge {
+    serviceId: number;
+    serviceName: string;
+}
+
+export interface LibraryAlbumRow {
+    albumId: number;
+    title: string;
+    artistName: string | null;
+    releaseYear: number | null;
+    /** Pistas distintas con pertenencia viva en el filtro. */
+    trackCount: number;
+    downloadedCount: number;
+    /** `downloadedCount / trackCount`; `null` si el total es cero. */
+    coverage: number | null;
+    accounts: LibraryAlbumAccountBadge[];
+    services: LibraryAlbumServiceBadge[];
+    dateAdded: string | null;
+    coverArtUrl: string | null;
+}
+
+export interface LibraryAlbumsResult {
+    albums: LibraryAlbumRow[];
+    /** Álbumes distintos con al menos una pista viva en el filtro. */
+    total: number;
+    offset: number;
+    limit: number;
+    hasMore: boolean;
 }
 
 // ==========================================================================

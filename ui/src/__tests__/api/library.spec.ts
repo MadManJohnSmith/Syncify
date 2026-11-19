@@ -18,7 +18,8 @@ import {
     syncFavorites,
     normalizeQualityPreference,
     syncLocalLibrary,
-    getTrackMetadata
+    getTrackMetadata,
+    queryLibraryAlbums
 } from '@/api/library';
 import { resetMocks, mockInvoke } from '../setup';
 
@@ -521,6 +522,78 @@ describe('libraryApi', () => {
             expect(meta.track_id).toBe(7);
             expect(meta.title).toBe('T');
             expect(meta.file_path).toBe('/x.flac');
+        });
+    });
+
+    describe('queryLibraryAlbums', () => {
+        const query = {
+            text: null,
+            serviceIds: [],
+            accountIds: [],
+            coverage: [],
+            sort: 'dateAdded' as const,
+            direction: 'desc' as const,
+            offset: 0,
+            limit: 100,
+        };
+
+        it('calls query_library_albums and normalizes the album page', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'query_library_albums') {
+                    return {
+                        albums: [{
+                            albumId: 7,
+                            title: 'Nightfall',
+                            artistName: 'Alpha Band',
+                            releaseYear: 1999,
+                            trackCount: 3,
+                            downloadedCount: 1,
+                            coverage: 1 / 3,
+                            accounts: [{ accountId: 1, displayName: 'A1', serviceName: 'spotify' }],
+                            services: [{ serviceId: 2, serviceName: 'qobuz' }],
+                            dateAdded: '2026-03-01T10:00:00Z',
+                            coverArtUrl: null,
+                        }],
+                        total: 1,
+                        offset: 0,
+                        limit: 100,
+                        hasMore: false,
+                    };
+                }
+                return null;
+            });
+
+            const result = await queryLibraryAlbums(query);
+
+            expect(invoke).toHaveBeenCalledWith('query_library_albums', { query });
+            expect(result.total).toBe(1);
+            expect(result.hasMore).toBe(false);
+            const album = result.albums[0];
+            expect(album.albumId).toBe(7);
+            expect(album.artistName).toBe('Alpha Band');
+            expect(album.trackCount).toBe(3);
+            expect(album.accounts[0].displayName).toBe('A1');
+            expect(album.services[0].serviceName).toBe('qobuz');
+        });
+
+        it('keeps coverage null when the server reports no total', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'query_library_albums') {
+                    return {
+                        albums: [{ albumId: 1, title: 'Empty', trackCount: 0, downloadedCount: 0, coverage: null }],
+                        total: 1,
+                        offset: 0,
+                        limit: 100,
+                        hasMore: false,
+                    };
+                }
+                return null;
+            });
+
+            const result = await queryLibraryAlbums(query);
+
+            expect(result.albums[0].coverage).toBeNull();
+            expect(result.albums[0].trackCount).toBe(0);
         });
     });
 });

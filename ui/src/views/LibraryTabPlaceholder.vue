@@ -18,7 +18,7 @@ const route = useRoute()
 const PLACEHOLDER_REASONS: Record<LibraryTabId, string> = {
   tracks: '',
   albums:
-    'The albums tab arrives with L07 (#104): a server-side query_library_albums with download coverage and its own orders. The album membership it builds on lands with L00 (#97). Nothing is simulated here.',
+    'The albums tab has its own view since L07 (#104). This placeholder is not used for albums.',
   artists:
     'The artists tab arrives with L08 (#105): a server-side query_library_artists with paginated detail and collaborations. The artist membership it builds on lands with L00 (#97). Nothing is simulated here.',
   duplicates:

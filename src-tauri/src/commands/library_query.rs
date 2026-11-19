@@ -96,7 +96,7 @@ pub enum SortDirection {
 }
 
 impl SortDirection {
-    fn sql(self) -> &'static str {
+    pub(crate) fn sql(self) -> &'static str {
         match self {
             SortDirection::Asc => "ASC",
             SortDirection::Desc => "DESC",
@@ -230,6 +230,10 @@ pub struct LibraryQueryCounts {
     pub favorites: i64,
     pub downloaded: i64,
     pub in_playlists: i64,
+    /// Álbumes DISTINTOS con al menos una pista viva en el filtro (L07,
+    /// #104): el contador de la cabecera no cuenta filas de `tracks` ni
+    /// álbumes sin pistas vivas.
+    pub albums: i64,
     /// Pistas distintas con fuente en cada servicio (badges: track_sources).
     pub by_service: Vec<ServiceCount>,
     /// Pistas distintas por cuenta (pertenencias: library_entries +
@@ -971,6 +975,26 @@ async fn count_matching(
     Ok(count)
 }
 
+/// Álbumes distintos con al menos una pista viva del filtro (L07, #104).
+/// Es el contador de la cabecera y `COUNT(DISTINCT t.album_id)` — no una
+/// fila por pista ni un álbum sin pistas vivas.
+async fn count_albums(db: &SqlitePool, query: &LibraryQuery) -> Result<i64, String> {
+    let (where_sql, binds) = build_where(query, Dimension::All)?;
+    let sql = format!(
+        "SELECT COUNT(DISTINCT t.album_id) FROM tracks t \
+         WHERE ({where_sql}) AND t.album_id IS NOT NULL"
+    );
+    let mut q = sqlx::query_as::<_, (i64,)>(&sql);
+    for bind in &binds {
+        q = q.bind(bind);
+    }
+    let (count,): (i64,) = q
+        .fetch_one(db)
+        .await
+        .map_err(|e| format!("query_library: error contando álbumes: {e}"))?;
+    Ok(count)
+}
+
 /// Contadores de cabecera. Cada uno sobre el filtro SIN su propia dimensión.
 async fn build_counts(
     db: &SqlitePool,
@@ -992,6 +1016,7 @@ async fn build_counts(
         "EXISTS (SELECT 1 FROM playlist_tracks pt_c2 WHERE pt_c2.track_id = t.id)",
     )
     .await?;
+    let albums = count_albums(db, query).await?;
 
     // Por servicio (badges: track_sources), sin el propio filtro de servicios.
     let (where_svc, binds_svc) = build_where(query, Dimension::Services)?;
@@ -1058,6 +1083,7 @@ async fn build_counts(
         favorites,
         downloaded,
         in_playlists,
+        albums,
         by_service,
         by_account,
     })
