@@ -309,7 +309,10 @@ jobs:
     # Python entera. El area `docs` existe para que un PR que solo toca
     # docs/**.md, AGENTS.md o GLOSSARY.md no pague las dos patas de Rust y la
     # de frontend; el toolchain Rust solo hace falta para `cargo metadata`
-    # con el que test_agents_claims mide los objetivos de test.
+    # con el que test_agents_claims mide los objetivos de test. Las
+    # dependencias de scripts/ sí hacen falta: la discovery cuenta imports y
+    # sin ellas pierde 37 casos (443 en vez de 480) y la cifra del AGENTS.md
+    # falla por el entorno, no por el árbol.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -328,6 +331,9 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
+    - name: Instalar dependencias de scripts/ (la discovery cuenta imports)
+      if: contains(fromJSON(needs.changed.outputs.areas), 'docs')
+      run: python -m pip install --disable-pip-version-check -r scripts/requirements.txt
     - name: Instalar toolchain Rust fijado 1.98.1 (cargo metadata)
       if: contains(fromJSON(needs.changed.outputs.areas), 'docs')
       uses: dtolnay/rust-toolchain@1.98.1
