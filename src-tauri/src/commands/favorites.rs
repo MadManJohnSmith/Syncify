@@ -1506,9 +1506,12 @@ pub async fn perform_sync_favorites(
             if type_filter == "all" || type_filter == "tracks" {
                 // F2-4: paginación completa (antes solo la página 0).
                 let mut offset: i32 = 0;
+                let mut reported_total: Option<i64> = None;
                 loop {
                     let page = client.get_favorites(offset, 100).await?;
-                    total_found += page.total as i64;
+                    if reported_total.is_none() && page.total > 0 {
+                        reported_total = Some(page.total as i64);
+                    }
                     let items_len = page.items.len();
                     for item in page.items {
                         let track = item.item;
@@ -1583,31 +1586,39 @@ pub async fn perform_sync_favorites(
                         offset,
                         items_len as i32,
                         100,
-                        (page.total > 0).then_some(page.total as i64),
+                        reported_total,
                     ) {
                         Some(next) => offset = next,
                         None => break,
                     }
                 }
+                if let Some(total) = reported_total {
+                    total_found += total;
+                }
             }
-
             if type_filter == "all" || type_filter == "albums" {
-                let page = client.get_favorite_albums(0, 100).await?;
-                total_found += page.total as i64;
-                for item in page.items {
-                    let album = item.item;
-                    let album_id_str = album.tidal_id.to_string();
-                    let title = album.title.clone();
-                    let artist_name = album
-                        .artist
-                        .as_ref()
-                        .map(|a| a.name.clone())
-                        .unwrap_or_else(|| "Unknown Artist".to_string());
-                    let upc = album.upc.clone();
-                    let image_url = album.cover_url();
-                    let favorited_at: Option<String> = None;
+                let mut offset: i32 = 0;
+                let mut reported_total: Option<i64> = None;
+                loop {
+                    let page = client.get_favorite_albums(offset, 100).await?;
+                    if reported_total.is_none() && page.total > 0 {
+                        reported_total = Some(page.total as i64);
+                    }
+                    let items_len = page.items.len();
+                    for item in page.items {
+                        let album = item.item;
+                        let album_id_str = album.tidal_id.to_string();
+                        let title = album.title.clone();
+                        let artist_name = album
+                            .artist
+                            .as_ref()
+                            .map(|a| a.name.clone())
+                            .unwrap_or_else(|| "Unknown Artist".to_string());
+                        let upc = album.upc.clone();
+                        let image_url = album.cover_url();
+                        let favorited_at: Option<String> = None;
 
-                    let res = sqlx::query(
+                        let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, upc, image_url, favorited_at)
                         VALUES (?, ?, 'album', ?, ?, ?, ?, ?, ?, ?)
@@ -1631,37 +1642,55 @@ pub async fn perform_sync_favorites(
                     .execute(db)
                     .await;
 
-                    if let Ok(r) = res {
-                        if r.rows_affected() > 0 {
-                            imported += 1;
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
                         }
-                    }
 
-                    // Canonical library album synchronization with UPC deduplication
-                    let _ = upsert_canonical_favorite_album(
-                        db,
-                        service_id,
-                        &album_id_str,
-                        &title,
-                        &artist_name,
-                        upc.as_deref(),
-                        image_url.as_deref(),
-                    )
-                    .await;
+                        // Canonical library album synchronization with UPC deduplication
+                        let _ = upsert_canonical_favorite_album(
+                            db,
+                            service_id,
+                            &album_id_str,
+                            &title,
+                            &artist_name,
+                            upc.as_deref(),
+                            image_url.as_deref(),
+                        )
+                        .await;
+                    }
+                    match crate::services::import_pagination::next_offset(
+                        offset,
+                        items_len as i32,
+                        100,
+                        reported_total,
+                    ) {
+                        Some(next) => offset = next,
+                        None => break,
+                    }
+                }
+                if let Some(total) = reported_total {
+                    total_found += total;
                 }
             }
-
             if type_filter == "all" || type_filter == "artists" {
-                let page = client.get_favorite_artists(0, 100).await?;
-                total_found += page.total as i64;
-                for item in page.items {
-                    let artist = item.item;
-                    let artist_id_str = artist.id.to_string();
-                    let name = artist.name.clone();
-                    let image_url: Option<String> = None;
-                    let favorited_at: Option<String> = None;
+                let mut offset: i32 = 0;
+                let mut reported_total: Option<i64> = None;
+                loop {
+                    let page = client.get_favorite_artists(offset, 100).await?;
+                    if reported_total.is_none() && page.total > 0 {
+                        reported_total = Some(page.total as i64);
+                    }
+                    let items_len = page.items.len();
+                    for item in page.items {
+                        let artist = item.item;
+                        let artist_id_str = artist.id.to_string();
+                        let name = artist.name.clone();
+                        let image_url: Option<String> = None;
+                        let favorited_at: Option<String> = None;
 
-                    let res = sqlx::query(
+                        let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, image_url, favorited_at)
                         VALUES (?, ?, 'artist', ?, ?, ?, ?, ?)
@@ -1682,15 +1711,29 @@ pub async fn perform_sync_favorites(
                     .execute(db)
                     .await;
 
-                    if let Ok(r) = res {
-                        if r.rows_affected() > 0 {
-                            imported += 1;
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
                         }
-                    }
 
-                    // Canonical library artist synchronization
-                    let _ = upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
-                        .await;
+                        // Canonical library artist synchronization
+                        let _ =
+                            upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
+                                .await;
+                    }
+                    match crate::services::import_pagination::next_offset(
+                        offset,
+                        items_len as i32,
+                        100,
+                        reported_total,
+                    ) {
+                        Some(next) => offset = next,
+                        None => break,
+                    }
+                }
+                if let Some(total) = reported_total {
+                    total_found += total;
                 }
             }
         }
@@ -1714,9 +1757,12 @@ pub async fn perform_sync_favorites(
             if type_filter == "all" || type_filter == "tracks" {
                 // F2-4: paginación completa (antes solo la página 0).
                 let mut offset: i32 = 0;
+                let mut reported_total: Option<i64> = None;
                 loop {
                     let page = client.get_favorites(offset, 100).await?;
-                    total_found += page.tracks.total as i64;
+                    if reported_total.is_none() && page.tracks.total > 0 {
+                        reported_total = Some(page.tracks.total as i64);
+                    }
                     let items_len_q = page.tracks.items.len();
                     for track in page.tracks.items {
                         let track_id_str = track.id.to_string();
@@ -1794,32 +1840,41 @@ pub async fn perform_sync_favorites(
                         offset,
                         items_len_q as i32,
                         100,
-                        (page.tracks.total > 0).then_some(page.tracks.total as i64),
+                        reported_total,
                     ) {
                         Some(next) => offset = next,
                         None => break,
                     }
                 }
+                if let Some(total) = reported_total {
+                    total_found += total;
+                }
             }
 
             if type_filter == "all" || type_filter == "albums" {
-                let page = client.get_favorite_albums(0, 100).await?;
-                total_found += page.albums.total as i64;
-                for album in page.albums.items {
-                    let album_id_str = album.id.clone();
-                    let title = album.title.unwrap_or_else(|| "Unknown Album".to_string());
-                    let artist_name = album
-                        .artist
-                        .as_ref()
-                        .and_then(|a| a.name.clone())
-                        .unwrap_or_else(|| "Unknown Artist".to_string());
-                    let upc = album.upc.clone();
-                    let image_url = album
-                        .image
-                        .as_ref()
-                        .and_then(|img| img.large.clone().or_else(|| img.small.clone()));
+                let mut offset: i32 = 0;
+                let mut reported_total: Option<i64> = None;
+                loop {
+                    let page = client.get_favorite_albums(offset, 100).await?;
+                    if reported_total.is_none() && page.albums.total > 0 {
+                        reported_total = Some(page.albums.total as i64);
+                    }
+                    let items_len = page.albums.items.len();
+                    for album in page.albums.items {
+                        let album_id_str = album.id.clone();
+                        let title = album.title.unwrap_or_else(|| "Unknown Album".to_string());
+                        let artist_name = album
+                            .artist
+                            .as_ref()
+                            .and_then(|a| a.name.clone())
+                            .unwrap_or_else(|| "Unknown Artist".to_string());
+                        let upc = album.upc.clone();
+                        let image_url = album
+                            .image
+                            .as_ref()
+                            .and_then(|img| img.large.clone().or_else(|| img.small.clone()));
 
-                    let res = sqlx::query(
+                        let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, upc, image_url)
                         VALUES (?, ?, 'album', ?, ?, ?, ?, ?, ?)
@@ -1841,34 +1896,53 @@ pub async fn perform_sync_favorites(
                     .execute(db)
                     .await;
 
-                    if let Ok(r) = res {
-                        if r.rows_affected() > 0 {
-                            imported += 1;
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
                         }
-                    }
 
-                    // Canonical library album synchronization with UPC deduplication
-                    let _ = upsert_canonical_favorite_album(
-                        db,
-                        service_id,
-                        &album_id_str,
-                        &title,
-                        &artist_name,
-                        upc.as_deref(),
-                        image_url.as_deref(),
-                    )
-                    .await;
+                        // Canonical library album synchronization with UPC deduplication
+                        let _ = upsert_canonical_favorite_album(
+                            db,
+                            service_id,
+                            &album_id_str,
+                            &title,
+                            &artist_name,
+                            upc.as_deref(),
+                            image_url.as_deref(),
+                        )
+                        .await;
+                    }
+                    match crate::services::import_pagination::next_offset(
+                        offset,
+                        items_len as i32,
+                        100,
+                        reported_total,
+                    ) {
+                        Some(next) => offset = next,
+                        None => break,
+                    }
+                }
+                if let Some(total) = reported_total {
+                    total_found += total;
                 }
             }
 
             if type_filter == "all" || type_filter == "artists" {
-                let page = client.get_favorite_artists(0, 100).await?;
-                total_found += page.artists.total as i64;
-                for artist in page.artists.items {
-                    let artist_id_str = artist.id.map(|n| n.to_string()).unwrap_or_default();
-                    let name = artist.name.unwrap_or_else(|| "Unknown Artist".to_string());
+                let mut offset: i32 = 0;
+                let mut reported_total: Option<i64> = None;
+                loop {
+                    let page = client.get_favorite_artists(offset, 100).await?;
+                    if reported_total.is_none() && page.artists.total > 0 {
+                        reported_total = Some(page.artists.total as i64);
+                    }
+                    let items_len = page.artists.items.len();
+                    for artist in page.artists.items {
+                        let artist_id_str = artist.id.map(|n| n.to_string()).unwrap_or_default();
+                        let name = artist.name.unwrap_or_else(|| "Unknown Artist".to_string());
 
-                    let res = sqlx::query(
+                        let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name)
                         VALUES (?, ?, 'artist', ?, ?, ?)
@@ -1885,15 +1959,29 @@ pub async fn perform_sync_favorites(
                     .execute(db)
                     .await;
 
-                    if let Ok(r) = res {
-                        if r.rows_affected() > 0 {
-                            imported += 1;
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
                         }
-                    }
 
-                    // Canonical library artist synchronization
-                    let _ = upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
-                        .await;
+                        // Canonical library artist synchronization
+                        let _ =
+                            upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
+                                .await;
+                    }
+                    match crate::services::import_pagination::next_offset(
+                        offset,
+                        items_len as i32,
+                        100,
+                        reported_total,
+                    ) {
+                        Some(next) => offset = next,
+                        None => break,
+                    }
+                }
+                if let Some(total) = reported_total {
+                    total_found += total;
                 }
             }
         }
@@ -1907,9 +1995,12 @@ pub async fn perform_sync_favorites(
             if type_filter == "all" || type_filter == "tracks" {
                 // F2-4: paginación completa (antes solo la página 0).
                 let mut offset: i32 = 0;
+                let mut reported_total: Option<i64> = None;
                 loop {
                     let page = client.get_saved_tracks(offset, 50).await?;
-                    total_found += page.total as i64;
+                    if reported_total.is_none() && page.total > 0 {
+                        reported_total = Some(page.total as i64);
+                    }
                     let items_len_s = page.items.len();
                     for saved in page.items {
                         let track = saved.track;
@@ -1990,27 +2081,36 @@ pub async fn perform_sync_favorites(
                         offset,
                         items_len_s as i32,
                         50,
-                        (page.total > 0).then_some(page.total as i64),
+                        reported_total,
                     ) {
                         Some(next) => offset = next,
                         None => break,
                     }
                 }
+                if let Some(total) = reported_total {
+                    total_found += total;
+                }
             }
 
             if type_filter == "all" || type_filter == "albums" {
-                let page = client.get_saved_albums(0, 50).await?;
-                total_found += page.total as i64;
-                for saved in page.items {
-                    let album = saved.album;
-                    let album_id_str = album.id.clone();
-                    let title = album.name.clone();
-                    let artist_name = "Various Artists".to_string();
-                    let upc = album.external_ids.as_ref().and_then(|e| e.upc.clone());
-                    let image_url = album.images.first().map(|i| i.url.clone());
-                    let favorited_at = saved.added_at;
+                let mut offset: i32 = 0;
+                let mut reported_total: Option<i64> = None;
+                loop {
+                    let page = client.get_saved_albums(offset, 50).await?;
+                    if reported_total.is_none() && page.total > 0 {
+                        reported_total = Some(page.total as i64);
+                    }
+                    let items_len = page.items.len();
+                    for saved in page.items {
+                        let album = saved.album;
+                        let album_id_str = album.id.clone();
+                        let title = album.name.clone();
+                        let artist_name = "Various Artists".to_string();
+                        let upc = album.external_ids.as_ref().and_then(|e| e.upc.clone());
+                        let image_url = album.images.first().map(|i| i.url.clone());
+                        let favorited_at = saved.added_at;
 
-                    let res = sqlx::query(
+                        let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, upc, image_url, favorited_at)
                         VALUES (?, ?, 'album', ?, ?, ?, ?, ?, ?, ?)
@@ -2034,35 +2134,57 @@ pub async fn perform_sync_favorites(
                     .execute(db)
                     .await;
 
-                    if let Ok(r) = res {
-                        if r.rows_affected() > 0 {
-                            imported += 1;
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
                         }
-                    }
 
-                    // Canonical library album synchronization with UPC deduplication
-                    let _ = upsert_canonical_favorite_album(
-                        db,
-                        service_id,
-                        &album_id_str,
-                        &title,
-                        &artist_name,
-                        upc.as_deref(),
-                        image_url.as_deref(),
-                    )
-                    .await;
+                        // Canonical library album synchronization with UPC deduplication
+                        let _ = upsert_canonical_favorite_album(
+                            db,
+                            service_id,
+                            &album_id_str,
+                            &title,
+                            &artist_name,
+                            upc.as_deref(),
+                            image_url.as_deref(),
+                        )
+                        .await;
+                    }
+                    match crate::services::import_pagination::next_offset(
+                        offset,
+                        items_len as i32,
+                        50,
+                        reported_total,
+                    ) {
+                        Some(next) => offset = next,
+                        None => break,
+                    }
+                }
+                if let Some(total) = reported_total {
+                    total_found += total;
                 }
             }
 
             if type_filter == "all" || type_filter == "artists" {
-                let page = client.get_followed_artists(None, 50).await?;
-                let count = page.artists.items.len() as i64;
-                total_found += count;
-                for artist in page.artists.items {
-                    let artist_id_str = artist.id.clone();
-                    let name = artist.name.clone();
+                let mut after: Option<String> = None;
+                let mut reported_total: Option<i64> = None;
+                let mut artists_seen: u64 = 0;
+                loop {
+                    let page = client.get_followed_artists(after.as_deref(), 50).await?;
+                    let artists_page = page.artists;
+                    if reported_total.is_none() && artists_page.total.unwrap_or(0) > 0 {
+                        reported_total = artists_page.total.map(i64::from);
+                    }
+                    let items_len = artists_page.items.len() as i32;
+                    let next_cursor = artists_page.cursors.and_then(|cursors| cursors.after);
+                    for artist in artists_page.items {
+                        artists_seen += 1;
+                        let artist_id_str = artist.id.clone();
+                        let name = artist.name.clone();
 
-                    let res = sqlx::query(
+                        let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name)
                         VALUES (?, ?, 'artist', ?, ?, ?)
@@ -2079,15 +2201,30 @@ pub async fn perform_sync_favorites(
                     .execute(db)
                     .await;
 
-                    if let Ok(r) = res {
-                        if r.rows_affected() > 0 {
-                            imported += 1;
+                        if let Ok(r) = res {
+                            if r.rows_affected() > 0 {
+                                imported += 1;
+                            }
                         }
-                    }
 
-                    // Canonical library artist synchronization
-                    let _ = upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
-                        .await;
+                        // Canonical library artist synchronization
+                        let _ =
+                            upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
+                                .await;
+                    }
+                    after = crate::services::import_pagination::next_cursor(
+                        next_cursor,
+                        items_len as usize,
+                        50,
+                        reported_total,
+                        artists_seen,
+                    );
+                    if after.is_none() {
+                        break;
+                    }
+                }
+                if let Some(total) = reported_total {
+                    total_found += total;
                 }
             }
         }
