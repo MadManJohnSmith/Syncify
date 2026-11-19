@@ -153,6 +153,36 @@ pub async fn refresh_and_snapshot(
     jobs::progress_snapshot(db, job_id).await
 }
 
+/// Título y cuerpo de la notificación de un job terminal (#122).
+///
+/// Devuelve `None` mientras el job no es terminal: nunca se notifica un job
+/// `running`. El llamador solo lo usa en la transición terminal, así que cada
+/// job notifica su estado final una sola vez.
+pub fn terminal_notification(event: &DownloadJobProgressEvent) -> Option<(String, String)> {
+    if !event.terminal {
+        return None;
+    }
+    let label = event
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Job #{}", event.job_id));
+    let title = match event.status.as_str() {
+        "completed" => format!("Descarga completada: {}", label),
+        "partial" => format!("Descarga parcial: {}", label),
+        "failed" => format!("Descarga fallida: {}", label),
+        "cancelled" => format!("Descarga cancelada: {}", label),
+        _ => return None,
+    };
+    let body = format!(
+        "{} completadas · {} fallidas · {} omitidas · {} canceladas",
+        event.completed, event.failed, event.skipped, event.cancelled
+    );
+    Some((title, body))
+}
+
 /// Un sondeo del watcher: refresca, emite si toca y devuelve `Some(true)` en
 /// la transición terminal, `Some(false)` mientras queda trabajo y `None` si el
 /// job ya no existe (limpiado mientras miraba).
@@ -170,6 +200,16 @@ pub async fn poll_job(
     }
     if event.terminal {
         forget_job_queues(job_id);
+        // #122: la notificación de fin no bloquea al watcher ni al worker; el
+        // spawn la entrega fuera del ciclo de sondeo.
+        if let Some((title, body)) = terminal_notification(&event) {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = crate::tray::show_notification(app, title, body).await {
+                    tracing::warn!(%error, "[job_events] job notification failed");
+                }
+            });
+        }
     }
     Ok(Some(event.terminal))
 }
@@ -260,6 +300,40 @@ mod tests {
         assert!(should_emit(10, &e));
         forget_job_queues(9);
         forget_job_queues(10);
+    }
+
+    #[test]
+    fn terminal_states_notify_once_with_the_summary() {
+        for status in ["completed", "partial", "failed", "cancelled"] {
+            let mut e = event(status, 2);
+            e.failed = 1;
+            e.skipped = 4;
+            e.cancelled = 3;
+            e.label = Some("Album X".to_string());
+            let (title, body) = terminal_notification(&e).expect("terminal debe notificar");
+            assert!(title.contains("Album X"), "{}", title);
+            assert!(
+                body.contains("2 completadas")
+                    && body.contains("1 fallidas")
+                    && body.contains("4 omitidas")
+                    && body.contains("3 canceladas"),
+                "{}",
+                body
+            );
+        }
+    }
+
+    #[test]
+    fn running_jobs_never_notify() {
+        assert!(terminal_notification(&event("running", 0)).is_none());
+        assert!(terminal_notification(&event("queued", 0)).is_none());
+    }
+
+    #[test]
+    fn terminal_without_label_falls_back_to_job_id() {
+        let e = event("completed", 3);
+        let (title, _) = terminal_notification(&e).unwrap();
+        assert!(title.contains("Job #1"), "{}", title);
     }
 
     #[test]
