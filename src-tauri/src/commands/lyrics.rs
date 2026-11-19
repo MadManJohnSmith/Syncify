@@ -547,6 +547,215 @@ pub(crate) async fn lyrics_auto_blocked(
     Ok(blocked.0 != 0)
 }
 
+/// LY-12b exclusion for candidate lists that cannot know which format a
+/// provider would return: the total mark (`'*'`) suppresses every format
+/// unless the user restored at least one. Per-format marks stay to the
+/// save-time gate (`lyrics_auto_blocked`). Shared verbatim by the harvest
+/// sweep and the missing-lyrics search so both candidate lists agree.
+/// `{track}` is the SQL expression holding the track id.
+pub(crate) fn lyrics_total_mark_exclusion(track: &str) -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM lyrics_deletion_marks m WHERE m.track_id = {t} AND m.format = '*' \
+         AND NOT EXISTS (SELECT 1 FROM lyrics_restored_formats r WHERE r.track_id = {t}))",
+        t = track
+    )
+}
+
+/// Track-level gate for bulk routes: true when the total mark (`'*'`) stands
+/// with no restored format, so no provider result can ever be saved. Unlike
+/// the candidate-list exclusion this cannot be inlined in SQL — the batch
+/// fetch consults it per track before spending a provider call.
+pub(crate) async fn lyrics_track_blocked(
+    db: &crate::DbPool,
+    track_id: i64,
+) -> Result<bool, String> {
+    let blocked: (i64,) = sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM lyrics_deletion_marks m WHERE m.track_id = ? AND m.format = '*' \
+         AND NOT EXISTS (SELECT 1 FROM lyrics_restored_formats r WHERE r.track_id = m.track_id))",
+    )
+    .bind(track_id)
+    .fetch_one(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(blocked.0 != 0)
+}
+
+/// Outcome of one automatic (non-explicit) fetch-and-save attempt. `Blocked`
+/// means a deletion mark stopped the acquisition: nothing was written and no
+/// mark was touched (LY-12b — what the user deletes does not come back).
+#[derive(Debug, Clone)]
+pub(crate) enum AutoFetchOutcome {
+    Saved(Lyrics),
+    Blocked,
+    NotFound,
+}
+
+/// Save half of the automatic fetch: refuses a marked format without deleting
+/// any mark, and persists through `auto_upsert_lyrics` (never `upsert_lyrics`,
+/// whose mark deletion is reserved to explicit user saves/imports).
+pub(crate) async fn save_auto_fetched(
+    db: &crate::DbPool,
+    params: SaveLyricsParams,
+) -> Result<AutoFetchOutcome, String> {
+    if lyrics_auto_blocked(db, params.track_id, &params.format).await? {
+        return Ok(AutoFetchOutcome::Blocked);
+    }
+    match auto_upsert_lyrics(db, &params).await? {
+        Some(lyrics) => Ok(AutoFetchOutcome::Saved(lyrics)),
+        // A concurrent delete raced the gate: treat the mark as standing.
+        None => Ok(AutoFetchOutcome::Blocked),
+    }
+}
+
+/// Fetch half of the automatic fetch: resolves provider metadata into
+/// `SaveLyricsParams` without persisting anything (offline-testable seam).
+async fn fetch_lyrics_params(
+    db: &crate::DbPool,
+    track_id: i64,
+) -> Result<Option<SaveLyricsParams>, String> {
+    // Get track info
+    let track: Option<(String, Option<String>, Option<i64>)> = sqlx::query_as(
+        r#"
+        SELECT t.title,
+               (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
+                JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist,
+               t.duration_ms
+        FROM tracks t
+        WHERE t.id = ?
+        "#,
+    )
+    .bind(track_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let (title, artist, duration_ms) = match track {
+        Some((t, a, d)) => (t, a.unwrap_or_default(), d),
+        None => return Err("Track not found".to_string()),
+    };
+
+    // Fetch lyrics from online sources using configuration
+    let config = load_lyrics_engine_config(db).await;
+    let lyrics_client = crate::download::LyricsClient::with_config(config);
+    let dur_sec = duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0);
+
+    match lyrics_client
+        .fetch_all_sources(&artist, &title, dur_sec)
+        .await
+    {
+        Ok(response) => {
+            // Determine format and content
+            let (format, content, sync_level) = if !response.lines.is_empty() {
+                let lrc = crate::download::LyricsClient::to_lrc_string(&response);
+                let sync = if response.sync_type == "WORD_SYNCED"
+                    || response.sync_type == "KARAOKE_WORD_SYNCED"
+                {
+                    "word"
+                } else {
+                    "line"
+                };
+                ("lrc".to_string(), lrc, Some(sync.to_string()))
+            } else if let Some(plain) = &response.plain_lyrics {
+                ("plain".to_string(), plain.clone(), Some("none".to_string()))
+            } else {
+                return Ok(None); // No lyrics found
+            };
+
+            let detected_lang = syncify_lyrics_domain::detect_language_heuristic(&content);
+
+            Ok(Some(SaveLyricsParams {
+                track_id,
+                format,
+                content,
+                sync_level,
+                source: Some(response.source),
+                language: detected_lang,
+            }))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to fetch lyrics: {}", e);
+            Ok(None)
+        }
+    }
+}
+
+/// One automatic fetch-and-save attempt. The save respects deletion marks in
+/// both directions: a marked format is never written and no mark is removed.
+pub(crate) async fn auto_fetch_and_save_lyrics(
+    db: &crate::DbPool,
+    track_id: i64,
+) -> Result<AutoFetchOutcome, String> {
+    match fetch_lyrics_params(db, track_id).await? {
+        Some(params) => save_auto_fetched(db, params).await,
+        None => Ok(AutoFetchOutcome::NotFound),
+    }
+}
+
+/// Outcome of one mass-fetch track, mapped 1:1 to the batch counters.
+#[derive(Debug, Clone)]
+pub(crate) enum BatchTrackOutcome {
+    Saved,
+    BlockedByMark,
+    NotFound,
+    AlreadyPresent,
+}
+
+/// Core of one mass-fetch track: skips tracks that already hold any lyric row,
+/// short-circuits total-marked tracks before any provider call, and lets the
+/// per-format gate stop the save. The two IPC batch commands map this outcome
+/// to counters and progress events.
+pub(crate) async fn batch_fetch_track(
+    db: &crate::DbPool,
+    track_id: i64,
+) -> Result<BatchTrackOutcome, String> {
+    // Check if lyrics already exist
+    let existing: Option<(i64,)> = sqlx::query_as("SELECT COUNT(*) FROM lyrics WHERE track_id = ?")
+        .bind(track_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if existing.map(|c| c.0 > 0).unwrap_or(false) {
+        return Ok(BatchTrackOutcome::AlreadyPresent);
+    }
+
+    // A standing total mark blocks every format: no provider call is spent.
+    if lyrics_track_blocked(db, track_id).await? {
+        return Ok(BatchTrackOutcome::BlockedByMark);
+    }
+
+    match auto_fetch_and_save_lyrics(db, track_id).await? {
+        AutoFetchOutcome::Saved(_) => Ok(BatchTrackOutcome::Saved),
+        AutoFetchOutcome::Blocked => Ok(BatchTrackOutcome::BlockedByMark),
+        AutoFetchOutcome::NotFound => Ok(BatchTrackOutcome::NotFound),
+    }
+}
+
+/// Candidate ids for the missing-lyrics search: tracks with no lyric rows that
+/// the total mark does not suppress. Per-format marks stay for the save gate.
+pub(crate) async fn fetch_missing_candidates(
+    db: &crate::DbPool,
+    limit: i64,
+) -> Result<Vec<i64>, String> {
+    let sql = format!(
+        r#"
+        SELECT t.id
+        FROM tracks t
+        LEFT JOIN lyrics l ON l.track_id = t.id
+        WHERE l.id IS NULL
+          AND {}
+        LIMIT ?
+        "#,
+        lyrics_total_mark_exclusion("t.id")
+    );
+    let rows: Vec<(i64,)> = sqlx::query_as(&sql)
+        .bind(limit)
+        .fetch_all(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
 async fn auto_upsert_lyrics(
     db: &crate::DbPool,
     params: &SaveLyricsParams,
@@ -1085,79 +1294,19 @@ pub async fn search_lyrics(
 
 /// Fetch lyrics for a track and save to database
 #[tauri::command]
+/// Fetch lyrics from the providers and persist them automatically. This is an
+/// acquisition path, not an explicit restore: a deletion mark for the track
+/// (total) or the resolved format blocks the save, and the save never removes
+/// marks — only `save_lyrics` and `import_lyrics_file` do that on purpose.
 pub async fn fetch_and_save_lyrics(
     state: State<'_, AppState>,
     track_id: i64,
 ) -> Result<Option<Lyrics>, String> {
     tracing::info!("fetch_and_save_lyrics: track_id={}", track_id);
 
-    // Get track info
-    let track: Option<(String, Option<String>, Option<i64>)> = sqlx::query_as(
-        r#"
-        SELECT t.title,
-               (SELECT GROUP_CONCAT(a.name, ', ') FROM track_artists ta
-                JOIN artists a ON a.id = ta.artist_id WHERE ta.track_id = t.id) as artist,
-               t.duration_ms
-        FROM tracks t
-        WHERE t.id = ?
-        "#,
-    )
-    .bind(track_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let (title, artist, duration_ms) = match track {
-        Some((t, a, d)) => (t, a.unwrap_or_default(), d),
-        None => return Err("Track not found".to_string()),
-    };
-
-    // Fetch lyrics from online sources using configuration
-    let config = load_lyrics_engine_config(&state.db).await;
-    let lyrics_client = crate::download::LyricsClient::with_config(config);
-    let dur_sec = duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0);
-
-    match lyrics_client
-        .fetch_all_sources(&artist, &title, dur_sec)
-        .await
-    {
-        Ok(response) => {
-            // Determine format and content
-            let (format, content, sync_level) = if !response.lines.is_empty() {
-                let lrc = crate::download::LyricsClient::to_lrc_string(&response);
-                let sync = if response.sync_type == "WORD_SYNCED"
-                    || response.sync_type == "KARAOKE_WORD_SYNCED"
-                {
-                    "word"
-                } else {
-                    "line"
-                };
-                ("lrc".to_string(), lrc, Some(sync.to_string()))
-            } else if let Some(plain) = &response.plain_lyrics {
-                ("plain".to_string(), plain.clone(), Some("none".to_string()))
-            } else {
-                return Ok(None); // No lyrics found
-            };
-
-            let detected_lang = syncify_lyrics_domain::detect_language_heuristic(&content);
-
-            // Save to database
-            let params = SaveLyricsParams {
-                track_id,
-                format,
-                content,
-                sync_level,
-                source: Some(response.source),
-                language: detected_lang,
-            };
-
-            let saved = save_lyrics(state, params).await?;
-            Ok(Some(saved))
-        }
-        Err(e) => {
-            tracing::warn!("Failed to fetch lyrics: {}", e);
-            Ok(None)
-        }
+    match auto_fetch_and_save_lyrics(&state.db, track_id).await? {
+        AutoFetchOutcome::Saved(lyrics) => Ok(Some(lyrics)),
+        AutoFetchOutcome::Blocked | AutoFetchOutcome::NotFound => Ok(None),
     }
 }
 
@@ -1174,28 +1323,22 @@ pub async fn batch_fetch_lyrics(
     let mut skipped = 0i64;
 
     for track_id in track_ids {
-        // Check if lyrics already exist
-        let existing: Option<(i64,)> =
-            sqlx::query_as("SELECT COUNT(*) FROM lyrics WHERE track_id = ?")
-                .bind(track_id)
-                .fetch_optional(&state.db)
-                .await
-                .map_err(|e| e.to_string())?;
-
-        if existing.map(|c| c.0 > 0).unwrap_or(false) {
-            skipped += 1;
-            continue;
+        // Per-track failures stay per-track: a mass fetch must not abort on
+        // one missing row or one failing provider path.
+        let outcome = batch_fetch_track(&state.db, track_id).await;
+        match outcome {
+            Ok(BatchTrackOutcome::Saved) => fetched += 1,
+            Ok(BatchTrackOutcome::BlockedByMark) | Ok(BatchTrackOutcome::AlreadyPresent) => {
+                skipped += 1
+            }
+            Ok(BatchTrackOutcome::NotFound) | Err(_) => failed += 1,
         }
 
-        // Fetch and save
-        match fetch_and_save_lyrics(state.clone(), track_id).await {
-            Ok(Some(_)) => fetched += 1,
-            Ok(None) => failed += 1,
-            Err(_) => failed += 1,
+        // Rate limiting - be kind to upstream APIs. The presence skip
+        // provably spent no provider call, so it needs no delay.
+        if !matches!(outcome, Ok(BatchTrackOutcome::AlreadyPresent)) {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
-
-        // Rate limiting - be kind to upstream APIs
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
     Ok(BatchLyricsResult {
@@ -1215,22 +1358,7 @@ pub async fn fetch_missing_lyrics(
 
     let limit = limit.unwrap_or(100);
 
-    // Get tracks without lyrics
-    let tracks: Vec<(i64,)> = sqlx::query_as(
-        r#"
-        SELECT t.id
-        FROM tracks t
-        LEFT JOIN lyrics l ON l.track_id = t.id
-        WHERE l.id IS NULL
-        LIMIT ?
-        "#,
-    )
-    .bind(limit)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let track_ids: Vec<i64> = tracks.into_iter().map(|t| t.0).collect();
+    let track_ids = fetch_missing_candidates(&state.db, limit).await?;
     let total = track_ids.len() as i64;
 
     tracing::info!("Found {} tracks missing lyrics", total);
@@ -1269,36 +1397,36 @@ pub async fn batch_fetch_lyrics_with_progress(
             .map(|t| t.0)
             .unwrap_or_else(|| format!("Track {}", track_id));
 
-        // Check if lyrics already exist
-        let existing: Option<(i64,)> =
-            sqlx::query_as("SELECT COUNT(*) FROM lyrics WHERE track_id = ?")
-                .bind(track_id)
-                .fetch_optional(&state.db)
-                .await
-                .map_err(|e| e.to_string())?;
-
-        if existing.map(|c| c.0 > 0).unwrap_or(false) {
-            emit_lyrics_progress(
-                &window,
-                "skipped",
-                current,
-                total,
-                &format!("{} (already has lyrics)", track_name),
-            );
-            skipped += 1;
-            continue;
-        }
-
-        // Emit progress before fetching
-        emit_lyrics_progress(&window, "fetching", current, total, &track_name);
-
-        // Fetch and save
-        match fetch_and_save_lyrics(state.clone(), track_id).await {
-            Ok(Some(_)) => {
+        // Per-track failures stay per-track: a mass fetch must not abort on
+        // one missing row or one failing provider path.
+        let outcome = batch_fetch_track(&state.db, track_id).await;
+        let presence_skip = matches!(outcome, Ok(BatchTrackOutcome::AlreadyPresent));
+        match outcome {
+            Ok(BatchTrackOutcome::Saved) => {
                 emit_lyrics_progress(&window, "found", current, total, &track_name);
                 fetched += 1;
             }
-            Ok(None) => {
+            Ok(BatchTrackOutcome::BlockedByMark) => {
+                emit_lyrics_progress(
+                    &window,
+                    "skipped",
+                    current,
+                    total,
+                    &format!("{} (marked as deleted)", track_name),
+                );
+                skipped += 1;
+            }
+            Ok(BatchTrackOutcome::AlreadyPresent) => {
+                emit_lyrics_progress(
+                    &window,
+                    "skipped",
+                    current,
+                    total,
+                    &format!("{} (already has lyrics)", track_name),
+                );
+                skipped += 1;
+            }
+            Ok(BatchTrackOutcome::NotFound) => {
                 emit_lyrics_progress(&window, "not_found", current, total, &track_name);
                 failed += 1;
             }
@@ -1314,8 +1442,11 @@ pub async fn batch_fetch_lyrics_with_progress(
             }
         }
 
-        // Rate limiting - be kind to upstream APIs
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // Rate limiting - be kind to upstream APIs. The presence skip
+        // provably spent no provider call, so it needs no delay.
+        if !presence_skip {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
     }
 
     emit_lyrics_progress(
@@ -2046,21 +2177,22 @@ pub async fn harvest_missing_lyrics(
     let limit = limit.unwrap_or(500).clamp(1, 5_000);
     tracing::info!("harvest_missing_lyrics: limit={}", limit);
 
-    let rows: Vec<(i64, String)> = sqlx::query_as(
+    let rows_sql = format!(
         r#"
         SELECT d.track_id, d.file_path
         FROM downloads d
         WHERE NOT EXISTS (SELECT 1 FROM lyrics l WHERE l.track_id = d.track_id)
-          AND NOT EXISTS (SELECT 1 FROM lyrics_deletion_marks m WHERE m.track_id = d.track_id AND m.format = '*'
-            AND NOT EXISTS (SELECT 1 FROM lyrics_restored_formats r WHERE r.track_id = d.track_id))
+          AND {}
         ORDER BY d.track_id
         LIMIT ?
         "#,
-    )
-    .bind(limit)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
+        lyrics_total_mark_exclusion("d.track_id")
+    );
+    let rows: Vec<(i64, String)> = sqlx::query_as(&rows_sql)
+        .bind(limit)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
 
     let mut result = LyricsHarvestResult {
         scanned: rows.len() as i64,
@@ -2521,6 +2653,232 @@ mod s200_harvest_tests {
     }
 }
 
+#[cfg(test)]
+mod ly07_deletion_mark_routes_tests {
+    //! LY07 (#180): the automatic acquisition routes must respect the deletion
+    //! marks — per-format and total — and never delete them on save. Route 1
+    //! (mass fetch), route 2 (missing search) and route 4 (karaoke refetch)
+    //! share the two canonical gates exercised here; route 3 (Tidal pipeline)
+    //! validates its identity proof in its own module.
+
+    use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::str::FromStr;
+
+    async fn fixture() -> crate::DbPool {
+        let options = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .foreign_keys(true);
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY); \
+             CREATE TABLE lyrics (id INTEGER PRIMARY KEY, track_id INTEGER REFERENCES tracks(id) ON DELETE CASCADE, format TEXT NOT NULL, sync_level TEXT, source TEXT, content TEXT NOT NULL, language TEXT, embedded_in_file INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(track_id,format)); \
+             CREATE TABLE lyrics_deletion_marks (track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE, format TEXT NOT NULL, PRIMARY KEY(track_id, format)); \
+             CREATE TABLE lyrics_restored_formats (track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE, format TEXT NOT NULL, PRIMARY KEY(track_id, format)); \
+             INSERT INTO tracks VALUES (1),(2),(3),(4),(5),(6)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        db
+    }
+
+    async fn mark(db: &crate::DbPool, track_id: i64, format: &str) {
+        sqlx::query("INSERT INTO lyrics_deletion_marks (track_id, format) VALUES (?, ?)")
+            .bind(track_id)
+            .bind(format)
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
+    async fn restore(db: &crate::DbPool, track_id: i64, format: &str) {
+        sqlx::query("INSERT INTO lyrics_restored_formats (track_id, format) VALUES (?, ?)")
+            .bind(track_id)
+            .bind(format)
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
+    async fn mark_count(db: &crate::DbPool, track_id: i64, format: &str) -> i64 {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM lyrics_deletion_marks WHERE track_id = ? AND format = ?",
+        )
+        .bind(track_id)
+        .bind(format)
+        .fetch_one(db)
+        .await
+        .unwrap();
+        n
+    }
+
+    async fn row_count(db: &crate::DbPool, track_id: i64) -> i64 {
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM lyrics WHERE track_id = ?")
+            .bind(track_id)
+            .fetch_one(db)
+            .await
+            .unwrap();
+        n
+    }
+
+    fn params_for(track_id: i64, format: &str) -> SaveLyricsParams {
+        SaveLyricsParams {
+            track_id,
+            format: format.into(),
+            content: "[00:01.00]LY07 fixture".into(),
+            sync_level: Some("line".into()),
+            source: Some("fixture".into()),
+            language: None,
+        }
+    }
+
+    // ---- Ruta 1: descarga masiva -------------------------------------------
+
+    #[tokio::test]
+    async fn batch_skips_total_marked_track_before_any_provider_call() {
+        let db = fixture().await;
+        mark(&db, 2, "*").await;
+        // The gate must return BlockedByMark: reaching NotFound or an error
+        // would mean the provider path was spent on a marked track.
+        assert!(matches!(
+            batch_fetch_track(&db, 2).await.unwrap(),
+            BatchTrackOutcome::BlockedByMark
+        ));
+        assert_eq!(row_count(&db, 2).await, 0);
+        assert_eq!(mark_count(&db, 2, "*").await, 1);
+    }
+
+    #[tokio::test]
+    async fn batch_skips_tracks_that_already_hold_lyrics() {
+        let db = fixture().await;
+        sqlx::query("INSERT INTO lyrics (track_id, format, content) VALUES (3, 'lrc', 'present')")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(matches!(
+            batch_fetch_track(&db, 3).await.unwrap(),
+            BatchTrackOutcome::AlreadyPresent
+        ));
+    }
+
+    #[tokio::test]
+    async fn auto_save_respects_format_mark_and_never_deletes_it() {
+        let db = fixture().await;
+        mark(&db, 1, "lrc").await;
+        assert!(matches!(
+            save_auto_fetched(&db, params_for(1, "lrc")).await.unwrap(),
+            AutoFetchOutcome::Blocked
+        ));
+        // Nothing saved, nothing deleted: the mark stands intact.
+        assert_eq!(row_count(&db, 1).await, 0);
+        assert_eq!(mark_count(&db, 1, "lrc").await, 1);
+        // The unmarked format is still acquirable for the same track.
+        assert!(matches!(
+            save_auto_fetched(&db, params_for(1, "plain"))
+                .await
+                .unwrap(),
+            AutoFetchOutcome::Saved(_)
+        ));
+        assert_eq!(mark_count(&db, 1, "lrc").await, 1);
+    }
+
+    #[tokio::test]
+    async fn auto_save_respects_total_mark_but_saves_restored_format() {
+        let db = fixture().await;
+        mark(&db, 2, "*").await;
+        assert!(matches!(
+            save_auto_fetched(&db, params_for(2, "lrc")).await.unwrap(),
+            AutoFetchOutcome::Blocked
+        ));
+        assert_eq!(mark_count(&db, 2, "*").await, 1);
+        assert_eq!(row_count(&db, 2).await, 0);
+
+        // Explicit restore of one format lifts only that format.
+        restore(&db, 2, "plain").await;
+        assert!(matches!(
+            save_auto_fetched(&db, params_for(2, "plain"))
+                .await
+                .unwrap(),
+            AutoFetchOutcome::Saved(_)
+        ));
+        // ... while every other format stays blocked, and the total mark
+        // itself was not removed by the automatic save.
+        assert!(matches!(
+            save_auto_fetched(&db, params_for(2, "lrc")).await.unwrap(),
+            AutoFetchOutcome::Blocked
+        ));
+        assert_eq!(mark_count(&db, 2, "*").await, 1);
+    }
+
+    // ---- Ruta 2: búsqueda de faltantes -------------------------------------
+
+    #[tokio::test]
+    async fn missing_candidates_exclude_total_marked_tracks() {
+        let db = fixture().await;
+        // 1: eligible. 2: total mark, excluded. 3: per-format mark stays in
+        // the list (the save gate refuses the marked format). 4: already has
+        // lyrics. 5: total mark with a restored format is eligible again.
+        mark(&db, 2, "*").await;
+        mark(&db, 3, "plain").await;
+        sqlx::query("INSERT INTO lyrics (track_id, format, content) VALUES (4, 'lrc', 'present')")
+            .execute(&db)
+            .await
+            .unwrap();
+        mark(&db, 5, "*").await;
+        restore(&db, 5, "lrc").await;
+        // 6: no marks, no lyrics — eligible.
+
+        let mut candidates = fetch_missing_candidates(&db, 100).await.unwrap();
+        candidates.sort_unstable();
+        assert_eq!(candidates, vec![1, 3, 5, 6]);
+    }
+
+    // ---- Ruta 4: re-fetch karaoke ------------------------------------------
+
+    #[tokio::test]
+    async fn track_gate_stands_only_without_restorations() {
+        let db = fixture().await;
+        // No marks.
+        assert!(!lyrics_track_blocked(&db, 1).await.unwrap());
+        // A per-format mark alone never blocks the whole track.
+        mark(&db, 2, "plain").await;
+        assert!(!lyrics_track_blocked(&db, 2).await.unwrap());
+        // Total mark stands until the user restores some format.
+        mark(&db, 3, "*").await;
+        assert!(lyrics_track_blocked(&db, 3).await.unwrap());
+        restore(&db, 3, "plain").await;
+        assert!(!lyrics_track_blocked(&db, 3).await.unwrap());
+        // The restored format saves; every other format remains blocked.
+        assert!(matches!(
+            save_auto_fetched(&db, params_for(3, "plain"))
+                .await
+                .unwrap(),
+            AutoFetchOutcome::Saved(_)
+        ));
+        assert!(matches!(
+            save_auto_fetched(&db, params_for(3, "lrc")).await.unwrap(),
+            AutoFetchOutcome::Blocked
+        ));
+    }
+
+    #[tokio::test]
+    async fn format_gate_blocks_marked_and_total_but_not_unmarked() {
+        let db = fixture().await;
+        mark(&db, 4, "lrc").await;
+        mark(&db, 5, "*").await;
+        assert!(lyrics_auto_blocked(&db, 4, "lrc").await.unwrap());
+        assert!(!lyrics_auto_blocked(&db, 4, "plain").await.unwrap());
+        assert!(lyrics_auto_blocked(&db, 5, "lrc").await.unwrap());
+        assert!(lyrics_auto_blocked(&db, 5, "plain").await.unwrap());
+        assert!(!lyrics_auto_blocked(&db, 6, "lrc").await.unwrap());
+    }
+}
+
 // ==============================================
 // S202 — LIBRARY-WIDE KARAOKE REFETCH + ANIMATED COVER SWEEP
 // ==============================================
@@ -2560,6 +2918,9 @@ pub struct KaraokeRefetchResult {
     pub downgraded_rejected: i64,
     pub failed: i64,
     pub embed_skipped: i64,
+    /// Tracks skipped because a deletion mark stands (LY-12b): no provider
+    /// payload was saved, embedded or staged for them.
+    pub skipped_marks: i64,
     pub cancelled: bool,
 }
 
@@ -2779,6 +3140,7 @@ pub async fn refetch_karaoke_lyrics(
             downgraded_rejected: 0,
             failed: 0,
             embed_skipped: 0,
+            skipped_marks: 0,
             cancelled: false,
         };
 
@@ -2801,6 +3163,22 @@ pub async fn refetch_karaoke_lyrics(
             }
             let current = (idx + 1) as u64;
             result.checked += 1;
+
+            // LY-12b: a standing total mark suppresses every format. Skip
+            // before any provider call — what the user deleted does not come
+            // back, not even as a karaoke upgrade.
+            if lyrics_track_blocked(&state.db, tr.track_id).await? {
+                result.skipped_marks += 1;
+                s202_emit_karaoke_progress(
+                    &window,
+                    "skipped_marks",
+                    current,
+                    total,
+                    &format!("{} - {}", tr.artist, tr.title),
+                    "Omitido: marca de borrado activa",
+                );
+                continue;
+            }
 
             // Best stored sync_level for this track (NULL-safe).
             let existing: Option<(Option<String>,)> = sqlx::query_as(
@@ -2864,6 +3242,28 @@ pub async fn refetch_karaoke_lyrics(
                     total,
                     &label,
                     "Contenido vacío",
+                );
+                continue;
+            }
+
+            // LY-12b per-format gate: the resolved format must not be marked.
+            // Checked BEFORE the embed and sidecar so a marked format is never
+            // written back into the file the user deleted it from.
+            let format = match resolution.sync_type {
+                LyricsSyncType::KaraokeWordSynced | LyricsSyncType::LineSynced => "lrc",
+                LyricsSyncType::Plain => "plain",
+                LyricsSyncType::Instrumental => "instrumental",
+                LyricsSyncType::None => "none",
+            };
+            if lyrics_auto_blocked(&state.db, tr.track_id, format).await? {
+                result.skipped_marks += 1;
+                s202_emit_karaoke_progress(
+                    &window,
+                    "skipped_marks",
+                    current,
+                    total,
+                    &label,
+                    &format!("Omitido: formato {} con marca de borrado", format),
                 );
                 continue;
             }
@@ -2969,12 +3369,6 @@ pub async fn refetch_karaoke_lyrics(
                         }
                     }
 
-                    let format = match resolution.sync_type {
-                        LyricsSyncType::KaraokeWordSynced | LyricsSyncType::LineSynced => "lrc",
-                        LyricsSyncType::Plain => "plain",
-                        LyricsSyncType::Instrumental => "instrumental",
-                        LyricsSyncType::None => "none",
-                    };
                     let sync_level = match resolution.sync_type {
                         LyricsSyncType::KaraokeWordSynced => "word",
                         LyricsSyncType::LineSynced => "line",
@@ -2988,7 +3382,9 @@ pub async fn refetch_karaoke_lyrics(
                         source: Some(resolution.provider.clone()),
                         language: None,
                     };
-                    if upsert_lyrics(&state.db, &params).await.is_err() {
+                    // Automatic re-check: the save never deletes a mark (the
+                    // per-format gate above already refused marked formats).
+                    if !matches!(auto_upsert_lyrics(&state.db, &params).await, Ok(Some(_))) {
                         result.failed += 1;
                         s202_emit_karaoke_progress(
                             &window,
@@ -3077,9 +3473,9 @@ pub async fn refetch_karaoke_lyrics(
             total,
             "Re-chequeo terminado",
             &format!(
-                "Verificadas: {}, a palabra: {}, otras mejoras: {}, rellenadas: {}, intactas: {}, rechazadas por empeorar: {}, fallidas: {}",
+                "Verificadas: {}, a palabra: {}, otras mejoras: {}, rellenadas: {}, intactas: {}, rechazadas por empeorar: {}, omitidas por marca: {}, fallidas: {}",
                 result.checked, result.upgraded_to_word, result.upgraded_other, result.filled_from_missing,
-                result.kept, result.downgraded_rejected, result.failed
+                result.kept, result.downgraded_rejected, result.skipped_marks, result.failed
             ),
         );
         Ok(result)
