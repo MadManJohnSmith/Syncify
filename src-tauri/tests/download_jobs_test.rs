@@ -651,6 +651,55 @@ async fn retry_job_failed_requeues_rows_and_reopens_the_job() {
 }
 
 #[tokio::test]
+async fn job_account_override_does_not_rewrite_service_preference() {
+    let pool = migrated_pool().await;
+    let qobuz = service_id(&pool, "qobuz").await;
+
+    sqlx::query(
+        "INSERT OR IGNORE INTO accounts (id, service_id, display_name, email, is_active)
+         VALUES (501, ?, 'Default Qobuz', 'default@qobuz.test', 1),
+                (502, ?, 'Override Qobuz', 'override@qobuz.test', 1)",
+    )
+    .bind(qobuz)
+    .bind(qobuz)
+    .execute(&pool)
+    .await
+    .expect("accounts fixture");
+    sqlx::query(
+        "INSERT INTO service_preferred_accounts (service_name, account_id) VALUES ('qobuz', 501)",
+    )
+    .execute(&pool)
+    .await
+    .expect("service preference fixture");
+
+    let ids = insert_tracks(&pool, 1).await;
+    insert_sources(
+        &pool,
+        &[(ids[0], qobuz, Some("FLAC"), Some(16), Some(44100))],
+    )
+    .await;
+
+    let mut req = selection_request(ids);
+    req.destination_service = Some("qobuz".to_string());
+    req.preferred_account_id = Some(502);
+    let job = jobs::create_job(&pool, &req).await.expect("create job");
+    jobs::run_job(&pool, job, &req).await.expect("run job");
+
+    let stored = jobs::get_job(&pool, job).await.expect("job row");
+    assert_eq!(stored.preferred_account_id, Some(502));
+    let service_default: i64 = sqlx::query_scalar(
+        "SELECT account_id FROM service_preferred_accounts WHERE service_name = 'qobuz'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("service preference survives");
+    assert_eq!(
+        service_default, 501,
+        "a job override must not rewrite the global service preference"
+    );
+}
+
+#[tokio::test]
 async fn clear_terminal_jobs_keeps_running_ones() {
     let pool = migrated_pool().await;
     let ids = insert_tracks(&pool, 4).await;

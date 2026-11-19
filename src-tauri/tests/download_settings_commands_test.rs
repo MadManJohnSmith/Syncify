@@ -14,12 +14,13 @@ use syncify_core_domain::{FolderFileTemplateConfig, LibraryLayout, TrackLayoutCo
 use syncify_tauri_lib::commands::{
     perform_batch_health_check, perform_clear_download_history, perform_force_redownload_tracks,
     perform_get_download_settings, perform_get_effective_download_paths,
-    perform_get_folder_settings, perform_get_quality_preferences, perform_get_sidecar_settings,
+    perform_get_folder_settings, perform_get_quality_preferences,
+    perform_get_service_preferred_accounts, perform_get_sidecar_settings,
     perform_reset_download_history, perform_save_download_settings, perform_save_setting,
-    perform_set_max_concurrent_downloads, perform_update_fallback_action,
-    perform_update_quality_preference, perform_update_sidecar_settings,
-    resolve_effective_download_paths, validate_directory_path, DownloadSettingsDto,
-    SidecarSettingsDto,
+    perform_set_max_concurrent_downloads, perform_set_service_preferred_account,
+    perform_update_fallback_action, perform_update_quality_preference,
+    perform_update_sidecar_settings, resolve_effective_download_paths, validate_directory_path,
+    DownloadSettingsDto, SidecarSettingsDto,
 };
 use syncify_tauri_lib::enrichment_worker::EnrichmentWorkerState;
 use syncify_tauri_lib::worker::DownloadWorkerState;
@@ -795,6 +796,74 @@ async fn test_concurrency_persistence_and_restart_simulation() {
         let restarted_worker = DownloadWorkerState::new(loaded_after_restart);
         assert_eq!(restarted_worker.max_concurrent(), target_concurrency);
     }
+}
+
+#[tokio::test]
+async fn test_service_preferred_account_roundtrip_and_validation() {
+    let (_state, pool, _temp_dir) = setup_test_app_state(2).await;
+
+    // A second Qobuz account and a Tidal account, to prove service ownership
+    // is validated (the table's FK alone only knows the account exists).
+    sqlx::query("INSERT OR IGNORE INTO accounts (id, service_id, display_name, email, is_active) VALUES (3, 2, 'Qobuz Second', 'qobuz2@test.com', 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT OR IGNORE INTO accounts (id, service_id, display_name, email, is_active) VALUES (4, 3, 'Tidal Test', 'tidal@test.com', 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert!(
+        perform_get_service_preferred_accounts(&pool)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a fresh database has no service preference"
+    );
+
+    let saved = perform_set_service_preferred_account(&pool, "qobuz".to_string(), Some(2))
+        .await
+        .expect("preference is saved")
+        .expect("saved row is returned");
+    assert_eq!(saved.service_name, "qobuz");
+    assert_eq!(saved.account_id, 2);
+
+    // Upsert keeps one row per service.
+    let replaced = perform_set_service_preferred_account(&pool, "Qobuz".to_string(), Some(3))
+        .await
+        .expect("preference is updated")
+        .expect("updated row is returned");
+    assert_eq!(replaced.service_name, "qobuz");
+    assert_eq!(replaced.account_id, 3);
+    let rows = perform_get_service_preferred_accounts(&pool).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].account_id, 3);
+
+    // Clearing removes the row instead of persisting a sentinel.
+    assert!(
+        perform_set_service_preferred_account(&pool, "qobuz".to_string(), None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(perform_get_service_preferred_accounts(&pool)
+        .await
+        .unwrap()
+        .is_empty());
+
+    // An account from another service cannot be preferred for this one.
+    assert!(
+        perform_set_service_preferred_account(&pool, "qobuz".to_string(), Some(4))
+            .await
+            .is_err(),
+        "Tidal account must not become Qobuz's preferred account"
+    );
+    assert!(
+        perform_set_service_preferred_account(&pool, "unknown".to_string(), Some(2))
+            .await
+            .is_err(),
+        "unknown service must be rejected"
+    );
 }
 
 #[tokio::test]

@@ -340,7 +340,128 @@ pub async fn update_service_import_preferences(
 // SPRINT 2: DOWNLOADS + FILE SETTINGS
 // ==============================================
 
-use crate::models::{AudioProcessingSettings, FolderSettings, QualityPreference};
+use crate::models::{
+    AudioProcessingSettings, FolderSettings, QualityPreference, ServicePreferredAccount,
+};
+
+/// Perform get the preferred download account per service (D09).
+pub async fn perform_get_service_preferred_accounts(
+    db: &crate::DbPool,
+) -> Result<Vec<ServicePreferredAccount>, String> {
+    tracing::info!("get_service_preferred_accounts");
+
+    sqlx::query_as::<_, ServicePreferredAccount>(
+        "SELECT service_name, account_id, updated_at
+         FROM service_preferred_accounts ORDER BY service_name",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Database error: {}", e))
+}
+
+/// Get the preferred download account per service.
+#[tauri::command]
+pub async fn get_service_preferred_accounts(
+    state: State<'_, AppState>,
+) -> Result<Vec<ServicePreferredAccount>, String> {
+    perform_get_service_preferred_accounts(&state.db).await
+}
+
+/// Persist the preferred download account for one service.
+///
+/// `account_id = None` clears the preference, so the resolver falls back to
+/// evidence/entitlement/active/id. A set account must exist and belong to the
+/// service: the table only has a FK to `accounts`, not to the service pair.
+pub async fn perform_set_service_preferred_account(
+    db: &crate::DbPool,
+    service_name: String,
+    account_id: Option<i64>,
+) -> Result<Option<ServicePreferredAccount>, String> {
+    tracing::info!(
+        "set_service_preferred_account: service={}, account={:?}",
+        service_name,
+        account_id
+    );
+
+    let requested = service_name.trim();
+    if requested.is_empty() {
+        return Err("Service name cannot be empty".to_string());
+    }
+
+    let service: Option<(i64, String)> =
+        sqlx::query_as("SELECT id, name FROM services WHERE LOWER(name) = LOWER(?) LIMIT 1")
+            .bind(requested)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| format!("Database error reading service: {}", e))?;
+    let Some((service_id, canonical_name)) = service else {
+        return Err(format!("Unknown service '{}'", requested));
+    };
+
+    let Some(account_id) = account_id else {
+        sqlx::query("DELETE FROM service_preferred_accounts WHERE service_name = ?")
+            .bind(&canonical_name)
+            .execute(db)
+            .await
+            .map_err(|e| format!("Delete error: {}", e))?;
+        return Ok(None);
+    };
+
+    let account: Option<(i64, String)> =
+        sqlx::query_as("SELECT service_id, state FROM accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| format!("Database error reading account: {}", e))?;
+    let Some((account_service_id, state)) = account else {
+        return Err(format!("Account {} does not exist", account_id));
+    };
+    if account_service_id != service_id {
+        return Err(format!(
+            "Account {} does not belong to service '{}'",
+            account_id, canonical_name
+        ));
+    }
+    if state != "enabled" {
+        return Err(format!(
+            "Account {} is {} and cannot be preferred for downloads",
+            account_id, state
+        ));
+    }
+
+    sqlx::query(
+        "INSERT INTO service_preferred_accounts (service_name, account_id, updated_at)
+         VALUES (?, ?, datetime('now'))
+         ON CONFLICT(service_name) DO UPDATE SET
+             account_id = excluded.account_id,
+             updated_at = excluded.updated_at",
+    )
+    .bind(&canonical_name)
+    .bind(account_id)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Update error: {}", e))?;
+
+    sqlx::query_as::<_, ServicePreferredAccount>(
+        "SELECT service_name, account_id, updated_at
+         FROM service_preferred_accounts WHERE service_name = ?",
+    )
+    .bind(&canonical_name)
+    .fetch_one(db)
+    .await
+    .map(Some)
+    .map_err(|e| format!("Fetch error: {}", e))
+}
+
+/// Persist (or clear with `account_id = None`) the preferred account of a service.
+#[tauri::command]
+pub async fn set_service_preferred_account(
+    state: State<'_, AppState>,
+    service_name: String,
+    account_id: Option<i64>,
+) -> Result<Option<ServicePreferredAccount>, String> {
+    perform_set_service_preferred_account(&state.db, service_name, account_id).await
+}
 
 /// Perform get all quality preferences for all services
 pub async fn perform_get_quality_preferences(

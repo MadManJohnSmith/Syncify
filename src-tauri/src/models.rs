@@ -60,6 +60,14 @@ pub struct ServiceSyncSettings {
 // SPRINT 2: DOWNLOADS + FILE SETTINGS
 // ==============================================
 
+/// Cuenta preferida de descarga por servicio (D09, tabla de D00).
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq)]
+pub struct ServicePreferredAccount {
+    pub service_name: String,
+    pub account_id: i64,
+    pub updated_at: String,
+}
+
 /// Quality preference per streaming service
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq)]
 pub struct QualityPreference {

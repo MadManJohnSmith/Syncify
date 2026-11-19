@@ -60,7 +60,7 @@
 
     <section class="space-y-4">
       <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Quality Caps (Per Service)</h3>
-      <p class="text-sm text-text-secondary">Set maximum quality and preferred format for each streaming service</p>
+      <p class="text-sm text-text-secondary">Set the maximum quality each streaming service may request. The delivered format is decided by the provider and the file itself, never by a preference the worker ignores.</p>
       
       <div v-if="downloadSettings.isLoading.value" class="flex items-center gap-2 text-text-secondary py-4">
         <span class="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
@@ -71,13 +71,13 @@
         <div v-for="pref in downloadSettings.qualityPreferences.value" :key="pref.service_name" class="p-4 bg-white dark:bg-surface-dark rounded-xl border border-gray-200 dark:border-border-dark">
           <div class="flex items-center justify-between mb-3">
             <h4 class="font-medium text-gray-900 dark:text-white">{{ formatServiceName(pref.service_name) }}</h4>
-            <span class="text-xs text-text-secondary px-2 py-1 bg-gray-100 dark:bg-surface-highlight rounded">{{ pref.max_quality }}</span>
+            <span class="text-xs text-text-secondary px-2 py-1 bg-gray-100 dark:bg-surface-highlight rounded">{{ normalizeServiceQuality(pref.max_quality) }}</span>
           </div>
-          <div class="grid grid-cols-2 gap-4">
+          <div class="grid grid-cols-1 gap-4">
             <div>
               <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Max Quality</label>
               <select 
-                :value="pref.max_quality"
+                :value="normalizeServiceQuality(pref.max_quality)"
                 @change="handleQualityChange(pref.service_name, getEventValue($event), pref.preferred_format)"
                 class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary outline-none transition-all"
               >
@@ -85,24 +85,10 @@
                      get_available_qualities_for_service, not from a fixed list:
                      this way a service can never be asked for more than it offers. -->
                 <option
-                  v-for="q in availableQualities[pref.service_name] ?? [{ value: pref.max_quality, label: QUALITY_LABELS[pref.max_quality] ?? pref.max_quality }]"
+                  v-for="q in qualityOptionsFor(pref)"
                   :key="q.value"
                   :value="q.value"
                 >{{ q.label }}</option>
-              </select>
-            </div>
-            <div>
-              <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Preferred Format</label>
-              <select 
-                :value="pref.preferred_format"
-                @change="handleQualityChange(pref.service_name, pref.max_quality, getEventValue($event))"
-                class="w-full px-3 py-2 bg-gray-50 dark:bg-surface-highlight/50 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary outline-none transition-all"
-              >
-                <option value="flac">FLAC</option>
-                <option value="alac">ALAC</option>
-                <option value="mp3">MP3</option>
-                <option value="aac">AAC</option>
-                <option value="ogg">Ogg Vorbis</option>
               </select>
             </div>
           </div>
@@ -119,6 +105,8 @@ import {
   getGlobalMaxQuality,
   setGlobalMaxQuality,
   getAvailableQualitiesForService,
+  normalizeServiceQuality,
+  WORKER_QUALITY_TIERS,
   type GlobalMaxQuality,
 } from '@/api/settings'
 
@@ -131,10 +119,22 @@ const globalCeiling = ref<GlobalMaxQuality>('any')
 const availableQualities = ref<Record<string, { value: string; label: string }[]>>({})
 
 const QUALITY_LABELS: Record<string, string> = {
+  inherit: 'Inherit global ceiling',
   hires: 'Hi-Res (24-bit/96kHz+)',
   lossless: 'Lossless (16-bit/44.1kHz)',
   high: 'High (320 kbps)',
-  normal: 'Normal (128-256 kbps)',
+}
+
+/**
+ * Options of a service selector. If the backend capability lookup failed, the
+ * fallback is still the canonical interpretation of the persisted value — never
+ * the raw alias, which would offer a tier the worker reinterprets.
+ */
+function qualityOptionsFor(pref: { service_name: string; max_quality: string }): { value: string; label: string }[] {
+  const loaded = availableQualities.value[pref.service_name]
+  if (loaded && loaded.length > 0) return loaded
+  const value = normalizeServiceQuality(pref.max_quality)
+  return [{ value, label: QUALITY_LABELS[value] ?? value }]
 }
 
 async function loadAvailableQualities(serviceNames: string[]) {
@@ -144,9 +144,14 @@ async function loadAvailableQualities(serviceNames: string[]) {
       try {
         const raw = await getAvailableQualitiesForService(name)
         if (Array.isArray(raw) && raw.length > 0) {
-          const persisted = downloadSettings.getQualityForService(name)?.max_quality
-          const allowed = persisted && !raw.includes(persisted) ? [...raw, persisted] : raw
-          result[name] = allowed.map((q: string) => ({
+          // Solo se ofrece lo que el worker ejecuta: inherit (delega en el
+          // techo global) y los tres techos reales. Cualquier alias heredado
+          // se pliega al valor canónico; lo desconocido no se pinta.
+          const workerValues = new Set<string>(WORKER_QUALITY_TIERS)
+          const persisted = normalizeServiceQuality(downloadSettings.getQualityForService(name)?.max_quality)
+          const offered = new Set(raw.filter((q: string) => workerValues.has(q)))
+          offered.add(persisted)
+          result[name] = [...offered].map((q: string) => ({
             value: q,
             label: QUALITY_LABELS[q] ?? q,
           }))
