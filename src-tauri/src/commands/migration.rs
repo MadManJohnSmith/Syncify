@@ -358,14 +358,67 @@ pub async fn preview_migration(
 }
 
 /// Services the wizard may offer as migration destinations (data-driven:
-/// derived from MIGRATION_DESTINATION_SERVICES, so a new backend destination
-/// appears in the UI without any frontend change).
+/// derived from MIGRATION_CAPABILITIES, so a new backend destination appears
+/// in the UI without any frontend change).
 #[tauri::command]
 pub async fn get_migration_destinations() -> Result<Vec<String>, String> {
     Ok(MIGRATION_DESTINATION_SERVICES
         .iter()
         .map(|service| service.to_string())
         .collect())
+}
+
+/// One destination's declared transfer capability: every collection the
+/// migration flow tracks, each with whether the engine can carry it there —
+/// the wizard renders `supported: false` as not available.
+#[derive(Debug, serde::Serialize)]
+pub struct MigrationDestinationCapability {
+    pub service: String,
+    pub collections: Vec<MigrationCollectionSupport>,
+}
+
+/// One matrix cell: a collection and whether the destination declares it.
+#[derive(Debug, serde::Serialize)]
+pub struct MigrationCollectionSupport {
+    pub collection: MigrationCollection,
+    pub supported: bool,
+}
+
+/// The wizard's capability matrix destination × collection (M00): the single
+/// source the UI consults to decide what it may offer per destination. The
+/// matrix declares what the migration engine can transfer end to end —
+/// matching on the destination, writing through its client — never what a
+/// client method merely hints at.
+#[tauri::command]
+pub async fn get_migration_capabilities() -> Result<Vec<MigrationDestinationCapability>, String> {
+    Ok(MIGRATION_CAPABILITIES
+        .iter()
+        .map(|(service, declared)| MigrationDestinationCapability {
+            service: service.to_string(),
+            collections: MIGRATION_ALL_COLLECTIONS
+                .iter()
+                .map(|collection| MigrationCollectionSupport {
+                    collection: *collection,
+                    supported: declared.contains(collection),
+                })
+                .collect(),
+        })
+        .collect())
+}
+
+/// True when the matrix declares `collection` for `destination_service`
+/// (case-insensitive: callers pass service names in any casing; the matrix
+/// keys are lowercase).
+pub fn migration_supports_collection(
+    destination_service: &str,
+    collection: MigrationCollection,
+) -> bool {
+    let service = destination_service.to_lowercase();
+    MIGRATION_CAPABILITIES
+        .iter()
+        .any(|(service_key, collections)| {
+            *service_key == service && collections.contains(&collection)
+        })
 }
 
 /// Format a remaining-time estimate (in seconds) in a human readable form.
@@ -640,20 +693,71 @@ pub async fn insert_migration_item(
     .map_err(|e| format!("Failed to insert migration item: {}", e))
 }
 
-/// Destination services the migration engine can transfer to.
-///
-/// This list is the single source of truth for what the wizard may offer as a
-/// destination (served to the UI by `get_migration_destinations`): adding a
-/// destination means adding its client support to `DestinationClients` (and to
-/// `search_destination_track`) plus one entry here — no UI change required.
-pub const MIGRATION_DESTINATION_SERVICES: &[&str] = &[
-    "qobuz",
-    "tidal",
-    "spotify",
-    "deezer",
-    "soundcloud",
-    "apple_music",
+/// Collections the migration engine can transfer into a destination, in the
+/// order the wizard presents them. The wire names are the matrix's contract
+/// with the UI (`get_migration_capabilities`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationCollection {
+    /// Saved tracks (track favorites).
+    Tracks,
+    /// Favorite albums.
+    Albums,
+    /// Followed artists.
+    Artists,
+    /// Playlists mirrored on the destination account.
+    Playlists,
+}
+
+/// The universe of collections the migration flow tracks, in the order the
+/// wizard presents them. `get_migration_capabilities` expands every matrix
+/// row over this list so the wire carries the full matrix — declared cells
+/// and the rest as `supported: false` — instead of leaving the wizard to
+/// guess what could exist.
+pub const MIGRATION_ALL_COLLECTIONS: &[MigrationCollection] = &[
+    MigrationCollection::Tracks,
+    MigrationCollection::Albums,
+    MigrationCollection::Artists,
+    MigrationCollection::Playlists,
 ];
+
+/// Generate the migration capability matrix and every list derived from it,
+/// so the destination × collection table is written exactly once. Adding a
+/// destination means adding its client support to `DestinationClients` (and
+/// to `search_destination_track`) plus one entry here — no UI change. A
+/// collection only enters a row when the engine can transfer it end to end
+/// for that destination (match + write through its client); the wizard shows
+/// everything else as not available.
+macro_rules! migration_capability_matrix {
+    ($(($service:literal, [$($collection:ident),* $(,)?])),+ $(,)?) => {
+        /// Destination services the migration engine can transfer to (derived
+        /// from the same single table as `MIGRATION_CAPABILITIES`; served to
+        /// the UI by `get_migration_destinations`).
+        pub const MIGRATION_DESTINATION_SERVICES: &[&str] = &[$($service),+];
+
+        /// Capability matrix destination × collection (M00): the single
+        /// source of what the wizard may offer per destination, served to the
+        /// UI by `get_migration_capabilities` and enforced by
+        /// `migration_supports_collection`.
+        pub const MIGRATION_CAPABILITIES: &[(&str, &[MigrationCollection])] =
+            &[$(($service, &[$(MigrationCollection::$collection),*])),+];
+    };
+}
+
+migration_capability_matrix! {
+    // Real capability today: every destination receives track favorites
+    // (`DestinationClients::add_favorite`); only Qobuz and Tidal can create
+    // and fill remote playlists (`supports_playlist_creation`). Albums and
+    // artists have client read/write methods in places (Qobuz, Tidal,
+    // Spotify, Apple Music) but no engine transfer path yet, so no row
+    // declares them (see docs/MATRIZ_PARIDAD_IMPORTACION.md, migración).
+    ("qobuz", [Tracks, Playlists]),
+    ("tidal", [Tracks, Playlists]),
+    ("spotify", [Tracks]),
+    ("deezer", [Tracks]),
+    ("soundcloud", [Tracks]),
+    ("apple_music", [Tracks]),
+}
 
 /// Destination clients used by the migration engine to match and transfer
 /// tracks. Every field stays `None` unless the destination service maps to it
@@ -1350,6 +1454,25 @@ fn validate_migration_account_pair(
     Ok(())
 }
 
+/// Refuse to start collections the capability matrix does not declare for the
+/// destination (M00: an unsupported collection must never reach the engine).
+/// Track favorites are the engine's base transfer and are declared for every
+/// destination; the one collection flag on the wire is `create_playlists`.
+fn validate_migration_options_supported(
+    destination_service: &str,
+    options: &MigrationOptions,
+) -> Result<(), String> {
+    if options.create_playlists
+        && !migration_supports_collection(destination_service, MigrationCollection::Playlists)
+    {
+        return Err(format!(
+            "Destination '{}' does not support playlist transfer; the migration was not started",
+            destination_service
+        ));
+    }
+    Ok(())
+}
+
 /// Validate explicit ownership and resolve the default active account.
 /// The default is only for destination credentials; a None source reads the
 /// full legacy service mirror and is deliberately persisted as NULL.
@@ -1400,6 +1523,9 @@ pub async fn start_migration<R: tauri::Runtime>(
         source_account_id,
         destination_account_id,
     )?;
+    // M00 gating: a collection the destination does not declare is not started,
+    // even if the UI is stale or bypassed — the matrix is authoritative.
+    validate_migration_options_supported(&destination_service, &options)?;
     resolve_migration_account(&state.db, &source_service, source_account_id).await?;
     let effective_destination =
         resolve_migration_account(&state.db, &destination_service, destination_account_id).await?;
@@ -2122,6 +2248,171 @@ mod migration_tests {
         .expect("Failed to create accounts table");
 
         pool
+    }
+
+    // ===== M00: capability matrix and gating =====
+
+    use MigrationCollection::{Albums, Artists, Playlists, Tracks};
+
+    /// The matrix is the single table: the destination list the wizard offers
+    /// must be exactly its row keys, in the same order, and every row must
+    /// speak only of the four collections the flow tracks.
+    #[test]
+    fn capability_matrix_is_the_single_source_of_destinations() {
+        let matrix_services: Vec<&str> = MIGRATION_CAPABILITIES
+            .iter()
+            .map(|(service, _)| *service)
+            .collect();
+        assert_eq!(matrix_services, MIGRATION_DESTINATION_SERVICES.to_vec());
+        assert_eq!(
+            MIGRATION_ALL_COLLECTIONS,
+            &[Tracks, Albums, Artists, Playlists]
+        );
+        for (_, declared) in MIGRATION_CAPABILITIES {
+            for collection in *declared {
+                assert!(
+                    MIGRATION_ALL_COLLECTIONS.contains(collection),
+                    "matrix row declares {collection:?} outside the collection universe"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn qobuz_declares_tracks_and_playlists_only() {
+        let declared = destination_row("qobuz");
+        assert_eq!(declared, &[Tracks, Playlists]);
+        assert!(migration_supports_collection("qobuz", Tracks));
+        assert!(migration_supports_collection("qobuz", Playlists));
+        assert!(!migration_supports_collection("qobuz", Albums));
+        assert!(!migration_supports_collection("qobuz", Artists));
+    }
+
+    #[test]
+    fn tidal_declares_tracks_and_playlists_only() {
+        let declared = destination_row("tidal");
+        assert_eq!(declared, &[Tracks, Playlists]);
+        assert!(migration_supports_collection("tidal", Tracks));
+        assert!(migration_supports_collection("tidal", Playlists));
+        assert!(!migration_supports_collection("tidal", Albums));
+        assert!(!migration_supports_collection("tidal", Artists));
+    }
+
+    #[test]
+    fn spotify_declares_only_tracks() {
+        let declared = destination_row("spotify");
+        assert_eq!(declared, &[Tracks]);
+        assert!(migration_supports_collection("spotify", Tracks));
+        assert!(!migration_supports_collection("spotify", Playlists));
+        assert!(!migration_supports_collection("spotify", Albums));
+        assert!(!migration_supports_collection("spotify", Artists));
+    }
+
+    #[test]
+    fn deezer_declares_only_tracks() {
+        let declared = destination_row("deezer");
+        assert_eq!(declared, &[Tracks]);
+        assert!(migration_supports_collection("deezer", Tracks));
+        assert!(!migration_supports_collection("deezer", Playlists));
+        assert!(!migration_supports_collection("deezer", Albums));
+        assert!(!migration_supports_collection("deezer", Artists));
+    }
+
+    #[test]
+    fn soundcloud_declares_only_tracks() {
+        let declared = destination_row("soundcloud");
+        assert_eq!(declared, &[Tracks]);
+        assert!(migration_supports_collection("soundcloud", Tracks));
+        // SoundCloud's public API exposes no playlists: a service constant,
+        // not a gap (docs/MATRIZ_PARIDAD_IMPORTACION.md).
+        assert!(!migration_supports_collection("soundcloud", Playlists));
+        assert!(!migration_supports_collection("soundcloud", Albums));
+        assert!(!migration_supports_collection("soundcloud", Artists));
+    }
+
+    #[test]
+    fn apple_music_declares_only_tracks() {
+        let declared = destination_row("apple_music");
+        assert_eq!(declared, &[Tracks]);
+        assert!(migration_supports_collection("apple_music", Tracks));
+        assert!(!migration_supports_collection("apple_music", Playlists));
+        // Its album write is "add to library", not a favorite transfer, and
+        // the engine has no album path yet: not declared.
+        assert!(!migration_supports_collection("apple_music", Albums));
+        assert!(!migration_supports_collection("apple_music", Artists));
+    }
+
+    fn destination_row(service: &str) -> &[MigrationCollection] {
+        let row = MIGRATION_CAPABILITIES
+            .iter()
+            .find(|(service_key, _)| *service_key == service)
+            .map(|(_, declared)| *declared);
+        assert!(row.is_some(), "matrix has no row for {service}");
+        row.unwrap()
+    }
+
+    #[test]
+    fn capability_lookup_is_case_insensitive_and_unknown_services_support_nothing() {
+        assert!(migration_supports_collection("QOBUZ", Tracks));
+        assert!(migration_supports_collection("Apple_Music", Tracks));
+        for collection in MIGRATION_ALL_COLLECTIONS {
+            assert!(!migration_supports_collection("napster", *collection));
+        }
+    }
+
+    /// The command expands every row over the full universe, so the wizard
+    /// receives the whole matrix — declared cells and `supported: false`.
+    #[tokio::test]
+    async fn get_migration_capabilities_reports_unsupported_collections_too() {
+        let capabilities = get_migration_capabilities().await.unwrap();
+        assert_eq!(capabilities.len(), MIGRATION_CAPABILITIES.len());
+        let qobuz = capabilities
+            .iter()
+            .find(|cap| cap.service == "qobuz")
+            .expect("qobuz in capabilities");
+        let by_collection = |collection: MigrationCollection| {
+            qobuz
+                .collections
+                .iter()
+                .find(|cell| cell.collection == collection)
+                .map(|cell| cell.supported)
+                .unwrap_or_else(|| panic!("{collection:?} missing from qobuz cells"))
+        };
+        assert_eq!(qobuz.collections.len(), MIGRATION_ALL_COLLECTIONS.len());
+        assert!(by_collection(Tracks));
+        assert!(by_collection(Playlists));
+        assert!(!by_collection(Albums));
+        assert!(!by_collection(Artists));
+    }
+
+    /// M00 gating: a collection the destination does not declare must refuse
+    /// to start, before any job or account lookup happens.
+    #[test]
+    fn migration_options_reject_playlists_for_destinations_without_support() {
+        let with_playlists = MigrationOptions {
+            create_playlists: true,
+            ..Default::default()
+        };
+        assert!(
+            validate_migration_options_supported("spotify", &with_playlists).is_err(),
+            "spotify must not start a playlist transfer"
+        );
+        assert!(
+            validate_migration_options_supported("soundcloud", &with_playlists).is_err(),
+            "soundcloud must not start a playlist transfer"
+        );
+        assert!(validate_migration_options_supported("qobuz", &with_playlists).is_ok());
+        assert!(validate_migration_options_supported("tidal", &with_playlists).is_ok());
+        assert!(
+            validate_migration_options_supported("napster", &with_playlists).is_err(),
+            "an unknown destination declares nothing and starts nothing"
+        );
+
+        let favorites_only = MigrationOptions {
+            create_playlists: false,
+            ..Default::default()
+        };
+        assert!(validate_migration_options_supported("spotify", &favorites_only).is_ok());
     }
 
     #[tokio::test]

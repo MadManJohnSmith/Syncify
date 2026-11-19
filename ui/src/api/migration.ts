@@ -9,6 +9,8 @@ import type {
     MigrationTemplate,
     MigrationOptions,
     MigrationPreviewResult,
+    MigrationDestinationCapability,
+    MigrationCollectionSupport,
     DestinationTrackMatch,
     PlaylistPreview
 } from './types';
@@ -50,6 +52,22 @@ export async function deleteMigration(jobId: string): Promise<string> {
 export async function getMigrationDestinations(): Promise<string[]> {
     const raw = await invoke<unknown>('get_migration_destinations');
     return asArray<string>(raw).map(service => String(service).toLowerCase());
+}
+
+/**
+ * Capability matrix destination × collection (M00): what the backend engine
+ * declares per destination. The wizard offers only `supported: true`
+ * collections and renders the rest as not available.
+ */
+export async function getMigrationCapabilities(): Promise<MigrationDestinationCapability[]> {
+    const raw = await invoke<unknown>('get_migration_capabilities');
+    return asArray<Record<string, unknown>>(raw).map(row => ({
+        service: String(row.service ?? '').toLowerCase(),
+        collections: asArray<Record<string, unknown>>(row.collections).map(cell => ({
+            collection: String(cell.collection ?? '') as MigrationCollectionSupport['collection'],
+            supported: cell.supported === true,
+        })),
+    }));
 }
 
 function validateMigrationAccounts(

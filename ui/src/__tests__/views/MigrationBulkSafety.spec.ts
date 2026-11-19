@@ -5,11 +5,24 @@ import { mockInvoke, resetMocks } from '../setup'
 
 const statuses = ['spotify', 'qobuz', 'tidal'].map(name => ({ name, connected: true, account_email: null, library_count: 3, favorites_count: 3, playlists_count: 0, last_synced: null, credentials_invalid: false }))
 
+// The capability matrix the backend declares (M00): tracks everywhere,
+// playlists only where the engine can create them.
+const capabilities = ['qobuz', 'tidal'].map(service => ({
+  service,
+  collections: [
+    { collection: 'tracks', supported: true },
+    { collection: 'albums', supported: false },
+    { collection: 'artists', supported: false },
+    { collection: 'playlists', supported: true },
+  ],
+}))
+
 async function setup() {
   const writes = vi.fn().mockResolvedValue('job-1')
   mockInvoke((cmd) => {
     if (cmd === 'get_service_statuses') return statuses
     if (cmd === 'get_migration_destinations') return ['qobuz', 'tidal']
+    if (cmd === 'get_migration_capabilities') return capabilities
     if (cmd === 'get_accounts') return [
       { id: 1, service_id: 1, service_name: 'spotify', display_name: 'Source', is_active: true },
       { id: 2, service_id: 2, service_name: 'qobuz', display_name: 'Qobuz', is_active: true },
