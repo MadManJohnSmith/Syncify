@@ -209,8 +209,8 @@ mod tests {
     #[tokio::test]
     async fn unknown_total_stops_on_the_first_short_page() {
         let pages = vec![
-            page(vec![json!({"id": 1}), json!({"id": 2})], None),
-            page(vec![json!({"id": 3})], None),
+            page(vec![json!({"id": 1})], None),
+            page(vec![json!({"id": 2}), json!({"id": 3})], None),
         ];
         let mut calls = 0;
         let collected = collect_all_pages(2, |offset| {
@@ -223,7 +223,7 @@ mod tests {
 
         assert_eq!(calls, 1, "sin total, una página corta es el final");
         assert_eq!(collected.reported_total, None);
-        assert_eq!(collected.items.len(), 2);
+        assert_eq!(collected.items.len(), 1);
     }
 
     #[tokio::test]
