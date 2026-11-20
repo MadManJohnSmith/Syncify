@@ -22,7 +22,7 @@ pub const SPOTIFY_PAGE_SIZE: i64 = 50;
 /// (401 Unauthorized): …`). Un mensaje sin estado es transporte o parseo.
 fn spotify_error_status(message: &str) -> Option<u16> {
     let rest = message.strip_prefix("Spotify API error (")?;
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().ok()
 }
 

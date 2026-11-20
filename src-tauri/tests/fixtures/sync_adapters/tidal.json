@@ -1,0 +1,272 @@
+{
+  "favorites": [
+    {
+      "items": [
+        {
+          "item": {
+            "id": 1,
+            "title": "Tidal Track 1",
+            "duration": 201,
+            "isrc": "TDISRC000001",
+            "audioQuality": "LOSSLESS",
+            "artist": {
+              "id": 1,
+              "name": "Tidal Artist 1"
+            },
+            "album": {
+              "id": 1,
+              "title": "Tidal Album 1",
+              "cover": "cover-1",
+              "releaseDate": "2024-01-01",
+              "numberOfTracks": 11,
+              "artist": {
+                "id": 1,
+                "name": "Tidal Artist 1"
+              },
+              "artists": [
+                {
+                  "id": 1,
+                  "name": "Tidal Artist 1"
+                }
+              ],
+              "type": "ALBUM",
+              "upc": "000000000001",
+              "label": "Fixture Label"
+            },
+            "trackNumber": 1,
+            "volumeNumber": 1
+          }
+        },
+        {
+          "item": {
+            "id": 2,
+            "title": "Tidal Track 2",
+            "duration": 202,
+            "isrc": "TDISRC000002",
+            "audioQuality": "LOSSLESS",
+            "artist": {
+              "id": 2,
+              "name": "Tidal Artist 2"
+            },
+            "album": {
+              "id": 2,
+              "title": "Tidal Album 2",
+              "cover": "cover-2",
+              "releaseDate": "2024-02-01",
+              "numberOfTracks": 12,
+              "artist": {
+                "id": 2,
+                "name": "Tidal Artist 2"
+              },
+              "artists": [
+                {
+                  "id": 2,
+                  "name": "Tidal Artist 2"
+                }
+              ],
+              "type": "ALBUM",
+              "upc": "000000000002",
+              "label": "Fixture Label"
+            },
+            "trackNumber": 2,
+            "volumeNumber": 1
+          }
+        }
+      ],
+      "totalNumberOfItems": 3
+    },
+    {
+      "items": [
+        {
+          "item": {
+            "id": 3,
+            "title": "Tidal Track 3",
+            "duration": 203,
+            "isrc": "TDISRC000003",
+            "audioQuality": "LOSSLESS",
+            "artist": {
+              "id": 3,
+              "name": "Tidal Artist 3"
+            },
+            "album": {
+              "id": 3,
+              "title": "Tidal Album 3",
+              "cover": "cover-3",
+              "releaseDate": "2024-03-01",
+              "numberOfTracks": 13,
+              "artist": {
+                "id": 3,
+                "name": "Tidal Artist 3"
+              },
+              "artists": [
+                {
+                  "id": 3,
+                  "name": "Tidal Artist 3"
+                }
+              ],
+              "type": "ALBUM",
+              "upc": "000000000003",
+              "label": "Fixture Label"
+            },
+            "trackNumber": 3,
+            "volumeNumber": 1
+          }
+        }
+      ],
+      "totalNumberOfItems": 3
+    }
+  ],
+  "albums": [
+    {
+      "items": [
+        {
+          "item": {
+            "id": 1,
+            "title": "Tidal Album 1",
+            "cover": "cover-1",
+            "releaseDate": "2024-01-01",
+            "numberOfTracks": 11,
+            "artist": {
+              "id": 1,
+              "name": "Tidal Artist 1"
+            },
+            "artists": [
+              {
+                "id": 1,
+                "name": "Tidal Artist 1"
+              }
+            ],
+            "type": "ALBUM",
+            "upc": "000000000001",
+            "label": "Fixture Label"
+          }
+        },
+        {
+          "item": {
+            "id": 2,
+            "title": "Tidal Album 2",
+            "cover": "cover-2",
+            "releaseDate": "2024-02-01",
+            "numberOfTracks": 12,
+            "artist": {
+              "id": 2,
+              "name": "Tidal Artist 2"
+            },
+            "artists": [
+              {
+                "id": 2,
+                "name": "Tidal Artist 2"
+              }
+            ],
+            "type": "ALBUM",
+            "upc": "000000000002",
+            "label": "Fixture Label"
+          }
+        }
+      ],
+      "totalNumberOfItems": 3
+    },
+    {
+      "items": [
+        {
+          "item": {
+            "id": 3,
+            "title": "Tidal Album 3",
+            "cover": "cover-3",
+            "releaseDate": "2024-03-01",
+            "numberOfTracks": 13,
+            "artist": {
+              "id": 3,
+              "name": "Tidal Artist 3"
+            },
+            "artists": [
+              {
+                "id": 3,
+                "name": "Tidal Artist 3"
+              }
+            ],
+            "type": "ALBUM",
+            "upc": "000000000003",
+            "label": "Fixture Label"
+          }
+        }
+      ],
+      "totalNumberOfItems": 3
+    }
+  ],
+  "artists": [
+    {
+      "items": [
+        {
+          "item": {
+            "id": 1,
+            "name": "Tidal Artist 1"
+          }
+        },
+        {
+          "item": {
+            "id": 2,
+            "name": "Tidal Artist 2"
+          }
+        }
+      ],
+      "totalNumberOfItems": 3
+    },
+    {
+      "items": [
+        {
+          "item": {
+            "id": 3,
+            "name": "Tidal Artist 3"
+          }
+        }
+      ],
+      "totalNumberOfItems": 3
+    }
+  ],
+  "playlists": [
+    {
+      "items": [
+        {
+          "uuid": "td-pl-1",
+          "title": "Tidal Playlist 1",
+          "description": null,
+          "numberOfTracks": 1,
+          "creator": {
+            "id": 99,
+            "name": "Fixture User"
+          },
+          "public_playlist": true
+        },
+        {
+          "uuid": "td-pl-2",
+          "title": "Tidal Playlist 2",
+          "description": null,
+          "numberOfTracks": 2,
+          "creator": {
+            "id": 99,
+            "name": "Fixture User"
+          },
+          "public_playlist": true
+        }
+      ],
+      "totalNumberOfItems": 3
+    },
+    {
+      "items": [
+        {
+          "uuid": "td-pl-3",
+          "title": "Tidal Playlist 3",
+          "description": null,
+          "numberOfTracks": 3,
+          "creator": {
+            "id": 99,
+            "name": "Fixture User"
+          },
+          "public_playlist": true
+        }
+      ],
+      "totalNumberOfItems": 3
+    }
+  ]
+}

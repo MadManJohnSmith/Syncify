@@ -20,9 +20,6 @@ pub mod source;
 pub mod spotify_source;
 pub mod tidal_source;
 
-pub use collection::{collect_all_pages, collect_cursor_pages, CollectedCollection};
 pub use events::SyncRunEvent;
 pub use qobuz_source::QobuzLibrarySource;
-pub use source::{CollectionPage, LibrarySource, SourceErrorKind};
-pub use spotify_source::SpotifyLibrarySource;
-pub use tidal_source::TidalLibrarySource;
+pub use source::{LibrarySource, SourceErrorKind};

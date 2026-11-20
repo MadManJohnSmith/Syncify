@@ -23,7 +23,7 @@ fn tidal_error_status(message: &str) -> Option<u16> {
     let rest = message
         .strip_prefix("Tidal API error ")
         .or_else(|| message.split_once("HTTP ").map(|(_, rest)| rest))?;
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().ok()
 }
 
