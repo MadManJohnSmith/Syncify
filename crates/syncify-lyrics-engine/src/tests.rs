@@ -6,11 +6,11 @@
 
 use std::sync::Arc;
 
+use crate::client::response_sync_level;
 use crate::{
     validate_and_embed_flac_lyrics, LyricsClient, LyricsEngineConfig, LyricsLine, LyricsResponse,
     LyricsSourceSetting, NoopHooks,
 };
-use crate::client::response_sync_level;
 use syncify_lyrics_domain::{parse_lrc_line, SyncLevel};
 
 /// Sonda ffmpeg best-effort con el flag de consola oculta del núcleo; si el
