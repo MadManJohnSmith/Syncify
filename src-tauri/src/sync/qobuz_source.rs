@@ -93,6 +93,8 @@ impl<'a> QobuzLibrarySource<'a> {
         })
     }
 
+    #[allow(dead_code)]
+    // Huella de playlist: la cubren los tests de #66 y el sync de playlists la adoptará; el bin aún no la llama.
     /// Página de playlists del usuario con la huella de conteo de cada una.
     pub async fn fetch_playlists_page(&self, offset: i64) -> Result<CollectionPage, SourceError> {
         let params = vec![

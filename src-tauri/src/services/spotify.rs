@@ -484,6 +484,7 @@ impl SpotifyClient {
 
     /// Base de la API para tests de regresión contra un servidor local.
     /// Producción nunca la llama.
+    #[allow(dead_code)] // La ejercitan los tests del adaptador; el bin no la construye.
     pub fn with_api_base(mut self, api_base: String) -> Self {
         self.api_base = api_base;
         self

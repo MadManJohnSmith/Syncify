@@ -494,6 +494,8 @@ pub struct QobuzArtistsResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct QobuzArtistsContainer {
     pub items: Vec<QobuzArtist>,
+    #[allow(dead_code)]
+    // Campo del contrato de datos: el adaptador lee el total del JSON crudo; se conserva el tipo completo.
     pub total: i32,
 }
 

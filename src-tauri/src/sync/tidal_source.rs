@@ -95,6 +95,8 @@ impl<'a> TidalLibrarySource<'a> {
         })
     }
 
+    #[allow(dead_code)]
+    // Huella de playlist: la cubren los tests de #66 y el sync de playlists la adoptará; el bin aún no la llama.
     /// Página de playlists. Tidal no expone `snapshot_id`: la huella es el
     /// conteo de pistas que declara cada playlist.
     pub async fn fetch_playlists_page(&self, offset: i64) -> Result<CollectionPage, SourceError> {

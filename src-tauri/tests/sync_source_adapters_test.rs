@@ -306,8 +306,9 @@ async fn spotify_artists_recorre_el_cursor_hasta_la_ultima_pagina() {
     let client = spotify_client(&server);
     let source = SpotifyLibrarySource::new(&client);
 
-    let collected = collect_cursor_pages(50, |after| async move {
-        source.fetch_artists_page(after.as_deref()).await
+    let collected = collect_cursor_pages(50, |after| {
+        let source = &source;
+        async move { source.fetch_artists_page(after.as_deref()).await }
     })
     .await
     .expect("recorrido de artistas");

@@ -1597,28 +1597,32 @@ pub async fn perform_sync_favorites(
                 }
             }
             if type_filter == "all" || type_filter == "albums" {
-                let mut offset: i32 = 0;
-                let mut reported_total: Option<i64> = None;
-                loop {
-                    let page = client.get_favorite_albums(offset, 100).await?;
-                    if reported_total.is_none() && page.total > 0 {
-                        reported_total = Some(page.total as i64);
-                    }
-                    let items_len = page.items.len();
-                    for item in page.items {
-                        let album = item.item;
-                        let album_id_str = album.tidal_id.to_string();
-                        let title = album.title.clone();
-                        let artist_name = album
-                            .artist
-                            .as_ref()
-                            .map(|a| a.name.clone())
-                            .unwrap_or_else(|| "Unknown Artist".to_string());
-                        let upc = album.upc.clone();
-                        let image_url = album.cover_url();
-                        let favorited_at: Option<String> = None;
+                let source = crate::sync::tidal_source::TidalLibrarySource::new(&client);
+                let collected = crate::sync::collection::collect_all_pages(100, |offset| {
+                    source.fetch_albums_page(offset)
+                })
+                .await
+                .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
+                    total_found += total;
+                }
+                for item in collected.items {
+                    let item: crate::services::tidal::TidalFavoriteAlbumItem =
+                        serde_json::from_value(item)
+                            .map_err(|e| format!("Tidal album decode error: {}", e))?;
+                    let album = item.item;
+                    let album_id_str = album.tidal_id.to_string();
+                    let title = album.title.clone();
+                    let artist_name = album
+                        .artist
+                        .as_ref()
+                        .map(|a| a.name.clone())
+                        .unwrap_or_else(|| "Unknown Artist".to_string());
+                    let upc = album.upc.clone();
+                    let image_url = album.cover_url();
+                    let favorited_at: Option<String> = None;
 
-                        let res = sqlx::query(
+                    let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, upc, image_url, favorited_at)
                         VALUES (?, ?, 'album', ?, ?, ?, ?, ?, ?, ?)
@@ -1642,55 +1646,46 @@ pub async fn perform_sync_favorites(
                     .execute(db)
                     .await;
 
-                        if let Ok(r) = res {
-                            if r.rows_affected() > 0 {
-                                imported += 1;
-                            }
+                    if let Ok(r) = res {
+                        if r.rows_affected() > 0 {
+                            imported += 1;
                         }
+                    }
 
-                        // Canonical library album synchronization with UPC deduplication
-                        let _ = upsert_canonical_favorite_album(
-                            db,
-                            service_id,
-                            &album_id_str,
-                            &title,
-                            &artist_name,
-                            upc.as_deref(),
-                            image_url.as_deref(),
-                        )
-                        .await;
-                    }
-                    match crate::services::import_pagination::next_offset(
-                        offset,
-                        items_len as i32,
-                        100,
-                        reported_total,
-                    ) {
-                        Some(next) => offset = next,
-                        None => break,
-                    }
-                }
-                if let Some(total) = reported_total {
-                    total_found += total;
+                    // Canonical library album synchronization with UPC deduplication
+                    let _ = upsert_canonical_favorite_album(
+                        db,
+                        service_id,
+                        &album_id_str,
+                        &title,
+                        &artist_name,
+                        upc.as_deref(),
+                        image_url.as_deref(),
+                    )
+                    .await;
                 }
             }
             if type_filter == "all" || type_filter == "artists" {
-                let mut offset: i32 = 0;
-                let mut reported_total: Option<i64> = None;
-                loop {
-                    let page = client.get_favorite_artists(offset, 100).await?;
-                    if reported_total.is_none() && page.total > 0 {
-                        reported_total = Some(page.total as i64);
-                    }
-                    let items_len = page.items.len();
-                    for item in page.items {
-                        let artist = item.item;
-                        let artist_id_str = artist.id.to_string();
-                        let name = artist.name.clone();
-                        let image_url: Option<String> = None;
-                        let favorited_at: Option<String> = None;
+                let source = crate::sync::tidal_source::TidalLibrarySource::new(&client);
+                let collected = crate::sync::collection::collect_all_pages(100, |offset| {
+                    source.fetch_artists_page(offset)
+                })
+                .await
+                .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
+                    total_found += total;
+                }
+                for item in collected.items {
+                    let item: crate::services::tidal::TidalFavoriteArtistItem =
+                        serde_json::from_value(item)
+                            .map_err(|e| format!("Tidal artist decode error: {}", e))?;
+                    let artist = item.item;
+                    let artist_id_str = artist.id.to_string();
+                    let name = artist.name.clone();
+                    let image_url: Option<String> = None;
+                    let favorited_at: Option<String> = None;
 
-                        let res = sqlx::query(
+                    let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, image_url, favorited_at)
                         VALUES (?, ?, 'artist', ?, ?, ?, ?, ?)
@@ -1711,29 +1706,15 @@ pub async fn perform_sync_favorites(
                     .execute(db)
                     .await;
 
-                        if let Ok(r) = res {
-                            if r.rows_affected() > 0 {
-                                imported += 1;
-                            }
+                    if let Ok(r) = res {
+                        if r.rows_affected() > 0 {
+                            imported += 1;
                         }
+                    }
 
-                        // Canonical library artist synchronization
-                        let _ =
-                            upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
-                                .await;
-                    }
-                    match crate::services::import_pagination::next_offset(
-                        offset,
-                        items_len as i32,
-                        100,
-                        reported_total,
-                    ) {
-                        Some(next) => offset = next,
-                        None => break,
-                    }
-                }
-                if let Some(total) = reported_total {
-                    total_found += total;
+                    // Canonical library artist synchronization
+                    let _ = upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
+                        .await;
                 }
             }
         }
@@ -1852,29 +1833,32 @@ pub async fn perform_sync_favorites(
             }
 
             if type_filter == "all" || type_filter == "albums" {
-                let mut offset: i32 = 0;
-                let mut reported_total: Option<i64> = None;
-                loop {
-                    let page = client.get_favorite_albums(offset, 100).await?;
-                    if reported_total.is_none() && page.albums.total > 0 {
-                        reported_total = Some(page.albums.total as i64);
-                    }
-                    let items_len = page.albums.items.len();
-                    for album in page.albums.items {
-                        let album_id_str = album.id.clone();
-                        let title = album.title.unwrap_or_else(|| "Unknown Album".to_string());
-                        let artist_name = album
-                            .artist
-                            .as_ref()
-                            .and_then(|a| a.name.clone())
-                            .unwrap_or_else(|| "Unknown Artist".to_string());
-                        let upc = album.upc.clone();
-                        let image_url = album
-                            .image
-                            .as_ref()
-                            .and_then(|img| img.large.clone().or_else(|| img.small.clone()));
+                let source = crate::sync::qobuz_source::QobuzLibrarySource::new(&client);
+                let collected = crate::sync::collection::collect_all_pages(100, |offset| {
+                    source.fetch_albums_page(offset)
+                })
+                .await
+                .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
+                    total_found += total;
+                }
+                for item in collected.items {
+                    let album: crate::services::qobuz::QobuzAlbum = serde_json::from_value(item)
+                        .map_err(|e| format!("Qobuz album decode error: {}", e))?;
+                    let album_id_str = album.id.clone();
+                    let title = album.title.unwrap_or_else(|| "Unknown Album".to_string());
+                    let artist_name = album
+                        .artist
+                        .as_ref()
+                        .and_then(|a| a.name.clone())
+                        .unwrap_or_else(|| "Unknown Artist".to_string());
+                    let upc = album.upc.clone();
+                    let image_url = album
+                        .image
+                        .as_ref()
+                        .and_then(|img| img.large.clone().or_else(|| img.small.clone()));
 
-                        let res = sqlx::query(
+                    let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, upc, image_url)
                         VALUES (?, ?, 'album', ?, ?, ?, ?, ?, ?)
@@ -1896,53 +1880,42 @@ pub async fn perform_sync_favorites(
                     .execute(db)
                     .await;
 
-                        if let Ok(r) = res {
-                            if r.rows_affected() > 0 {
-                                imported += 1;
-                            }
+                    if let Ok(r) = res {
+                        if r.rows_affected() > 0 {
+                            imported += 1;
                         }
+                    }
 
-                        // Canonical library album synchronization with UPC deduplication
-                        let _ = upsert_canonical_favorite_album(
-                            db,
-                            service_id,
-                            &album_id_str,
-                            &title,
-                            &artist_name,
-                            upc.as_deref(),
-                            image_url.as_deref(),
-                        )
-                        .await;
-                    }
-                    match crate::services::import_pagination::next_offset(
-                        offset,
-                        items_len as i32,
-                        100,
-                        reported_total,
-                    ) {
-                        Some(next) => offset = next,
-                        None => break,
-                    }
-                }
-                if let Some(total) = reported_total {
-                    total_found += total;
+                    // Canonical library album synchronization with UPC deduplication
+                    let _ = upsert_canonical_favorite_album(
+                        db,
+                        service_id,
+                        &album_id_str,
+                        &title,
+                        &artist_name,
+                        upc.as_deref(),
+                        image_url.as_deref(),
+                    )
+                    .await;
                 }
             }
-
             if type_filter == "all" || type_filter == "artists" {
-                let mut offset: i32 = 0;
-                let mut reported_total: Option<i64> = None;
-                loop {
-                    let page = client.get_favorite_artists(offset, 100).await?;
-                    if reported_total.is_none() && page.artists.total > 0 {
-                        reported_total = Some(page.artists.total as i64);
-                    }
-                    let items_len = page.artists.items.len();
-                    for artist in page.artists.items {
-                        let artist_id_str = artist.id.map(|n| n.to_string()).unwrap_or_default();
-                        let name = artist.name.unwrap_or_else(|| "Unknown Artist".to_string());
+                let source = crate::sync::qobuz_source::QobuzLibrarySource::new(&client);
+                let collected = crate::sync::collection::collect_all_pages(100, |offset| {
+                    source.fetch_artists_page(offset)
+                })
+                .await
+                .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
+                    total_found += total;
+                }
+                for item in collected.items {
+                    let artist: crate::services::qobuz::QobuzArtist = serde_json::from_value(item)
+                        .map_err(|e| format!("Qobuz artist decode error: {}", e))?;
+                    let artist_id_str = artist.id.map(|n| n.to_string()).unwrap_or_default();
+                    let name = artist.name.unwrap_or_else(|| "Unknown Artist".to_string());
 
-                        let res = sqlx::query(
+                    let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name)
                         VALUES (?, ?, 'artist', ?, ?, ?)
@@ -1959,29 +1932,15 @@ pub async fn perform_sync_favorites(
                     .execute(db)
                     .await;
 
-                        if let Ok(r) = res {
-                            if r.rows_affected() > 0 {
-                                imported += 1;
-                            }
+                    if let Ok(r) = res {
+                        if r.rows_affected() > 0 {
+                            imported += 1;
                         }
+                    }
 
-                        // Canonical library artist synchronization
-                        let _ =
-                            upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
-                                .await;
-                    }
-                    match crate::services::import_pagination::next_offset(
-                        offset,
-                        items_len as i32,
-                        100,
-                        reported_total,
-                    ) {
-                        Some(next) => offset = next,
-                        None => break,
-                    }
-                }
-                if let Some(total) = reported_total {
-                    total_found += total;
+                    // Canonical library artist synchronization
+                    let _ = upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
+                        .await;
                 }
             }
         }
@@ -2093,24 +2052,28 @@ pub async fn perform_sync_favorites(
             }
 
             if type_filter == "all" || type_filter == "albums" {
-                let mut offset: i32 = 0;
-                let mut reported_total: Option<i64> = None;
-                loop {
-                    let page = client.get_saved_albums(offset, 50).await?;
-                    if reported_total.is_none() && page.total > 0 {
-                        reported_total = Some(page.total as i64);
-                    }
-                    let items_len = page.items.len();
-                    for saved in page.items {
-                        let album = saved.album;
-                        let album_id_str = album.id.clone();
-                        let title = album.name.clone();
-                        let artist_name = "Various Artists".to_string();
-                        let upc = album.external_ids.as_ref().and_then(|e| e.upc.clone());
-                        let image_url = album.images.first().map(|i| i.url.clone());
-                        let favorited_at = saved.added_at;
+                let source = crate::sync::spotify_source::SpotifyLibrarySource::new(&client);
+                let collected = crate::sync::collection::collect_all_pages(50, |offset| {
+                    source.fetch_albums_page(offset)
+                })
+                .await
+                .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
+                    total_found += total;
+                }
+                for item in collected.items {
+                    let saved: crate::services::spotify::SpotifySavedAlbum =
+                        serde_json::from_value(item)
+                            .map_err(|e| format!("Spotify album decode error: {}", e))?;
+                    let album = saved.album;
+                    let album_id_str = album.id.clone();
+                    let title = album.name.clone();
+                    let artist_name = "Various Artists".to_string();
+                    let upc = album.external_ids.as_ref().and_then(|e| e.upc.clone());
+                    let image_url = album.images.first().map(|i| i.url.clone());
+                    let favorited_at = saved.added_at;
 
-                        let res = sqlx::query(
+                    let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, upc, image_url, favorited_at)
                         VALUES (?, ?, 'album', ?, ?, ?, ?, ?, ?, ?)
@@ -2134,57 +2097,45 @@ pub async fn perform_sync_favorites(
                     .execute(db)
                     .await;
 
-                        if let Ok(r) = res {
-                            if r.rows_affected() > 0 {
-                                imported += 1;
-                            }
+                    if let Ok(r) = res {
+                        if r.rows_affected() > 0 {
+                            imported += 1;
                         }
+                    }
 
-                        // Canonical library album synchronization with UPC deduplication
-                        let _ = upsert_canonical_favorite_album(
-                            db,
-                            service_id,
-                            &album_id_str,
-                            &title,
-                            &artist_name,
-                            upc.as_deref(),
-                            image_url.as_deref(),
-                        )
-                        .await;
-                    }
-                    match crate::services::import_pagination::next_offset(
-                        offset,
-                        items_len as i32,
-                        50,
-                        reported_total,
-                    ) {
-                        Some(next) => offset = next,
-                        None => break,
-                    }
-                }
-                if let Some(total) = reported_total {
-                    total_found += total;
+                    // Canonical library album synchronization with UPC deduplication
+                    let _ = upsert_canonical_favorite_album(
+                        db,
+                        service_id,
+                        &album_id_str,
+                        &title,
+                        &artist_name,
+                        upc.as_deref(),
+                        image_url.as_deref(),
+                    )
+                    .await;
                 }
             }
-
             if type_filter == "all" || type_filter == "artists" {
-                let mut after: Option<String> = None;
-                let mut reported_total: Option<i64> = None;
-                let mut artists_seen: u64 = 0;
-                loop {
-                    let page = client.get_followed_artists(after.as_deref(), 50).await?;
-                    let artists_page = page.artists;
-                    if reported_total.is_none() && artists_page.total.unwrap_or(0) > 0 {
-                        reported_total = artists_page.total.map(i64::from);
-                    }
-                    let items_len = artists_page.items.len() as i32;
-                    let next_cursor = artists_page.cursors.and_then(|cursors| cursors.after);
-                    for artist in artists_page.items {
-                        artists_seen += 1;
-                        let artist_id_str = artist.id.clone();
-                        let name = artist.name.clone();
+                let source = crate::sync::spotify_source::SpotifyLibrarySource::new(&client);
+                let source = &source;
+                let collected =
+                    crate::sync::collection::collect_cursor_pages(50, |after| async move {
+                        source.fetch_artists_page(after.as_deref()).await
+                    })
+                    .await
+                    .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
+                    total_found += total;
+                }
+                for item in collected.items {
+                    let artist: crate::services::spotify::SpotifyArtist =
+                        serde_json::from_value(item)
+                            .map_err(|e| format!("Spotify artist decode error: {}", e))?;
+                    let artist_id_str = artist.id.clone();
+                    let name = artist.name.clone();
 
-                        let res = sqlx::query(
+                    let res = sqlx::query(
                         r#"
                         INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name)
                         VALUES (?, ?, 'artist', ?, ?, ?)
@@ -2201,30 +2152,15 @@ pub async fn perform_sync_favorites(
                     .execute(db)
                     .await;
 
-                        if let Ok(r) = res {
-                            if r.rows_affected() > 0 {
-                                imported += 1;
-                            }
+                    if let Ok(r) = res {
+                        if r.rows_affected() > 0 {
+                            imported += 1;
                         }
+                    }
 
-                        // Canonical library artist synchronization
-                        let _ =
-                            upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
-                                .await;
-                    }
-                    after = crate::services::import_pagination::next_cursor(
-                        next_cursor,
-                        items_len as usize,
-                        50,
-                        reported_total,
-                        artists_seen,
-                    );
-                    if after.is_none() {
-                        break;
-                    }
-                }
-                if let Some(total) = reported_total {
-                    total_found += total;
+                    // Canonical library artist synchronization
+                    let _ = upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
+                        .await;
                 }
             }
         }
