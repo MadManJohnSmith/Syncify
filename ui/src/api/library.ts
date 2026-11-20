@@ -702,10 +702,13 @@ export async function getFavoritesTracks(service?: string, offset?: number, limi
 }
 
 /**
- * Get favorite albums with optional service filter
+ * Get favorite albums with optional service filter.
+ * `includeStubs` (P16 #147): los favoritos importados por sync llegan como
+ * stubs hasta que su tracklist se expande; ocultarlos haría mentir la vista,
+ * así que Favoritos los pide y marca los sin pistas.
  */
-export async function getFavoritesAlbums(service?: string, offset?: number, limit?: number): Promise<FavoriteAlbumItem[]> {
-    const raw = await invokeCommand<unknown>('get_favorites_albums', { service, offset, limit });
+export async function getFavoritesAlbums(service?: string, offset?: number, limit?: number, includeStubs?: boolean): Promise<FavoriteAlbumItem[]> {
+    const raw = await invokeCommand<unknown>('get_favorites_albums', { service, offset, limit, includeStubs });
     return asArray<FavoriteAlbumItem>(raw);
 }
 

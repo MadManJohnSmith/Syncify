@@ -22,6 +22,9 @@ export const routes: RouteRecordRaw[] = [
     { path: '/library/albums', name: 'LibraryAlbums', component: () => import('./views/LibraryAlbumsView.vue'), meta: { libraryTab: 'albums' } },
     { path: '/library/artists', name: 'LibraryArtists', component: () => import('./views/LibraryArtistsView.vue'), meta: { libraryTab: 'artists' } },
     { path: '/library/duplicates', name: 'LibraryDuplicates', component: () => import('./views/LibraryTabPlaceholder.vue'), meta: { libraryTab: 'duplicates' } },
+    // P16 (#147): vista de Favoritos — rejillas de álbumes y artistas
+    // favoritos sobre los comandos reales del backend.
+    { path: '/favorites', name: 'Favorites', component: () => import('./views/FavoritesView.vue') },
     { path: '/playlists', name: 'Playlists', component: () => import('./views/PlaylistView.vue') },
     { path: '/downloads', name: 'Downloads', component: () => import('./views/DownloadsView.vue') },
     { path: '/queue', redirect: '/downloads' },
