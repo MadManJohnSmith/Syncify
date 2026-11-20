@@ -1,7 +1,7 @@
 // Download orchestrator - coordinates multiple download services with resilience and cooperative cancellation
 
 use crate::download::amazon::AmazonDownloader;
-use crate::download::lyrics::LyricsClient;
+use crate::download::lyrics::{new_lyrics_client, LyricsClient};
 use crate::download::progress::{
     DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
 };
@@ -182,7 +182,7 @@ impl DownloadOrchestrator {
             qobuz,
             tidal,
             songlink: Arc::new(SongLinkClient::new()),
-            lyrics: Arc::new(LyricsClient::new()),
+            lyrics: Arc::new(new_lyrics_client()),
             enrichment: Arc::new(EnrichmentEngine::new()),
             service_priority: vec![
                 "qobuz".to_string(),

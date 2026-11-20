@@ -6,8 +6,7 @@ use crate::download::http_client::{
 };
 use crate::download::identity::{identity_conflicts, IdentityCandidate};
 use crate::download::lyrics::{
-    validate_and_embed_flac_lyrics, LyricsPipelineService, LyricsResolution, LyricsSyncType,
-    ResolutionStatus,
+    validate_and_embed_flac_lyrics, LyricsResolution, LyricsSyncType, ResolutionStatus,
 };
 use crate::download::progress::{
     ByteStreamTracker, DownloadPhase, DownloadPhaseTracker, DownloadProgress, DownloadRequest,
@@ -2539,8 +2538,8 @@ impl QobuzDownloader {
                 // 7b. ResolveLyrics phase
                 phase_tracker.start_phase(DownloadPhase::ResolveLyrics);
                 let lyrics_service = match db_opt {
-                    Some(pool) => LyricsPipelineService::from_db(pool).await,
-                    None => LyricsPipelineService::new(),
+                    Some(pool) => crate::download::lyrics::pipeline_from_db(pool).await,
+                    None => crate::download::lyrics::pipeline_default(),
                 };
                 let duration_sec = if track.duration > 0 {
                     track.duration as f64

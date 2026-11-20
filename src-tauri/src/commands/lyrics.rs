@@ -186,7 +186,7 @@ pub async fn resolve_track_lyrics(
     track_id: Option<i64>,
 ) -> Result<LyricsResolutionPayload, String> {
     let config = load_lyrics_engine_config(&state.db).await;
-    let lyrics_client = crate::download::LyricsClient::with_config(config);
+    let lyrics_client = crate::download::lyrics::lyrics_client_with_config(config);
     resolve_track_lyrics_with_client(
         &lyrics_client,
         &state.db,
@@ -636,7 +636,7 @@ async fn fetch_lyrics_params(
 
     // Fetch lyrics from online sources using configuration
     let config = load_lyrics_engine_config(db).await;
-    let lyrics_client = crate::download::LyricsClient::with_config(config);
+    let lyrics_client = crate::download::lyrics::lyrics_client_with_config(config);
     let dur_sec = duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0);
 
     match lyrics_client
@@ -1261,7 +1261,7 @@ pub async fn search_lyrics(
     tracing::info!("search_lyrics: {} - {}", artist, title);
 
     let config = load_lyrics_engine_config(&state.db).await;
-    let lyrics_client = crate::download::LyricsClient::with_config(config);
+    let lyrics_client = crate::download::lyrics::lyrics_client_with_config(config);
     let dur_sec = duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0);
 
     let responses = lyrics_client
@@ -3154,7 +3154,7 @@ pub async fn refetch_karaoke_lyrics(
         );
 
         let config = load_lyrics_engine_config(&state.db).await;
-        let client = crate::download::LyricsClient::with_config(config);
+        let client = crate::download::lyrics::lyrics_client_with_config(config);
 
         for (idx, tr) in tracks.into_iter().enumerate() {
             if S202_KARAOKE_REFETCH_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {
