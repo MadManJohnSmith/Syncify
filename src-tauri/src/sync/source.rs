@@ -123,6 +123,22 @@ pub struct FavoritesPage {
     pub reported_total: Option<i64>,
 }
 
+/// Una página de una colección paginada más allá de favoritos (playlists,
+/// álbumes y artistas). Los ítems viajan crudos, igual que en
+/// [`FavoritesPage`]; `reported_total` es el total de la colección que publica
+/// el proveedor y `fingerprints` lleva una huella por ítem cuando el
+/// proveedor la expone (`snapshot_id` en Spotify; el conteo en Qobuz y Tidal).
+///
+/// `next_cursor` solo se usa en colecciones con cursor (Spotify `/me/following`);
+/// en las de offset queda en `None`.
+#[derive(Debug, Clone, Default)]
+pub struct CollectionPage {
+    pub items: Vec<serde_json::Value>,
+    pub reported_total: Option<i64>,
+    pub fingerprints: Vec<Option<String>>,
+    pub next_cursor: Option<String>,
+}
+
 /// La interfaz única de proveedor (seam 2). Cada colección es una operación
 /// por página; el adaptador declara el tamaño de página y el job decide el
 /// recorrido y la cancelación en el límite de página.

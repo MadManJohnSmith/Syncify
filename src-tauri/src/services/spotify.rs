@@ -6,6 +6,10 @@ use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::SqlitePool;
 
+/// Base de la API de Spotify (sin barra final). Producción por defecto; los
+/// tests de regresión la sustituyen con [`SpotifyClient::with_api_base`].
+pub const SPOTIFY_API_BASE: &str = "https://api.spotify.com/v1";
+
 /// Helper to deserialize null as empty Vec (Spotify sometimes returns null for arrays)
 fn deserialize_null_as_empty_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
@@ -97,7 +101,7 @@ pub struct SpotifyUser {
 }
 
 /// Spotify track from API
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SpotifyTrack {
     #[serde(default, deserialize_with = "deserialize_null_as_empty_string")]
     pub id: String,
@@ -123,7 +127,7 @@ pub struct SpotifyTrack {
     pub preview_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SpotifyExternalIds {
     #[serde(default)]
     pub isrc: Option<String>,
@@ -133,7 +137,7 @@ pub struct SpotifyExternalIds {
     pub ean: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SpotifyArtist {
     #[serde(default, deserialize_with = "deserialize_null_as_empty_string")]
     pub id: String,
@@ -141,7 +145,7 @@ pub struct SpotifyArtist {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SpotifyAlbum {
     #[serde(default, deserialize_with = "deserialize_null_as_empty_string")]
     pub id: String,
@@ -186,7 +190,7 @@ impl SpotifyAlbum {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[allow(dead_code)] // Payload de la API de Spotify; se deserializa íntegra aunque el código solo lea `url`.
 pub struct SpotifyImage {
     #[serde(default, deserialize_with = "deserialize_null_as_empty_string")]
@@ -195,24 +199,24 @@ pub struct SpotifyImage {
     pub height: Option<i32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpotifySavedTrack {
     pub added_at: String,
     pub track: SpotifyTrack,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpotifySavedAlbum {
     pub added_at: String,
     pub album: SpotifyAlbum,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpotifyFollowedArtistsResponse {
     pub artists: SpotifyArtistsCursorPaginated,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)] // Fila paginada de la API de Spotify; se deserializa íntegra aunque el código solo lea `items`.
 pub struct SpotifyArtistsCursorPaginated {
     pub items: Vec<SpotifyArtist>,
@@ -221,12 +225,12 @@ pub struct SpotifyArtistsCursorPaginated {
     pub cursors: Option<SpotifyCursor>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SpotifyCursor {
     pub after: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpotifyPaginated<T> {
     pub items: Vec<T>,
     pub next: Option<String>,
@@ -239,7 +243,7 @@ pub struct SpotifyAlbumsResponse {
 }
 
 /// Spotify playlist from API
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpotifyPlaylist {
     #[serde(default)]
     pub id: String,
@@ -257,9 +261,12 @@ pub struct SpotifyPlaylist {
     pub tracks: Option<SpotifyPlaylistTracks>,
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub images: Vec<SpotifyImage>,
+    /// Huella de la playlist (A-02): Spotify la publica en cada playlist.
+    #[serde(default)]
+    pub snapshot_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[allow(dead_code)] // Payload de la API de Spotify; se deserializa íntegra aunque el código solo lea `display_name`.
 pub struct SpotifyPlaylistOwner {
     #[serde(default)]
@@ -268,14 +275,14 @@ pub struct SpotifyPlaylistOwner {
     pub display_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SpotifyPlaylistTracks {
     #[serde(default)]
     pub total: i32,
 }
 
 /// Playlist track item from API
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpotifyPlaylistItem {
     #[serde(default)]
     pub added_at: Option<String>,
@@ -440,6 +447,9 @@ pub struct SpotifyClient {
     pub config: Option<SpotifyConfig>,
     pub rate_limiter: Arc<RateLimiter>,
     pub retry_policy: Arc<HttpRetryPolicy>,
+    /// Base de la API. Producción por defecto; los tests de regresión la
+    /// apuntan a un servidor local para ejercitar paginación y 429 sin red.
+    pub api_base: String,
 }
 
 impl SpotifyClient {
@@ -468,7 +478,16 @@ impl SpotifyClient {
             config: SpotifyConfig::from_env().ok(),
             rate_limiter: Arc::new(RateLimiter::new()),
             retry_policy: Arc::new(HttpRetryPolicy::new()),
+            api_base: SPOTIFY_API_BASE.to_string(),
         }
+    }
+
+    /// Base de la API para tests de regresión contra un servidor local.
+    /// Producción nunca la llama.
+    #[allow(dead_code)] // La ejercitan los tests del adaptador; el bin no la construye.
+    pub fn with_api_base(mut self, api_base: String) -> Self {
+        self.api_base = api_base;
+        self
     }
 
     /// Ensure the access token is valid, refreshing if necessary
@@ -591,8 +610,8 @@ impl SpotifyClient {
         _max_retries: u32,
     ) -> Result<SpotifyPaginated<SpotifySavedTrack>, String> {
         let url = format!(
-            "https://api.spotify.com/v1/me/tracks?offset={}&limit={}",
-            offset, limit
+            "{}/me/tracks?offset={}&limit={}",
+            self.api_base, offset, limit
         );
 
         let mut retries = 0;
@@ -661,8 +680,8 @@ impl SpotifyClient {
         limit: i32,
     ) -> Result<SpotifyPaginated<SpotifySavedAlbum>, String> {
         let url = format!(
-            "https://api.spotify.com/v1/me/albums?offset={}&limit={}",
-            offset, limit
+            "{}/me/albums?offset={}&limit={}",
+            self.api_base, offset, limit
         );
 
         let mut retries = 0;
@@ -791,10 +810,7 @@ impl SpotifyClient {
         after: Option<&str>,
         limit: i32,
     ) -> Result<SpotifyFollowedArtistsResponse, String> {
-        let mut url = format!(
-            "https://api.spotify.com/v1/me/following?type=artist&limit={}",
-            limit
-        );
+        let mut url = format!("{}/me/following?type=artist&limit={}", self.api_base, limit);
         if let Some(cursor) = after {
             url.push_str(&format!("&after={}", urlencoding::encode(cursor)));
         }
@@ -1010,8 +1026,8 @@ impl SpotifyClient {
         // RateLimiter dispatch + HttpRetryPolicy resilience every other
         // reader uses; a 429 here used to fail whole playlist imports.
         let url = format!(
-            "https://api.spotify.com/v1/me/playlists?offset={}&limit={}",
-            offset, limit
+            "{}/me/playlists?offset={}&limit={}",
+            self.api_base, offset, limit
         );
 
         tracing::debug!("Requesting playlists from: {}", url);

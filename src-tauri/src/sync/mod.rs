@@ -10,12 +10,15 @@
 //!   ([`qobuz_source`]); el resto de proveedores siguen por el camino antiguo
 //!   hasta sus tickets.
 
+pub mod collection;
 pub mod events;
 pub mod fake;
 pub mod job;
 pub mod qobuz_source;
 pub mod runs;
 pub mod source;
+pub mod spotify_source;
+pub mod tidal_source;
 
 pub use events::SyncRunEvent;
 pub use qobuz_source::QobuzLibrarySource;

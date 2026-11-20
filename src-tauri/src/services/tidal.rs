@@ -302,26 +302,26 @@ pub struct TidalAlbumTracksResponse {
     pub total: i32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalAlbumPaginated {
     pub items: Vec<TidalFavoriteAlbumItem>,
     #[serde(rename = "totalNumberOfItems")]
     pub total: i32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalFavoriteArtistItem {
     pub item: TidalArtist,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalArtistPaginated {
     pub items: Vec<TidalFavoriteArtistItem>,
     #[serde(rename = "totalNumberOfItems")]
     pub total: i32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalPlaylist {
     pub uuid: String,
     pub title: String,
@@ -332,7 +332,7 @@ pub struct TidalPlaylist {
     pub public_playlist: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalPlaylistCreator {
     #[allow(dead_code)]
     // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
@@ -340,7 +340,7 @@ pub struct TidalPlaylistCreator {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TidalPlaylistsResponse {
     pub items: Vec<TidalPlaylist>,
     #[serde(rename = "totalNumberOfItems")]
@@ -640,6 +640,57 @@ impl TidalClient {
             .map_err(|e| format!("Failed to parse user profile: {}", e))
     }
 
+    /// GET a Tidal page honoring `Retry-After` on 429.
+    ///
+    /// The client used to fail the whole page on the first 429. The contract
+    /// (ADR-0006, decisión 14) requires the server-directed wait to be
+    /// respected, clamped by `rate_limiter::MAX_429_PENALTY`; other failures
+    /// keep the caller's existing error text untouched.
+    async fn send_get_with_429_retry(
+        &self,
+        flow: &str,
+        url: &str,
+        query: &[(&str, &str)],
+    ) -> Result<reqwest::Response, String> {
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut attempt = 0u32;
+        loop {
+            let response = self
+                .client
+                .get(url)
+                .bearer_auth(&self.access_token)
+                .query(query)
+                .send()
+                .await
+                .map_err(|e| format!("Request failed: {}", e))?;
+
+            let status = response.status();
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt + 1 < MAX_ATTEMPTS {
+                attempt += 1;
+                let delay = crate::services::rate_limiter::retry_after_delay(
+                    response.headers(),
+                    std::time::Duration::from_millis(500),
+                );
+                tracing::warn!(
+                    "[S187][tidal] {} rate limited (attempt {}/{}), retrying in {:?}",
+                    flow,
+                    attempt,
+                    MAX_ATTEMPTS,
+                    delay
+                );
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                return Err(Self::handle_api_error(status, &body, url));
+            }
+
+            return Ok(response);
+        }
+    }
+
     /// Get user's favorite tracks (paginated)
     pub async fn get_favorites(&self, offset: i32, limit: i32) -> Result<TidalPaginated, String> {
         let user_id = self.user_id.as_ref().ok_or("User ID not set")?;
@@ -647,23 +698,16 @@ impl TidalClient {
         let url = format!("{}/users/{}/favorites/tracks", self.base_url, user_id);
 
         let response = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.access_token)
-            .query(&[
-                ("countryCode", self.country_code.as_str()),
-                ("offset", &offset.to_string()),
-                ("limit", &limit.to_string()),
-            ])
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(Self::handle_api_error(status, &body, &url));
-        }
+            .send_get_with_429_retry(
+                "favorite tracks",
+                &url,
+                &[
+                    ("countryCode", self.country_code.as_str()),
+                    ("offset", &offset.to_string()),
+                    ("limit", &limit.to_string()),
+                ],
+            )
+            .await?;
 
         response
             .json()
@@ -682,23 +726,16 @@ impl TidalClient {
         let url = format!("{}/users/{}/favorites/albums", self.base_url, user_id);
 
         let response = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.access_token)
-            .query(&[
-                ("countryCode", self.country_code.as_str()),
-                ("offset", &offset.to_string()),
-                ("limit", &limit.to_string()),
-            ])
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(Self::handle_api_error(status, &body, &url));
-        }
+            .send_get_with_429_retry(
+                "favorite albums",
+                &url,
+                &[
+                    ("countryCode", self.country_code.as_str()),
+                    ("offset", &offset.to_string()),
+                    ("limit", &limit.to_string()),
+                ],
+            )
+            .await?;
 
         response
             .json::<TidalAlbumPaginated>()
@@ -717,23 +754,16 @@ impl TidalClient {
         let url = format!("{}/users/{}/favorites/artists", self.base_url, user_id);
 
         let response = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.access_token)
-            .query(&[
-                ("countryCode", self.country_code.as_str()),
-                ("offset", &offset.to_string()),
-                ("limit", &limit.to_string()),
-            ])
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(Self::handle_api_error(status, &body, &url));
-        }
+            .send_get_with_429_retry(
+                "favorite artists",
+                &url,
+                &[
+                    ("countryCode", self.country_code.as_str()),
+                    ("offset", &offset.to_string()),
+                    ("limit", &limit.to_string()),
+                ],
+            )
+            .await?;
 
         response
             .json::<TidalArtistPaginated>()
@@ -907,23 +937,16 @@ impl TidalClient {
         let url = format!("{}/users/{}/playlists", self.base_url, user_id);
 
         let response = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.access_token)
-            .query(&[
-                ("countryCode", self.country_code.as_str()),
-                ("offset", &offset.to_string()),
-                ("limit", &limit.to_string()),
-            ])
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(Self::handle_api_error(status, &body, &url));
-        }
+            .send_get_with_429_retry(
+                "playlists",
+                &url,
+                &[
+                    ("countryCode", self.country_code.as_str()),
+                    ("offset", &offset.to_string()),
+                    ("limit", &limit.to_string()),
+                ],
+            )
+            .await?;
 
         response
             .json()

@@ -1506,9 +1506,12 @@ pub async fn perform_sync_favorites(
             if type_filter == "all" || type_filter == "tracks" {
                 // F2-4: paginación completa (antes solo la página 0).
                 let mut offset: i32 = 0;
+                let mut reported_total: Option<i64> = None;
                 loop {
                     let page = client.get_favorites(offset, 100).await?;
-                    total_found += page.total as i64;
+                    if reported_total.is_none() && page.total > 0 {
+                        reported_total = Some(page.total as i64);
+                    }
                     let items_len = page.items.len();
                     for item in page.items {
                         let track = item.item;
@@ -1583,18 +1586,31 @@ pub async fn perform_sync_favorites(
                         offset,
                         items_len as i32,
                         100,
-                        (page.total > 0).then_some(page.total as i64),
+                        reported_total,
                     ) {
                         Some(next) => offset = next,
                         None => break,
                     }
                 }
+                if let Some(total) = reported_total {
+                    total_found += total;
+                }
             }
-
             if type_filter == "all" || type_filter == "albums" {
-                let page = client.get_favorite_albums(0, 100).await?;
-                total_found += page.total as i64;
-                for item in page.items {
+                let source = crate::sync::tidal_source::TidalLibrarySource::new(&client);
+                let collected = crate::sync::collection::collect_all_pages(
+                    crate::sync::tidal_source::TIDAL_PAGE_SIZE,
+                    |offset| source.fetch_albums_page(offset),
+                )
+                .await
+                .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
+                    total_found += total;
+                }
+                for item in collected.items {
+                    let item: crate::services::tidal::TidalFavoriteAlbumItem =
+                        serde_json::from_value(item)
+                            .map_err(|e| format!("Tidal album decode error: {}", e))?;
                     let album = item.item;
                     let album_id_str = album.tidal_id.to_string();
                     let title = album.title.clone();
@@ -1650,11 +1666,21 @@ pub async fn perform_sync_favorites(
                     .await;
                 }
             }
-
             if type_filter == "all" || type_filter == "artists" {
-                let page = client.get_favorite_artists(0, 100).await?;
-                total_found += page.total as i64;
-                for item in page.items {
+                let source = crate::sync::tidal_source::TidalLibrarySource::new(&client);
+                let collected = crate::sync::collection::collect_all_pages(
+                    crate::sync::tidal_source::TIDAL_PAGE_SIZE,
+                    |offset| source.fetch_artists_page(offset),
+                )
+                .await
+                .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
+                    total_found += total;
+                }
+                for item in collected.items {
+                    let item: crate::services::tidal::TidalFavoriteArtistItem =
+                        serde_json::from_value(item)
+                            .map_err(|e| format!("Tidal artist decode error: {}", e))?;
                     let artist = item.item;
                     let artist_id_str = artist.id.to_string();
                     let name = artist.name.clone();
@@ -1714,9 +1740,12 @@ pub async fn perform_sync_favorites(
             if type_filter == "all" || type_filter == "tracks" {
                 // F2-4: paginación completa (antes solo la página 0).
                 let mut offset: i32 = 0;
+                let mut reported_total: Option<i64> = None;
                 loop {
                     let page = client.get_favorites(offset, 100).await?;
-                    total_found += page.tracks.total as i64;
+                    if reported_total.is_none() && page.tracks.total > 0 {
+                        reported_total = Some(page.tracks.total as i64);
+                    }
                     let items_len_q = page.tracks.items.len();
                     for track in page.tracks.items {
                         let track_id_str = track.id.to_string();
@@ -1794,18 +1823,31 @@ pub async fn perform_sync_favorites(
                         offset,
                         items_len_q as i32,
                         100,
-                        (page.tracks.total > 0).then_some(page.tracks.total as i64),
+                        reported_total,
                     ) {
                         Some(next) => offset = next,
                         None => break,
                     }
                 }
+                if let Some(total) = reported_total {
+                    total_found += total;
+                }
             }
 
             if type_filter == "all" || type_filter == "albums" {
-                let page = client.get_favorite_albums(0, 100).await?;
-                total_found += page.albums.total as i64;
-                for album in page.albums.items {
+                let source = crate::sync::qobuz_source::QobuzLibrarySource::new(&client);
+                let collected = crate::sync::collection::collect_all_pages(
+                    crate::sync::qobuz_source::QOBUZ_FAVORITES_PAGE_SIZE,
+                    |offset| source.fetch_albums_page(offset),
+                )
+                .await
+                .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
+                    total_found += total;
+                }
+                for item in collected.items {
+                    let album: crate::services::qobuz::QobuzAlbum = serde_json::from_value(item)
+                        .map_err(|e| format!("Qobuz album decode error: {}", e))?;
                     let album_id_str = album.id.clone();
                     let title = album.title.unwrap_or_else(|| "Unknown Album".to_string());
                     let artist_name = album
@@ -1860,11 +1902,20 @@ pub async fn perform_sync_favorites(
                     .await;
                 }
             }
-
             if type_filter == "all" || type_filter == "artists" {
-                let page = client.get_favorite_artists(0, 100).await?;
-                total_found += page.artists.total as i64;
-                for artist in page.artists.items {
+                let source = crate::sync::qobuz_source::QobuzLibrarySource::new(&client);
+                let collected = crate::sync::collection::collect_all_pages(
+                    crate::sync::qobuz_source::QOBUZ_FAVORITES_PAGE_SIZE,
+                    |offset| source.fetch_artists_page(offset),
+                )
+                .await
+                .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
+                    total_found += total;
+                }
+                for item in collected.items {
+                    let artist: crate::services::qobuz::QobuzArtist = serde_json::from_value(item)
+                        .map_err(|e| format!("Qobuz artist decode error: {}", e))?;
                     let artist_id_str = artist.id.map(|n| n.to_string()).unwrap_or_default();
                     let name = artist.name.unwrap_or_else(|| "Unknown Artist".to_string());
 
@@ -1907,9 +1958,12 @@ pub async fn perform_sync_favorites(
             if type_filter == "all" || type_filter == "tracks" {
                 // F2-4: paginación completa (antes solo la página 0).
                 let mut offset: i32 = 0;
+                let mut reported_total: Option<i64> = None;
                 loop {
                     let page = client.get_saved_tracks(offset, 50).await?;
-                    total_found += page.total as i64;
+                    if reported_total.is_none() && page.total > 0 {
+                        reported_total = Some(page.total as i64);
+                    }
                     let items_len_s = page.items.len();
                     for saved in page.items {
                         let track = saved.track;
@@ -1990,18 +2044,31 @@ pub async fn perform_sync_favorites(
                         offset,
                         items_len_s as i32,
                         50,
-                        (page.total > 0).then_some(page.total as i64),
+                        reported_total,
                     ) {
                         Some(next) => offset = next,
                         None => break,
                     }
                 }
+                if let Some(total) = reported_total {
+                    total_found += total;
+                }
             }
 
             if type_filter == "all" || type_filter == "albums" {
-                let page = client.get_saved_albums(0, 50).await?;
-                total_found += page.total as i64;
-                for saved in page.items {
+                let source = crate::sync::spotify_source::SpotifyLibrarySource::new(&client);
+                let collected = crate::sync::collection::collect_all_pages(50, |offset| {
+                    source.fetch_albums_page(offset)
+                })
+                .await
+                .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
+                    total_found += total;
+                }
+                for item in collected.items {
+                    let saved: crate::services::spotify::SpotifySavedAlbum =
+                        serde_json::from_value(item)
+                            .map_err(|e| format!("Spotify album decode error: {}", e))?;
                     let album = saved.album;
                     let album_id_str = album.id.clone();
                     let title = album.name.clone();
@@ -2053,12 +2120,22 @@ pub async fn perform_sync_favorites(
                     .await;
                 }
             }
-
             if type_filter == "all" || type_filter == "artists" {
-                let page = client.get_followed_artists(None, 50).await?;
-                let count = page.artists.items.len() as i64;
-                total_found += count;
-                for artist in page.artists.items {
+                let source = crate::sync::spotify_source::SpotifyLibrarySource::new(&client);
+                let source = &source;
+                let collected =
+                    crate::sync::collection::collect_cursor_pages(50, |after| async move {
+                        source.fetch_artists_page(after.as_deref()).await
+                    })
+                    .await
+                    .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
+                    total_found += total;
+                }
+                for item in collected.items {
+                    let artist: crate::services::spotify::SpotifyArtist =
+                        serde_json::from_value(item)
+                            .map_err(|e| format!("Spotify artist decode error: {}", e))?;
                     let artist_id_str = artist.id.clone();
                     let name = artist.name.clone();
 

@@ -494,6 +494,8 @@ pub struct QobuzArtistsResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct QobuzArtistsContainer {
     pub items: Vec<QobuzArtist>,
+    #[allow(dead_code)]
+    // Campo del contrato de datos: el adaptador lee el total del JSON crudo; se conserva el tipo completo.
     pub total: i32,
 }
 
@@ -630,78 +632,106 @@ impl QobuzClient {
             url.push_str(&urlencoding::encode(val));
         }
 
-        let mut request = self.client.get(&url);
-        request = request.header("User-Agent", crate::download::http_client::get_user_agent());
-        request = request.header("X-App-Id", &self.app_id);
+        // 429 respeta `Retry-After` y reintenta con backoff, con el mismo
+        // techo que `rate_limiter` (MAX_429_PENALTY). El login no se
+        // reintenta: su cuerpo puede reflejar credenciales y el usuario
+        // necesita el aviso inmediato.
+        const MAX_RATE_LIMIT_ATTEMPTS: u32 = 3;
+        let mut rate_limit_attempt = 0u32;
+        loop {
+            let mut request = self.client.get(&url);
+            request = request.header("User-Agent", crate::download::http_client::get_user_agent());
+            request = request.header("X-App-Id", &self.app_id);
 
-        if let Some(token) = &self.user_auth_token {
-            if !token.trim().is_empty() {
-                request = request.header("X-User-Auth-Token", token);
+            if let Some(token) = &self.user_auth_token {
+                if !token.trim().is_empty() {
+                    request = request.header("X-User-Auth-Token", token);
+                } else if require_auth {
+                    return Err("Authentication required".to_string());
+                }
             } else if require_auth {
                 return Err("Authentication required".to_string());
             }
-        } else if require_auth {
-            return Err("Authentication required".to_string());
-        }
 
-        let response = request.send().await.map_err(|e| {
-            if method == "user/login" {
-                // reqwest errors can embed the request URL, including the
-                // email and password passed as query parameters above.
-                "Qobuz login request failed; check your connection and reconnect.".to_string()
-            } else {
-                format!("Request failed: {}", e)
-            }
-        })?;
+            let response = request.send().await.map_err(|e| {
+                if method == "user/login" {
+                    // reqwest errors can embed the request URL, including the
+                    // email and password passed as query parameters above.
+                    "Qobuz login request failed; check your connection and reconnect.".to_string()
+                } else {
+                    format!("Request failed: {}", e)
+                }
+            })?;
 
-        let status = response.status();
-        let text = response.text().await.map_err(|e| {
-            if method == "user/login" {
-                "Failed to read Qobuz login response".to_string()
-            } else {
-                format!("Failed to read response: {}", e)
-            }
-        })?;
-
-        if !status.is_success() {
-            if method == "user/login" {
-                // The provider may echo the submitted credentials or a token.
-                // Do not log or propagate the untrusted response body.
-                tracing::warn!("[QobuzClient] Login rejected (HTTP {})", status);
-                return Err(format!(
-                    "Qobuz login rejected (HTTP {}); please reconnect.",
-                    status
-                ));
-            }
-            tracing::warn!(
-                "[QobuzClient] API error for {} ({}): {}",
-                method,
-                status,
-                text
-            );
-            return Err(format!("Qobuz API error ({}): {}", status, text));
-        }
-
-        serde_json::from_str(&text).map_err(|e| {
-            if method == "user/login" {
-                // Parse errors can include slices of the response JSON.
-                tracing::warn!("[QobuzClient] Invalid login response format");
-                "Failed to parse Qobuz login response".to_string()
-            } else {
-                tracing::error!(
-                    "[QobuzClient] Deserialization failure for {}: {} (raw: {})",
-                    method,
-                    e,
-                    &text[..text.len().min(300)]
+            let status = response.status();
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                && method != "user/login"
+                && rate_limit_attempt + 1 < MAX_RATE_LIMIT_ATTEMPTS
+            {
+                rate_limit_attempt += 1;
+                let delay = crate::services::rate_limiter::retry_after_delay(
+                    response.headers(),
+                    std::time::Duration::from_millis(500),
                 );
-                format!(
-                    "Failed to parse Qobuz response for {}: {} (raw: {})",
+                tracing::warn!(
+                    "[QobuzClient] rate limited for {} (attempt {}/{}), retrying in {:?}",
                     method,
-                    e,
-                    &text[..text.len().min(300)]
-                )
+                    rate_limit_attempt,
+                    MAX_RATE_LIMIT_ATTEMPTS,
+                    delay
+                );
+                tokio::time::sleep(delay).await;
+                continue;
             }
-        })
+
+            let text = response.text().await.map_err(|e| {
+                if method == "user/login" {
+                    "Failed to read Qobuz login response".to_string()
+                } else {
+                    format!("Failed to read response: {}", e)
+                }
+            })?;
+
+            if !status.is_success() {
+                if method == "user/login" {
+                    // The provider may echo the submitted credentials or a token.
+                    // Do not log or propagate the untrusted response body.
+                    tracing::warn!("[QobuzClient] Login rejected (HTTP {})", status);
+                    return Err(format!(
+                        "Qobuz login rejected (HTTP {}); please reconnect.",
+                        status
+                    ));
+                }
+                tracing::warn!(
+                    "[QobuzClient] API error for {} ({}): {}",
+                    method,
+                    status,
+                    text
+                );
+                return Err(format!("Qobuz API error ({}): {}", status, text));
+            }
+
+            return serde_json::from_str(&text).map_err(|e| {
+                if method == "user/login" {
+                    // Parse errors can include slices of the response JSON.
+                    tracing::warn!("[QobuzClient] Invalid login response format");
+                    "Failed to parse Qobuz login response".to_string()
+                } else {
+                    tracing::error!(
+                        "[QobuzClient] Deserialization failure for {}: {} (raw: {})",
+                        method,
+                        e,
+                        &text[..text.len().min(300)]
+                    );
+                    format!(
+                        "Failed to parse Qobuz response for {}: {} (raw: {})",
+                        method,
+                        e,
+                        &text[..text.len().min(300)]
+                    )
+                }
+            });
+        }
     }
 
     /// Login with username/password to get user auth token.
