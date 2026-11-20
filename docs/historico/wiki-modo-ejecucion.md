@@ -441,3 +441,64 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   el grafo del tracker antes de seguir el orden de la cola del handoff.
   Fuente: cuerpos de #106/#108/#109/#110/#72 y `grep sync_quarantine`
   del 2026-11-19.
+- **2026-11-19**: D05 #117 fusionado por squash en PR #337
+  (`bba4edd`), issue cerrado citando el SHA. La revisión independiente
+  no encontró bloqueantes; los límites de evidencia del gate (FLAC
+  ilegible fail-open, duración de cabecera, piso Deezer free y el `320`
+  duplicado en Tidal) quedaron en #338. Cifras de entonces: 346
+  objetivos cargo, 150 ficheros / 1275 tests UI, 476 Python. Fuente:
+  `git log dev`, PR #337.
+- **2026-11-19, «completed sin entregar» sigue vivo**: el hijo de #110
+  cerró el turno con todo el trabajo **staged**, sin commit ni PR, y un
+  `cargo test` huérfano. Rescate aplicado: `t3_thread_send` al mismo
+  hilo para esperar la suite, correr el resto de puertas y entregar,
+  sin relanzar limpio. Antes de tratar un `completed` como entrega,
+  revisar `git status`/`git log` del worktree y `pgrep cargo`. Fuente:
+  estado del worktree t3-2c8e6e31 y `task_status` del 2026-11-19.
+- **2026-11-19, carriles remotos como hijos con clon propio**: en
+  entornos vinculados `delegate_task` rechaza `isolation: "worktree"`
+  (`invalid_request`) y correría en el checkout compartido. Para que
+  sean hijos visibles/notificables y aislados se crea un clon por
+  carril (`t3_project_clone` bajo `~/.t3/lanes/syncify-<issue>`), se
+  registra como proyecto (`t3_project_create`) y se lanza el hijo con
+  `target.environmentId` + `target.projectId`. Evita el entrelazado de
+  WIP del 2026-11-17 y conserva la notificación de fin. Fuente: error
+  `invalid_request`, orden del propietario y lanzamientos de
+  #66/#67/#147 en agentvm1.
+- **2026-11-19, capacidad medida — ZCode aguanta 3 turnos GLM, no 5**:
+  con 2 carriles locales (#95, #180) y 2 remotos (#66, #147) vivos, el
+  rescate de #67 y el turno de #147 murieron con `3008 user concurrency
+  limit exceeded`; con 3 vivos (#66 + #95 + #180) se estabiliza. El plan
+  2 locales + 3 remotos no es ejecutable con esta cuenta: la cola rota
+  un máximo de 3 GLM (locales o remotos) + el carril deepseek. Fuente:
+  fallos de #67/#147 del 2026-11-19.
+- **2026-11-19, reanudar un delegado remoto no es fiable**: `t3_thread_send`
+  al hilo remoto que cerró con un mensaje de progreso falló dos veces con
+  `Internal error`. El rescate fiable es un **hijo nuevo** en el mismo
+  proyecto/clon, con un brief que empieza por `git status`/`git log` y
+  prohíbe reiniciar; el WIP vive en el clon, no en el hilo. Fuente:
+  #66/#67 y sus hijos de rescate del 2026-11-19.
+- **2026-11-19, agentvm1 no entregó ningún carril (remotos aparcados)**:
+  con tres clones/proyectos y tres hijos (#66/#67/#147), los turnos
+  originales cerraron con mensajes de progreso sin rama ni PR; los
+  rescates nuevos también murieron con `Internal error` tras el primer
+  turno (no `3008`). Resultado final: **0 ramas, 0 PRs y 0 issues
+  cerrados** desde agentvm1; los tres carriles terminaron sin entrega.
+  Decisión: no lanzar más remotos y mover los carriles a la cola local
+  cuando haya ranura. Fuente: comentario en #277 y `t3_thread_list` de
+  los tres proyectos del 2026-11-19.
+- **2026-11-19, tanda de cierre**: L13 #110 (`19e9d45`), A03-bis #95
+  (`6779e20`), LY07 #180 (`3057253`), L14 #109 (`dbcd25f`) y el retro
+  R1-R7/R10 (`e10b0df`) fusionados por squash; P16 #147 quedó en PR
+  #345 y T02 #66 en carril local. Siete issues cerrados en la sesión.
+  Fuente: `git log dev` y PRs #339/#340/#341/#343/#344/#345.
+- **2026-11-19, commits de wiki duplicados en los carriles**: un commit
+  local de wiki sin push en el checkout padre viaja como ancestro a cada
+  worktree de carril y contamina el PR (visto en #109, #66 y #147).
+  Antes de abrir carriles, empuja o aparca la wiki fuera de `dev`; si
+  aparece, crea rama limpia desde `origin/dev` y cherry-pick solo de los
+  commits del issue. Fuente: PRs #343/#345 y rama de #66 del 2026-11-19.
+- **2026-11-19, R2 parcial**: CodeRabbit no hará auto-reviews hasta que
+  el repositorio tenga 10 estrellas; `.coderabbit.yaml` queda listo pero
+  inerte. El artefacto `gh pr review --comment` sigue siendo la parte
+  aplicable de R2. Fuente: comentario del bot en PR #344.

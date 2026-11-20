@@ -14,6 +14,8 @@ handoff del día; esta página solo fija lo que no debe re-litigarse.
   para rescatar un WIP.
 - **Cupo real.** 2 carriles GLM locales + 1 remoto = 3 GLM, más 1 deepseek
   local. El cuarto GLM muere con `3008`: la cola rota, no se fuerza.
+- **Remotos aparcados (2026-11-19).** agentvm1 no entregó ningún carril
+  (`Internal error` en los tres); la cola es local hasta nuevo aviso.
 - **Reparto de superficies.** Los carriles simultáneos no comparten fichero;
   si lo necesitan, se serializan o usan un worktree aislado.
 - **Target por checkout.** `CARGO_TARGET_DIR=$HOME/.cache/syncify-target-$(basename "$PWD")`,
