@@ -172,6 +172,10 @@ export async function queryLibraryAlbums(query: LibraryAlbumQuery): Promise<Libr
             releaseYear: optionalNumber(rec.releaseYear ?? rec.release_year) ?? null,
             trackCount: asNumber(rec.trackCount ?? rec.track_count),
             downloadedCount: asNumber(rec.downloadedCount ?? rec.downloaded_count),
+            queuedCount: asNumber(rec.queuedCount ?? rec.queued_count),
+            downloadingCount: asNumber(rec.downloadingCount ?? rec.downloading_count),
+            failedCount: asNumber(rec.failedCount ?? rec.failed_count),
+            notDownloadedCount: asNumber(rec.notDownloadedCount ?? rec.not_downloaded_count),
             coverage: optionalNumber(rec.coverage) ?? null,
             accounts: asArray(rec.accounts).map((account) => {
                 const a = asRecord(account) ?? {};

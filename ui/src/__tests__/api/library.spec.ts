@@ -550,6 +550,10 @@ describe('libraryApi', () => {
                             releaseYear: 1999,
                             trackCount: 3,
                             downloadedCount: 1,
+                            queuedCount: 1,
+                            downloadingCount: 0,
+                            failedCount: 0,
+                            notDownloadedCount: 1,
                             coverage: 1 / 3,
                             accounts: [{ accountId: 1, displayName: 'A1', serviceName: 'spotify' }],
                             services: [{ serviceId: 2, serviceName: 'qobuz' }],
@@ -574,6 +578,10 @@ describe('libraryApi', () => {
             expect(album.albumId).toBe(7);
             expect(album.artistName).toBe('Alpha Band');
             expect(album.trackCount).toBe(3);
+            expect(album.queuedCount).toBe(1);
+            expect(album.downloadingCount).toBe(0);
+            expect(album.failedCount).toBe(0);
+            expect(album.notDownloadedCount).toBe(1);
             expect(album.accounts[0].displayName).toBe('A1');
             expect(album.services[0].serviceName).toBe('qobuz');
         });

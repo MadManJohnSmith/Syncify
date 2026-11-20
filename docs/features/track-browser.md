@@ -1,6 +1,9 @@
 # Navegador de pistas — comportamiento de las listas
 
-**Estado de revisión:** 2026-11-19 (L13, issue #110: caché de páginas,
+**Estado de revisión:** 2026-11-19 (L14, issue #109: cinco estados de
+descarga y calidad efectiva en la fila; filtros de estado y calidad; cobertura
+de álbum compartida con L07; acciones de encolar, re-descargar y borrar audio
+sobre la cola existente. Previo: L13, issue #110: caché de páginas,
 virtualización de grid y grupos, invalidación por evento).
 
 Una sola maquinaria sirve las listas de pistas de la UI. Este documento dice cómo
@@ -71,6 +74,41 @@ filtro de calidad de `LibraryView` compara el bucket en las tres. Deuda: el
 `metadata_score` de `search_tracks` no excluye `NOT_FOUND`/`MISMATCH` ni exige
 `release_year > 0` — diverge del de `get_library`.
 
+## Descargas y calidad (L14, #109)
+
+La fila de `LibraryView` muestra cinco estados de descarga —`downloaded`,
+`queued`, `downloading`, `failed`, `not_downloaded`— y la **calidad
+efectiva** del fichero (`FLAC 24/96`, `MP3`). Ambos campos llegan en la misma
+consulta de página (`query_library`), con subescalares sobre `downloads` y
+`download_queue`: no hay una consulta por pista. `downloads.file_path` manda
+sobre la cola; `cancelled`/`complete` sin ledger no se presentan como
+descargados. El badge expone `data-download-status` para que la etiqueta sea
+verificable; el icono y el tooltip conservan el estado.
+
+Los filtros de la lista traducen cada estado a `download_statuses` del
+contrato y los tres buckets de calidad a `quality_buckets` (los mismos del
+deep-link FE-10 del dashboard). `Not Downloaded` significa ausencia de
+descarga y de cola, no un cajón que mezcle los otros estados. La URL conserva
+los cinco valores en `dl=`; el deep-link legacy `filter=notDownloaded` se
+expande a los cuatro estados sin fichero.
+
+La cobertura de álbum (`query_library_albums`, L07) usa la MISMA expresión
+`DOWNLOAD_STATUS_SQL` de `commands/library_query.rs`: la regla de estados no
+se duplica. Cada fila de álbum expone `downloadedCount`, `queuedCount`,
+`downloadingCount`, `failedCount` y `notDownloadedCount`; la cobertura sigue
+siendo `downloadedCount / trackCount` y es `null` cuando el total es cero (no
+se inventa un porcentaje). Cola, descarga en curso y fallo no cuentan como
+cobertura.
+
+Acciones: encolar usa `add_to_queue` (la cola existente, con su guardrail de
+deduplicación); re-descargar usa `force_redownload_tracks` (limpia el
+Download y las filas de cola de esa pista y la vuelve a encolar por
+`perform_add_to_queue`), no una segunda ruta. Borrar audio elimina el
+Download, sus entradas de cola y el fichero, pero conserva Track, TrackSource,
+pertenencia y evidencia de edición; es por pista y pide confirmación
+(`delete_track_audio`, L04). La biblioteca no decide calidad ni fallback de
+edición: solo encola, muestra estado y borra audio.
+
 ## Rutas
 
 Las vistas leen la ruta y pocas la escriben: el deep-link de `LibraryView`
@@ -136,5 +174,9 @@ lista.
   de filtros deja una consulta, la caché evita repetir una clave visitada, los
   contadores no se recalculan al paginar, grid/grupos renderizan solo la
   ventana y el panel consulta una vez al abrirse.
+- `ui/src/__tests__/views/LibraryViewDownloads.spec.ts` — cinco estados,
+  calidad efectiva, filtros de estado/calidad, encolar y re-descargar por las
+  rutas existentes, borrado de audio con confirmación y una sola consulta de
+  página (sin N+1).
 - Los specs de vistas (`ui/src/__tests__/views/`) cubren el comportamiento de
   mount; `DownloadsViewQueue.spec.ts` fija R11 (la cola no es ref profundo).

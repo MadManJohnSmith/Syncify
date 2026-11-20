@@ -109,6 +109,32 @@ describe('libraryUrlState — parse y build (módulo puro)', () => {
         expect(state.downloadStatuses).toEqual(['downloaded']);
     });
 
+    it('L14: parsea los cinco estados de descarga', () => {
+        const { state } = parseLibraryUrlQuery({
+            dl: 'downloaded,queued,downloading,failed,not_downloaded',
+        });
+        expect(state.downloadStatuses).toEqual([
+            'downloaded',
+            'queued',
+            'downloading',
+            'failed',
+            'not_downloaded',
+        ]);
+        expect(buildLibraryUrlQuery(state).dl).toBe(
+            'downloaded,queued,downloading,failed,not_downloaded'
+        );
+    });
+
+    it('L14: el legacy filter=notDownloaded cubre los cuatro estados sin fichero', () => {
+        const { state } = parseLibraryUrlQuery({ filter: 'notDownloaded' });
+        expect(state.downloadStatuses).toEqual([
+            'queued',
+            'downloading',
+            'failed',
+            'not_downloaded',
+        ]);
+    });
+
     it('acepta el deep-link legacy FE-10 del dashboard (etiqueta de calidad)', () => {
         const { state, legacyQualityLabel } = parseLibraryUrlQuery({
             filter: 'quality',

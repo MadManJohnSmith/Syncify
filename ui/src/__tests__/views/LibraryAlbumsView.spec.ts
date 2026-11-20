@@ -26,6 +26,10 @@ function albumRow(id: number, overrides: Partial<LibraryAlbumRow> = {}): Library
         releaseYear: 1999,
         trackCount: 10,
         downloadedCount: 4,
+        queuedCount: 0,
+        downloadingCount: 0,
+        failedCount: 0,
+        notDownloadedCount: 6,
         coverage: 0.4,
         accounts: [
             { accountId: 1, displayName: 'A1', serviceName: 'spotify' },
@@ -99,6 +103,7 @@ describe('LibraryAlbumsView — pestaña de álbumes (L07 #104)', () => {
         expect(rows[0].text()).toContain('1999');
         expect(rows[0].text()).toContain('10 tracks');
         expect(rows[0].text()).toContain('4 downloaded');
+        expect(rows[0].text()).toContain('6 not downloaded');
         expect(rows[0].text()).toContain('40% downloaded');
         expect(rows[0].find('[data-testid="album-accounts"]').text()).toContain('A1');
         expect(rows[0].find('[data-testid="album-services"]').text()).toContain('qobuz');
@@ -106,6 +111,35 @@ describe('LibraryAlbumsView — pestaña de álbumes (L07 #104)', () => {
         expect(rows[1].text()).toContain('0% downloaded');
         // Sin pertenencias no se inventa una cuenta.
         expect(rows[1].find('[data-testid="album-accounts"]').text()).toBe('');
+    });
+
+    it('L14: expone los cinco estados de descarga del álbum en la misma fila', async () => {
+        mockInvoke((cmd) => {
+            if (cmd === 'query_library_albums') {
+                return albumsPage([
+                    albumRow(1, {
+                        trackCount: 6,
+                        downloadedCount: 2,
+                        queuedCount: 1,
+                        downloadingCount: 1,
+                        failedCount: 1,
+                        notDownloadedCount: 1,
+                        coverage: 2 / 6,
+                    }),
+                ], 1);
+            }
+            if (cmd === 'get_accounts' || cmd === 'get_services') return [];
+            return null;
+        });
+
+        const { wrapper } = await mountAlbums();
+        const states = wrapper.find('[data-testid="album-download-states"]');
+        expect(states.find('[data-testid="album-state-queued"]').text()).toContain('1 queued');
+        expect(states.find('[data-testid="album-state-downloading"]').text()).toContain('1 downloading');
+        expect(states.find('[data-testid="album-state-failed"]').text()).toContain('1 failed');
+        expect(states.find('[data-testid="album-state-not-downloaded"]').text()).toContain('1 not downloaded');
+        // La cobertura sigue siendo 2/6: cola y fallo no cuentan como descarga.
+        expect(wrapper.find('[data-testid="album-coverage"]').text()).toContain('33% downloaded');
     });
 
     it('no inventa porcentaje cuando el total de pistas es cero', async () => {

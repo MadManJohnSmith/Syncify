@@ -249,6 +249,12 @@ async fn una_fila_por_album_y_solo_albumes_con_pistas_vivas() {
     assert_eq!(nightfall.release_year, Some(1999));
     assert_eq!(nightfall.track_count, 3);
     assert_eq!(nightfall.downloaded_count, 1);
+    // L14 (#109): los cinco estados se agregan con la MISMA regla que la
+    // fila de pistas. T3 está en cola y T2 no tiene descarga.
+    assert_eq!(nightfall.queued_count, 1);
+    assert_eq!(nightfall.downloading_count, 0);
+    assert_eq!(nightfall.failed_count, 0);
+    assert_eq!(nightfall.not_downloaded_count, 1);
     let ratio = nightfall.coverage.unwrap();
     assert!((ratio - 1.0 / 3.0).abs() < 1e-9, "coverage={ratio}");
     assert_eq!(
@@ -284,6 +290,45 @@ async fn una_fila_por_album_y_solo_albumes_con_pistas_vivas() {
     let full = result.albums.iter().find(|a| a.album_id == 4).unwrap();
     assert_eq!(full.downloaded_count, 2);
     assert_eq!(full.coverage, Some(1.0));
+}
+
+/// L14 (#109): la cobertura de álbum cuenta el mismo estado `downloaded`
+/// que el badge de la pista, y expone los otros cuatro estados agregados.
+/// Una cola activa o un fallo NO se inventan como cobertura.
+#[tokio::test]
+async fn cobertura_comparte_los_cinco_estados_de_la_fila() {
+    let pool = seed().await;
+    // Nightfall: T1 descargada (fichero real), T2 sin descarga, T3 en cola.
+    // Llevamos T3 a `downloading` y marcamos T2 como `failed`: la cobertura
+    // sigue siendo 1/3 y cada estado aparece en su contador.
+    sqlx::query("UPDATE download_queue SET status = 'downloading' WHERE track_id = 3")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO download_queue (track_id, status) VALUES (2, 'failed')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let result = query_library_albums_inner(&pool, q()).await.unwrap();
+    let nightfall = result.albums.iter().find(|a| a.album_id == 1).unwrap();
+    assert_eq!(nightfall.track_count, 3);
+    assert_eq!(nightfall.downloaded_count, 1);
+    assert_eq!(nightfall.downloading_count, 1);
+    assert_eq!(nightfall.failed_count, 1);
+    assert_eq!(nightfall.queued_count, 0);
+    assert_eq!(nightfall.not_downloaded_count, 0);
+    let ratio = nightfall.coverage.unwrap();
+    assert!((ratio - 1.0 / 3.0).abs() < 1e-9, "coverage={ratio}");
+
+    // El filtro de cobertura sigue siendo honesto: parcial por una descarga,
+    // nunca completo por tener trabajo en curso.
+    let mut query = q();
+    query.coverage = vec![AlbumCoverageFilter::Partial];
+    assert_eq!(album_ids(&pool, query).await, vec![1]);
+    let mut query = q();
+    query.coverage = vec![AlbumCoverageFilter::Complete];
+    assert_eq!(album_ids(&pool, query).await, vec![4]);
 }
 
 #[tokio::test]

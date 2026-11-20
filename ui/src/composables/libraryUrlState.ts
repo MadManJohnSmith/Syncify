@@ -12,7 +12,8 @@
  *   q       — texto (búsqueda FTS de L02)
  *   sort    — clave de orden
  *   dir     — dirección (solo afecta a la clave primaria)
- *   dl      — estados de descarga (coma: downloaded, queued, not_downloaded)
+ *   dl      — estados de descarga (coma: downloaded, queued, downloading,
+ *             failed, not_downloaded)
  *   quality — buckets de calidad (coma: hi_res, cd_quality, lossy)
  *   fav     — solo favoritos («1»)
  *
@@ -73,6 +74,8 @@ export const LIBRARY_URL_DEFAULTS: LibraryUrlState = {
 const DOWNLOAD_STATUS_VALUES: readonly DownloadStatusFilter[] = [
     'downloaded',
     'queued',
+    'downloading',
+    'failed',
     'not_downloaded',
 ];
 
@@ -202,7 +205,10 @@ export function parseLibraryUrlQuery(query: Record<string, unknown> | null | und
         downloadRaw.push('downloaded');
     }
     if (legacyFilter === 'notDownloaded') {
-        for (const status of ['queued', 'not_downloaded'] as const) {
+        // Compatibilidad con el deep-link anterior a L14: «no descargadas»
+        // significaba cualquier estado sin fichero (cola, descargando, fallo
+        // o ausencia). Los cinco estados se pueden filtrar por separado.
+        for (const status of ['queued', 'downloading', 'failed', 'not_downloaded'] as const) {
             if (!downloadRaw.includes(status)) downloadRaw.push(status);
         }
     }

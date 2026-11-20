@@ -6,7 +6,11 @@
 
 **Estado de revisión:** 2026-11-14 — re-derivación contra el árbol (verificación dirigida de símbolos y comportamiento; D-04b, issue #59). Re-deriva y absorbe la re-revisión del 2026-10-25 (cadena de encolado `queue_downloads` → `commands/queue.rs::add_to_queue`; bucle del worker event-driven con `slot_available_notify`; claim atómico vía `claim_next_item`; `process_download_claimed` + `process_download_internal`; estado `cancelled`; payload de `syncify:download_progress`) y las entradas del 2026-11-06/07 (puerto de proveedores ADR-0023, invalidación de caché de streaming ADR-0024). Ajustado ahora al árbol: `worker.rs` ronda hoy las 3.400 líneas; el arranque del worker ya no es un reset simple — ejecuta en orden `sanitize_stuck_downloads` (TASK-84: descargas `downloading` de más de 1 h a `failed` y staging purgado), `reconcile_downloads_on_startup` (`services/operation_recovery.rs`), `recover_interrupted_jobs` (`download/job.rs`) para el reset restante a `queued`, `repair_unresolved_queue_sources` y la restauración de la concurrencia desde `sync_settings` (SB01: superficie canónica; la KV `dl_concurrent_downloads` queda como lectura tolerante de legado). El barrido periódico cada 60 s aplica la misma sanitización TASK-84. Sigue sin verificar en escritorio real la ejecución de descargas de punta a punta (GUI, red viva): véase README §"Verification and limitations".
 
-**Último cambio:** 2026-11-19 — D05 (issue #117): gate de verificación de entrega antes de `complete` (`download/verification.rs`), `fallback_action` aplicado por el worker, piso de bitrate por proveedor y `downloads.account_id` — archivos: `worker.rs`, `download/verification.rs`, `download/quality_reconcile.rs`, `download/provider_gateway.rs`, `download/progress.rs`, `download/orchestrator.rs`, `crates/syncify-core-domain/src/quality.rs`. Previo: 2026-11-14 — re-derivación completa contra el árbol (issue #59) — archivos: `worker.rs`, `download/job.rs`, `services/operation_recovery.rs`. Previo: 2026-11-07 — P6 Fase C (ADR-0024): la descarga completada invalida la caché de streaming de la pista — archivos: `worker.rs`, `services/stream_cache.rs`. Previo: 2026-11-06 — P5: el despacho de proveedores pasa por el puerto `download/provider_gateway.rs` (ADR-0023) — archivos: `download/orchestrator.rs`, `download/provider_gateway.rs`, `download/providers/*`, `download/quality_reconcile.rs`, `worker.rs`. Previo: 2026-10-25 — re-revisión de comportamiento contra el árbol. Previo: 2026-08-25 — eliminación del módulo legacy `downloader.rs` (QBDLX/streamrip) y del bundle `resources/qbdlx-mod/`. Previo a ese: S40 — 2026-03-30.
+**Último cambio:** 2026-11-19 — L14 (issue #109): la biblioteca expone los
+cinco estados de descarga y la calidad efectiva en la consulta de página,
+filtra por estado y calidad, comparte la regla de estados con la cobertura de
+álbum (L07) y reutiliza `add_to_queue` / `force_redownload_tracks` /
+`delete_track_audio`. Previo: 2026-11-19 — D05 (issue #117): gate de verificación de entrega antes de `complete` (`download/verification.rs`), `fallback_action` aplicado por el worker, piso de bitrate por proveedor y `downloads.account_id` — archivos: `worker.rs`, `download/verification.rs`, `download/quality_reconcile.rs`, `download/provider_gateway.rs`, `download/progress.rs`, `download/orchestrator.rs`, `crates/syncify-core-domain/src/quality.rs`. Previo: 2026-11-14 — re-derivación completa contra el árbol (issue #59) — archivos: `worker.rs`, `download/job.rs`, `services/operation_recovery.rs`. Previo: 2026-11-07 — P6 Fase C (ADR-0024): la descarga completada invalida la caché de streaming de la pista — archivos: `worker.rs`, `services/stream_cache.rs`. Previo: 2026-11-06 — P5: el despacho de proveedores pasa por el puerto `download/provider_gateway.rs` (ADR-0023) — archivos: `download/orchestrator.rs`, `download/provider_gateway.rs`, `download/providers/*`, `download/quality_reconcile.rs`, `worker.rs`. Previo: 2026-10-25 — re-revisión de comportamiento contra el árbol. Previo: 2026-08-25 — eliminación del módulo legacy `downloader.rs` (QBDLX/streamrip) y del bundle `resources/qbdlx-mod/`. Previo a ese: S40 — 2026-03-30.
 **Leer antes de modificar:** `worker.rs`, `commands/queue.rs`, `commands/download.rs`, `services/stream_cache.rs`
 **Archivos core:**
 - `src-tauri/src/worker.rs` (~3.400 líneas — bucle del worker, claim atómico, eventos de progreso, supervisor auxiliar)
@@ -123,6 +127,24 @@ struct DownloadWorkerState {
 Methods: `pause()`, `resume()`, `stop()`, `wait_if_paused()`, `notify_available()`,
 `active_downloads()`, `increment_active()` / `decrement_active()`,
 `set_max_concurrent()`, `is_paused()` / `is_stopped()`.
+
+### Estado en la biblioteca (L14 — issue #109)
+
+La biblioteca no ejecuta descargas ni decide calidad: lee el estado de la cola
+y del ledger. `commands/library_query.rs` proyecta en la MISMA consulta de
+página los cinco estados del badge —`downloaded` si `downloads.file_path`
+existe; si no, `downloading`, `queued` o `failed` según la fila de
+`download_queue`; `not_downloaded` en el resto— y la calidad efectiva del
+fichero (`FLAC 24/96`). `library_albums.rs` agrega esos mismos estados para la
+cobertura del álbum con la expresión compartida; no hay una regla duplicada
+ni una consulta por pista.
+
+Las acciones reutilizan la única cola: encolar llama a `add_to_queue` (con su
+guardrail de deduplicación) y re-descargar a `force_redownload_tracks` (borra
+el Download y las filas de cola de esa pista y la reencola por
+`perform_add_to_queue`). «Borrar audio» llama a `delete_track_audio` (L04):
+elimina el Download, sus entradas de cola y el fichero, y conserva Track,
+TrackSource, pertenencia y evidencia de edición.
 
 ### Download Sources (pipeline Rust-nativo: `download/orchestrator.rs`)
 

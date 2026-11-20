@@ -295,13 +295,18 @@ pub struct LibraryTrack {
     pub available_services: Option<String>, // Services verified available
     pub availability_summary: Option<String>, // JSON or summary of source statuses
     pub quality: Option<String>,  // e.g. "24/96", "16/44.1", "320kbps"
+    // L14 (#109): calidad efectiva del fichero descargado ('FLAC 24/96',
+    // 'MP3'); `None` si la pista no está descargada. Solo la proyecta
+    // `query_library`; las demás consultas la dejan en su default.
+    #[sqlx(default)]
+    pub download_quality: Option<String>,
     // FE-10: dashboard-compatible quality bucket ('Hi-Res (24-bit+)' |
     // 'CD Quality' | 'Lossy'), computed by get_library, search_tracks and
     // get_favorite_tracks (ADR-0025, decisión 5) so the /library?filter=quality
     // deep-link no longer degrades on FTS and favorites.
     #[sqlx(default)]
     pub quality_bucket: Option<String>,
-    pub download_status: Option<String>, // "downloaded", "queued", "not_downloaded"
+    pub download_status: Option<String>, // "downloaded", "queued", "downloading", "failed", "not_downloaded"
     pub metadata_score: Option<i32>,     // 0-100 based on field completeness
     pub lyrics_type: Option<String>,     // "synced", "timed", "plain", "none"
     pub cover_art_url: Option<String>,   // Album artwork URL
