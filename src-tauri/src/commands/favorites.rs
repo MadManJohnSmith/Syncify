@@ -1598,9 +1598,10 @@ pub async fn perform_sync_favorites(
             }
             if type_filter == "all" || type_filter == "albums" {
                 let source = crate::sync::tidal_source::TidalLibrarySource::new(&client);
-                let collected = crate::sync::collection::collect_all_pages(100, |offset| {
-                    source.fetch_albums_page(offset)
-                })
+                let collected = crate::sync::collection::collect_all_pages(
+                    crate::sync::tidal_source::TIDAL_PAGE_SIZE,
+                    |offset| source.fetch_albums_page(offset),
+                )
                 .await
                 .map_err(|error| error.message)?;
                 if let Some(total) = collected.reported_total {
@@ -1667,9 +1668,10 @@ pub async fn perform_sync_favorites(
             }
             if type_filter == "all" || type_filter == "artists" {
                 let source = crate::sync::tidal_source::TidalLibrarySource::new(&client);
-                let collected = crate::sync::collection::collect_all_pages(100, |offset| {
-                    source.fetch_artists_page(offset)
-                })
+                let collected = crate::sync::collection::collect_all_pages(
+                    crate::sync::tidal_source::TIDAL_PAGE_SIZE,
+                    |offset| source.fetch_artists_page(offset),
+                )
                 .await
                 .map_err(|error| error.message)?;
                 if let Some(total) = collected.reported_total {
@@ -1834,9 +1836,10 @@ pub async fn perform_sync_favorites(
 
             if type_filter == "all" || type_filter == "albums" {
                 let source = crate::sync::qobuz_source::QobuzLibrarySource::new(&client);
-                let collected = crate::sync::collection::collect_all_pages(100, |offset| {
-                    source.fetch_albums_page(offset)
-                })
+                let collected = crate::sync::collection::collect_all_pages(
+                    crate::sync::qobuz_source::QOBUZ_FAVORITES_PAGE_SIZE,
+                    |offset| source.fetch_albums_page(offset),
+                )
                 .await
                 .map_err(|error| error.message)?;
                 if let Some(total) = collected.reported_total {
@@ -1901,9 +1904,10 @@ pub async fn perform_sync_favorites(
             }
             if type_filter == "all" || type_filter == "artists" {
                 let source = crate::sync::qobuz_source::QobuzLibrarySource::new(&client);
-                let collected = crate::sync::collection::collect_all_pages(100, |offset| {
-                    source.fetch_artists_page(offset)
-                })
+                let collected = crate::sync::collection::collect_all_pages(
+                    crate::sync::qobuz_source::QOBUZ_FAVORITES_PAGE_SIZE,
+                    |offset| source.fetch_artists_page(offset),
+                )
                 .await
                 .map_err(|error| error.message)?;
                 if let Some(total) = collected.reported_total {
