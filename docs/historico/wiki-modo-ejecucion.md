@@ -488,10 +488,15 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   cuando haya ranura. Fuente: comentario en #277 y `t3_thread_list` de
   los tres proyectos del 2026-11-19.
 - **2026-11-19, tanda de cierre**: L13 #110 (`19e9d45`), A03-bis #95
-  (`6779e20`), LY07 #180 (`3057253`), L14 #109 (`dbcd25f`) y el retro
-  R1-R7/R10 (`e10b0df`) fusionados por squash; P16 #147 quedó en PR
-  #345 y T02 #66 en carril local. Siete issues cerrados en la sesión.
-  Fuente: `git log dev` y PRs #339/#340/#341/#343/#344/#345.
+  (`6779e20`), LY07 #180 (`3057253`), L14 #109 (`dbcd25f`), el retro
+  R1-R7/R10 (`e10b0df`), P16 #147 (`4f0d290`) y T02 #66 (`14db90c`)
+  fusionados por squash. **Ocho issues cerrados** en la sesión. Fuente:
+  `git log dev` y PRs #339/#340/#341/#343/#344/#345/#346.
+- **2026-11-19, limpieza R5**: `tools/lane-prune.sh --apply` eliminó 11
+  worktrees fusionados y limpios; se conservaron 14 con cambios sin
+  commitear y 10 sin fusionar. Se borraron 176 GB de targets huérfanos
+  (186 → 10 GB) y `/tmp/syncify-target`. Fuente: salida de
+  `tools/lane-prune.sh` y `du` del 2026-11-19.
 - **2026-11-19, commits de wiki duplicados en los carriles**: un commit
   local de wiki sin push en el checkout padre viaja como ancestro a cada
   worktree de carril y contamina el PR (visto en #109, #66 y #147).
