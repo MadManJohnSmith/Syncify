@@ -9390,4 +9390,127 @@ mod sync_arm_contracts {
             "RequiresAuth: SoundCloud user_id missing from stored credentials"
         );
     }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // A03-ter (#342): caracterización de `get_or_refresh_spotify_token`.
+    // Fija el comportamiento ANTES de sustituir el cuerpo ad-hoc por la
+    // puerta de `account_refresh` (ADR-0007 decisión 14). Sin red: la rama de
+    // red real no es caracterizable offline; el wire format del refresco ya
+    // lo espeja `spotify_refresh_payload` en `account_refresh.rs`.
+    // ═════════════════════════════════════════════════════════════════════
+
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// Clave falsa del binario de pruebas unitarias (mismo patrón que
+    /// `account_profiles.rs` / `download/tidal.rs`): el cifrado global queda
+    /// inicializado una vez por proceso y los tests cifran y descifran con la
+    /// MISMA clave global, sea quien sea quien la fijara.
+    fn characterization_crypto() {
+        let _ = crate::crypto::init_crypto([42u8; 32]);
+    }
+
+    async fn characterization_db() -> sqlx::SqlitePool {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        db
+    }
+
+    async fn insert_spotify_account(db: &sqlx::SqlitePool, creds: &serde_json::Value) -> i64 {
+        let service_id: i64 =
+            sqlx::query_scalar("SELECT id FROM services WHERE name = 'spotify'")
+                .fetch_one(db)
+                .await
+                .unwrap();
+        let encrypted = crate::crypto::encrypt(&creds.to_string()).unwrap();
+        sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, display_name, email, is_active, credentials_json) \
+             VALUES (?, 'Caracterización', 'char@test.invalid', 1, ?) RETURNING id",
+        )
+        .bind(service_id)
+        .bind(&encrypted)
+        .fetch_one(db)
+        .await
+        .unwrap()
+    }
+
+    /// Camino dominante: token con vencimiento lejano se devuelve tal cual y
+    /// NO toca la fila (ni re-cifra ni toca marcas).
+    #[tokio::test]
+    async fn spotify_token_fresco_se_devuelve_tal_cual_sin_escribir() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "token-vigente",
+            "refresh_token": "rt",
+            "expires_at": now + 3600,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+        let stored_before: String =
+            sqlx::query_scalar("SELECT credentials_json FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        let token = get_or_refresh_spotify_token(&db, account_id, &creds)
+            .await
+            .expect("token vigente se devuelve sin refresco");
+
+        assert_eq!(token, "token-vigente");
+        let stored_after: String =
+            sqlx::query_scalar("SELECT credentials_json FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(stored_before, stored_after, "la fila no se toca");
+        let invalid: i64 =
+            sqlx::query_scalar("SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(invalid, 0);
+    }
+
+    /// Token vencido sin `refresh_token`: el intento muere ANTES de la red y
+    /// (comportamiento caracterizado) la cuenta NO queda marcada. La adopción
+    /// de la puerta (decisión 14) cambia esto a propósito: un refresco
+    /// imposible marca reautenticación; el test se actualiza en el hito de
+    /// cableado.
+    #[tokio::test]
+    async fn spotify_token_vencido_sin_refresh_token_falla_y_no_marca() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "token-muerto",
+            "expires_at": now - 100,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+
+        let error = get_or_refresh_spotify_token(&db, account_id, &creds)
+            .await
+            .expect_err("sin refresh_token no hay refresco posible");
+
+        assert!(
+            error.contains("Missing refresh token"),
+            "llegó: {error}"
+        );
+        let invalid: i64 =
+            sqlx::query_scalar("SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            invalid, 0,
+            "caracterizado: el cuerpo ad-hoc NO marca la cuenta"
+        );
+    }
 }
