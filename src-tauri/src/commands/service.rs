@@ -482,92 +482,87 @@ pub(crate) fn emit_import_complete(
 
 /// Get or refresh Spotify access token
 /// Returns valid access token, refreshing if needed and saving to DB.
+///
+/// A03-ter (#342): el cuerpo ad-hoc (PKCE con buffer de 300 s, wire format
+/// idéntico) se sustituye por la puerta única de `account_refresh`
+/// (ADR-0007 decisión 14). Lo que cambia respecto al cuerpo anterior: un
+/// refresco rechazado o imposible AHORA marca la cuenta para reautenticar
+/// (puerta anti-bucle) y un fallo transitorio la deja válida (decisión 12).
 pub(crate) async fn get_or_refresh_spotify_token(
     db: &sqlx::SqlitePool,
     account_id: i64,
     creds: &serde_json::Value,
 ) -> Result<String, String> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    get_or_refresh_spotify_token_with_transport(
+        db,
+        account_id,
+        creds,
+        &account_refresh::ProductionRefreshTransport::default(),
+    )
+    .await
+}
 
-    let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
-    let buffer_seconds = 300; // 5 minutes
-
-    if now >= (expires_at - buffer_seconds) {
-        tracing::info!("Spotify access token expired or expiring soon, refreshing via PKCE...");
-
-        let refresh_token = creds["refresh_token"]
-            .as_str()
-            .ok_or("Missing refresh token - please reconnect to Spotify")?;
-
-        // S196: credentials resolved from DB settings first, env fallback (dev).
-        let config: SpotifyConfig = crate::commands::resolve_spotify_config(db)
-            .await
-            .map_err(|e| format!("Spotify config error: {}", e))?;
-        let client_id = config.client_id;
-        let http_client = reqwest::Client::new();
-
-        let params = [
-            ("client_id", client_id.as_str()),
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-        ];
-
-        let token_resp = http_client
-            .post("https://accounts.spotify.com/api/token")
-            .form(&params)
-            .send()
-            .await
-            .map_err(|e| format!("Refresh request failed: {}", e))?;
-
-        if !token_resp.status().is_success() {
-            let error = token_resp.text().await.unwrap_or_default();
-            tracing::error!("Token refresh failed: {}", error);
-            return Err(format!("Token refresh failed: {}", error));
-        }
-
-        let token_data: serde_json::Value = token_resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse refresh response: {}", e))?;
-
-        let new_access_token = token_data["access_token"]
-            .as_str()
-            .ok_or("Missing access_token in refresh response")?
-            .to_string();
-
-        let new_refresh_token = token_data["refresh_token"]
-            .as_str()
-            .unwrap_or(refresh_token)
-            .to_string();
-
-        let expires_in = token_data["expires_in"].as_i64().unwrap_or(3600);
-        let new_expires_at = now + expires_in;
-
-        let updated_creds = serde_json::json!({
-            "token_type": "Bearer",
-            "access_token": new_access_token,
-            "refresh_token": new_refresh_token,
-            "expires_at": new_expires_at
-        });
-
-        let encrypted = crate::crypto::encrypt(&updated_creds.to_string())?;
-        sqlx::query("UPDATE accounts SET credentials_json = ? WHERE id = ?")
-            .bind(&encrypted)
+/// Seam de pruebas de la puerta: misma política con transporte inyectable
+/// (reloj real; los tests usan vencimientos relativos a `now_epoch_secs`).
+pub(crate) async fn get_or_refresh_spotify_token_with_transport(
+    db: &sqlx::SqlitePool,
+    account_id: i64,
+    creds: &serde_json::Value,
+    transport: &dyn account_refresh::CredentialRefreshTransport,
+) -> Result<String, String> {
+    match account_refresh::refresh_account_credential(
+        db,
+        "spotify",
+        account_id,
+        transport,
+        account_refresh::now_epoch_secs(),
+    )
+    .await?
+    {
+        account_refresh::RefreshOutcome::Refreshed => {
+            // La puerta persistió el artefacto en la MISMA fila: recargarlo y
+            // extraer el token nuevo. Un fallo aquí es el mismo tipo de error
+            // que tenía el cuerpo ad-hoc tras un refresh exitoso.
+            let encrypted: Option<String> = sqlx::query_scalar(
+                "SELECT credentials_json FROM accounts WHERE id = ? \
+                 AND credentials_json IS NOT NULL AND TRIM(credentials_json) != ''",
+            )
             .bind(account_id)
-            .execute(db)
+            .fetch_optional(db)
             .await
-            .map_err(|e| format!("Failed to save refreshed token: {}", e))?;
-
-        tracing::info!("Spotify PKCE token refreshed and saved to database");
-        Ok(new_access_token)
-    } else {
-        creds["access_token"]
+            .map_err(|e| format!("Failed to load refreshed Spotify credentials: {}", e))?;
+            let encrypted =
+                encrypted.ok_or("Refreshed Spotify credentials missing from database")?;
+            let plain = crate::crypto::decrypt(&encrypted)
+                .map_err(|e| format!("Failed to decrypt refreshed Spotify credentials: {}", e))?;
+            let fresh: serde_json::Value = serde_json::from_str(&plain)
+                .map_err(|e| format!("Refreshed Spotify credentials are not valid JSON: {}", e))?;
+            fresh["access_token"]
+                .as_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "Missing access token in refreshed credentials".to_string())
+        }
+        // Rama passthrough del cuerpo ad-hoc: credencial aún fresca (o sin
+        // vencimiento publicado — Spotify siempre lo publica en estados
+        // alcanzables) se devuelve tal cual.
+        account_refresh::RefreshOutcome::NotNeeded => creds["access_token"]
             .as_str()
             .map(|s| s.to_string())
-            .ok_or_else(|| "Missing access token".to_string())
+            .ok_or_else(|| "Missing access token".to_string()),
+        // Fallo transitorio (red/5xx): la cuenta queda válida pero este
+        // llamador necesita un token usable AHORA — mismo fail-early que el
+        // cuerpo ad-hoc, sin la marca de decisión 12.
+        account_refresh::RefreshOutcome::RetryLater => Err(
+            "Token refresh failed transiently; the account stays valid, retry later".to_string(),
+        ),
+        // Puerta anti-bucle: ya marcada (NeedsReauth) o marcada AHORA por el
+        // rechazo del refresco (MarkedForReauth). Las cuatro llamadas de
+        // producción filtran cuentas marcadas antes de llegar aquí; el error
+        // es el RequiresAuth que el cuerpo ad-hoc emitía al fallar.
+        account_refresh::RefreshOutcome::MarkedForReauth | account_refresh::RefreshOutcome::NeedsReauth => Err(
+            "Token refresh failed: provider rejected the credential refresh; reauthentication required"
+                .to_string(),
+        ),
     }
 }
 
@@ -3093,6 +3088,64 @@ async fn tidal_force_refresh_after_401(db: &sqlx::SqlitePool, account_id: i64) -
         )
         .await;
     creds_opt.map(|c| c.access_token)
+}
+
+/// A03-ter (#342): el 401/403 reactivo del sync pasa por la puerta única de
+/// `account_refresh` (ADR-0007 decisión 14). En producción el transporte no
+/// tiene refresco programático para estos servicios: el intento termina en
+/// `NotRefreshable` y la cuenta se marca — el mismo estado final que el
+/// `mark_account_credentials_invalid` directo que había, ahora con la puerta
+/// anti-bucle compartida (una cuenta ya marcada no se re-marca ni se
+/// re-emite) y con la distinción de decisión 12 (un fallo transitorio del
+/// refresco no marca). Mejor esfuerzo: un fallo de la puerta no cambia el
+/// resultado del brazo.
+pub(crate) async fn sync_reactive_credential_rejection(
+    db: &sqlx::SqlitePool,
+    service: &str,
+    account_id: i64,
+    status: u16,
+    reason: &str,
+) {
+    sync_reactive_credential_rejection_with_transport(
+        db,
+        service,
+        account_id,
+        status,
+        reason,
+        &account_refresh::ProductionRefreshTransport::default(),
+    )
+    .await
+}
+
+/// Seam de pruebas: la misma puerta con transporte inyectable.
+pub(crate) async fn sync_reactive_credential_rejection_with_transport(
+    db: &sqlx::SqlitePool,
+    service: &str,
+    account_id: i64,
+    status: u16,
+    reason: &str,
+    transport: &dyn account_refresh::CredentialRefreshTransport,
+) {
+    match account_refresh::handle_credential_rejection(
+        db, service, account_id, status, transport, reason,
+    )
+    .await
+    {
+        Ok(outcome) => tracing::debug!(
+            service,
+            account_id,
+            status,
+            ?outcome,
+            "reactive credential rejection handled by the shared gate"
+        ),
+        Err(e) => tracing::warn!(
+            service,
+            account_id,
+            status,
+            error = %e,
+            "reactive credential rejection could not be recorded"
+        ),
+    }
 }
 
 pub(crate) async fn enrich_persist_with_locked_retry(
@@ -6556,11 +6609,13 @@ where
                 .await?;
                 if e.kind == crate::sync::SourceErrorKind::AuthExpired {
                     tracing::warn!("[perform_sync_service/qobuz] 401 on favorites — marking credentials invalid");
-                    let _ = mark_account_credentials_invalid(
+                    // A03-ter (#342): puerta única reactivo (decisión 14).
+                    sync_reactive_credential_rejection(
                         db,
                         "qobuz",
+                        account_id,
+                        401,
                         "HTTP 401: User authentication required",
-                        Some(account_id),
                     )
                     .await;
                     let err_msg = format!(
@@ -6918,11 +6973,13 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                 Err(e) => {
                     if is_qobuz_auth_error(&e) {
                         tracing::warn!("[perform_sync_service/qobuz] 401 on favorite albums — marking credentials invalid");
-                        let _ = mark_account_credentials_invalid(
+                        // A03-ter (#342): puerta única reactivo (decisión 14).
+                        sync_reactive_credential_rejection(
                             db,
                             "qobuz",
+                            account_id,
+                            401,
                             "HTTP 401: User authentication required",
-                            Some(account_id),
                         )
                         .await;
                         let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorite albums: {}", e);
@@ -7182,11 +7239,13 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                 Err(e) => {
                     if is_qobuz_auth_error(&e) {
                         tracing::warn!("[perform_sync_service/qobuz] 401 on purchases — marking credentials invalid");
-                        let _ = mark_account_credentials_invalid(
+                        // A03-ter (#342): puerta única reactivo (decisión 14).
+                        sync_reactive_credential_rejection(
                             db,
                             "qobuz",
+                            account_id,
+                            401,
                             "HTTP 401: User authentication required",
-                            Some(account_id),
                         )
                         .await;
                         let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching purchases: {}", e);
@@ -7543,11 +7602,13 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                 Err(e) => {
                     if is_qobuz_auth_error(&e) {
                         tracing::warn!("[perform_sync_service/qobuz] 401 on playlists — marking credentials invalid");
-                        let _ = mark_account_credentials_invalid(
+                        // A03-ter (#342): puerta única reactivo (decisión 14).
+                        sync_reactive_credential_rejection(
                             db,
                             "qobuz",
+                            account_id,
+                            401,
                             "HTTP 401: User authentication required",
-                            Some(account_id),
                         )
                         .await;
                         let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching playlists: {}", e);
@@ -7634,11 +7695,13 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                 Err(e) => {
                     if is_qobuz_auth_error(&e) {
                         tracing::warn!("[perform_sync_service/qobuz] 401 on favorite artists — marking credentials invalid");
-                        let _ = mark_account_credentials_invalid(
+                        // A03-ter (#342): puerta única reactivo (decisión 14).
+                        sync_reactive_credential_rejection(
                             db,
                             "qobuz",
+                            account_id,
+                            401,
                             "HTTP 401: User authentication required",
-                            Some(account_id),
                         )
                         .await;
                         let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorite artists: {}", e);
@@ -9420,11 +9483,19 @@ mod sync_arm_contracts {
     }
 
     async fn insert_spotify_account(db: &sqlx::SqlitePool, creds: &serde_json::Value) -> i64 {
-        let service_id: i64 =
-            sqlx::query_scalar("SELECT id FROM services WHERE name = 'spotify'")
-                .fetch_one(db)
-                .await
-                .unwrap();
+        insert_service_account(db, "spotify", creds).await
+    }
+
+    async fn insert_service_account(
+        db: &sqlx::SqlitePool,
+        service: &str,
+        creds: &serde_json::Value,
+    ) -> i64 {
+        let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
+            .bind(service)
+            .fetch_one(db)
+            .await
+            .unwrap();
         let encrypted = crate::crypto::encrypt(&creds.to_string()).unwrap();
         sqlx::query_scalar(
             "INSERT INTO accounts (service_id, display_name, email, is_active, credentials_json) \
@@ -9469,22 +9540,25 @@ mod sync_arm_contracts {
                 .await
                 .unwrap();
         assert_eq!(stored_before, stored_after, "la fila no se toca");
-        let invalid: i64 =
-            sqlx::query_scalar("SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?")
-                .bind(account_id)
-                .fetch_one(&db)
-                .await
-                .unwrap();
+        let invalid: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
         assert_eq!(invalid, 0);
     }
 
-    /// Token vencido sin `refresh_token`: el intento muere ANTES de la red y
-    /// (comportamiento caracterizado) la cuenta NO queda marcada. La adopción
-    /// de la puerta (decisión 14) cambia esto a propósito: un refresco
-    /// imposible marca reautenticación; el test se actualiza en el hito de
-    /// cableado.
+    /// Token vencido sin `refresh_token`: el refresco es imposible y, desde la
+    /// adopción de la puerta (A03-ter #342), marca reautenticación — el cuerpo
+    /// ad-hoc caracterizado en el hito 1 fallaba SIN marcar; la decisión 14
+    /// pide lo contrario («un refresco imposible marca reautenticación y no
+    /// entra en bucle»), así que esta aserción cambió a propósito. El
+    /// transporte de producción no llega a la red: sin `refresh_token` el
+    /// intento muere en `NotRefreshable`.
     #[tokio::test]
-    async fn spotify_token_vencido_sin_refresh_token_falla_y_no_marca() {
+    async fn spotify_token_vencido_sin_refresh_token_marca_reautenticacion() {
         characterization_crypto();
         let db = characterization_db().await;
         let now = crate::commands::account_refresh::now_epoch_secs();
@@ -9499,18 +9573,356 @@ mod sync_arm_contracts {
             .expect_err("sin refresh_token no hay refresco posible");
 
         assert!(
-            error.contains("Missing refresh token"),
+            error.contains("provider rejected the credential refresh"),
             "llegó: {error}"
         );
-        let invalid: i64 =
-            sqlx::query_scalar("SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?")
+        let invalid: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            invalid, 1,
+            "decisión 14: un refresco imposible marca reautenticación"
+        );
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // A03-ter (#342): la puerta única en los dos puntos del sync — Spotify
+    // (`get_or_refresh_spotify_token`) y el reactivo del brazo Qobuz
+    // (`sync_reactive_credential_rejection`). Transporte falso contando
+    // llamadas y vencimientos relativos al reloj real: cero red, cero bucle.
+    // ═════════════════════════════════════════════════════════════════════
+
+    struct GateTransport {
+        outcome: Result<serde_json::Value, crate::commands::account_refresh::RefreshError>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl GateTransport {
+        fn ok(payload: serde_json::Value) -> Self {
+            Self {
+                outcome: Ok(payload),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn err(error: crate::commands::account_refresh::RefreshError) -> Self {
+            Self {
+                outcome: Err(error),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl crate::commands::account_refresh::CredentialRefreshTransport for GateTransport {
+        fn refresh<'a>(
+            &'a self,
+            _db: &'a sqlx::SqlitePool,
+            _service: &'a str,
+            _account_id: i64,
+            _creds: &'a serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            serde_json::Value,
+                            crate::commands::account_refresh::RefreshError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.outcome.clone()
+            })
+        }
+    }
+
+    async fn stored_creds_json(db: &sqlx::SqlitePool, account_id: i64) -> serde_json::Value {
+        let encrypted: String =
+            sqlx::query_scalar("SELECT credentials_json FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(db)
+                .await
+                .unwrap();
+        let plain = crate::crypto::decrypt(&encrypted).unwrap();
+        serde_json::from_str(&plain).unwrap()
+    }
+
+    async fn is_marked(db: &sqlx::SqlitePool, account_id: i64) -> bool {
+        let invalid: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_one(db)
+        .await
+        .unwrap();
+        invalid != 0
+    }
+
+    /// Con vencimiento vencido la puerta refresca ANTES de usar la credencial:
+    /// token nuevo devuelto y persistido en la MISMA fila, una sola llamada.
+    #[tokio::test]
+    async fn puerta_spotify_refresca_vencido_antes_de_usar() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "viejo",
+            "refresh_token": "rt",
+            "expires_at": now - 100,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+        let transport = GateTransport::ok(json!({
+            "access_token": "nuevo",
+            "refresh_token": "rt",
+            "expires_at": now + 3600,
+        }));
+
+        let token =
+            get_or_refresh_spotify_token_with_transport(&db, account_id, &creds, &transport)
+                .await
+                .expect("refresco proactivo con vencimiento publicado");
+
+        assert_eq!(token, "nuevo");
+        assert_eq!(transport.call_count(), 1);
+        assert_eq!(
+            stored_creds_json(&db, account_id).await["access_token"],
+            "nuevo"
+        );
+        assert!(!is_marked(&db, account_id).await);
+    }
+
+    /// Credencial fresca: la puerta confía y el transporte ni se entera.
+    #[tokio::test]
+    async fn puerta_spotify_fresco_no_llama_al_transporte() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "vigente",
+            "refresh_token": "rt",
+            "expires_at": now + 3600,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+        let transport = GateTransport::ok(json!({ "access_token": "no-debe-persistirse" }));
+
+        let token =
+            get_or_refresh_spotify_token_with_transport(&db, account_id, &creds, &transport)
+                .await
+                .expect("token vigente se devuelve tal cual");
+
+        assert_eq!(token, "vigente");
+        assert_eq!(transport.call_count(), 0);
+        assert!(!is_marked(&db, account_id).await);
+    }
+
+    /// Rechazo del proveedor: la cuenta se marca AHORA y el siguiente intento
+    /// de la puerta no toca el transporte (anti-bucle, decisión 14).
+    #[tokio::test]
+    async fn puerta_spotify_rechazo_marca_y_no_reintenta() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "viejo",
+            "refresh_token": "rt",
+            "expires_at": now - 100,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+        let transport = GateTransport::err(
+            crate::commands::account_refresh::RefreshError::ProviderRejected(
+                "invalid_grant".to_string(),
+            ),
+        );
+
+        let first =
+            get_or_refresh_spotify_token_with_transport(&db, account_id, &creds, &transport)
+                .await
+                .expect_err("el rechazo del proveedor falla");
+        let second =
+            get_or_refresh_spotify_token_with_transport(&db, account_id, &creds, &transport)
+                .await
+                .expect_err("la puerta bloqueada también falla");
+
+        assert!(
+            first.contains("provider rejected the credential refresh"),
+            "llegó: {first}"
+        );
+        assert!(
+            second.contains("provider rejected the credential refresh"),
+            "llegó: {second}"
+        );
+        assert_eq!(transport.call_count(), 1, "sin bucle de reintentos");
+        assert!(is_marked(&db, account_id).await);
+    }
+
+    /// Fallo transitorio: la cuenta queda VÁLIDA (decisión 12) y el error es
+    /// fail-early, igual que en el cuerpo ad-hoc caracterizado.
+    #[tokio::test]
+    async fn puerta_spotify_transitorio_no_marca() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "viejo",
+            "refresh_token": "rt",
+            "expires_at": now - 100,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+        let transport = GateTransport::err(
+            crate::commands::account_refresh::RefreshError::Transient("red caída".to_string()),
+        );
+
+        let error =
+            get_or_refresh_spotify_token_with_transport(&db, account_id, &creds, &transport)
+                .await
+                .expect_err("sin token nuevo el llamador falla temprano");
+
+        assert!(error.contains("transiently"), "llegó: {error}");
+        assert_eq!(transport.call_count(), 1);
+        assert!(!is_marked(&db, account_id).await);
+    }
+
+    /// Cuenta ya marcada: la puerta anti-bucle no recibe ni un intento.
+    #[tokio::test]
+    async fn puerta_spotify_cuenta_marcada_no_recibe_intentos() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "viejo",
+            "refresh_token": "rt",
+            "expires_at": now - 100,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+        sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
+            .bind(account_id)
+            .execute(&db)
+            .await
+            .unwrap();
+        let transport = GateTransport::ok(json!({ "access_token": "no-debe-persistirse" }));
+
+        let error =
+            get_or_refresh_spotify_token_with_transport(&db, account_id, &creds, &transport)
+                .await
+                .expect_err("una cuenta marcada no produce token");
+
+        assert!(
+            error.contains("provider rejected the credential refresh"),
+            "llegó: {error}"
+        );
+        assert_eq!(transport.call_count(), 0, "la cuenta ya estaba marcada");
+    }
+
+    /// Reactivo del sync por la puerta: un 401 sobre una credencial sin
+    /// vencimiento publicado dispara UN intento; su rechazo marca y la
+    /// segunda llamada ya no toca el transporte (anti-bucle compartido).
+    #[tokio::test]
+    async fn puerta_reactiva_marca_y_no_reemite() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let creds = json!({ "user_auth_token": "qobuz-token" });
+        let account_id = insert_service_account(&db, "qobuz", &creds).await;
+        let transport = GateTransport::err(
+            crate::commands::account_refresh::RefreshError::NotRefreshable(
+                "sin refresco programático".to_string(),
+            ),
+        );
+
+        sync_reactive_credential_rejection_with_transport(
+            &db,
+            "qobuz",
+            account_id,
+            401,
+            "HTTP 401: User authentication required",
+            &transport,
+        )
+        .await;
+        sync_reactive_credential_rejection_with_transport(
+            &db,
+            "qobuz",
+            account_id,
+            401,
+            "HTTP 401: User authentication required",
+            &transport,
+        )
+        .await;
+
+        assert_eq!(
+            transport.call_count(),
+            1,
+            "el primer 401 dispara UN intento"
+        );
+        assert!(is_marked(&db, account_id).await, "el rechazo marca");
+    }
+
+    /// La producción llama con el transporte real: para un servicio sin
+    /// refresco programático el intento termina en `NotRefreshable` (sin red)
+    /// y la cuenta se marca — el mismo estado final que el
+    /// `mark_account_credentials_invalid` directo que había.
+    #[tokio::test]
+    async fn puerta_reactiva_produccion_marca_qobuz_sin_red() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let creds = json!({ "user_auth_token": "qobuz-token" });
+        let account_id = insert_service_account(&db, "qobuz", &creds).await;
+
+        sync_reactive_credential_rejection(
+            &db,
+            "qobuz",
+            account_id,
+            401,
+            "HTTP 401: User authentication required",
+        )
+        .await;
+
+        assert!(is_marked(&db, account_id).await);
+        let reason: Option<String> =
+            sqlx::query_scalar("SELECT invalid_reason FROM accounts WHERE id = ?")
                 .bind(account_id)
                 .fetch_one(&db)
                 .await
                 .unwrap();
-        assert_eq!(
-            invalid, 0,
-            "caracterizado: el cuerpo ad-hoc NO marca la cuenta"
+        let reason = reason.unwrap_or_default();
+        assert!(
+            reason.contains("no programmatic refresh for service 'qobuz'"),
+            "el motivo documentado de la puerta: {reason}"
         );
+    }
+
+    /// Un fallo TRANSITORIO del intento reactivo no envenena credenciales
+    /// sanas (decisión 12) — la diferencia clave con la marca directa que
+    /// había antes de la puerta.
+    #[tokio::test]
+    async fn puerta_reactiva_transitorio_no_marca() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let creds = json!({ "user_auth_token": "qobuz-token" });
+        let account_id = insert_service_account(&db, "qobuz", &creds).await;
+        let transport = GateTransport::err(
+            crate::commands::account_refresh::RefreshError::Transient("red caída".to_string()),
+        );
+
+        sync_reactive_credential_rejection_with_transport(
+            &db,
+            "qobuz",
+            account_id,
+            401,
+            "HTTP 401: User authentication required",
+            &transport,
+        )
+        .await;
+
+        assert_eq!(transport.call_count(), 1);
+        assert!(!is_marked(&db, account_id).await, "decisión 12");
     }
 }

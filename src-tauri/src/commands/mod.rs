@@ -129,7 +129,7 @@ pub use url_import::*;
 pub(crate) use crate::db::DbPool;
 pub(crate) use crate::import_cache::ImportCache;
 pub(crate) use crate::services::{
-    qobuz::QOBUZ_APP_ID, ImportResult, QobuzClient, SpotifyClient, SpotifyConfig, SPOTIFY_SCOPES,
+    qobuz::QOBUZ_APP_ID, ImportResult, QobuzClient, SpotifyClient, SPOTIFY_SCOPES,
 };
 pub(crate) use crate::AppState;
 pub(crate) use futures_util::StreamExt;

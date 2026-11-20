@@ -27,7 +27,7 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/syncify-target-$(basen
 cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
-cargo test --locked --no-fail-fast   # 349 objetivos de test: recuento real
+cargo test --locked --no-fail-fast   # 351 objetivos de test: recuento real
 cargo test --locked --test batch_50_audit_test -- --test-threads=1
 npm --prefix ui run build && npm --prefix ui run test:run                  # 154 ficheros de test UI
 .venv/bin/python -m unittest discover -s scripts/tests                    # 480 tests (2 skipped)
@@ -77,7 +77,7 @@ El repo se vigila a sí mismo; si una falla, el fallo es el mensaje:
 | `scripts/tests/test_docs_consistency.py` | Que las docs no citen ficheros o ramas inexistentes |
 | `scripts/tests/test_readme_claims.py` | Cifras del README contra el árbol real |
 | `scripts/tests/test_agents_claims.py` | Cifras del AGENTS.md contra el árbol real (objetivos cargo, ficheros de test UI, tests Python, `#[ignore]`) |
-| `scripts/tests/test_dead_code_allow_ratchet.py` | `#![allow(dead_code)]` de módulos de producción contra el suelo 1 (adopción pendiente en #342) |
+| `scripts/tests/test_dead_code_allow_ratchet.py` | `#![allow(dead_code)]` de módulos de producción contra el suelo 0 (adopción de `account_refresh` aterrizada en #342) |
 | `scripts/tests/test_tracked_artifact_hygiene.py` | Artefactos generados que no deben estar versionados |
 
 Arregla la causa: no añadas excepciones a esas listas, no pongas

@@ -5,17 +5,16 @@ Un `#![allow(dead_code)]` a nivel de modulo apaga el lint para todo el
 fichero: es la forma de fusionar un modulo grande sin llamador y cerrar el
 issue como si el comportamiento ya existiera. La retro del 2026-11-19 (R6)
 midio exactamente un caso de produccion: `commands/account_refresh.rs`, cuya
-adopcion quedo pendiente en el issue #342. Los otros dos del arbol viven en
-helpers de tests (`crates/*/tests`, `src-tauri/tests`) y no cuentan aqui.
+adopcion quedo pendiente en el issue #342. La adopcion aterrizo (A03-ter,
+issue #342): los llamadores consumen la puerta y el allow se retiro, asi que
+el suelo es 0. Los `#![allow(dead_code)]` de helpers de tests
+(`crates/*/tests`, `src-tauri/tests`) no cuentan aqui.
 
-El suelo es 1 y solo puede bajar: adoptar el modulo y quitar el allow permite
-bajar BASELINE; uno nuevo obliga a justificarlo en revision, abrir un issue de
-adopcion (como #342) y citarlo en el doc del modulo. El test congela el
-recuento para que la deuda no vuelva por la puerta de atras.
-
-La segunda prueba ata el suelo al caso conocido y al issue #342: si el allow
-desaparece (adopcion aterrizada), pasa; si aparece otro fichero, la primera
-prueba ya falla.
+El suelo es 0 y solo puede bajar... y ya no puede bajar mas: uno nuevo obliga
+a justificarlo en revision, abrir un issue de adopcion (el precedente es el
+propio #342) y citarlo en el doc del modulo. El test congela el recuento para
+que la deuda no vuelva por la puerta de atras: si reaparece el allow del caso
+conocido o aparece otro, la primera prueba falla con el detalle.
 """
 
 import re
@@ -25,7 +24,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PRODUCTION_ROOTS = (REPO_ROOT / "src-tauri" / "src",)
 CRATE_SOURCE_GLOB = "crates/*/src"
-BASELINE = 1
+BASELINE = 0
 ADOPTION_ISSUE = "#342"
 KNOWN_SITE = "src-tauri/src/commands/account_refresh.rs"
 PATTERN = re.compile(r"#!\s*\[\s*allow\s*\(\s*dead_code\s*\)\s*\]")

@@ -1,10 +1,12 @@
 //! A03-ter (#342) — caracterización del punto reactivo de descarga.
 //!
-//! Fija el comportamiento de `persist_rejected_primary_account` ANTES de
-//! sustituir su `UPDATE` ad-hoc por la puerta de `account_refresh`
-//! (`handle_credential_rejection`, ADR-0007 decisión 14). Los cuatro tests
-//! cubren el contrato observable actual: el veredicto que escribe, la
-//! idempotencia de la marca, el aislamiento por servicio y los no-ops.
+//! Fija el contrato de `persist_rejected_primary_account`, que desde la
+//! adopción delega en la puerta de `account_refresh`
+//! (`handle_credential_rejection`, ADR-0007 decisión 14) en lugar del
+//! `UPDATE` ad-hoc que el hito 1 caracterizó. Los cuatro tests cubren: el
+//! veredicto que escribe (el único aspecto que cambió a propósito con la
+//! puerta, documentado en el test), la idempotencia de la marca, el
+//! aislamiento por servicio y los no-ops.
 //!
 //! Sin red, BD `:memory:` completamente migrada y cuentas desechables.
 
@@ -47,7 +49,10 @@ async fn insert_account(pool: &Pool<Sqlite>, service: &str) -> i64 {
     .expect("cuenta sembrada")
 }
 
-async fn account_row(pool: &Pool<Sqlite>, account_id: i64) -> (i64, Option<String>, Option<String>, Option<String>) {
+async fn account_row(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> (i64, Option<String>, Option<String>, Option<String>) {
     sqlx::query_as(
         "SELECT COALESCE(credentials_invalid, 0), invalid_reason, last_auth_error, \
          last_auth_error_at FROM accounts WHERE id = ?",
@@ -58,8 +63,14 @@ async fn account_row(pool: &Pool<Sqlite>, account_id: i64) -> (i64, Option<Strin
     .expect("cuenta presente")
 }
 
-/// El veredicto escrito hoy: marca la cuenta con los textos documentados del
-/// `UPDATE` ad-hoc y sella `last_auth_error_at` (el latch A-4 lee esa fecha).
+/// El veredicto: marca la cuenta y sella `last_auth_error_at` (el latch A-4
+/// lee esa fecha). El veredicto sigue siendo «cuenta invalidada», pero desde
+/// la adopción (A03-ter #342) el texto lo escribe la puerta compartida — el
+/// `UPDATE` ad-hoc caracterizado en el hito 1 escribía
+/// `token_expired`/`Provider rejected credentials`; la decisión 14 deja el
+/// motivo en manos de `handle_credential_rejection`, saneado en la frontera
+/// de `mark_account_credentials_invalid`. Para una cuenta SIN credenciales el
+/// motivo documentado de la puerta es «no credentials stored».
 #[tokio::test]
 async fn marks_the_unmarked_account_with_the_documented_verdict() {
     let pool = setup_db().await;
@@ -72,11 +83,8 @@ async fn marks_the_unmarked_account_with_the_documented_verdict() {
 
     let (invalid, reason, last_err, last_at) = account_row(&pool, account_id).await;
     assert_eq!(invalid, 1, "la cuenta rechazada queda invalidada");
-    assert_eq!(reason.as_deref(), Some("token_expired"));
-    assert_eq!(
-        last_err.as_deref(),
-        Some("Provider rejected credentials")
-    );
+    assert_eq!(reason.as_deref(), Some("no credentials stored"));
+    assert_eq!(last_err.as_deref(), Some("no credentials stored"));
     let stamp = last_at.expect("el latch A-4 necesita la fecha de la marca");
     chrono::DateTime::parse_from_rfc3339(&stamp).expect("last_auth_error_at en RFC 3339");
 }
@@ -138,7 +146,9 @@ async fn without_account_or_db_is_a_noop() {
     let inexistente = account_id + 1000;
 
     let orchestrator = DownloadOrchestrator::new().with_db(pool.clone());
-    orchestrator.persist_rejected_primary_account(None, "qobuz").await;
+    orchestrator
+        .persist_rejected_primary_account(None, "qobuz")
+        .await;
     orchestrator
         .persist_rejected_primary_account(Some(inexistente), "qobuz")
         .await;
@@ -149,11 +159,10 @@ async fn without_account_or_db_is_a_noop() {
         .persist_rejected_primary_account(Some(account_id), "qobuz")
         .await;
 
-    let totals: (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COALESCE(SUM(credentials_invalid), 0) FROM accounts",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let totals: (i64, i64) =
+        sqlx::query_as("SELECT COUNT(*), COALESCE(SUM(credentials_invalid), 0) FROM accounts")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(totals, (1, 0), "ninguna llamada marcó nada");
 }
