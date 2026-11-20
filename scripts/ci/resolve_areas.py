@@ -16,17 +16,18 @@ scripts/tests/test_resolve_areas.py.
 
 Contrato con el workflow:
 
-  Entrada  Tres variables de entorno con los outputs crudos del filtro de
-           rutas de dorny: FILTER_RUST, FILTER_FRONTEND, FILTER_PYTHON.
+  Entrada  Cuatro variables de entorno con los outputs crudos del filtro de
+           rutas de dorny: FILTER_RUST, FILTER_FRONTEND, FILTER_PYTHON,
+           FILTER_DOCS.
            Se pasan por `env:` y no por interpolacion en `run:` para no
            incrustar expresiones de GitHub dentro de un shell.
   Salida   UN unico output `areas`, una lista JSON con los nombres de las
-           areas a ejecutar, en orden fijo (rust, frontend, python). La linea
-           `areas=[...]` se añade a $GITHUB_OUTPUT cuando existe (dentro de
-           Actions) y siempre se imprime en stdout (log y uso manual).
-  Fallback Sin ninguna area detectada, la lista contiene las tres: una PR
-           solo-de-.github/ o docs/ ejecuta todo en vez de nada. El fake-green
-           de los jobs (aparecer en verde sin ejecutar pasos) se conserva por
+           areas a ejecutar, en orden fijo (rust, frontend, python, docs). La
+           linea `areas=[...]` se añade a $GITHUB_OUTPUT cuando existe (dentro
+           de Actions) y siempre se imprime en stdout (log y uso manual).
+  Fallback Sin ninguna area detectada, la lista contiene las cuatro: una PR
+           solo-de-.github/ ejecuta todo en vez de nada. El fake-green de los
+           jobs (aparecer en verde sin ejecutar pasos) se conserva por
            semantica de required checks, intacto.
 
 Consumo (pertenencia exacta, sin trampas truthy ni colisiones de substring:
@@ -43,13 +44,14 @@ import sys
 
 # Orden fijo de la lista emitida: determinista e independiente del orden en
 # que lleguen las variables de entorno.
-AREAS = ("rust", "frontend", "python")
+AREAS = ("rust", "frontend", "python", "docs")
 
 # Outputs crudos de dorny, tal cual llegan del paso `filter` de ci.yml.
 INPUT_VARS = {
     "rust": "FILTER_RUST",
     "frontend": "FILTER_FRONTEND",
     "python": "FILTER_PYTHON",
+    "docs": "FILTER_DOCS",
 }
 
 FALLBACK_NOTICE = "::notice::El filtro de rutas no detecto areas; se ejecutan todas."

@@ -1,0 +1,41 @@
+name: Docs check
+'on':
+  push:
+    branches:
+    - dev
+    paths:
+    - '**.md'
+    - 'docs/**'
+    - 'AGENTS.md'
+    - 'GLOSSARY.md'
+    - '.github/workflows/docs-check.yml'
+  workflow_dispatch: null
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  docs:
+    name: Docs (consistencia · claims · README)
+    # El camino documentado para los docs es el push directo a dev
+    # (docs/agents/wiki/protocolo-pr.md). Antes no arrancaba nada; este
+    # workflow corre solo las tres puertas de scripts/tests/, no la suite
+    # Python completa ni la matriz Rust/frontend.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    # test_agents_claims descubre la suite con el intérprete: sin las
+    # dependencias de scripts/ pierde módulos y la cifra del AGENTS.md falla.
+    - name: Instalar dependencias de scripts/
+      run: python -m pip install --disable-pip-version-check -r scripts/requirements.txt
+    # test_agents_claims mide los objetivos de test con `cargo metadata`.
+    - uses: dtolnay/rust-toolchain@1.98.1
+    - name: Consistencia de docs y referencias
+      run: python -m unittest discover -s scripts/tests -p 'test_docs_consistency.py' -v
+    - name: Cifras de los README
+      run: python -m unittest discover -s scripts/tests -p 'test_readme_claims.py' -v
+    - name: Cifras del AGENTS.md
+      run: python -m unittest discover -s scripts/tests -p 'test_agents_claims.py' -v

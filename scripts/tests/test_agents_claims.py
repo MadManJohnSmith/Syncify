@@ -1,15 +1,17 @@
 """Puerta de cifras del AGENTS.md.
 
-El AGENTS.md anota recuentos a mano ("318 objetivos de test", "428 tests",
-"131 ficheros", "los 13 tests #[ignore]", "~113 escrituras silenciosas") y
-eran la unica cifra del repo que ningun gate verificaba: en la sesion de
-cierres del 2026-11-11 cuatro PRs chocaron en rebase por esas lineas. Esta
-puerta mide el arbol y compara; si el arbol cambia, la cifra del AGENTS.md se
-actualiza con el numero medido, no con el recordado.
+El AGENTS.md anota recuentos a mano ("347 objetivos de test", "480 tests",
+"152 ficheros de test UI", "los 13 tests #[ignore]", "~19 escrituras
+silenciosas") y eran la unica cifra del repo que ningun gate verificaba: en
+la sesion de cierres del 2026-11-11 cuatro PRs chocaron en rebase por esas
+lineas. Esta puerta mide el arbol y compara; si el arbol cambia, la cifra del
+AGENTS.md se actualiza con el numero medido, no con el recordado.
 
 Cubre lo derivable de forma hermetica. Quedan fuera, a proposito:
-- "1139 tests" de la suite UI: vitest materializa `it.each` en tiempo de
-  ejecucion y no hay conteo hermetico que no sea correr la suite.
+- El conteo de tests de la suite UI: vitest materializa `it.each` en tiempo de
+  ejecucion y no hay conteo hermetico que no sea correr la suite. Desde la
+  retro del 2026-11-19 (R4) el AGENTS.md solo publica el numero de ficheros,
+  que si es medible.
 - "(2 skipped)" de la suite Python: los skips son condicionales
   (skipIf/skipUnless) y dependen de la plataforma.
 - La cifra "~113" no se mide aqui: su fuente es BASELINE en
@@ -111,7 +113,7 @@ class AgentsCountTests(unittest.TestCase):
         )
 
     def test_ui_file_count_matches_the_tree(self):
-        claimed = _agents_count(r"(\d+) ficheros / \d+ tests", "los ficheros de la UI")
+        claimed = _agents_count(r"(\d+) ficheros de test UI", "los ficheros de la UI")
         ui_src = REPO_ROOT / "ui" / "src"
         measured = len(list(ui_src.rglob("*.spec.ts"))) + len(list(ui_src.rglob("*.test.ts")))
         self.assertEqual(

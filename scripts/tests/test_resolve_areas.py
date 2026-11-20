@@ -4,8 +4,8 @@ Behavior tests for the CI area resolver (scripts/ci/resolve_areas.py, #248).
 
 The `changed` job of ci.yml delegates to this script both the detection and the
 fallback ("if nothing was detected, run them all"), and it emits a single
-`areas` output as a JSON list that the three consumer jobs query with exact
-membership (`contains(fromJSON(...), 'rust')`).
+`areas` output as a JSON list that the four consumer jobs (rust, frontend,
+python, docs) query with exact membership (`contains(fromJSON(...), 'rust')`).
 
 The fake here is dorny/paths-filter simulated as it behaves in Actions: it
 speaks through environment variables and its outputs are the STRINGS
@@ -32,11 +32,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 RESOLVER_SCRIPT = REPO_ROOT / "scripts" / "ci" / "resolve_areas.py"
 
-ALL_AREAS = ["rust", "frontend", "python"]
+ALL_AREAS = ["rust", "frontend", "python", "docs"]
 FILTER_ENV_VARS = {
     "rust": "FILTER_RUST",
     "frontend": "FILTER_FRONTEND",
     "python": "FILTER_PYTHON",
+    "docs": "FILTER_DOCS",
 }
 
 
@@ -52,7 +53,9 @@ class ResolveAreasCLITest(unittest.TestCase):
 
     # ── helpers ────────────────────────────────────────────────────────
 
-    def _run_resolver(self, *, rust=None, frontend=None, python=None, github_output=False):
+    def _run_resolver(
+        self, *, rust=None, frontend=None, python=None, docs=None, github_output=False
+    ):
         """Run the script with dorny simulated: outputs arrive as strings.
 
         An argument of None means dorny said nothing about that area (the
@@ -63,7 +66,7 @@ class ResolveAreasCLITest(unittest.TestCase):
             for key, value in os.environ.items()
             if key not in FILTER_ENV_VARS.values() and key != "GITHUB_OUTPUT"
         }
-        simulated = {"rust": rust, "frontend": frontend, "python": python}
+        simulated = {"rust": rust, "frontend": frontend, "python": python, "docs": docs}
         for area, value in simulated.items():
             if value is not None:
                 env[FILTER_ENV_VARS[area]] = value
@@ -125,15 +128,27 @@ class ResolveAreasCLITest(unittest.TestCase):
         proc = self._run_resolver(rust="true", frontend="false", python=None)
         self._assert_single_area_line(proc, ["rust"])
 
-    def test_all_detected_lists_the_three_areas_in_fixed_order(self):
-        proc = self._run_resolver(python="true", frontend="true", rust="true")
-        # Orden fijo (rust, frontend, python), no el orden de las variables.
+    def test_all_detected_lists_the_four_areas_in_fixed_order(self):
+        proc = self._run_resolver(python="true", docs="true", frontend="true", rust="true")
+        # Orden fijo (rust, frontend, python, docs), no el de las variables.
         self._assert_single_area_line(proc, ALL_AREAS)
         self.assertNotIn("::notice::", proc.stdout)
 
     def test_detected_subset_keeps_the_fixed_order(self):
-        proc = self._run_resolver(rust=None, frontend="true", python="true")
-        self._assert_single_area_line(proc, ["frontend", "python"])
+        proc = self._run_resolver(rust=None, frontend="true", python="true", docs="true")
+        self._assert_single_area_line(proc, ["frontend", "python", "docs"])
+
+    def test_docs_only_enables_docs_and_not_the_code_matrix(self):
+        # El caso que motiva el area docs (retro 2026-11-19, R1): un PR de
+        # wiki/AGENTS.md no debe disparar la matriz Rust/frontend.
+        proc = self._run_resolver(docs="true", rust="false", frontend="false", python="false")
+        self._assert_single_area_line(proc, ["docs"])
+        self.assertNotIn("::notice::", proc.stdout)
+
+    def test_docs_plus_code_enables_both_areas(self):
+        # Un PR que cambia codigo y ademas AGENTS.md no pierde ninguna puerta.
+        proc = self._run_resolver(rust="true", docs="true", frontend="false", python="false")
+        self._assert_single_area_line(proc, ["rust", "docs"])
 
     # ── pertenencia exacta: elementos, no substrings ───────────────────
 
@@ -146,13 +161,13 @@ class ResolveAreasCLITest(unittest.TestCase):
         areas = self._emitted_areas(proc)
         self.assertEqual(areas, ["frontend"])
         self.assertTrue("frontend" in areas)
-        for partial in ("front", "end", "rust", "python"):
+        for partial in ("front", "end", "rust", "python", "doc"):
             self.assertNotIn(partial, areas)
-        proc = self._run_resolver(rust="true", frontend="true", python="true")
+        proc = self._run_resolver(rust="true", frontend="true", python="true", docs="true")
         areas = self._emitted_areas(proc)
         for area in ALL_AREAS:
             self.assertIn(area, areas)
-        for partial in ("front", "end", "py", "ust"):
+        for partial in ("front", "end", "py", "ust", "doc"):
             self.assertNotIn(partial, areas)
 
     def test_emitted_value_is_a_json_array_not_a_plain_string(self):

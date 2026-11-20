@@ -34,6 +34,35 @@ else
   ok "openssl $openssl_version via pkg-config"
 fi
 
+# --- Target de Rust ---------------------------------------------------------
+# Un target por checkout fuera de tmpfs (retro 2026-11-19, R3): /tmp es un
+# tmpfs de 12 GB que se llena y un target compartido mezcla fingerprints de
+# otros worktrees. Es informativo: el default de los scripts ya lo respeta.
+resolved_target="${CARGO_TARGET_DIR:-$HOME/.cache/syncify-target-$(basename "$PWD")}"
+probe="$resolved_target"
+while [ ! -e "$probe" ] && [ "$probe" != "/" ]; do
+  probe="$(dirname "$probe")"
+done
+target_fstype="$(stat -f -c %T "$probe" 2>/dev/null || true)"
+if [ "$target_fstype" = "tmpfs" ]; then
+  warn "CARGO_TARGET_DIR=$resolved_target cae en tmpfs: un build grande puede morir con ENOSPC (usa \$HOME/.cache/syncify-target-\$(basename \"\$PWD\"))"
+else
+  ok "target de Rust en $resolved_target ($target_fstype)"
+fi
+
+shared_lane=""
+while IFS= read -r worktree_path; do
+  [ -n "$worktree_path" ] || continue
+  [ "$worktree_path" = "$(pwd -P)" ] && continue
+  other_default="$HOME/.cache/syncify-target-$(basename "$worktree_path")"
+  if [ "$other_default" = "$resolved_target" ]; then
+    shared_lane="$worktree_path"
+  fi
+done < <(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+if [ -n "$shared_lane" ]; then
+  warn "otro worktree ($shared_lane) resuelve al mismo target: exporta un CARGO_TARGET_DIR distinto por carril"
+fi
+
 # --- Suite Python -----------------------------------------------------------
 if [ -d .venv ]; then
   ok ".venv presente (suite: .venv/bin/python -m unittest discover -s scripts/tests)"

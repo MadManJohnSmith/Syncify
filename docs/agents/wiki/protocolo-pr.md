@@ -23,6 +23,24 @@ quedan los hechos fechados que lo complementan. Relacionada:
 - **Vía PR**: portada (`README.md` / `README.es.md`), código, cambios de
   puertas (precedente: PRs #26/#27 para el README; #283/#284 para código).
 
+## Revisión independiente con artefacto
+
+- **2026-11-19, regla**: la revisión independiente de un PR publica su
+  veredicto con `gh pr review --comment` (hallazgos, fecha y veredicto) antes
+  del merge. El comentario queda junto al diff y es comprobable; sin ese
+  artefacto, el claim «revisión independiente» no cuenta. El bot de
+  CodeRabbit (`.coderabbit.yaml`, auto-review sobre `dev`) es una segunda
+  lectura, no sustituye el artefacto. Fuente: retro 2026-11-19 §R2.
+
+## Módulos sin llamador
+
+- **2026-11-19, regla**: un issue que añade un módulo sin llamador no se
+  cierra hasta que la adopción aterrice en producción o exista un follow-up
+  enlazado. El ratchet
+  `scripts/tests/test_dead_code_allow_ratchet.py` congela el único
+  `#![allow(dead_code)]` de producción (`commands/account_refresh.rs`, cuya
+  adopción sigue en #342). Fuente: retro 2026-11-19 §R6.
+
 ## Docs y CI
 
 - **2026-11-13, verificado en `.github/workflows/ci.yml`**: CI ignora
@@ -30,6 +48,12 @@ quedan los hechos fechados que lo complementan. Relacionada:
   `scripts/tests/test_readme_claims.py`). Consecuencia: los cambios de docs
   no corren CI; la suite Python local (`.venv/bin/python -m unittest
   discover -s scripts/tests`) es la única red antes de empujar docs.
+- **2026-11-19, corregido para `dev`**: un push a `dev` que solo toca
+  `**.md`, `docs/**`, `AGENTS.md` o `GLOSSARY.md` dispara
+  `.github/workflows/docs-check.yml` con las tres puertas de
+  `scripts/tests/`; un PR de solo docs ejecuta el job `docs` de `ci.yml` sin
+  la matriz Rust/frontend. Los pushes a `main` siguen ignorando esos paths.
+  Fuente: retro 2026-11-19 §R1.
 - La puerta `scripts/tests/test_docs_consistency.py` cubre `docs/agents/`
   recursivamente desde el 2026-11-13 (incluida esta wiki): toda ruta citada
   entre tiques debe resolver.

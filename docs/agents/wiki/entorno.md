@@ -97,11 +97,22 @@ aquí solo queda lo aprendido con fecha. Relacionadas:
   funciona cuando el PR no toca lockfiles (verificado en PR #283).
   Candidato a estándar: enlazar o instalar el entorno en la preparación del
   worktree. Fuente: retro del 2026-11-13.
+- **2026-11-19**: el candidato es script. `tools/lane-setup.sh <worktree>`
+  enlaza `ui/node_modules`, `.venv` y `node_modules` desde el checkout
+  principal, construye `ui/dist` si falta y recuerda el target del carril;
+  `tools/lane-prune.sh` (dry-run por defecto) lista los worktrees ya
+  fusionados en `origin/dev` y `--apply` los elimina con su target. Fuente:
+  retro 2026-11-19 §R5.
 
 ## `/tmp` es efímero
 
 - Regla global del propietario (vigente el 2026-11-13): handoffs y
   artefactos de sesión a `~/.local/state/<proyecto>/`; `/tmp` se pierde con
-  cada reinicio. El target de Rust vive en `/tmp/syncify-target` por
-  decisión de `AGENTS.md` (llenar el disco del repo es el mal menor
-  aceptado): tras un reinicio, la primera puerta recompila.
+  cada reinicio.
+- **2026-11-19**: el target de Rust ya no vive en `/tmp/syncify-target`.
+  `AGENTS.md`, `tools/prepush-check.sh` y `tools/prueba-limpia.sh` usan
+  `${CARGO_TARGET_DIR:-$HOME/.cache/syncify-target-$(basename "$PWD")}`, un
+  target por checkout fuera de tmpfs. Motivo medido: `/tmp` es un tmpfs de
+  12 GB que se llenó al 100% (ENOSPC) y el target compartido inventó un
+  `E0061` de otro árbol. El default histórico en `/tmp` queda en las
+  entradas fechadas de arriba. Fuente: retro 2026-11-19 §R3.
