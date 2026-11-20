@@ -2,8 +2,7 @@
 
 use std::time::Instant;
 use syncify_tauri_lib::download::lyrics::{
-    clear_lyrics_cache, set_cached_lyrics, LyricsPipelineService, LyricsResolution,
-    ResolutionStatus,
+    clear_lyrics_cache, set_cached_lyrics, LyricsResolution, ResolutionStatus,
 };
 use syncify_tauri_lib::download::progress::{
     DownloadPhaseTimings, DownloadRequest, DownloadResult,
@@ -82,7 +81,7 @@ async fn test_animated_cover_album_caching() {
 async fn test_lyrics_identity_caching() {
     clear_lyrics_cache();
 
-    let service = LyricsPipelineService::new();
+    let service = syncify_tauri_lib::download::lyrics::pipeline_default();
     let artist = "ArtistBatchTest";
     let title = "TrackBatchTest";
     let album = Some("AlbumBatchTest");
@@ -293,7 +292,7 @@ async fn test_in_memory_cache_benchmark_20_tracks() {
 
     let client = syncify_tauri_lib::download::http_client::create_http_client();
     let engine = EnrichmentEngine::new();
-    let lyrics_service = LyricsPipelineService::new();
+    let lyrics_service = syncify_tauri_lib::download::lyrics::pipeline_default();
 
     // 1. Warm-up cache with 1 track
     let _ = extract_apple_music_token(&client).await;
@@ -457,7 +456,7 @@ async fn test_physical_batch_benchmark_20_tracks_comparison() {
 
     let client = syncify_tauri_lib::download::http_client::create_http_client();
     let engine = EnrichmentEngine::new();
-    let lyrics_service = LyricsPipelineService::new();
+    let lyrics_service = syncify_tauri_lib::download::lyrics::pipeline_default();
     let concurrency_semaphore = Arc::new(Semaphore::new(5)); // Concurrency 5
 
     // Seed MusicBrainz cache

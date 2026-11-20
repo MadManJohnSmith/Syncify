@@ -5623,6 +5623,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncify-lyrics-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "flate2",
+ "futures",
+ "metaflac",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "syncify-core-domain",
+ "syncify-lyrics-domain",
+ "tokio",
+ "tracing",
+ "urlencoding",
+]
+
+[[package]]
 name = "syncify-metadata-domain"
 version = "0.1.0"
 dependencies = [
@@ -5674,6 +5694,7 @@ dependencies = [
  "syncify-flac-writer",
  "syncify-fmp4-flac",
  "syncify-lyrics-domain",
+ "syncify-lyrics-engine",
  "syncify-metadata-domain",
  "syncify-player",
  "syncify-tidal-downloader",

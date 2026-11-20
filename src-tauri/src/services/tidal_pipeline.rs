@@ -9,8 +9,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::crypto;
 use crate::download::lyrics::{
-    validate_and_embed_flac_lyrics, LyricsPipelineService, LyricsResolution, LyricsSyncType,
-    ResolutionStatus,
+    validate_and_embed_flac_lyrics, LyricsResolution, LyricsSyncType, ResolutionStatus,
 };
 use crate::download::progress::{DownloadPhase, DownloadPhaseTimings, DownloadPhaseTracker};
 use crate::services::animated_cover::{resolve_and_download_animated_cover, AnimatedCoverStatus};
@@ -1950,7 +1949,7 @@ where
                 .with_resolved_track(resolved_info.clone()),
         );
 
-        let lyrics_service = LyricsPipelineService::from_db(db).await;
+        let lyrics_service = crate::download::lyrics::pipeline_from_db(db).await;
         let duration_sec = track.duration as f64;
         let mut resolved_lyrics_res: Option<LyricsResolution> = None;
 
@@ -2446,7 +2445,7 @@ where
         );
 
         let mut m4a_lyrics_str: Option<String> = None;
-        let lyrics_service = LyricsPipelineService::from_db(db).await;
+        let lyrics_service = crate::download::lyrics::pipeline_from_db(db).await;
         let duration_sec = track.duration as f64;
         // LY07 (#180): same deletion-mark gate as the FLAC path, with the
         // validated library identity resolved before any write.
@@ -4733,7 +4732,7 @@ pub async fn reenrich_download_file_with_baseline(
     // during repair too — the repair must not resurrect what the user deleted.
     let repair_lyrics_allowed = !lyrics_total_mark_blocks(db, old_track_id).await;
 
-    let lyrics_service = LyricsPipelineService::from_db(db).await;
+    let lyrics_service = crate::download::lyrics::pipeline_from_db(db).await;
     let lyrics_res = if repair_lyrics_allowed {
         lyrics_service
             .resolve_lyrics_and_sidecar(&final_artist, &final_title, Some(&final_album), 180.0)

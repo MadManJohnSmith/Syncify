@@ -5,6 +5,7 @@ members = [
     "crates/syncify-flac-writer",
     "crates/syncify-fmp4-flac",
     "crates/syncify-lyrics-domain",
+    "crates/syncify-lyrics-engine",
     "crates/syncify-metadata-domain",
     "crates/syncify-tidal-downloader",
     "crates/syncify-player",
