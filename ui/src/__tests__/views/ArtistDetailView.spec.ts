@@ -14,21 +14,41 @@ vi.mock('@/composables/usePlayer', () => ({
     }),
 }));
 
-vi.mock('vue-router', () => ({
-    useRoute: () => ({
-        params: { id: '42' },
-        query: {},
-    }),
-    useRouter: () => ({
-        push: vi.fn(),
-        back: vi.fn(),
-    }),
+const toastMocks = vi.hoisted(() => ({
+    error: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
 }));
+vi.mock('@/composables/useToast', () => ({
+    useToast: () => toastMocks,
+}));
+
+// La ruta es REACTIVA a propósito: App.vue monta `<component :is="Component" />`
+// sin `:key`, así que pasar de /artist/:id a otro /artist/:id reutiliza la
+// instancia (mismo registro de ruta) y `onMounted` no se repite. El mock
+// estático anterior no podía disparar el watch del parámetro.
+const routeHarness = vi.hoisted(() => ({
+    route: null as unknown as { params: { id: string }; query: Record<string, unknown> },
+}));
+vi.mock('vue-router', async () => {
+    const { reactive } = await import('vue');
+    const route = reactive({ params: { id: '42' }, query: {} });
+    routeHarness.route = route;
+    return {
+        useRoute: () => route,
+        useRouter: () => ({
+            push: vi.fn(),
+            back: vi.fn(),
+        }),
+    };
+});
 
 describe('ArtistDetailView', () => {
     beforeEach(() => {
         resetMocks();
         vi.clearAllMocks();
+        routeHarness.route.params.id = '42';
     });
 
     const mockArtist = {
@@ -131,6 +151,8 @@ describe('ArtistDetailView', () => {
         // toca la lista virtualizada (sigue con las 2 de `top_tracks`).
         const pages = invokeCalls.filter(c => c.cmd === 'query_library_artist_tracks');
         expect(pages.map(c => (c.args.query as { offset: number }).offset)).toEqual([0, 2, 4, 6]);
+        // Bloque lleno: el máximo que acepta el servidor (ARTIST_TRACK_PAGE_SIZE_MAX).
+        expect(pages.map(c => (c.args.query as { limit: number }).limit)).toEqual([200, 200, 200, 200]);
         expect(wrapper.findAll('[data-testid="artist-track-row"]')).toHaveLength(0);
     });
 
@@ -172,10 +194,21 @@ describe('ArtistDetailView', () => {
     // avisa; no se encola la página parcial que sí estaba en pantalla.
     it('no encola una colección parcial si la enumeración completa falla', async () => {
         const invokeCalls: { cmd: string; args: any }[] = [];
+        const enumeration: { reject: ((error: Error) => void) | null } = { reject: null };
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
             if (cmd === 'get_artist') return { ...mockArtist, tracks_total: 7 };
-            if (cmd === 'query_library_artist_tracks') throw new Error('network down');
+            if (cmd === 'query_library_artist_tracks') {
+                // La primera página queda PENDIENTE a propósito: mientras la
+                // enumeración está en vuelo los dos botones deben estar
+                // deshabilitados (si se borra `:disabled`, esto falla).
+                if (!enumeration.reject) {
+                    return new Promise((_resolve, reject) => {
+                        enumeration.reject = reject;
+                    });
+                }
+                return Promise.reject(new Error('network down'));
+            }
             return null;
         });
 
@@ -185,8 +218,25 @@ describe('ArtistDetailView', () => {
         await wrapper.find('[data-testid="artist-download-all"]').trigger('click');
         await flushPromises();
 
+        expect(wrapper.find('[data-testid="artist-download-all"]').attributes('disabled')).toBeDefined();
+        expect(wrapper.find('[data-testid="artist-shuffle-play"]').attributes('disabled')).toBeDefined();
+
+        enumeration.reject!(new Error('network down'));
+        await flushPromises();
+
         expect(invokeCalls.some(c => c.cmd === 'add_batch_to_queue')).toBe(false);
         expect(wrapper.find('[data-testid="artist-download-all"]').attributes('disabled')).toBeUndefined();
+        expect(wrapper.find('[data-testid="artist-shuffle-play"]').attributes('disabled')).toBeUndefined();
+        expect(toastMocks.error).toHaveBeenCalledWith('Failed to load the artist tracks', 'network down');
+
+        // La misma enumeración es la de Shuffle Play (:444): también avisa y
+        // no toca el reproductor.
+        await wrapper.find('[data-testid="artist-shuffle-play"]').trigger('click');
+        await flushPromises();
+
+        expect(mockReplaceQueueAndPlay).not.toHaveBeenCalled();
+        expect(toastMocks.error).toHaveBeenCalledTimes(2);
+        expect(toastMocks.error).toHaveBeenLastCalledWith('Failed to load the artist tracks', 'network down');
     });
 
     it('enqueues single track download with add_to_queue', async () => {
@@ -295,6 +345,66 @@ describe('ArtistDetailView', () => {
         expect(queries[queries.length - 1]).toEqual({ artistId: 42, offset: 3, limit: 100 });
         rows = wrapper.findAll('[data-testid="artist-track-row"]');
         expect(rows).toHaveLength(4);
+    });
+
+    // #336 (AC): recargar con la pestaña de pistas ACTIVA. Cambiar de artista
+    // no remonta la vista (App.vue no pone `:key` en router-view), así que el
+    // watch del parámetro debe recargar el detalle y repedir la página extra
+    // que el `onMounted` inicial ya no va a pedir.
+    it('recarga el artista con la pestaña de pistas activa y repide la página extra', async () => {
+        const queries: { artistId: number; offset: number; limit: number }[] = [];
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_artist') {
+                const requestedId = (args as { artistId: number }).artistId;
+                if (requestedId === 43) {
+                    return {
+                        ...mockArtist,
+                        id: 43,
+                        name: 'The Rolling Stones',
+                        tracks_total: 7,
+                        albums: [],
+                        top_tracks: [201, 202, 203, 204, 205].map(id => ({
+                            id, title: `Track ${id}`, album: 'Let It Bleed', durationMs: 180000,
+                        })),
+                    };
+                }
+                return { ...mockArtist, tracks_total: 7 };
+            }
+            if (cmd === 'query_library_artist_tracks') {
+                const query = (args as { query: { artistId: number; offset: number; limit: number } }).query;
+                queries.push(query);
+                return {
+                    tracks: [{
+                        id: 300 + query.offset, title: `More ${query.offset}`, album: 'Let It Bleed',
+                        albumId: 11, durationMs: 1000, collaborators: [], sources: [],
+                    }],
+                    total: 7,
+                    offset: query.offset,
+                    limit: query.limit,
+                    hasMore: false,
+                };
+            }
+            return null;
+        });
+
+        const wrapper = mount(ArtistDetailView);
+        await flushPromises();
+
+        // Pestaña de pistas activa ANTES del cambio de artista: su watch pide
+        // una página extra de las 2 de `top_tracks` (2 de 7).
+        await wrapper.findAll('button').find(b => b.text().includes('All Tracks'))!.trigger('click');
+        await flushPromises();
+        expect(queries).toEqual([{ artistId: 42, offset: 2, limit: 100 }]);
+
+        routeHarness.route.params.id = '43';
+        await flushPromises();
+
+        expect(wrapper.text()).toContain('The Rolling Stones');
+        expect(wrapper.find('[data-testid="artist-tracks-scroll"]').exists()).toBe(true);
+        // get_artist del nuevo artista trae 5 de 7: la página extra va al
+        // offset 5, no al 0 (la lista se reinició con su `top_tracks`).
+        expect(queries[queries.length - 1]).toEqual({ artistId: 43, offset: 5, limit: 100 });
+        expect(wrapper.findAll('[data-testid="artist-track-row"]')).toHaveLength(6);
     });
 
     it('reintenta la página siguiente tras un fallo de paginación', async () => {

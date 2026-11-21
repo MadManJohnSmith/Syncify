@@ -37,6 +37,13 @@ se comporta una lista; las vistas solo declaran su fuente.
 | `MetadataView` | `get_library(0,500)` o `get_tracks_needing_metadata(500)` según `filterType` | página única, sin `has_more` | ids |
 | `DownloadsView` | `get_queue` completa | sin paginación server-side; recorte client-side a 50 por sección y salto por posición | sin selección |
 
+**Por qué el detalle pagina y no usa el runner por lotes (L05, #336):**
+`LibrarySelection` en modo `filter` viaja como `LibraryQuery`, que no tiene
+dimensión de artista; usar el runner para «todo el artista» habría exigido un
+campo nuevo en el contrato de filtros. La colección completa se obtiene
+paginando `query_library_artist_tracks` a bloque lleno (200), la misma consulta
+que alimenta la lista.
+
 La optimización de prefijo ordenado de `LibraryView` (`sortedPrefix`/`mergeSorted`)
 se retiró con L01: el orden lo fija el servidor y el renderer solo concatena
 páginas. `search_tracks` sigue existiendo para la búsqueda global (CommandPalette,

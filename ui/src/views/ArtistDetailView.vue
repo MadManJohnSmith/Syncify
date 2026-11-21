@@ -282,8 +282,10 @@ let tracksRequestSeq = 0
 
 const hasMoreTracks = computed(() => tracks.value.length < tracksTotal.value)
 
-// Get artist ID from route params
-const artistId = Number(route.params.id)
+// El id sale de la ruta en cada lectura: App.vue monta `<component :is="Component" />`
+// sin `:key`, así que navegar de /artist/:id a otro /artist/:id REUTILIZA esta
+// instancia y `onMounted` no se repite (mismo registro de ruta = mismo componente).
+const artistId = computed(() => Number(route.params.id))
 
 const {
   containerRef,
@@ -314,7 +316,7 @@ async function loadMoreTracks(): Promise<void> {
   tracksLoadingMore.value = true
   try {
     const result = await queryLibraryArtistTracks({
-      artistId,
+      artistId: artistId.value,
       offset: tracks.value.length,
       limit: TRACK_PAGE_SIZE,
     })
@@ -348,9 +350,9 @@ function retryTracks(): void {
 
 /**
  * Pide la página extra solo cuando la pestaña de pistas está abierta. Se usa
- * al entrar en la pestaña y también tras recargar el artista: un reintento
- * con la pestaña ya activa no cambia `activeTab` y dejaría las cinco filas
- * de `top_tracks` sin scroll para pedir el resto.
+ * al entrar en la pestaña y también tras recargar el artista con esa pestaña
+ * ya activa: ese caso no cambia `activeTab` y dejaría las cinco filas de
+ * `top_tracks` sin scroll para pedir el resto.
  */
 function ensureExtraTracksPage(): void {
   if (activeTab.value === 'tracks' && hasMoreTracks.value) {
@@ -382,7 +384,7 @@ async function loadArtistCollection(): Promise<ArtistTrackRow[]> {
   let offset = 0
   for (;;) {
     const page = await queryLibraryArtistTracks({
-      artistId,
+      artistId: artistId.value,
       offset,
       limit: FULL_COLLECTION_PAGE_SIZE,
     })
@@ -499,7 +501,7 @@ async function handleToggleFavorite() {
   const previousState = isFavorite.value
   isFavorite.value = !previousState
   try {
-    const newState = await toggleArtistFavorite(artistId)
+    const newState = await toggleArtistFavorite(artistId.value)
     isFavorite.value = newState
   } catch (err) {
     isFavorite.value = previousState
@@ -530,14 +532,14 @@ async function loadArtist() {
   isLoading.value = true
   error.value = null
   
-  if (isNaN(artistId) || artistId === 0) {
+  if (isNaN(artistId.value) || artistId.value === 0) {
     error.value = "Invalid artist ID"
     isLoading.value = false
     return
   }
 
   try {
-    const result = await getArtist(artistId)
+    const result = await getArtist(artistId.value)
     if (result) {
       artist.value = result
       // `top_tracks` ES la primera página de la consulta del detalle (L08) y
@@ -570,6 +572,17 @@ async function loadArtist() {
  */
 watch(activeTab, () => {
   ensureExtraTracksPage()
+})
+
+/**
+ * Cambiar de artista no remonta la vista (`<component :is="Component" />` sin
+ * `:key` en App.vue), así que `onMounted` no vuelve a correr: sin este watch
+ * quedarían en pantalla el artista, su colección y su paginación anteriores.
+ * `loadArtist` ya reinicia la lista y, si la pestaña de pistas sigue activa,
+ * vuelve a pedir su página extra.
+ */
+watch(() => route.params.id, () => {
+  loadArtist()
 })
 
 onMounted(() => {
