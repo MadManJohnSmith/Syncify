@@ -270,6 +270,24 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 - **Cierra**: un brazo por commit, cada uno con su test de caracterización verde antes y
   después, y el orquestador reducido a un bucle corto sobre los brazos.
 
+### D-09 — Reintento DASH re-descarga sobre un temporal a medio escribir
+
+- **Observado (2026-11-20, review de PR #349, hallazgo preexistente)**: en la rama DASH de
+  `download_audio_payload_with_progress` (`crates/syncify-tidal-downloader/src/lib.rs`), el
+  `File::create` del temporal está fuera del bucle de reintentos: si `write_all` falla a
+  medias en el intento N (p. ej. disco lleno), el intento N+1 re-descarga el segmento y
+  añade sin truncar. El control de completitud aterrizado en #349 es de longitud (bytes en
+  disco == bytes consumidos) y no detectaría el solape; el remux posterior lo tumbaría casi
+  siempre con `RemuxError`, así que el defecto visible es un fallo de descarga, no
+  corrupción silenciosa. La estructura de reintentos es idéntica antes y después de #349:
+  el PR no la empeora, y sus garantías nuevas (libro de consumo en orden, purga del
+  temporal en fallo de segmento/init) no cubren este camino.
+- **Corrección que lo cerraría**: truncar o recrear el temporal al inicio de cada intento,
+  con un test que reproduzca el fallo de escritura a medias. Cobertura simétrica opcional:
+  un test offline con servidor local para `PayloadIncomplete` en la rama directa (los
+  criterios de #45 eran DASH y esa rama solo tiene tests live `#[ignore]`).
+- **Cierra**: el truncado por intento con su test rojo→verde.
+
 ## Cerrado en esta revisión
 
 | ID | Qué se cerró | Evidencia |
