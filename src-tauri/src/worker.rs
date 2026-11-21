@@ -293,19 +293,6 @@ fn sqlite_utc_timestamp(at: std::time::Instant) -> String {
 
 /// Formato por extensión cuando la inspección física no pudo leer el fichero:
 /// la misma heurística que `mark_complete` usa para etiquetar sin inspector.
-fn extension_format(file_path: &str) -> String {
-    let lower = file_path.to_lowercase();
-    if lower.ends_with(".mp3") {
-        "MP3".to_string()
-    } else if lower.ends_with(".m4a") || lower.ends_with(".aac") {
-        "AAC".to_string()
-    } else if lower.ends_with(".opus") {
-        "OPUS".to_string()
-    } else {
-        "FLAC".to_string()
-    }
-}
-
 /// Punto 3: ¿procede intentar una resolución viva por ISRC cuando el resolver
 /// no encontró ninguna fuente descargable?
 ///
@@ -832,16 +819,17 @@ impl DownloadWorker {
                 tracing::warn!("D05: inspección física cancelada en el gate: {e}");
                 None
             });
-            let (bd, sr, fmt) = phys
-                .as_ref()
-                .map(|p| (p.bit_depth, p.sample_rate, p.format.clone()))
-                .unwrap_or_else(|| {
-                    (
-                        res.bit_depth,
-                        res.sample_rate,
-                        extension_format(&res.file_path),
-                    )
-                });
+            // #338: bajo política estricta, una reinspección fallida NO cae a
+            // los valores anunciados por el proveedor (no son evidencia). Antes
+            // de este cierre, un FLAC/M4A ilegible se evaluaba con lo declarado.
+            let Some(phys) = phys else {
+                return Err(format!(
+                    "RejectedQuality: physical re-inspection failed for '{}'; \
+                     strict quality policy does not trust declared values",
+                    res.file_path
+                ));
+            };
+            let (bd, sr, fmt) = (phys.bit_depth, phys.sample_rate, phys.format.clone());
             let physical_tier = syncify_core_domain::quality::classify_audio_tier(
                 Some(bd),
                 Some(sr),
@@ -866,6 +854,79 @@ impl DownloadWorker {
             }
         }
         Ok(())
+    }
+
+    /// D05/#338: costura observable del orden gate → `mark_complete`.
+    ///
+    /// La producción y los tests usan esta misma llamada: si el gate rechaza,
+    /// la fila NO se promociona y el fichero promovido no queda sin dueño
+    /// (se borra cuando ninguna fila del ledger lo referencia). Antes, el
+    /// orden solo se vigilaba buscando cadenas en el fuente.
+    pub async fn verify_then_complete(
+        &self,
+        queue_id: i64,
+        res: &crate::download::DownloadResult,
+        expected: crate::download::verification::ExpectedDelivery,
+        require_cover: bool,
+        strict_quality: bool,
+        extra_tolerance_secs: f64,
+    ) -> Result<(), String> {
+        match self
+            .verify_delivery_before_complete(
+                queue_id,
+                res,
+                expected,
+                require_cover,
+                strict_quality,
+                extra_tolerance_secs,
+            )
+            .await
+        {
+            Ok(()) => {
+                self.mark_complete(queue_id, res).await;
+                Ok(())
+            }
+            Err(reason) => {
+                self.discard_unowned_promoted_file(queue_id, &res.file_path)
+                    .await;
+                Err(reason)
+            }
+        }
+    }
+
+    /// #338: un rechazo de verificación después de `checkpoint_promoted` no
+    /// deja el fichero promovido sin dueño. Si ninguna fila del ledger lo
+    /// referencia se borra; si ya tiene dueño se conserva y se registra.
+    async fn discard_unowned_promoted_file(&self, queue_id: i64, file_path: &str) {
+        let owner: Option<i64> =
+            sqlx::query_scalar("SELECT track_id FROM downloads WHERE file_path = ? LIMIT 1")
+                .bind(file_path)
+                .fetch_optional(&self.db)
+                .await
+                .unwrap_or(None);
+        if let Some(track_id) = owner {
+            tracing::warn!(
+                queue_id,
+                file_path,
+                track_id,
+                "[Worker] Rejected delivery kept: the ledger already owns this path"
+            );
+            return;
+        }
+        match tokio::fs::remove_file(file_path).await {
+            Ok(()) => tracing::warn!(
+                queue_id,
+                file_path,
+                "[Worker] Rejected delivery removed: promoted file had no ledger owner"
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(
+                queue_id,
+                file_path,
+                error = %e,
+                "[Worker] Failed to remove rejected promoted file"
+            ),
+        }
     }
 
     /// La calidad pedida original de la fila (la misma fuente que usa
@@ -2543,7 +2604,7 @@ impl DownloadWorker {
                 // la entrega por debajo de lo pedido. Si falla: fallo de
                 // verificación y el ledger de `downloads` NO se escribe.
                 let delivery_gate = self
-                    .verify_delivery_before_complete(
+                    .verify_then_complete(
                         queue_id,
                         &download_result,
                         expected_delivery,
@@ -2580,7 +2641,6 @@ impl DownloadWorker {
                     return;
                 }
 
-                self.mark_complete(queue_id, &download_result).await;
                 self.schedule_bpm_postprocess(queue_id, track_id).await;
 
                 // BD-9: cerrar la entrada del journal. Sin esto la operación

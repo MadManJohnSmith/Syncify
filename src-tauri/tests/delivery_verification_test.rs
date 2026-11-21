@@ -546,35 +546,104 @@ fn provider_delivery_account_propagates_into_result() {
     assert_eq!(delivery.result.account_id, Some(3));
 }
 
-/// Guardia estructural: el gate corre en `process_download_internal` ANTES de
-/// `mark_complete`, y un fallo del gate es un fallo de verificación que no
-/// toca el ledger. La llamada al gate y el manejo del error deben seguir
-/// entre la verificación física básica y la promoción.
-#[test]
-fn gate_wiring_runs_before_mark_complete() {
-    let source =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/worker.rs"))
-            .expect("worker.rs legible");
-    let gate_call = source
-        .find("verify_delivery_before_complete(")
-        .expect("el worker llama al gate");
-    let gate_error = source[gate_call..]
-        .find("DeliveryVerificationFailed")
-        .expect("el fallo del gate se marca como fallo de verificación");
-    let complete_call = source
-        .find("self.mark_complete(queue_id, &download_result)")
-        .expect("la promoción sigue existiendo");
+/// #338: el orden gate → `mark_complete` se verifica por comportamiento, no
+/// buscando cadenas en el fuente. `verify_then_complete` es la misma costura
+/// que usa `process_download_internal`: un rechazo del gate deja la fila en
+/// `downloading`, sin ledger, y borra el fichero promovido sin dueño; una
+/// entrega válida sí promociona.
+#[tokio::test]
+async fn gate_runs_before_mark_complete_and_cleans_rejected_promotion() {
+    let dir = TempDir::new().unwrap();
+    let pool = migrated_pool(&dir, "order.db").await;
+    let (queue_id, track_id) = seed_downloading_row(&pool, &dir, 1, "hires").await;
+    let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+
+    // Físico 197 s frente a catálogo 200 s: el gate rechaza.
+    let rejected = dir.path().join("rejected.flac");
+    write_verified_flac(&rejected, 197 * 44_100);
+    let reason = worker
+        .verify_then_complete(
+            queue_id,
+            &delivered_result(&rejected),
+            expected_delivery(200_000),
+            true,
+            false,
+            0.0,
+        )
+        .await
+        .expect_err("el gate debe rechazar antes de mark_complete");
     assert!(
-        gate_error < complete_call,
-        "el gate (fallo en {}) debe correr antes de mark_complete ({}): \
-         un fichero no verificado no se promociona",
-        gate_error,
-        complete_call
+        reason.contains("duration out of tolerance"),
+        "motivo: {reason}"
     );
-    // El fallo de verificación persiste con el prefijo reservado y sin ledger.
-    let failure_block = &source[gate_error..complete_call];
+    assert_eq!(
+        queue_status(&pool, queue_id).await,
+        "downloading",
+        "un rechazo no promociona la fila"
+    );
+    assert!(ledger_row(&pool, track_id).await.is_none(), "sin ledger");
     assert!(
-        failure_block.contains("mark_permanent_failure"),
-        "el fallo de verificación marca la fila"
+        !rejected.exists(),
+        "el fichero promovido rechazado no puede quedar sin dueño"
     );
+
+    // La misma costura con una entrega válida promociona y escribe el ledger.
+    let accepted = dir.path().join("accepted.flac");
+    write_verified_flac(&accepted, 200 * 44_100);
+    worker
+        .verify_then_complete(
+            queue_id,
+            &delivered_result(&accepted),
+            expected_delivery(200_000),
+            true,
+            false,
+            0.0,
+        )
+        .await
+        .expect("una entrega verificada completa");
+    assert_eq!(queue_status(&pool, queue_id).await, "complete");
+    assert!(
+        ledger_row(&pool, track_id).await.is_some(),
+        "ledger escrito"
+    );
+}
+
+/// #338 AC: un FLAC o M4A no vacío que el lector no puede parsear no se marca
+/// `complete` (antes el gate lo trataba como «formato sin lector»).
+#[tokio::test]
+async fn unreadable_flac_and_m4a_never_complete() {
+    let dir = TempDir::new().unwrap();
+
+    for (name, bytes) in [
+        ("corrupt.flac", b"fLaC-not-a-parseable-tag-chain".as_slice()),
+        ("corrupt.m4a", b"not-an-mp4-container".as_slice()),
+    ] {
+        let pool = migrated_pool(&dir, &format!("unreadable-{name}.db")).await;
+        let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+        let (queue_id, track_id) = seed_downloading_row(&pool, &dir, 1, "lossless").await;
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+
+        let reason = worker
+            .verify_then_complete(
+                queue_id,
+                &delivered_result(&path),
+                expected_delivery(200_000),
+                false,
+                false,
+                0.0,
+            )
+            .await
+            .expect_err("un fichero ilegible con lector debe fallar cerrado");
+        assert!(
+            reason.contains("tags unreadable in a format that declares a reader"),
+            "{name}: motivo: {reason}"
+        );
+        assert_eq!(queue_status(&pool, queue_id).await, "downloading");
+        assert!(
+            ledger_row(&pool, track_id).await.is_none(),
+            "{name}: sin ledger"
+        );
+        assert!(!path.exists(), "{name}: sin fichero huérfano");
+    }
 }

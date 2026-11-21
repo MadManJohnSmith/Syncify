@@ -858,11 +858,23 @@ impl QualityPolicy {
 /// fallback instead of silently inventing one.
 pub fn parse_bitrate_kbps(quality: &str) -> Option<i32> {
     let q = quality.trim().to_lowercase();
-    // "128kbps" / "96k" tokens first; a bare "320" is the whole token.
-    let token = q
-        .split_whitespace()
-        .find(|t| t.ends_with("kbps") || t.ends_with('k'))
-        .unwrap_or(q.as_str());
+    // Contrato de etiquetas (#338):
+    //   1. token con unidad: "128kbps" / "96k" / "320 kbps";
+    //   2. token numérico sin unidad: "AAC 256" / "320" (el número ES kbps);
+    //   3. sin token numérico: "lossless", "low", "FLAC 24-bit / 96.0kHz" → None.
+    let tokens: Vec<&str> = q.split_whitespace().collect();
+    let numeric = tokens
+        .iter()
+        .find(|t| {
+            t.chars().next().is_some_and(|c| c.is_ascii_digit())
+                && (t.ends_with("kbps") || t.ends_with('k'))
+        })
+        .or_else(|| {
+            tokens
+                .iter()
+                .find(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()))
+        });
+    let token = numeric.copied().unwrap_or(q.as_str());
     let digits: String = token.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse::<i32>().ok().filter(|br| *br > 0)
 }
@@ -1401,12 +1413,14 @@ mod tests {
         assert_eq!(parse_bitrate_kbps("0kbps"), None);
     }
 
-    /// #338, caracterización: `parse_bitrate_kbps` solo reconoce la etiqueta
-    /// con sufijo (`"AAC 96k"`); una etiqueta sin sufijo como `"AAC 256"` no
-    /// aporta evidencia. El contrato se amplía en el hito del núcleo.
+    /// #338: el contrato de etiquetas cubre también el número sin sufijo.
     #[test]
-    fn characterization_parse_bitrate_rejects_suffixless_label() {
-        assert_eq!(parse_bitrate_kbps("AAC 256"), None);
+    fn test_parse_bitrate_accepts_suffixless_label() {
+        assert_eq!(parse_bitrate_kbps("AAC 256"), Some(256));
+        assert_eq!(parse_bitrate_kbps("MP3 320"), Some(320));
+        assert_eq!(parse_bitrate_kbps("320 kbps"), Some(320));
+        // Una resolución no es un bitrate: el contrato sigue devolviendo None.
+        assert_eq!(parse_bitrate_kbps("FLAC 24-bit / 96.0kHz"), None);
     }
 
     #[test]
