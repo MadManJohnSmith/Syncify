@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>WK-01 · pantalla de prueba</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #101820; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script>
+// Pantalla de prueba idéntica para las dos rutas (compatible y acelerada):
+// un bloque rojo que se desplaza a velocidad constante sobre fondo oscuro, más
+// un contador de frames. El bloque permite medir píxeles rojos en la ventana
+// (prueba de contenido visible) y los ticks de requestAnimationFrame miden
+// producción de frames en el proceso web. `n` es monótono: la diferencia entre
+// dos muestras da los frames del intervalo.
+(function () {
+  "use strict";
+
+  const W = 480;
+  const H = 360;
+  const stage = document.getElementById("stage");
+  stage.width = W;
+  stage.height = H;
+  const ctx = stage.getContext("2d");
+
+  const post = (payload) => {
+    try {
+      window.webkit.messageHandlers.wk01.postMessage(JSON.stringify(payload));
+    } catch (err) {
+      /* el puente no existe fuera de la sonda */
+    }
+  };
+
+  let n = 0;
+  let last = 0;
+  const intervals = [];
+
+  function frame(now) {
+    if (last > 0) {
+      intervals.push(now - last);
+      if (intervals.length > 120) intervals.shift();
+    }
+    last = now;
+    n += 1;
+
+    ctx.fillStyle = "#101820";
+    ctx.fillRect(0, 0, W, H);
+
+    // Bandas estáticas: referencias de color para distinguir "fondo uniforme"
+    // de "contenido pintado" aun si el bloque no está en pantalla.
+    ctx.fillStyle = "#16425b";
+    ctx.fillRect(0, 0, W, 40);
+    ctx.fillStyle = "#1f7a8c";
+    ctx.fillRect(0, H - 40, W, 40);
+
+    // Bloque rojo en movimiento horizontal, 60x60 CSS px.
+    ctx.fillStyle = "#e04040";
+    ctx.fillRect((n * 5) % (W - 60), 120, 60, 60);
+
+    ctx.fillStyle = "#f2f4f8";
+    ctx.font = "20px sans-serif";
+    ctx.fillText("WK-01 frame " + n, 16, 28);
+
+    if (n === 1 || n % 10 === 0) {
+      post({
+        n: n,
+        intervals: intervals.slice(-40),
+        hidden: document.hidden,
+        dpr: window.devicePixelRatio,
+      });
+    }
+    requestAnimationFrame(frame);
+  }
+
+  post({ ready: true, hidden: document.hidden, dpr: window.devicePixelRatio });
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
