@@ -125,7 +125,8 @@ export async function startMigration(
     playlistIds?: string[],
     options?: MigrationOptions,
     sourceAccountId?: number | null,
-    destinationAccountId?: number | null
+    destinationAccountId?: number | null,
+    collections?: string[]
 ): Promise<string> {
     validateMigrationAccounts(sourceService, destinationService, sourceAccountId, destinationAccountId);
     return invoke('start_migration', {
@@ -134,6 +135,9 @@ export async function startMigration(
         playlistIds,
         sourceAccountId: sourceAccountId ?? null,
         destinationAccountId: destinationAccountId ?? null,
+        // Collections the job carries (0113); undefined keeps the legacy
+        // track-favorites flow, the same wire shape as before M01.
+        collections: collections && collections.length > 0 ? collections : undefined,
         options: options || {
             match_threshold: 0.80,
             skip_unmatched: true,

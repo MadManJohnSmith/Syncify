@@ -776,7 +776,7 @@
                     Destination: {{ getServiceName(dest) }} · account {{ destinationAccounts[dest] ?? 'default' }}
                     · {{ previewedPairMatches(dest) ? `${previewSummary.total ?? 0} items previewed` : 'not previewed' }}
                   </p>
-                  <p class="mt-2">Content selected: {{ selectedContent.join(', ') }}. The existing engine does not filter every content category independently; the preview is for its actual source selection.</p>
+                  <p class="mt-2">Content selected: {{ selectedContent.join(', ') }}. Tracks and albums are read and matched independently; playlists are mirrored from the transferred tracks. The preview counts tracks only.</p>
                   <p v-if="destinationServices.length !== 1" class="mt-2 font-medium text-amber-700 dark:text-amber-300" data-testid="batch-blocked">Batch writes are disabled: each destination account needs a verified preview and explicit confirmation.</p>
                   <label v-else class="mt-3 flex items-start gap-2 cursor-pointer">
                     <input v-model="transferConfirmed" type="checkbox" data-testid="confirm-transfer" class="mt-1" :disabled="!previewedPairMatches(destinationServices[0])">
@@ -1046,7 +1046,10 @@
                 <div v-if="showFailedTracks" class="mt-2 border border-gray-200 dark:border-border-dark rounded-lg overflow-hidden">
                   <div v-for="track in failedTracks" :key="track.id" class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50 last:border-0 flex items-center justify-between">
                     <div class="min-w-0">
-                      <p class="text-sm font-medium text-gray-900 dark:text-white">{{ track.source_track_title }}</p>
+                      <p class="text-sm font-medium text-gray-900 dark:text-white">
+                        {{ track.source_track_title }}
+                        <span v-if="track.kind === 'album'" class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-500 align-middle" data-testid="item-kind-badge">album</span>
+                      </p>
                       <p class="text-xs text-text-secondary">{{ track.source_track_artist }}</p>
                       <p class="text-xs text-error mt-1">{{ track.error_message || 'Transfer failed' }}</p>
                     </div>
@@ -1066,7 +1069,10 @@
                 <div v-if="showSkippedTracks" class="mt-2 border border-gray-200 dark:border-border-dark rounded-lg overflow-hidden">
                   <div v-for="track in skippedTracks" :key="track.id" class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50 last:border-0 flex items-center justify-between">
                     <div class="min-w-0">
-                      <p class="text-sm font-medium text-gray-900 dark:text-white">{{ track.source_track_title }}</p>
+                      <p class="text-sm font-medium text-gray-900 dark:text-white">
+                        {{ track.source_track_title }}
+                        <span v-if="track.kind === 'album'" class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-500 align-middle" data-testid="item-kind-badge">album</span>
+                      </p>
                       <p class="text-xs text-text-secondary">{{ track.source_track_artist }}</p>
                       <p class="text-xs text-amber-500 mt-1">{{ track.error_message || 'No match found on the destination service' }}</p>
                     </div>
@@ -1383,6 +1389,7 @@ const realProgress = computed(() => {
     failed: p.failed_count,
     skipped: p.skipped_count,
     currentAction: p.current_action || p.current_track || 'Processing...',
+    currentKind: p.current_kind || '',
     eta: p.eta || 'calculating...',
     speed: p.speed > 0 ? p.speed.toFixed(1) : '—'
   }
@@ -1698,7 +1705,7 @@ function destinationSupports(serviceId: string, collection: string): boolean {
 const contentTypes = computed(() => [
   { id: 'favorites', label: 'Favorites & Tracks', icon: 'favorite', description: 'Saved tracks and favorites', disabled: !collectionDeclaredAnywhere('tracks') },
   { id: 'playlists', label: 'Playlists', icon: 'queue_music', description: 'Playlists and playlist tracks', disabled: !collectionDeclaredAnywhere('playlists') },
-  { id: 'albums', label: 'Saved Albums', icon: 'album', description: 'Tracks from saved albums in your library', disabled: !collectionDeclaredAnywhere('albums') },
+  { id: 'albums', label: 'Favorite Albums', icon: 'album', description: 'Albums favorited on your source account', disabled: !collectionDeclaredAnywhere('albums') },
   { id: 'artists', label: 'Followed Artists', icon: 'person', description: 'Tracks from followed artists in your library', disabled: !collectionDeclaredAnywhere('artists') },
 ])
 
@@ -1711,6 +1718,23 @@ function collectionDeclaredAnywhere(collection: string): boolean {
 }
 
 const selectedContent = ref<string[]>(['favorites'])
+
+/** Wire collections (M01) the selected content maps to, in selection order.
+ *
+ * The playlist mirror has no read of its own — the engine builds destination
+ * playlists from the track items the job transferred — so a selection that
+ * carries 'playlists' without 'tracks' would start an empty job (the server
+ * refuses it, and before that refusal it closed as an empty "completed").
+ * Playlists never travel alone: the track favorites read is added here. */
+const selectedCollections = computed(() => {
+  const collections = selectedContent.value
+    .map(contentId => MIGRATION_COLLECTION_BY_CONTENT[contentId])
+    .filter((collection): collection is string => Boolean(collection))
+  if (collections.includes('playlists') && !collections.includes('tracks')) {
+    collections.unshift('tracks')
+  }
+  return collections
+})
 
 /** Selected content the chosen destinations do not declare (M00 gating). */
 const capabilityConflicts = computed(() => {
@@ -2071,7 +2095,7 @@ async function startTransfer(): Promise<void> {
   const failedDestinations: string[] = []
   for (const dest of destinationServices.value) {
     if (migration.progress.status === 'cancelled') break
-    const jobId = await migration.start(sourceService.value, dest, undefined, options, sourceAccount.value, destinationAccounts.value[dest] ?? null)
+    const jobId = await migration.start(sourceService.value, dest, undefined, options, sourceAccount.value, destinationAccounts.value[dest] ?? null, selectedCollections.value)
     if (jobId) {
       completedJobIds.value.push(jobId)
     } else {
@@ -2130,7 +2154,7 @@ async function startServiceMigration(): Promise<void> {
     create_playlists: false,
   }
 
-  const jobId = await migration.start(svcSource.value, svcDestination.value, undefined, options, svcSourceAccount.value, svcDestinationAccount.value)
+  const jobId = await migration.start(svcSource.value, svcDestination.value, undefined, options, svcSourceAccount.value, svcDestinationAccount.value, ['tracks'])
 
   if (migration.progress.status === 'cancelled') {
     // The user cancelled while the job ran; do not show a completed screen.

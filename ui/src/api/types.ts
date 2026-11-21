@@ -1350,6 +1350,8 @@ export interface MigrationJob {
     source_account_id: number | null;
     destination_account_id: number | null;
     source_playlist_ids: string | null;
+    /** JSON array of requested collection names; null keeps meaning the legacy track-favorites flow (0113). */
+    collections: string | null;
     options: string;
     status: string;
     total_items: number;
@@ -1371,6 +1373,8 @@ export interface MigrationItem {
     source_track_album: string | null;
     source_playlist_id: string | null;
     source_playlist_name: string | null;
+    /** Collection the item belongs to (0113): 'track' | 'album'. */
+    kind: string;
     destination_track_id: string | null;
     match_confidence: number | null;
     match_method: string | null;
@@ -1445,6 +1449,8 @@ export interface MigrationProgress {
     eta: string;
     /** Human readable description of the operation being performed */
     current_action: string;
+    /** Collection kind of the item being processed (0113); absent outside per-item events. */
+    current_kind?: string;
 }
 
 export interface DestinationTrackMatch {
