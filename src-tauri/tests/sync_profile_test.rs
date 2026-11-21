@@ -330,7 +330,7 @@ async fn saving_service_default_values_keeps_inheritance_clean() {
 async fn disabled_toggle_excludes_the_account_from_bulk_services() {
     let pool = setup_test_db().await;
     let (qobuz_id, _) = seed_account(&pool, "qobuz").await;
-    let (_tidal_id, _) = seed_account(&pool, "tidal").await;
+    let (tidal_id, _) = seed_account(&pool, "tidal").await;
 
     let update = SyncProfileUpdate {
         enabled: false,
@@ -347,10 +347,10 @@ async fn disabled_toggle_excludes_the_account_from_bulk_services() {
         .await
         .expect("participación"));
 
-    let services = profile::active_participating_services(&pool)
+    let accounts = profile::active_participating_accounts(&pool)
         .await
-        .expect("servicios del sync masivo");
-    assert_eq!(services, vec!["tidal".to_string()]);
+        .expect("cuentas del sync masivo");
+    assert_eq!(accounts, vec![(tidal_id, "tidal".to_string())]);
 
     // «Sync ahora» resuelve el perfil aunque esté pausado: el toggle no lo
     // bloquea (ADR-0006, decisión 4).
@@ -383,6 +383,47 @@ async fn update_rejects_modes_without_an_engine() {
             .expect_err("un modo sin motor no es seleccionable");
         assert!(error.contains(reason), "mode '{}': {error}", raw);
     }
+}
+
+/// Un payload IPC que omita `enabled` no se acepta: el toggle no tiene default
+/// por servicio y omitirlo reactivaría en silencio una cuenta pausada.
+#[test]
+fn update_payload_without_enabled_is_rejected() {
+    let error = serde_json::from_str::<SyncProfileUpdate>(
+        r#"{"mode":null,"interval_hours":null,"collections":null}"#,
+    )
+    .expect_err("enabled es obligatorio en el payload IPC");
+
+    assert!(error.to_string().contains("enabled"), "{error}");
+}
+
+/// Con dos cuentas activas en el mismo servicio, el universo de «sincronizar
+/// todo» nombra la cuenta que participa y no el servicio: el motor no debe
+/// resolver por su cuenta una cuenta pausada.
+#[tokio::test]
+async fn bulk_sync_names_the_participating_account_not_the_service() {
+    let pool = setup_test_db().await;
+    let (paused_id, _) = seed_account(&pool, "qobuz").await;
+    let (participating_id, _) = seed_account(&pool, "qobuz").await;
+
+    let pause = SyncProfileUpdate {
+        enabled: false,
+        mode: None,
+        interval_hours: None,
+        collections: None,
+    };
+    profile::save_account_profile(&pool, paused_id, &pause)
+        .await
+        .expect("pausar la primera cuenta");
+
+    let accounts = profile::active_participating_accounts(&pool)
+        .await
+        .expect("cuentas del sync masivo");
+    assert_eq!(
+        accounts,
+        vec![(participating_id, "qobuz".to_string())],
+        "el servicio no basta: la cuenta pausada quedaría dentro"
+    );
 }
 
 /// Validación: modo desconocido e intervalo fuera de rango.

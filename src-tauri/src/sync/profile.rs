@@ -7,8 +7,9 @@
 //! Contrato de este corte:
 //!
 //! - El modo por defecto es `import_only` y el intervalo 24 h (decisiones 1 y
-//!   30). El bidireccional existe en el modelo pero no es seleccionable: su
-//!   motivo es [`BIDIRECTIONAL_UNAVAILABLE_REASON`] (decisión 18).
+//!   30). `import_only` es el ÚNICO modo seleccionable: los espejo existen en
+//!   el modelo pero no tienen motor en este árbol (llegan con T06/T07) y el
+//!   bidireccional es post-beta; los tres llevan su motivo (decisión 18).
 //! - El toggle de participación es de la cuenta y gobierna el auto-sync y
 //!   «sincronizar todo»; un «sync ahora» por cuenta lo ignora (decisión 4).
 //! - El override de cuenta gana al default del servicio en modo, colecciones e
@@ -19,7 +20,6 @@
 //!   son constantes del contrato en este corte.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 
 /// Intervalo propuesto por el ADR-0006 (decisión 30), en horas.
 pub const DEFAULT_INTERVAL_HOURS: i64 = 24;
@@ -73,16 +73,21 @@ impl SyncMode {
         Self::ALL.into_iter().find(|mode| mode.as_str() == raw)
     }
 
-    /// `false` solo para el modo modelado y pendiente de post-beta (decisión 18).
+    /// `false` mientras el modo no tenga motor que lo ejecute: hoy solo
+    /// `import_only` recorre algo. Los espejo llegan con su motor (T06/T07) y
+    /// el bidireccional es post-beta (decisión 18).
     pub fn is_selectable(self) -> bool {
-        self != SyncMode::Bidirectional
+        self == SyncMode::ImportOnly
     }
 
     /// Motivo por el que el modo no se puede elegir, si lo hay.
     pub fn unavailable_reason(self) -> Option<&'static str> {
         match self {
+            SyncMode::ImportOnly => None,
+            SyncMode::MirrorQuarantine | SyncMode::StrictMirror => {
+                Some(MIRROR_ENGINE_UNAVAILABLE_REASON)
+            }
             SyncMode::Bidirectional => Some(BIDIRECTIONAL_UNAVAILABLE_REASON),
-            _ => None,
         }
     }
 }
@@ -177,11 +182,10 @@ pub struct SyncProfile {
 }
 
 /// Payload de `update_sync_profile`: `None` en un campo significa «hereda del
-/// servicio». `enabled` es siempre explícito porque el toggle no tiene default
-/// por servicio: la cuenta participa salvo que se apague.
+/// servicio». `enabled` es obligatorio: el toggle no tiene default por servicio
+/// y un payload que lo omita no debe reactivar en silencio una cuenta pausada.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncProfileUpdate {
-    #[serde(default = "enabled_by_default")]
     pub enabled: bool,
     #[serde(default)]
     pub mode: Option<String>,
@@ -347,9 +351,15 @@ pub async fn is_account_participating(
         .unwrap_or(true))
 }
 
-/// Servicios con al menos una cuenta activa que participa. Es el universo de
+/// Cuentas activas que participan, con su servicio. Es el universo de
 /// «sincronizar todo» y del auto-sync; un «sync ahora» no pasa por aquí.
-pub async fn active_participating_services(db: &sqlx::SqlitePool) -> Result<Vec<String>, String> {
+///
+/// La unidad es la cuenta, no el servicio: con dos cuentas activas en el mismo
+/// servicio, el motor resolvería una sola por su cuenta y podría elegir la
+/// pausada. El par (cuenta, servicio) deja que el llamador fije la cuenta.
+pub async fn active_participating_accounts(
+    db: &sqlx::SqlitePool,
+) -> Result<Vec<(i64, String)>, String> {
     let rows: Vec<(i64, String)> = sqlx::query_as(
         r#"SELECT a.id, LOWER(s.name)
            FROM accounts a
@@ -361,13 +371,13 @@ pub async fn active_participating_services(db: &sqlx::SqlitePool) -> Result<Vec<
     .await
     .map_err(|e| format!("SyncProfileLookup: {}", e))?;
 
-    let mut services = BTreeSet::new();
+    let mut accounts = Vec::new();
     for (account_id, service_name) in rows {
         if is_account_participating(db, account_id).await? {
-            services.insert(service_name);
+            accounts.push((account_id, service_name));
         }
     }
-    Ok(services.into_iter().collect())
+    Ok(accounts)
 }
 
 /// Convierte el payload de la UI en el override a persistir. Valida el modo y

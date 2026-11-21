@@ -822,19 +822,23 @@ pub async fn sync_all_services<R: Runtime>(app: &AppHandle<R>) -> Result<usize, 
 async fn sync_all_services_inner<R: Runtime>(app: &AppHandle<R>) -> Result<usize, String> {
     let db = app.state::<crate::AppState>().db.clone();
 
-    let services: Vec<String> = crate::sync::profile::active_participating_services(&db)
+    let accounts = crate::sync::profile::active_participating_accounts(&db)
         .await
-        .map_err(|e| format!("Failed to list participating services: {}", e))?;
+        .map_err(|e| format!("Failed to list participating accounts: {}", e))?;
 
-    if services.is_empty() {
-        tracing::info!("Tray 'Sync All Services': no participating active services");
+    if accounts.is_empty() {
+        tracing::info!("Tray 'Sync All Services': no participating active accounts");
         return Ok(0);
     }
 
     let mut synced = 0usize;
     let mut failed: Vec<String> = Vec::new();
-    for service in &services {
-        match perform_sync_service_with_emitter(&db, service, None, None, Some(app)).await {
+    for (account_id, service) in &accounts {
+        // La cuenta va explícita: el motor no la adivina por `is_active`, así
+        // que una cuenta pausada nunca entra por la puerta de atrás.
+        match perform_sync_service_with_emitter(&db, service, Some(*account_id), None, Some(app))
+            .await
+        {
             Ok(_) => synced += 1,
             Err(e) => {
                 tracing::warn!("Tray sync of '{}' failed: {}", service, e);
@@ -847,7 +851,7 @@ async fn sync_all_services_inner<R: Runtime>(app: &AppHandle<R>) -> Result<usize
         (
             NotificationKind::Success,
             "Sync complete".to_string(),
-            format!("{} service(s) synchronized.", synced),
+            format!("{} account(s) synchronized.", synced),
         )
     } else if synced == 0 {
         (
@@ -860,7 +864,7 @@ async fn sync_all_services_inner<R: Runtime>(app: &AppHandle<R>) -> Result<usize
             NotificationKind::Warning,
             "Sync completed with errors".to_string(),
             format!(
-                "{} service(s) synchronized; failed: {}",
+                "{} account(s) synchronized; failed: {}",
                 synced,
                 failed.join(", ")
             ),

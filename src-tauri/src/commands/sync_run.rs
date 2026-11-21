@@ -86,10 +86,12 @@ pub async fn start_sync_run(
         );
     }
 
-    // Perfil resuelto (issue #69): el modo de la corrida sale del perfil
-    // efectivo. El toggle de participación NO se consulta aquí: «sync ahora»
-    // siempre puede forzar una corrida aunque la cuenta esté pausada
-    // (ADR-0006, decisión 4).
+    // Perfil resuelto (issue #69): la corrida registra el modo del perfil
+    // efectivo. Hoy ese modo siempre es `import_only` — los espejo no tienen
+    // motor en este árbol y no son seleccionables (T06/T07) —, así que la fila
+    // no afirma nada que el job no ejecute. El toggle de participación NO se
+    // consulta aquí: «sync ahora» siempre puede forzar una corrida aunque la
+    // cuenta esté pausada (ADR-0006, decisión 4).
     let profile = crate::sync::profile::load_sync_profile(&db, account_id).await?;
     let run_id = runs::insert_running_run(
         &db,

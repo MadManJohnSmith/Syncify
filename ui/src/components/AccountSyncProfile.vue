@@ -29,13 +29,15 @@
         <span>Loading sync profile…</span>
       </div>
 
-      <p
-        v-else-if="error"
-        class="text-error"
-        :data-testid="`sync-profile-error-${accountId}`"
-      >{{ error }}</p>
-
       <template v-else-if="profile">
+        <!-- El error se pinta DENTRO del formulario: si lo sustituyera, la
+             ficha se quedaría sin Save ni Close. -->
+        <p
+          v-if="error"
+          class="text-error"
+          :data-testid="`sync-profile-error-${accountId}`"
+        >{{ error }}</p>
+
         <!-- Perfil resuelto: una sola lectura, sin mezclar fuentes en la vista. -->
         <p class="font-medium text-gray-900 dark:text-white" :data-testid="`sync-profile-effective-${accountId}`">
           Effective: {{ summary }}
@@ -93,11 +95,12 @@
         </div>
 
         <p
-          v-if="bidirectionalReason"
+          v-for="option in unavailableModes"
+          :key="option.value"
           class="text-text-secondary"
-          :data-testid="`sync-profile-bidirectional-reason-${accountId}`"
+          :data-testid="`sync-profile-unavailable-${accountId}-${option.value}`"
         >
-          Two-way sync: not available ({{ bidirectionalReason }}).
+          {{ modeLabel(option.value) }}: not available before beta ({{ option.reason }}).
         </p>
 
         <div class="space-y-1">
@@ -142,6 +145,20 @@
           </button>
         </div>
       </template>
+
+      <div v-else class="space-y-2">
+        <p class="text-error" :data-testid="`sync-profile-error-${accountId}`">
+          {{ error ?? 'Sync profile unavailable' }}
+        </p>
+        <button
+          type="button"
+          class="px-2 py-1 rounded text-text-secondary hover:text-primary"
+          :data-testid="`sync-profile-close-${accountId}`"
+          @click="closePanel"
+        >
+          Close
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -188,10 +205,11 @@ const form = reactive({
   } as SyncProfileCollections,
 })
 
-const bidirectionalReason = computed(() => {
-  const option = profile.value?.modes.find((mode) => mode.value === 'bidirectional')
-  return option && !option.enabled ? option.reason : null
-})
+/** Modos modelados que ningún motor ejecuta todavía: se nombran con su motivo
+ *  en vez de ofrecerse como si fueran seleccionables. */
+const unavailableModes = computed(() =>
+  (profile.value?.modes ?? []).filter((mode) => !mode.enabled)
+)
 
 const summary = computed(() => {
   const current = profile.value

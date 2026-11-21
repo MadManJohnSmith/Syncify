@@ -18,8 +18,9 @@ pub async fn get_sync_profile(
 
 /// Guarda el override de la cuenta y devuelve el perfil resuelto resultante.
 ///
-/// Un campo `null` hereda del servicio; el bidireccional se rechaza con su
-/// motivo (`write_back_not_available`) porque no es seleccionable antes de beta.
+/// Un campo `null` hereda del servicio. Los modos sin motor (`mirror_quarantine`,
+/// `strict_mirror`) y el bidireccional se rechazan con su motivo: solo
+/// `import_only` es seleccionable en este corte.
 #[tauri::command]
 pub async fn update_sync_profile(
     state: State<'_, AppState>,

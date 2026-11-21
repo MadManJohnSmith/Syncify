@@ -7,7 +7,7 @@ use std::sync::Arc;
 use syncify_tauri_lib::{
     commands::backup::{export_library_with_bases, import_library_with_bases},
     crypto,
-    settings_defaults::SETTINGS_KV_KEYS,
+    settings_defaults::is_user_settings_kv_key,
     sync::profile::{self as sync_profile, SyncProfileUpdate},
     worker::DownloadWorkerState,
     AppState, EnrichmentWorkerState,
@@ -283,7 +283,7 @@ async fn manifest_v2_excludes_every_secret_from_settings_kv() {
     let kv = manifest["settings"]["kv"].as_object().unwrap();
     for key in kv.keys() {
         assert!(
-            SETTINGS_KV_KEYS.contains(&key.as_str()),
+            is_user_settings_kv_key(key),
             "exported KV key '{}' must be part of the user-settings catalog",
             key
         );

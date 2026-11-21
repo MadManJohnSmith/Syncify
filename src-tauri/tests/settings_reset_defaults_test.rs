@@ -503,6 +503,43 @@ async fn reset_clears_settings_kv_but_not_infra_keys() {
 }
 
 #[tokio::test]
+async fn reset_clears_entity_scoped_user_settings() {
+    let pool = migrated_pool().await;
+
+    // El override del perfil de sync vive en la KV con instancia por cuenta
+    // (issue #69): es ajuste de usuario y el reset lo devuelve a fábrica.
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES ('sync_profile:account:7', '{\"enabled\":false}')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO settings (key, value) VALUES ('bpm_postprocess_queue_1', 'pending')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    reset_all_settings(&pool).await.expect("reset must succeed");
+
+    let profile_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM settings WHERE key = 'sync_profile:account:7'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        profile_rows, 0,
+        "reset must clear the per-account sync profile"
+    );
+
+    let infra_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM settings WHERE key = 'bpm_postprocess_queue_1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(infra_rows, 1, "reset must not touch worker state");
+}
+
+#[tokio::test]
 async fn module_defaults_match_the_fresh_migrated_seed() {
     // El contrato «defaults en un solo sitio»: los Default del módulo y el
     // estado de una BD recién migrada tienen que coincidir por superficie.

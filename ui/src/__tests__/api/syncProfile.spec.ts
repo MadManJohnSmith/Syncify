@@ -20,8 +20,8 @@ const resolvedProfile: SyncProfile = {
     collections_source: 'service',
     modes: [
         { value: 'import_only', enabled: true, reason: null },
-        { value: 'mirror_quarantine', enabled: true, reason: null },
-        { value: 'strict_mirror', enabled: true, reason: null },
+        { value: 'mirror_quarantine', enabled: false, reason: 'mirror_engine_not_available' },
+        { value: 'strict_mirror', enabled: false, reason: 'mirror_engine_not_available' },
         { value: 'bidirectional', enabled: false, reason: 'write_back_not_available' },
     ],
 };
@@ -52,8 +52,6 @@ describe('sync_profile_ipc_contract_test', () => {
         const updated: SyncProfile = {
             ...resolvedProfile,
             enabled: false,
-            mode: 'mirror_quarantine',
-            mode_source: 'account',
             interval_hours: 6,
             interval_source: 'account',
             collections: { favorites: true, playlists: false, albums: true, artists: false },
@@ -67,7 +65,7 @@ describe('sync_profile_ipc_contract_test', () => {
 
         const payload = {
             enabled: false,
-            mode: 'mirror_quarantine',
+            mode: 'import_only',
             interval_hours: 6,
             collections: { favorites: true, playlists: false, albums: true, artists: false },
         };

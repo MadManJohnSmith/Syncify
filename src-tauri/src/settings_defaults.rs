@@ -220,6 +220,25 @@ pub const SETTINGS_KV_KEYS: &[&str] = &[
     "lastfm_api_key",
 ];
 
+/// Prefijos de la KV `settings` cuyas claves son ajustes de usuario con
+/// instancia por entidad: no se pueden enumerar de antemano, pero cuentan como
+/// [`SETTINGS_KV_KEYS`] en backup, restore y reset (ADR-0020, decisión 1).
+///
+/// `sync_profile:account:{id}` es el override del perfil de sincronización de
+/// una cuenta (issue #69): sin él, restaurar en otra máquina reactivaría en
+/// silencio una cuenta pausada y el reset no devolvería el perfil a fábrica.
+pub const SETTINGS_KV_KEY_PREFIXES: &[&str] = &[crate::sync::profile::ACCOUNT_PROFILE_KEY_PREFIX];
+
+/// Criterio único de «esto es un ajuste de usuario»: la clave está enumerada en
+/// [`SETTINGS_KV_KEYS`] o cae bajo uno de [`SETTINGS_KV_KEY_PREFIXES`]. Lo usan
+/// el export del backup, el restore y el reset completo.
+pub fn is_user_settings_kv_key(key: &str) -> bool {
+    SETTINGS_KV_KEYS.contains(&key)
+        || SETTINGS_KV_KEY_PREFIXES
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+}
+
 // ---------------------------------------------------------------------------
 // Defaults de los singletons (impl Default = misma verdad que la BD nueva)
 // ---------------------------------------------------------------------------
@@ -596,13 +615,21 @@ pub async fn reset_all_settings(db: &DbPool) -> Result<(), String> {
         .execute(&mut *tx).await.map_err(err("lyrics_provider_settings"))?;
     }
 
-    // -- KV de ajustes: solo las claves enumeradas como ajustes de usuario.
-    for key in SETTINGS_KV_KEYS {
-        sqlx::query("DELETE FROM settings WHERE key = ?")
-            .bind(key)
-            .execute(&mut *tx)
-            .await
-            .map_err(err("settings (KV)"))?;
+    // -- KV de ajustes: las claves enumeradas y las que llevan instancia por
+    // entidad (p. ej. el perfil de sync por cuenta, que se resuelve borrando el
+    // override). El criterio es el mismo que el del backup.
+    let kv_keys: Vec<(String,)> = sqlx::query_as("SELECT key FROM settings")
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(err("settings (KV)"))?;
+    for (key,) in kv_keys {
+        if is_user_settings_kv_key(&key) {
+            sqlx::query("DELETE FROM settings WHERE key = ?")
+                .bind(&key)
+                .execute(&mut *tx)
+                .await
+                .map_err(err("settings (KV)"))?;
+        }
     }
 
     tx.commit()

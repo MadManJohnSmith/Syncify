@@ -432,10 +432,12 @@ async fn export_settings_table_rows(
     Ok(rows.iter().map(sqlite_row_to_json).collect())
 }
 
-/// Exporta la KV de ajustes: solo las claves del catálogo de usuario
-/// (`SETTINGS_KV_KEYS`, el mismo universo que borra el reset) y, dentro de
-/// él, ninguna clave sensible: tokens, claves de API ni credenciales de
-/// ningún tipo se quedan fuera del manifest (contrato testeable).
+/// Exporta la KV de ajustes: solo las claves que son ajustes de usuario
+/// ([`crate::settings_defaults::is_user_settings_kv_key`], el mismo universo
+/// que borra el reset: claves enumeradas y prefijos con instancia por entidad)
+/// y, dentro de él, ninguna clave sensible: tokens, claves de API ni
+/// credenciales de ningún tipo se quedan fuera del manifest (contrato
+/// testeable).
 async fn export_settings_kv(
     db: &crate::DbPool,
 ) -> Result<std::collections::BTreeMap<String, String>, String> {
@@ -448,8 +450,7 @@ async fn export_settings_kv(
     Ok(rows
         .into_iter()
         .filter(|(key, _)| {
-            crate::settings_defaults::SETTINGS_KV_KEYS.contains(&key.as_str())
-                && !is_sensitive_setting_key(key)
+            crate::settings_defaults::is_user_settings_kv_key(key) && !is_sensitive_setting_key(key)
         })
         .collect())
 }
@@ -957,18 +958,18 @@ async fn restore_settings_surface(
     Ok(rows.len() as i64)
 }
 
-/// Restaura la KV de ajustes con la misma selección del export: solo claves
-/// del catálogo de usuario y ninguna sensible. Un manifest que traiga una
-/// clave sensible o desconocida no la escribe: la restauración no fabrica
-/// credenciales (contrato testeable de ADR-0020).
+/// Restaura la KV de ajustes con la misma selección del export: solo claves de
+/// usuario (enumeradas o bajo un prefijo con instancia por entidad) y ninguna
+/// sensible. Un manifest que traiga una clave sensible o desconocida no la
+/// escribe: la restauración no fabrica credenciales (contrato testeable de
+/// ADR-0020).
 async fn restore_settings_kv(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     kv: &std::collections::BTreeMap<String, String>,
 ) -> Result<i64, String> {
     let mut restored = 0i64;
     for (key, value) in kv {
-        if !crate::settings_defaults::SETTINGS_KV_KEYS.contains(&key.as_str())
-            || is_sensitive_setting_key(key)
+        if !crate::settings_defaults::is_user_settings_kv_key(key) || is_sensitive_setting_key(key)
         {
             continue;
         }

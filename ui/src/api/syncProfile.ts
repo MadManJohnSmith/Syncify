@@ -24,7 +24,11 @@ export interface SyncModeOption {
     /** import_only | mirror_quarantine | strict_mirror | bidirectional */
     value: string;
     enabled: boolean;
-    /** `write_back_not_available` cuando el modo no es seleccionable. */
+    /**
+     * Motivo por el que el modo no es seleccionable: `write_back_not_available`
+     * (bidireccional, post-beta) o `mirror_engine_not_available` (espejo, sin
+     * motor todavía).
+     */
     reason: string | null;
 }
 

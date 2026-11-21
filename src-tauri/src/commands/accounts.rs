@@ -419,8 +419,8 @@ pub async fn insert_account_exclusive(
 }
 
 /// DB half of [`remove_account`]: borra la fila de la cuenta y lo que vive en
-/// la KV de ajustes sin FK que lo arrastre. Separado del comando para probarlo
-/// sin `AppHandle`.
+/// la KV de ajustes sin FK que lo arrastre (el override del perfil de sync,
+/// issue #69). Separado del comando para probarlo sin `AppHandle`.
 pub async fn perform_remove_account(db: &sqlx::SqlitePool, account_id: i64) -> Result<(), String> {
     // Eliminar borra también el perfil cifrado del webview (issue #86): el
     // archivo en disco se borra explícito, antes de que la FK CASCADE quite
@@ -435,11 +435,24 @@ pub async fn perform_remove_account(db: &sqlx::SqlitePool, account_id: i64) -> R
         );
     }
 
-    sqlx::query("DELETE FROM accounts WHERE id = ?")
-        .bind(account_id)
-        .execute(db)
+    // Las dos escrituras van juntas: o se va la cuenta y su KV, o no se va
+    // ninguna de las dos.
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| e.to_string())?;
+
+    sqlx::query("DELETE FROM accounts WHERE id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    crate::sync::profile::delete_account_profile(&mut *tx, account_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tx.commit().await.map_err(|e| e.to_string())?;
 
     Ok(())
 }
