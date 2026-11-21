@@ -104,6 +104,16 @@ aquí solo queda lo aprendido con fecha. Relacionadas:
   fusionados en `origin/dev` y `--apply` los elimina con su target. Fuente:
   retro 2026-11-19 §R5.
 
+## Máquinas enlazadas y cola local de carriles
+
+- **2026-11-21, medido en sesión**: gallifrey (desktop) es la única máquina
+  con el proyecto Syncify registrado en el harness. TARDIS (laptop) está
+  enlazada y accesible, pero su lista de proyectos no incluye Syncify;
+  agentvm1 sigue inaccesible. Consecuencia operativa: la cola de carriles es
+  local y los lotes se reparten en oleadas de ≤3 concurrentes. Fuente:
+  handoff del despacho del Lote 2 (carpeta de estado del dueño) y consulta
+  de proyectos por máquina en la sesión del día.
+
 ## `/tmp` es efímero
 
 - Regla global del propietario (vigente el 2026-11-13): handoffs y

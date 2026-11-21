@@ -31,6 +31,19 @@ handoff del día; esta página solo fija lo que no debe re-litigarse.
   directos a `dev`; `.github/workflows/docs-check.yml` corre las tres puertas
   de `scripts/tests/`.
 
+**Bloque fechado 2026-11-21 (Ola 0, Lote 2).** Los lotes de Ola 0 viajan por
+**oleadas de ≤3 carriles concurrentes en una sola máquina** (gallifrey):
+TARDIS está enlazada y accesible pero sin el proyecto Syncify registrado, y
+agentvm1 sigue inaccesible (ver `entorno.md`). Los delegados son todos
+`opencode-go/deepseek-v4.1-flash` (provider `opencode`) en `full-access`
+(orden del dueño ese día), un worktree por carril vía delegación con
+`isolation: worktree`. Los PRs de carril van contra `wave/ola-0-batch-<n>` y
+el lote cierra con un PR consolidado a `main`; cada PR de carril lleva
+revisión delegada independiente con artefacto `gh pr review --comment` antes
+de integrarse. Anti-3008: commit + push en cada micro-hito (caracterización,
+núcleo, puertas). Fuente: handoff del despacho del Lote 2 en
+`~/.local/state/syncify/`.
+
 ## Histórico
 
 Las entradas fechadas del 2026-11-13 al 2026-11-19 (decisiones del
