@@ -8,12 +8,12 @@
 -- voluntad del usuario, no evidencia de resolución, y nunca escribe ni lee esta
 -- tabla.
 --
--- `reason` es la clasificación estable del fallo y la escribe el motor:
--- 'not_found' | 'policy_rejected' | 'requires_auth' | 'rate_limited' |
--- 'source_unavailable' | 'failed'. `detail` conserva el mensaje de diagnóstico
--- del proveedor y puede ser NULL. No hay CHECK sobre `reason` para no convertir
--- cada motivo nuevo en una migración: el vocabulario vive en el clasificador
--- del crate y este comentario.
+-- `reason` es la clasificación estable del fallo y la escribe el clasificador
+-- del motor (la persistencia es del núcleo): 'not_found' | 'policy_rejected' |
+-- 'requires_auth' | 'rate_limited' | 'source_unavailable' | 'failed'. `detail`
+-- conserva el mensaje de diagnóstico del proveedor y puede ser NULL. No hay
+-- CHECK sobre `reason` para no convertir cada motivo nuevo en una migración: el
+-- vocabulario vive en el clasificador del crate y este comentario.
 --
 -- `expires_at` es una marca absoluta en UTC (`datetime('now')`); una fila está
 -- vigente mientras `expires_at > datetime('now')`. Las filas caducadas no se
