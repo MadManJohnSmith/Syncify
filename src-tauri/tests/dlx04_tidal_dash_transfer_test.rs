@@ -109,11 +109,13 @@ async fn servir_dash(
                     .and_then(|s| s.parse::<usize>().ok())
                     .and_then(|n| n.checked_sub(1))
                     .and_then(|idx| segmentos.get(idx))
-                    .map(|seg| seg.clone())
+                    .cloned()
             };
             let Some(payload) = payload else {
                 let _ = socket
-                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
                     .await;
                 return;
             };
@@ -153,7 +155,11 @@ async fn arrancar_servidor() -> DashServer {
         256,
         orden.clone(),
     ));
-    DashServer { base, handle, orden }
+    DashServer {
+        base,
+        handle,
+        orden,
+    }
 }
 
 fn spec_dash(base: &str, total: usize) -> String {

@@ -111,8 +111,10 @@ async fn arrancar_servidor(segmento_ausente: Option<usize>) -> Servidor {
                         bytes.len()
                     )
                     .into_bytes(),
-                    None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                        .to_vec(),
+                    None => {
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_vec()
+                    }
                 };
                 if socket.write_all(&respuesta).await.is_err() {
                     return;
@@ -123,7 +125,11 @@ async fn arrancar_servidor(segmento_ausente: Option<usize>) -> Servidor {
             });
         }
     });
-    Servidor { base, handle, orden }
+    Servidor {
+        base,
+        handle,
+        orden,
+    }
 }
 
 fn fixture_path() -> PathBuf {
@@ -214,7 +220,9 @@ async fn spec_malformada_se_rechaza_sin_ninguna_peticion() {
             .download_audio_payload_with_progress(&spec, &salida, |_, _, _| {})
             .await;
 
-        let err = res.err().unwrap_or_else(|| panic!("recuento {recuento:?} debe fallar"));
+        let err = res
+            .err()
+            .unwrap_or_else(|| panic!("recuento {recuento:?} debe fallar"));
         assert!(
             err.to_string().contains("InvalidDashSpec"),
             "recuento {recuento:?} debe dar InvalidDashSpec, fue: {err}"
@@ -242,7 +250,7 @@ async fn salto_de_segmento_no_promociona_parcial() {
         .download_audio_payload_with_progress(&spec_dash(&server.base, 4), &salida, |_, _, _| {})
         .await;
 
-    let err = res.err().expect("el salto del segmento 2 debe tumbar la descarga");
+    let err = res.expect_err("el salto del segmento 2 debe tumbar la descarga");
     assert!(
         err.to_string().contains("SegmentDownloadFailed"),
         "fallo de segmento clasificado, fue: {err}"
@@ -302,7 +310,7 @@ async fn fallo_en_init_no_deja_temporal() {
     let res = TidalDownloader::new()
         .download_audio_payload_with_progress(spec, &salida, |_, _, _| {})
         .await;
-    let err = res.err().expect("sin servidor debe fallar");
+    let err = res.expect_err("sin servidor debe fallar");
     assert!(err.to_string().contains("SegmentDownloadFailed"));
     assert!(!salida.exists());
     assert!(!salida.with_extension("stream.tmp").exists());
