@@ -573,6 +573,131 @@ describe('PL-08, PL-09, PL-10, PL-04, PL-05: Reproductor Completo & StatusBar Ce
       wrapper.unmount()
     })
 
+    it('rellena la línea activa palabra a palabra y busca al hacer click en una palabra', async () => {
+      useRichMetadata()
+      const wrapper = mount(FullscreenPlayer)
+      player.current.value = sampleTrack
+      player.positionSec.value = 4.6
+      player.openFullscreen()
+      await paint()
+
+      // El badge dice la verdad: hay timings de palabra en la fuente almacenada.
+      const badge = docQuery('[data-testid="lyrics-sync-badge"]')!
+      expect(badge.textContent).toContain('Karaoke (word)')
+
+      // La línea 1 arranca en 4.50: "Same" (4.50) · "as" (4.90) · "before" (5.10).
+      const same = docQuery('[data-testid="lyric-word-1-0"]')!
+      const asWord = docQuery('[data-testid="lyric-word-1-1"]')!
+      const before = docQuery('[data-testid="lyric-word-1-2"]')!
+      expect(same.getAttribute('data-word-start')).toBe('4.5')
+      expect(asWord.getAttribute('data-word-start')).toBe('4.9')
+
+      // En 4.6 la palabra activa es "Same" y va por el 25% de su relleno.
+      expect(same.classList.contains('karaoke-word--active')).toBe(true)
+      expect((same as HTMLElement).style.getPropertyValue('--word-fill')).toBe('25%')
+      expect(asWord.classList.contains('karaoke-word--pending')).toBe(true)
+      expect(before.classList.contains('karaoke-word--pending')).toBe(true)
+
+      // Las palabras ya cantadas de la línea activa quedan en acento pleno.
+      expect(same.textContent).toBe('Same ')
+
+      // Click en una palabra: busca SU instante (4.90), no el de la línea (4.50).
+      asWord.click()
+      await paint()
+      expect(player.positionSec.value).toBe(4.9)
+
+      wrapper.unmount()
+    })
+
+    it('con letras de línea (sin timings de palabra) cae al resaltado por línea', async () => {
+      // El mock por defecto devuelve LRC de línea: sin etiquetas `<mm:ss.xx>`.
+      const wrapper = mount(FullscreenPlayer)
+      player.current.value = sampleTrack
+      player.positionSec.value = 5.0
+      player.openFullscreen()
+      await paint()
+
+      expect(docQuery('[data-testid="lyrics-sync-badge"]')!.textContent).toContain('Synchronized (LRC)')
+      expect(docQuery('[data-testid="lyric-word-0-0"]')).toBe(null)
+      // La fuente mostrada sigue siendo la almacenada.
+      expect(docQuery('[data-testid="panel-lyrics"]')!.textContent).toContain('Source: lrclib')
+
+      // El resaltado por línea y el click para buscar siguen intactos.
+      const line1 = docQuery('[data-testid="lyric-line-1"]')!
+      expect(line1.classList.contains('text-accent')).toBe(true)
+      line1.click()
+      await paint()
+      expect(player.positionSec.value).toBe(4.5)
+
+      wrapper.unmount()
+    })
+
+    it('wipe con KRC (sílabas) tal y como lo almacena el backend', async () => {
+      mockInvoke((cmd: string) => {
+        if (cmd === 'get_lyrics') {
+          return {
+            id: 51,
+            track_id: 101,
+            format: 'lrc',
+            sync_level: 'word',
+            source: 'kugou.com',
+            content: '[00:12.00]<00:12.00>我<00:12.30>爱<00:12.60>你',
+            language: 'zh',
+            embedded_in_file: false,
+            created_at: '2026-11-21 00:00:00',
+          }
+        }
+        return null
+      })
+
+      const wrapper = mount(FullscreenPlayer)
+      player.current.value = sampleTrack
+      player.positionSec.value = 12.45
+      player.openFullscreen()
+      await paint()
+
+      expect(docQuery('[data-testid="lyrics-sync-badge"]')!.textContent).toContain('Karaoke (word)')
+      const line = docQuery('[data-testid="lyric-line-0"]')!
+      expect(line.textContent).toBe('我爱你')
+      // 我 (12.00) cantada · 爱 (12.30) activa · 你 (12.60) pendiente.
+      expect(docQuery('[data-testid="lyric-word-0-0"]')!.classList.contains('karaoke-word--sung')).toBe(true)
+      expect(docQuery('[data-testid="lyric-word-0-1"]')!.classList.contains('karaoke-word--active')).toBe(true)
+      expect(docQuery('[data-testid="lyric-word-0-2"]')!.classList.contains('karaoke-word--pending')).toBe(true)
+
+      docQuery('[data-testid="lyric-word-0-2"]')!.click()
+      await paint()
+      expect(player.positionSec.value).toBe(12.6)
+
+      wrapper.unmount()
+    })
+
+    it('sin letra mantiene el estado vacío y ofrece buscarla', async () => {
+      const calls: string[] = []
+      mockInvoke((cmd: string) => {
+        calls.push(cmd)
+        return null
+      })
+
+      const wrapper = mount(FullscreenPlayer)
+      player.current.value = sampleTrack
+      player.openFullscreen()
+      await paint()
+
+      const panel = docQuery('[data-testid="panel-lyrics"]')!
+      expect(panel.textContent).toContain('No lyrics available for this track')
+
+      const searchBtn = Array.from(panel.querySelectorAll('button')).find((button) =>
+        button.textContent?.includes('Search for lyrics now'),
+      )
+      expect(searchBtn).not.toBeUndefined()
+      searchBtn!.click()
+      await paint()
+
+      expect(calls).toContain('resolve_track_lyrics')
+
+      wrapper.unmount()
+    })
+
     it('abre el booklet externamente con la ruta real (no una URL asset)', async () => {
       useRichMetadata()
       const invoked: Array<{ cmd: string; args?: Record<string, unknown> }> = []
