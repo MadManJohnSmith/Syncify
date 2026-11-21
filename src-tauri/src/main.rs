@@ -1048,6 +1048,8 @@ fn main() {
             commands::cancel_sync_run,
             commands::get_sync_run,
             commands::list_sync_runs,
+            commands::get_sync_profile,
+            commands::update_sync_profile,
             commands::toggle_album_favorite,
             commands::toggle_artist_favorite,
             commands::push_favorite_to_service,

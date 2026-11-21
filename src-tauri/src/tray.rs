@@ -822,19 +822,12 @@ pub async fn sync_all_services<R: Runtime>(app: &AppHandle<R>) -> Result<usize, 
 async fn sync_all_services_inner<R: Runtime>(app: &AppHandle<R>) -> Result<usize, String> {
     let db = app.state::<crate::AppState>().db.clone();
 
-    let services: Vec<String> = sqlx::query_scalar(
-        r#"SELECT DISTINCT LOWER(s.name)
-           FROM accounts a
-           JOIN services s ON s.id = a.service_id
-           WHERE a.is_active = 1
-           ORDER BY 1"#,
-    )
-    .fetch_all(&db)
-    .await
-    .map_err(|e| format!("Failed to list active services: {}", e))?;
+    let services: Vec<String> = crate::sync::profile::active_participating_services(&db)
+        .await
+        .map_err(|e| format!("Failed to list participating services: {}", e))?;
 
     if services.is_empty() {
-        tracing::info!("Tray 'Sync All Services': no active services configured");
+        tracing::info!("Tray 'Sync All Services': no participating active services");
         return Ok(0);
     }
 

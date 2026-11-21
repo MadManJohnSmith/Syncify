@@ -1990,6 +1990,11 @@ pub async fn perform_delete_account(
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
+    // El override del perfil de sync vive en la KV de ajustes: sin FK que lo
+    // arrastre, se borra en la misma transacción (issue #69).
+    crate::sync::profile::delete_account_profile(&mut *tx, account_id)
+        .await
+        .map_err(|e| e.to_string())?;
     if delete_audio {
         sqlx::query("DELETE FROM downloads WHERE account_id = ?")
             .bind(account_id)

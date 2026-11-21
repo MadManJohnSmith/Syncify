@@ -13,6 +13,10 @@ use sqlx::sqlite::SqlitePoolOptions;
 use syncify_tauri_lib::commands::settings::{
     perform_get_service_import_preferences, perform_update_service_sync_settings,
 };
+use syncify_tauri_lib::sync::profile::{
+    self, AccountSyncOverride, ProfileSource, ServiceSyncDefaults, SyncCollections, SyncMode,
+    SyncProfileUpdate, BIDIRECTIONAL_UNAVAILABLE_REASON, DEFAULT_INTERVAL_HOURS,
+};
 
 async fn setup_test_db() -> sqlx::SqlitePool {
     let pool = SqlitePoolOptions::new()
@@ -127,4 +131,319 @@ async fn characterization_a_fresh_account_has_no_account_scoped_profile_row() {
         .expect("consulta de la KV de ajustes");
 
     assert_eq!(rows, 0, "una cuenta nueva no tiene override persistido");
+}
+
+// ============================================================
+// Hito 2 — resolución pura y persistencia del override
+// ============================================================
+
+fn service_defaults(
+    mode: SyncMode,
+    interval_hours: i64,
+    collections: SyncCollections,
+) -> ServiceSyncDefaults {
+    ServiceSyncDefaults {
+        service_name: "qobuz".to_string(),
+        mode,
+        interval_hours,
+        collections,
+    }
+}
+
+/// Sin override: modo solo importar, 24 h y colecciones del servicio.
+#[test]
+fn resolve_without_override_inherits_the_service_defaults() {
+    let service = service_defaults(
+        SyncMode::ImportOnly,
+        DEFAULT_INTERVAL_HOURS,
+        SyncCollections {
+            favorites: true,
+            playlists: false,
+            albums: true,
+            artists: false,
+        },
+    );
+
+    let profile = profile::resolve(7, &service, None);
+
+    assert_eq!(profile.account_id, 7);
+    assert!(profile.enabled, "una cuenta participa salvo que se apague");
+    assert_eq!(profile.mode, SyncMode::ImportOnly);
+    assert_eq!(profile.mode_source, ProfileSource::Service);
+    assert_eq!(profile.interval_hours, 24);
+    assert_eq!(profile.interval_source, ProfileSource::Service);
+    assert_eq!(
+        profile.collections,
+        SyncCollections {
+            favorites: true,
+            playlists: false,
+            albums: true,
+            artists: false,
+        }
+    );
+    assert_eq!(profile.collections_source, ProfileSource::Service);
+}
+
+/// Criterio 1: el override de cuenta gana al default del servicio en modo,
+/// colecciones e intervalo, y la ficha puede decir de dónde viene cada valor.
+#[test]
+fn resolve_account_override_wins_on_mode_collections_and_interval() {
+    let service = service_defaults(
+        SyncMode::ImportOnly,
+        DEFAULT_INTERVAL_HOURS,
+        SyncCollections::all(),
+    );
+    let account = AccountSyncOverride {
+        enabled: true,
+        mode: Some(SyncMode::MirrorQuarantine),
+        interval_hours: Some(6),
+        collections: Some(SyncCollections {
+            favorites: true,
+            playlists: true,
+            albums: false,
+            artists: false,
+        }),
+    };
+
+    let profile = profile::resolve(7, &service, Some(&account));
+
+    assert_eq!(profile.mode, SyncMode::MirrorQuarantine);
+    assert_eq!(profile.mode_source, ProfileSource::Account);
+    assert_eq!(profile.interval_hours, 6);
+    assert_eq!(profile.interval_source, ProfileSource::Account);
+    assert!(!profile.collections.albums);
+    assert!(!profile.collections.artists);
+    assert_eq!(profile.collections_source, ProfileSource::Account);
+}
+
+/// Criterio 3: el bidireccional existe, está deshabilitado y lleva su motivo.
+#[test]
+fn resolve_exposes_bidirectional_as_unavailable_with_reason() {
+    let service = service_defaults(
+        SyncMode::ImportOnly,
+        DEFAULT_INTERVAL_HOURS,
+        SyncCollections::all(),
+    );
+
+    let profile = profile::resolve(7, &service, None);
+    let bidirectional = profile
+        .modes
+        .iter()
+        .find(|option| option.value == SyncMode::Bidirectional)
+        .expect("el modo bidireccional está modelado");
+
+    assert!(!bidirectional.enabled);
+    assert_eq!(bidirectional.reason, Some(BIDIRECTIONAL_UNAVAILABLE_REASON));
+    assert!(profile
+        .modes
+        .iter()
+        .filter(|option| option.value != SyncMode::Bidirectional)
+        .all(|option| option.enabled));
+}
+
+/// Persistencia: lo guardado por la ficha se lee de vuelta y gana al servicio.
+#[tokio::test]
+async fn persisted_override_roundtrips_and_wins_over_service_defaults() {
+    let pool = setup_test_db().await;
+    let (account_id, _) = seed_account(&pool, "qobuz").await;
+    perform_update_service_sync_settings(&pool, "qobuz", true, true, false)
+        .await
+        .expect("defaults del servicio");
+
+    let update = SyncProfileUpdate {
+        enabled: true,
+        mode: Some("strict_mirror".to_string()),
+        interval_hours: Some(12),
+        collections: Some(SyncCollections {
+            favorites: true,
+            playlists: true,
+            albums: true,
+            artists: false,
+        }),
+    };
+    let saved = profile::save_account_profile(&pool, account_id, &update)
+        .await
+        .expect("guardar el perfil");
+
+    assert_eq!(saved.mode, SyncMode::StrictMirror);
+    assert_eq!(saved.mode_source, ProfileSource::Account);
+    assert_eq!(saved.interval_hours, 12);
+    assert!(saved.collections.albums);
+
+    let loaded = profile::load_sync_profile(&pool, account_id)
+        .await
+        .expect("leer el perfil");
+    assert_eq!(loaded, saved);
+}
+
+/// Guardar exactamente los defaults del servicio no crea override: la herencia
+/// limpia es la ausencia de fila y la fuente sigue siendo el servicio.
+#[tokio::test]
+async fn saving_service_default_values_keeps_inheritance_clean() {
+    let pool = setup_test_db().await;
+    let (account_id, _) = seed_account(&pool, "qobuz").await;
+
+    let update = SyncProfileUpdate {
+        enabled: true,
+        mode: Some("import_only".to_string()),
+        interval_hours: Some(24),
+        collections: Some(SyncCollections::all()),
+    };
+    let saved = profile::save_account_profile(&pool, account_id, &update)
+        .await
+        .expect("guardar valores heredados");
+
+    assert_eq!(saved.mode_source, ProfileSource::Service);
+    assert_eq!(saved.interval_source, ProfileSource::Service);
+    assert_eq!(saved.collections_source, ProfileSource::Service);
+
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM settings WHERE key = ?")
+        .bind(profile::account_profile_key(account_id))
+        .fetch_one(&pool)
+        .await
+        .expect("consulta de la KV");
+    assert_eq!(rows, 0, "sin override no hay fila persistida");
+}
+
+/// Criterio 2: apagar el toggle excluye la cuenta del universo de
+/// «sincronizar todo» (el mismo que usa el auto-sync) sin borrar su perfil.
+#[tokio::test]
+async fn disabled_toggle_excludes_the_account_from_bulk_services() {
+    let pool = setup_test_db().await;
+    let (qobuz_id, _) = seed_account(&pool, "qobuz").await;
+    let (_tidal_id, _) = seed_account(&pool, "tidal").await;
+
+    let update = SyncProfileUpdate {
+        enabled: false,
+        mode: None,
+        interval_hours: None,
+        collections: None,
+    };
+    let saved = profile::save_account_profile(&pool, qobuz_id, &update)
+        .await
+        .expect("pausar la cuenta");
+
+    assert!(!saved.enabled);
+    assert!(!profile::is_account_participating(&pool, qobuz_id)
+        .await
+        .expect("participación"));
+
+    let services = profile::active_participating_services(&pool)
+        .await
+        .expect("servicios del sync masivo");
+    assert_eq!(services, vec!["tidal".to_string()]);
+
+    // «Sync ahora» resuelve el perfil aunque esté pausado: el toggle no lo
+    // bloquea (ADR-0006, decisión 4).
+    let loaded = profile::load_sync_profile(&pool, qobuz_id)
+        .await
+        .expect("perfil de la cuenta pausada");
+    assert!(!loaded.enabled);
+}
+
+/// Validación: el bidireccional no se puede seleccionar.
+#[tokio::test]
+async fn update_rejects_bidirectional_with_its_reason() {
+    let pool = setup_test_db().await;
+    let (account_id, _) = seed_account(&pool, "qobuz").await;
+
+    let update = SyncProfileUpdate {
+        enabled: true,
+        mode: Some("bidirectional".to_string()),
+        interval_hours: None,
+        collections: None,
+    };
+    let error = profile::save_account_profile(&pool, account_id, &update)
+        .await
+        .expect_err("el bidireccional no es seleccionable");
+
+    assert!(error.contains(BIDIRECTIONAL_UNAVAILABLE_REASON), "{error}");
+}
+
+/// Validación: modo desconocido e intervalo fuera de rango.
+#[tokio::test]
+async fn update_rejects_unknown_mode_and_out_of_range_interval() {
+    let pool = setup_test_db().await;
+    let (account_id, _) = seed_account(&pool, "qobuz").await;
+
+    let unknown_mode = SyncProfileUpdate {
+        enabled: true,
+        mode: Some("mirror_forever".to_string()),
+        interval_hours: None,
+        collections: None,
+    };
+    let error = profile::save_account_profile(&pool, account_id, &unknown_mode)
+        .await
+        .expect_err("modo desconocido");
+    assert!(error.contains("unknown sync mode"), "{error}");
+
+    let bad_interval = SyncProfileUpdate {
+        enabled: true,
+        mode: None,
+        interval_hours: Some(0),
+        collections: None,
+    };
+    let error = profile::save_account_profile(&pool, account_id, &bad_interval)
+        .await
+        .expect_err("intervalo fuera de rango");
+    assert!(error.contains("interval_hours 0"), "{error}");
+}
+
+/// Un override corrupto se reporta; no se sustituye en silencio por defaults.
+#[tokio::test]
+async fn corrupt_override_is_reported_not_silently_defaulted() {
+    let pool = setup_test_db().await;
+    let (account_id, _) = seed_account(&pool, "qobuz").await;
+
+    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?)")
+        .bind(profile::account_profile_key(account_id))
+        .bind("{not json")
+        .execute(&pool)
+        .await
+        .expect("sembrar el override corrupto");
+
+    let error = profile::load_sync_profile(&pool, account_id)
+        .await
+        .expect_err("el JSON corrupto se propaga");
+    assert!(error.contains("SyncProfileInvalid"), "{error}");
+}
+
+/// El borrado de la cuenta limpia el override (la KV no tiene FK).
+#[tokio::test]
+async fn deleting_the_profile_clears_the_override() {
+    let pool = setup_test_db().await;
+    let (account_id, _) = seed_account(&pool, "qobuz").await;
+
+    let update = SyncProfileUpdate {
+        enabled: false,
+        mode: Some("mirror_quarantine".to_string()),
+        interval_hours: Some(48),
+        collections: None,
+    };
+    profile::save_account_profile(&pool, account_id, &update)
+        .await
+        .expect("guardar el override");
+
+    profile::delete_account_profile(&pool, account_id)
+        .await
+        .expect("borrar el override");
+
+    let loaded = profile::load_sync_profile(&pool, account_id)
+        .await
+        .expect("perfil tras el borrado");
+    assert!(loaded.enabled);
+    assert_eq!(loaded.mode, SyncMode::ImportOnly);
+    assert_eq!(loaded.interval_hours, DEFAULT_INTERVAL_HOURS);
+    assert_eq!(loaded.mode_source, ProfileSource::Service);
+}
+
+/// Una cuenta inexistente no inventa un perfil.
+#[tokio::test]
+async fn unknown_account_is_reported() {
+    let pool = setup_test_db().await;
+
+    let error = profile::load_sync_profile(&pool, 9_999)
+        .await
+        .expect_err("cuenta inexistente");
+    assert!(error.contains("SyncProfileNotFound"), "{error}");
 }
