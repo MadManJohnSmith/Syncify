@@ -1005,3 +1005,69 @@ fn test_backend_http_timeout_handling() {
         Some("Request timed out after 10000ms".to_string())
     );
 }
+
+// LY03 (#184) — caracterización de la caché de identidad ANTES de la caché
+// negativa persistente. `LYRICS_CACHE` es un mapa en memoria por identidad
+// (artista, título, álbum normalizados) que guarda también las resoluciones
+// no resueltas y no tiene caducidad ni granularidad por Fuente de letras: un
+// segundo intento de la misma identidad devuelve el fallo cacheado sin volver
+// a sondear mientras viva el proceso. Estos tests fijan ese contrato para que
+// la entrega de #184 no lo cambie por accidente.
+
+#[test]
+fn identity_cache_key_normalizes_case_and_whitespace() {
+    crate::cache::clear_lyrics_cache();
+    crate::cache::set_cached_lyrics(
+        "  Artist X ",
+        "Song Y ",
+        Some("Album Z"),
+        LyricsResolution::new_not_found("Orchestrator", "multi_provider_cascade"),
+        None,
+    );
+
+    let cache = crate::cache::LYRICS_CACHE.read().unwrap();
+    let entries = cache.as_ref().expect("la caché se inicializa al sembrar");
+    assert_eq!(
+        entries.keys().cloned().collect::<Vec<_>>(),
+        vec!["artist x:::song y:::album z".to_string()],
+        "la clave es artista:::título:::álbum en minúsculas y sin espacios de borde"
+    );
+}
+
+#[test]
+fn identity_cache_reuses_negative_resolution_without_expiry() {
+    futures::executor::block_on(async {
+        crate::cache::clear_lyrics_cache();
+
+        // Sin fuentes configuradas, una sonda real no podría devolver nada: si
+        // el resultado no viniera de la caché, el test lo delataría como
+        // no-resuelto recién orquestado en vez de la resolución sembrada.
+        let mut config = LyricsEngineConfig::default();
+        config.sources.clear();
+        let client = LyricsClient::with_parts_and_config(
+            reqwest::Client::new(),
+            Arc::new(NoopHooks),
+            config,
+        );
+        let service = crate::pipeline::LyricsPipelineService::with_client(client);
+
+        let mut negative =
+            LyricsResolution::new_not_found("Orchestrator", "multi_provider_cascade");
+        negative.error = Some("fallo sembrado por el test".to_string());
+        crate::cache::set_cached_lyrics(
+            "Artist X",
+            "Song Y",
+            Some("Album Z"),
+            negative.clone(),
+            None,
+        );
+
+        let (resolution, sidecar) = service
+            .resolve_lyrics_and_sidecar("artist x", "song y", Some("album z"), 180.0)
+            .await
+            .expect("la caché negativa se sirve como resultado");
+
+        assert_eq!(resolution, negative);
+        assert_eq!(sidecar, None);
+    });
+}
