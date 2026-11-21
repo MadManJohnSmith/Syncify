@@ -262,6 +262,7 @@ async function openPanel(): Promise<void> {
 
 function closePanel(): void {
   open.value = false
+  error.value = null
   if (profile.value) applyProfile(profile.value)
 }
 
