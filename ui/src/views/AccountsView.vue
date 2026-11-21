@@ -891,6 +891,11 @@
                             </span>
                           </div>
                         </div>
+
+                        <!-- Perfil de sincronización resuelto (issue #69): la
+                             ficha muestra el modo, el intervalo, las colecciones
+                             y el toggle de participación de ESTA cuenta. -->
+                        <AccountSyncProfile :account-id="acct.id" />
                       </div>
                       <!-- /v-for acct -->
                     </div>
@@ -1204,6 +1209,7 @@ import { useAccountsStatus, SERVICE_ICON_SYMBOLS, claimIdentityRefreshRun } from
 import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import LocalLibrarySyncModal from '@/components/LocalLibrarySyncModal.vue';
 import SpotifyApiConfigCard from '@/components/SpotifyApiConfigCard.vue'
+import AccountSyncProfile from '@/components/AccountSyncProfile.vue'
 
 const router = useRouter()
 const toast = useToast()

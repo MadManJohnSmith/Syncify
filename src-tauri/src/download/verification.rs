@@ -22,6 +22,24 @@
 //! mientras no exista el escritor ID3 (D16): su duración y bitrate no son
 //! legibles aquí, así que sus checks se saltan por falta de evidencia, nunca
 //! se inventa un fallo.
+//!
+//! #338: «falta de lector» y «lectura fallida» dejan de confundirse. Para un
+//! formato con lector (FLAC/M4A) un fichero no vacío que el lector no puede
+//! parsear es un fallo cerrado del gate, no un check saltado.
+//!
+//! Límite conocido de la duración: sale de la cabecera (STREAMINFO / mvhd), así
+//! que un fichero cortado por la cola conserva la duración completa y este
+//! check no lo detecta. Lo que sí detecta: un fichero con cabecera propia más
+//! corta que el catálogo (preview, edición o pista equivocadas). Si no hay
+//! ninguna duración física el check se salta por falta de evidencia; bajo
+//! política estricta el worker sí rechaza la reinspección fallida en vez de
+//! creer la calidad anunciada. La corroboración de longitud decodificable queda
+//! fuera porque duplicaría un decode completo por pista; el árbol ya tiene el
+//! verificador (`syncify_flac_writer::verify_flac_integrity_stream`: MD5 PCM de
+//! STREAMINFO o decode-check), pero su coste por pista debe medirse antes de
+//! cablearlo al gate. El test `characterization_header_duration_cannot_detect_tail_truncation`
+//! fija el límite y `shorter_header_detects_preview_or_wrong_file` el caso
+//! cubierto.
 
 use std::path::Path;
 
@@ -53,9 +71,19 @@ pub struct DeliveredTags {
     pub disc_number: Option<i64>,
     /// Portada frontal presente con datos no vacíos y magia JPEG/PNG.
     pub has_valid_cover: bool,
-    /// `false` para formatos sin lector de tags en este árbol (MP3 hasta D16):
-    /// los checks de tags/portada se saltan, no se inventa evidencia.
-    pub tags_readable: bool,
+}
+
+/// #338: resultado de releer los tags, con la distinción que el gate necesita.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TagReadOutcome {
+    /// El formato tiene lector y la lectura funcionó.
+    Readable(DeliveredTags),
+    /// El formato no tiene lector en este árbol (MP3 hasta D16): falta de
+    /// evidencia, no fallo.
+    NoReader,
+    /// El formato declara lector y la lectura falló (fichero ilegible): el
+    /// gate falla cerrado.
+    Unreadable(String),
 }
 
 /// Verifica la entrega física contra lo que el catálogo promete.
@@ -88,7 +116,25 @@ pub fn verify_delivery(
     }
 
     let physical = crate::download::audio_inspector::inspect_physical_audio_file(path);
-    let delivered = read_delivered_tags(path);
+
+    // #338: un formato con lector que no se deja leer es un fallo cerrado, no
+    // falta de evidencia. Solo MP3 (y una extensión sin lector) se saltan.
+    let delivered = match read_delivered_tags(path) {
+        TagReadOutcome::Readable(delivered) => {
+            verify_tags(&delivered, expected, &mut failures);
+            if require_cover && !delivered.has_valid_cover {
+                failures.push("cover art missing or invalid in the delivered file".to_string());
+            }
+            delivered
+        }
+        TagReadOutcome::NoReader => DeliveredTags::default(),
+        TagReadOutcome::Unreadable(reason) => {
+            failures.push(format!(
+                "tags unreadable in a format that declares a reader: {reason}"
+            ));
+            DeliveredTags::default()
+        }
+    };
 
     // Duración física dentro de tolerancia frente al catálogo.
     if let (Some(phys), Some(catalog_ms)) = (
@@ -106,17 +152,8 @@ pub fn verify_delivery(
         }
     }
 
-    if let Some(delivered) = delivered.as_ref() {
-        if delivered.tags_readable {
-            verify_tags(delivered, expected, &mut failures);
-            if require_cover && !delivered.has_valid_cover {
-                failures.push("cover art missing or invalid in the delivered file".to_string());
-            }
-        }
-    }
-
     if failures.is_empty() {
-        Ok(delivered.unwrap_or_default())
+        Ok(delivered)
     } else {
         Err(failures)
     }
@@ -194,10 +231,11 @@ fn match_tag(
     }
 }
 
-/// Relee los tags del fichero entregado. Devuelve `None` para formatos sin
-/// lector (MP3 hasta que aterrice el escritor ID3 de D16): falta de lector no
-/// es un fallo de verificación, es falta de evidencia.
-pub fn read_delivered_tags(path: &Path) -> Option<DeliveredTags> {
+/// Relee los tags del fichero entregado distinguiendo lector ausente de
+/// lectura fallida (#338). `NoReader` es falta de evidencia (MP3 hasta que
+/// aterrice el escritor ID3 de D16); `Unreadable` es un fichero de un formato
+/// con lector que no se deja parsear, y el gate lo trata como fallo.
+pub fn read_delivered_tags(path: &Path) -> TagReadOutcome {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -205,12 +243,18 @@ pub fn read_delivered_tags(path: &Path) -> Option<DeliveredTags> {
         .to_lowercase();
 
     if ext == "flac" || looks_like_flac(path) {
-        return read_flac_tags(path);
+        return match read_flac_tags(path) {
+            Ok(tags) => TagReadOutcome::Readable(tags),
+            Err(reason) => TagReadOutcome::Unreadable(reason),
+        };
     }
     if ext == "m4a" || ext == "aac" || ext == "mp4" {
-        return read_mp4_tags(path);
+        return match read_mp4_tags(path) {
+            Ok(tags) => TagReadOutcome::Readable(tags),
+            Err(reason) => TagReadOutcome::Unreadable(reason),
+        };
     }
-    None
+    TagReadOutcome::NoReader
 }
 
 fn looks_like_flac(path: &Path) -> bool {
@@ -238,15 +282,16 @@ fn parse_number_prefix(raw: &str) -> Option<i64> {
     digits.parse::<i64>().ok()
 }
 
-fn read_flac_tags(path: &Path) -> Option<DeliveredTags> {
-    let tag = metaflac::Tag::read_from_path(path).ok()?;
+fn read_flac_tags(path: &Path) -> Result<DeliveredTags, String> {
+    let tag = metaflac::Tag::read_from_path(path)
+        .map_err(|e| format!("metaflac cannot parse '{}': {e}", path.display()))?;
     let vorbis = tag.vorbis_comments();
     let cover = tag
         .pictures()
         .find(|pic| pic.picture_type == metaflac::block::PictureType::CoverFront)
         .map(|pic| is_valid_image_payload(&pic.data))
         .unwrap_or(false);
-    Some(DeliveredTags {
+    Ok(DeliveredTags {
         title: vorbis.and_then(|v| vorbis_first(v, "TITLE")),
         artist: vorbis.and_then(|v| vorbis_first(v, "ARTIST")),
         album: vorbis.and_then(|v| vorbis_first(v, "ALBUM")),
@@ -257,24 +302,23 @@ fn read_flac_tags(path: &Path) -> Option<DeliveredTags> {
             .and_then(|v| vorbis_first(v, "DISCNUMBER"))
             .and_then(|raw| parse_number_prefix(&raw)),
         has_valid_cover: cover,
-        tags_readable: true,
     })
 }
 
-fn read_mp4_tags(path: &Path) -> Option<DeliveredTags> {
-    let tag = mp4ameta::Tag::read_from_path(path).ok()?;
+fn read_mp4_tags(path: &Path) -> Result<DeliveredTags, String> {
+    let tag = mp4ameta::Tag::read_from_path(path)
+        .map_err(|e| format!("mp4ameta cannot parse '{}': {e}", path.display()))?;
     let cover = tag
         .artwork()
         .map(|img| is_valid_image_payload(img.data))
         .unwrap_or(false);
-    Some(DeliveredTags {
+    Ok(DeliveredTags {
         title: tag.title().map(|v| v.trim().to_string()),
         artist: tag.artist().map(|v| v.trim().to_string()),
         album: tag.album().map(|v| v.trim().to_string()),
         track_number: tag.track_number().map(|v| v as i64),
         disc_number: tag.disc_number().map(|v| v as i64),
         has_valid_cover: cover,
-        tags_readable: true,
     })
 }
 
@@ -439,7 +483,9 @@ mod tests {
                 payload,
             );
             tag.write_to_path(&path).unwrap();
-            let delivered = read_delivered_tags(&path).unwrap();
+            let TagReadOutcome::Readable(delivered) = read_delivered_tags(&path) else {
+                panic!("el FLAC de prueba debe ser legible");
+            };
             assert!(
                 !delivered.has_valid_cover,
                 "portada {name} no debe contar como válida"
@@ -499,6 +545,38 @@ mod tests {
         assert!(!failures.iter().any(|f| f.contains("disc")));
     }
 
+    /// #338, caracterización: la duración verificada sale de la cabecera
+    /// (STREAMINFO), así que un fichero cortado por la cola conserva la
+    /// duración completa y este check no lo detecta. El límite es deliberado
+    /// en este hito: se documenta aquí antes de decidir si se corrobora con
+    /// una longitud decodificable (coste de un decode completo por pista).
+    #[test]
+    fn characterization_header_duration_cannot_detect_tail_truncation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tail-truncated.flac");
+        write_flac_with_duration(&path, 200 * 44_100);
+        // Quita bytes del final del payload: la cabecera sigue intacta y
+        // declara los 200 s completos.
+        let len = std::fs::metadata(&path).unwrap().len();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(len - 4).unwrap();
+        verify_delivery(&path, &duration_only(200_000), false, 0.0)
+            .expect("cabecera intacta: el truncado de cola no se detecta aquí");
+    }
+
+    /// #338: el caso que la duración de cabecera SÍ cubre — un preview o un
+    /// fichero equivocado trae su propia cabecera más corta que el catálogo.
+    #[test]
+    fn shorter_header_detects_preview_or_wrong_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("preview.flac");
+        write_flac_with_duration(&path, 30 * 44_100);
+        let failures = verify_delivery(&path, &duration_only(200_000), false, 0.0).unwrap_err();
+        assert!(failures
+            .iter()
+            .any(|f| f.contains("duration out of tolerance")));
+    }
+
     #[test]
     fn mp3_without_id3_reader_skips_tag_checks_but_verifies_preconditions() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -507,6 +585,49 @@ mod tests {
         // Sin lector de tags ni duración (MP3): falta de evidencia no es fallo.
         verify_delivery(&path, &expected(200_000), true, 0.0)
             .expect("MP3 sin lector ID3 no falla el gate");
-        assert!(read_delivered_tags(&path).is_none());
+        assert_eq!(read_delivered_tags(&path), TagReadOutcome::NoReader);
+    }
+
+    /// #338: un FLAC no vacío que metaflac no puede parsear ya no pasa el
+    /// gate por falta de evidencia: es un formato con lector y la lectura
+    /// falló, así que falla cerrado.
+    #[test]
+    fn unreadable_flac_fails_closed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("corrupt.flac");
+        std::fs::write(&path, b"fLaC-not-a-parseable-tag-chain").unwrap();
+
+        assert!(matches!(
+            read_delivered_tags(&path),
+            TagReadOutcome::Unreadable(_)
+        ));
+        let failures = verify_delivery(&path, &duration_only(200_000), false, 0.0).unwrap_err();
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("tags unreadable in a format that declares a reader")),
+            "fallo cerrado esperado, obtuve: {failures:?}"
+        );
+    }
+
+    /// #338: lo mismo para M4A: mp4ameta no puede parsear el contenedor y el
+    /// gate no lo trata como «sin lector».
+    #[test]
+    fn unreadable_m4a_fails_closed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("corrupt.m4a");
+        std::fs::write(&path, b"not-an-mp4-container").unwrap();
+
+        assert!(matches!(
+            read_delivered_tags(&path),
+            TagReadOutcome::Unreadable(_)
+        ));
+        let failures = verify_delivery(&path, &duration_only(200_000), false, 0.0).unwrap_err();
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("tags unreadable in a format that declares a reader")),
+            "fallo cerrado esperado, obtuve: {failures:?}"
+        );
     }
 }
