@@ -234,8 +234,8 @@ async fn test_schema_already_accepts_artist_items_and_collections() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(
-        latest_version, 113,
+    assert!(
+        latest_version >= 113,
         "the schema already carries the M01 kinds migration"
     );
 

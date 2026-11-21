@@ -2765,7 +2765,7 @@ pub async fn start_migration<R: tauri::Runtime>(
         prefetch_manual_matches(&state.db, &destination_service, effective_destination).await;
 
     // Process tracks with real matching. The counters are the job's running
-    // totals across every collection phase (tracks, then albums).
+    // totals across every collection phase (tracks, then albums, then artists).
     let mut counters = MigrationCounters::default();
     // Set when cancel_migration flipped the job while the loop was running:
     // the loop stops early, so the job must not be reported as completed.
