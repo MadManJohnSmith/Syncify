@@ -123,6 +123,11 @@
           <span class="text-text-secondary">
             {{ profile.collections_source === 'account' ? 'Account override' : 'Service default' }}
           </span>
+          <!-- Honestidad de alcance: el motor de este corte importa favoritos;
+               el resto de colecciones se aplica cuando llega su cobertura (T07). -->
+          <span class="text-text-secondary">
+            Applied as coverage arrives (T07); today the run imports Favorites only.
+          </span>
         </div>
 
         <div class="flex items-center gap-2">
