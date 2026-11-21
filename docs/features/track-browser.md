@@ -39,7 +39,7 @@ se comporta una lista; las vistas solo declaran su fuente.
 
 **Por qué el detalle pagina y no usa el runner por lotes (L05, #336):**
 `LibrarySelection` en modo `filter` viaja como `LibraryQuery`, que no tiene
-dimensión de artista; usar el runner para «todo el artista» habría exigido un
+dimensión de artista por id; usar el runner para «todo el artista» habría exigido un
 campo nuevo en el contrato de filtros. La colección completa se obtiene
 paginando `query_library_artist_tracks` a bloque lleno (200), la misma consulta
 que alimenta la lista.

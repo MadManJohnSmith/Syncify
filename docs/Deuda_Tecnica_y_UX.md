@@ -288,6 +288,27 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   criterios de #45 eran DASH y esa rama solo tiene tests live `#[ignore]`).
 - **Cierra**: el truncado por intento con su test rojo→verde.
 
+### D-12 — Estado obsoleto del detalle de artista al cambiar de artista in-place
+
+- **Observado (2026-11-21, re-check de PR #351)**: tras aterrizar la recarga real
+  por parámetro (#351: `watch(() => route.params.id)` en `ArtistDetailView.vue`),
+  quedan dos ventanas sin protección:
+  1. `loadArtist` no tiene secuenciación: con una navegación A→B rápida, la
+     respuesta que llega última pinta el artista aunque la URL sea otra, y el
+     estado persiste hasta la siguiente navegación. `loadArtistCollection` además
+     relee `artistId.value` en cada página: cambiar de artista a mitad de la
+     enumeración de Download All/Shuffle puede mezclar pistas de dos artistas en
+     la misma cola.
+  2. `isFavorite` nunca se reinicia ni se carga en `loadArtist`, mientras el
+     backend sí persiste el favorito por artista (`src-tauri/src/commands/favorites.rs`):
+     tras A→B el corazón conserva el estado del artista anterior y en el primer
+     montaje no refleja el backend.
+- **Corrección que lo cerraría**: el patrón barato ya presente en el propio
+  fichero (`tracksRequestSeq`): un `artistRequestSeq` para `loadArtist` y
+  `loadArtistCollection`, capturar el id al iniciar cada acción de cola, y
+  reiniciar (o leer) `isFavorite` en `loadArtist`, con un test de carrera A→B.
+- **Cierra**: la secuenciación + captura de id + `isFavorite` con su test de carrera.
+
 ## Cerrado en esta revisión
 
 | ID | Qué se cerró | Evidencia |
