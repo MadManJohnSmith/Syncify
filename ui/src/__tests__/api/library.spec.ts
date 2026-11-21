@@ -21,7 +21,8 @@ import {
     getTrackMetadata,
     queryLibraryAlbums,
     queryLibraryArtists,
-    queryLibraryArtistTracks
+    queryLibraryArtistTracks,
+    getArtist
 } from '@/api/library';
 import { resetMocks, mockInvoke } from '../setup';
 
@@ -714,6 +715,81 @@ describe('libraryApi', () => {
 
             expect(result.tracks[0].collaborators).toEqual([]);
             expect(result.tracks[0].sources).toEqual([]);
+        });
+    });
+
+    describe('getArtist', () => {
+        // #336: `top_tracks` pasa por el MISMO normalizador que
+        // `query_library_artist_tracks`; el backend serializa camelCase en
+        // este release, así que un alias snake_case ya no se interpreta.
+        it('normalizes top_tracks with the shared track normalizer', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'get_artist') {
+                    return {
+                        id: 42,
+                        name: 'The Beatles',
+                        bio: null,
+                        image_url: null,
+                        album_count: 1,
+                        albums: [],
+                        top_tracks: [{
+                            id: 101,
+                            title: 'Come Together',
+                            album: 'Abbey Road',
+                            albumId: 10,
+                            durationMs: 259000,
+                            collaborators: ['Guest'],
+                            sources: [{ serviceId: 1, serviceName: 'spotify' }],
+                        }],
+                        tracks_total: 7,
+                    };
+                }
+                return null;
+            });
+
+            const detail = await getArtist(42);
+
+            expect(detail.tracks_total).toBe(7);
+            expect(detail.top_tracks).toEqual([{
+                id: 101,
+                title: 'Come Together',
+                album: 'Abbey Road',
+                albumId: 10,
+                durationMs: 259000,
+                collaborators: ['Guest'],
+                sources: [{ serviceId: 1, serviceName: 'spotify' }],
+            }]);
+        });
+
+        it('does not resurrect snake_case aliases for detail tracks', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'get_artist') {
+                    return {
+                        id: 42,
+                        name: 'The Beatles',
+                        album_count: 0,
+                        albums: [],
+                        top_tracks: [{
+                            id: 101,
+                            title: 'Come Together',
+                            album: null,
+                            album_id: 10,
+                            duration_ms: 259000,
+                            collaborators: null,
+                            sources: [{ service_id: 1, service_name: 'spotify' }],
+                        }],
+                        tracks_total: 1,
+                    };
+                }
+                return null;
+            });
+
+            const detail = await getArtist(42);
+            const track = detail.top_tracks[0];
+
+            expect(track.albumId).toBeNull();
+            expect(track.durationMs).toBeNull();
+            expect(track.sources).toEqual([{ serviceId: 0, serviceName: '' }]);
         });
     });
 });

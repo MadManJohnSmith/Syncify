@@ -757,14 +757,15 @@ pub struct LibraryArtistDetail {
     pub bio: Option<String>,
     pub image_url: Option<String>,
     pub album_count: i64,
-    pub track_count: i64,
     pub albums: Vec<ArtistAlbum>,
     /// Primera página de [`query_library_artist_tracks_inner`] (L08, #105):
     /// `top_tracks` ya NO es una consulta distinta; el resto de páginas del
     /// detalle usa `query_library_artist_tracks`.
     pub top_tracks: Vec<crate::commands::library_artists::ArtistTrackRow>,
-    /// Pistas vivas DISTINTAS del artista (independiente de `top_tracks`,
-    /// que solo trae la primera página).
+    /// Pistas vivas DISTINTAS del artista: el ÚNICO contador de pistas del
+    /// detalle. El viejo `track_count` (filas de `track_artists`, con roles
+    /// duplicados y pistas sin pertenencia viva) se retiró en #336 para que el
+    /// payload no publique dos cifras que divergen.
     pub tracks_total: i64,
     #[serde(default)]
     pub appearances: Vec<ArtistAppearanceTrack>,
@@ -805,16 +806,17 @@ pub async fn fetch_artist(
 ) -> Result<LibraryArtistDetail, String> {
     tracing::info!("fetch_artist called for {}", artist_id);
 
-    // Fetch base artist details
-    let artist: (i64, String, Option<String>, i64, i64) = sqlx::query_as(
+    // Fetch base artist details. `album_count` cuenta filas de relación
+    // (metadatos de álbum, no pistas): el contador de pistas del payload es
+    // `tracks_total`, que viene de la MISMA consulta paginada del detalle.
+    let artist: (i64, String, Option<String>, i64) = sqlx::query_as(
         r#"
         SELECT
             a.id,
             a.name,
             -- bio doesn't exist in the schema yet; image_url does (migration 0076)
             a.image_url as image_url,
-            (SELECT COUNT(*) FROM album_artists WHERE artist_id = a.id) as album_count,
-            (SELECT COUNT(*) FROM track_artists WHERE artist_id = a.id) as track_count
+            (SELECT COUNT(*) FROM album_artists WHERE artist_id = a.id) as album_count
         FROM artists a
         WHERE a.id = ?
         "#,
@@ -866,7 +868,6 @@ pub async fn fetch_artist(
         bio: None,
         image_url: artist.2,
         album_count: artist.3,
-        track_count: artist.4,
         albums,
         top_tracks: first_page.tracks,
         tracks_total: first_page.total,

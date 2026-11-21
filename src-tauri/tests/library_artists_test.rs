@@ -14,10 +14,12 @@
 //! - `top_tracks` es la primera página de la MISMA consulta del detalle;
 //! - colaboraciones cross-service con sus fuentes (spotify + qobuz);
 //! - filtros por texto, cuenta y servicio; orden por nombre, pistas y fecha
-//!   añadida;
+//!   añadida (con `library_added_at` NULL al final en ambas direcciones);
 //! - paginación en servidor, total exacto y `has_more`;
 //! - el contador `artists` de la cabecera cuenta artistas distintos con
 //!   pistas vivas en el filtro;
+//! - un solo contador de pistas en el detalle (`tracks_total`); el viejo
+//!   `track_count` ya no viaja en el payload (#336);
 //! - plan de consulta por índices.
 
 use sqlx::sqlite::SqlitePoolOptions;
@@ -455,6 +457,115 @@ async fn lista_pagina_en_servidor_con_total_exacto() {
     .unwrap();
     assert_eq!(third.artists[0].name, "Guest Vocalist");
     assert!(!third.has_more);
+}
+
+#[tokio::test]
+async fn orden_por_fecha_anadida_deja_los_nulos_al_final() {
+    let pool = seed().await;
+
+    // Artista con pistas vivas pero SIN fecha de añadido materializada: la
+    // pertenencia existe (`library_memberships`) y `tracks.library_added_at`
+    // sigue NULL porque nadie lo refrescó. Es el caso de una importación
+    // antigua o de una pista sin `added_at` en el proveedor.
+    sqlx::query("INSERT INTO artists (id, name) VALUES (6, 'Null Date')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (id, title, created_at) VALUES (13, 'Undated', '2025-12-01T09:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (13, 6, 'primary')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO library_memberships (account_id, track_id, collection_type, collection_id, provider_item, added_at) \
+         VALUES (1, 13, 'album', 9, 'sp-alb-undated', NULL)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let by_date_desc = artist_names(
+        &pool,
+        LibraryArtistQuery {
+            sort: LibraryArtistSortKey::DateAdded,
+            direction: SortDirection::Desc,
+            ..q()
+        },
+    )
+    .await;
+    assert_eq!(
+        by_date_desc,
+        vec!["Alpha Band", "Guest Vocalist", "Beta Trio", "Null Date"],
+        "los nulos van al final en descendente"
+    );
+
+    let by_date_asc = artist_names(
+        &pool,
+        LibraryArtistQuery {
+            sort: LibraryArtistSortKey::DateAdded,
+            direction: SortDirection::Asc,
+            ..q()
+        },
+    )
+    .await;
+    assert_eq!(
+        by_date_asc,
+        vec!["Beta Trio", "Alpha Band", "Guest Vocalist", "Null Date"],
+        "los nulos van al final también en ascendente"
+    );
+
+    // Y el campo del payload lo dice: sin fecha, `date_added` va a None.
+    let result = query_library_artists_inner(&pool, q()).await.unwrap();
+    let undated = result.artists.iter().find(|a| a.artist_id == 6).unwrap();
+    assert_eq!(undated.track_count, 1);
+    assert_eq!(undated.date_added, None);
+}
+
+// ==========================================================================
+// Detalle: un solo contador de pistas (tracks_total)
+// ==========================================================================
+
+// #336: el detalle publica SOLO `tracks_total` (pistas vivas distintas). El
+// viejo `track_count` contaba filas de `track_artists` —roles duplicados y
+// pistas sin pertenencia viva incluidas— y divergía del total visible. Ya no
+// existe en el payload: la pista repetida y la no viva no mueven la cifra.
+#[tokio::test]
+async fn detalle_publica_un_solo_contador_de_pistas() {
+    let pool = seed().await;
+
+    // T1 ya cuenta para Alpha: un segundo rol para el mismo artista duplica
+    // la fila. T13 es de Alpha pero no tiene pertenencia viva (no es visible).
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (1, 1, 'featured')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (id, title, created_at) VALUES (13, 'Hidden', '2025-12-01T09:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (13, 1, 'primary')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let detail = fetch_artist(&pool, 1).await.unwrap();
+    assert_eq!(detail.tracks_total, 8, "pistas vivas distintas");
+
+    let payload = serde_json::to_value(&detail).unwrap();
+    assert!(
+        payload.get("track_count").is_none(),
+        "el detalle ya no publica un segundo contador que diverge: {payload}"
+    );
+    assert_eq!(payload["tracks_total"], 8);
+    // La cabecera sigue prometiendo lo que la acción encola: el total vive.
+    assert!(detail.top_tracks.len() <= TOP_TRACKS_LIMIT as usize);
 }
 
 // ==========================================================================

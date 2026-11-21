@@ -33,9 +33,16 @@ se comporta una lista; las vistas solo declaran su fuente.
 | `LibraryView` | `query_library` (L01, issue #98: filtros, orden, búsqueda y contadores EN SERVIDOR; módulo `commands/library_query.rs`) | offset/limit 100 (máx 200) + `has_more` + contadores en la primera página | ids |
 | `LibraryAlbumsView` | `query_library_albums` (L07, issue #104: una fila por álbum vivo, cobertura, cuentas y servicios; módulo `commands/library_albums.rs`) | offset/limit 100 (máx 200) + `has_more` en servidor | sin selección |
 | `LibraryArtistsView` | `query_library_artists` (L08, issue #105: una fila por artista vivo, pistas, álbumes, colaboraciones, cuentas y servicios; módulo `commands/library_artists.rs`) | offset/limit 100 (máx 200) + `has_more` en servidor | sin selección |
-| `ArtistDetailView` | `get_artist` (primera página = `top_tracks`, 5) + `query_library_artist_tracks` (L08: todas las pistas vivas, paginadas con colaboradores y fuentes) | offset/limit 100 (máx 200) + `has_more` en servidor | sin selección |
+| `ArtistDetailView` | `get_artist` (cabecera y primera página = `top_tracks`, 5, sin contador de pistas propio: solo `tracks_total`) + `query_library_artist_tracks` (L08: todas las pistas vivas, paginadas con colaboradores y fuentes). `Download All` y `Shuffle Play` enumeran la colección completa paginando esa misma consulta (#336), no `top_tracks` | offset/limit 100 (máx 200) + `has_more` en servidor; la acción por lotes pagina a 200 | sin selección |
 | `MetadataView` | `get_library(0,500)` o `get_tracks_needing_metadata(500)` según `filterType` | página única, sin `has_more` | ids |
 | `DownloadsView` | `get_queue` completa | sin paginación server-side; recorte client-side a 50 por sección y salto por posición | sin selección |
+
+**Por qué el detalle pagina y no usa el runner por lotes (L05, #336):**
+`LibrarySelection` en modo `filter` viaja como `LibraryQuery`, que no tiene
+dimensión de artista; usar el runner para «todo el artista» habría exigido un
+campo nuevo en el contrato de filtros. La colección completa se obtiene
+paginando `query_library_artist_tracks` a bloque lleno (200), la misma consulta
+que alimenta la lista.
 
 La optimización de prefijo ordenado de `LibraryView` (`sortedPrefix`/`mergeSorted`)
 se retiró con L01: el orden lo fija el servidor y el renderer solo concatena
