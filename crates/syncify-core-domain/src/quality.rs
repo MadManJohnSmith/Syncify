@@ -1401,6 +1401,51 @@ mod tests {
         assert_eq!(parse_bitrate_kbps("0kbps"), None);
     }
 
+    /// #338, caracterización: `parse_bitrate_kbps` solo reconoce la etiqueta
+    /// con sufijo (`"AAC 96k"`); una etiqueta sin sufijo como `"AAC 256"` no
+    /// aporta evidencia. El contrato se amplía en el hito del núcleo.
+    #[test]
+    fn characterization_parse_bitrate_rejects_suffixless_label() {
+        assert_eq!(parse_bitrate_kbps("AAC 256"), None);
+    }
+
+    #[test]
+    fn test_deezer_free_floor_accepts_128_declared() {
+        // D05/#338: con la capa free resuelta, un MP3 128 de Deezer está en el
+        // piso y se completa declarando la caída; el premium sigue rechazándolo.
+        let free = QualityPolicy::evaluate_stream_resolution(
+            "lossless",
+            "MP3 128kbps",
+            "MP3",
+            16,
+            44_100.0,
+            "deezer",
+            "deezer",
+            false,
+            true,
+            provider_lossy_floor_kbps("deezer", true),
+        );
+        assert_eq!(
+            free.decision,
+            QualityDecisionKind::CompletedWithQualityFallback
+        );
+        assert!(free.quality_fallback_used);
+
+        let premium = QualityPolicy::evaluate_stream_resolution(
+            "lossless",
+            "MP3 128kbps",
+            "MP3",
+            16,
+            44_100.0,
+            "deezer",
+            "deezer",
+            false,
+            true,
+            provider_lossy_floor_kbps("deezer", false),
+        );
+        assert_eq!(premium.decision, QualityDecisionKind::RejectedQuality);
+    }
+
     #[test]
     fn test_provider_lossy_floor_matrix() {
         // D05 matrix: SoundCloud 128; Deezer 320 (128 free); the lossless

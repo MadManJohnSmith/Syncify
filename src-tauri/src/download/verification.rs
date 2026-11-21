@@ -499,6 +499,38 @@ mod tests {
         assert!(!failures.iter().any(|f| f.contains("disc")));
     }
 
+    /// #338, caracterización: la duración verificada sale de la cabecera
+    /// (STREAMINFO), así que un fichero cortado por la cola conserva la
+    /// duración completa y este check no lo detecta. El límite es deliberado
+    /// en este hito: se documenta aquí antes de decidir si se corrobora con
+    /// una longitud decodificable (coste de un decode completo por pista).
+    #[test]
+    fn characterization_header_duration_cannot_detect_tail_truncation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("tail-truncated.flac");
+        write_flac_with_duration(&path, 200 * 44_100);
+        // Quita bytes del final del payload: la cabecera sigue intacta y
+        // declara los 200 s completos.
+        let len = std::fs::metadata(&path).unwrap().len();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(len - 4).unwrap();
+        verify_delivery(&path, &duration_only(200_000), false, 0.0)
+            .expect("cabecera intacta: el truncado de cola no se detecta aquí");
+    }
+
+    /// #338: el caso que la duración de cabecera SÍ cubre — un preview o un
+    /// fichero equivocado trae su propia cabecera más corta que el catálogo.
+    #[test]
+    fn shorter_header_detects_preview_or_wrong_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("preview.flac");
+        write_flac_with_duration(&path, 30 * 44_100);
+        let failures = verify_delivery(&path, &duration_only(200_000), false, 0.0).unwrap_err();
+        assert!(failures
+            .iter()
+            .any(|f| f.contains("duration out of tolerance")));
+    }
+
     #[test]
     fn mp3_without_id3_reader_skips_tag_checks_but_verifies_preconditions() {
         let dir = tempfile::TempDir::new().unwrap();
