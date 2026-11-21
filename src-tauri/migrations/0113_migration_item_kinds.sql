@@ -18,6 +18,10 @@ ALTER TABLE migration_items ADD COLUMN kind TEXT NOT NULL DEFAULT 'track';
 
 ALTER TABLE migration_jobs ADD COLUMN collections TEXT;
 
--- Per-kind progress reads on the job detail view (the existing
--- idx_migration_items_job_status already serves status filters).
+-- Reserved for per-kind reads of one job (counts or filters per collection).
+-- Nothing reads by (job_id, kind) yet: today's item lists and status filters
+-- go through idx_migration_items_job_status, and the engine writes the kind on
+-- every insert. The job detail's per-collection totals are the consumer this
+-- is ahead of; adding it here keeps those reads off a scan when they land and
+-- costs one index on a table that only grows with job history.
 CREATE INDEX IF NOT EXISTS idx_migration_items_job_kind ON migration_items(job_id, kind);

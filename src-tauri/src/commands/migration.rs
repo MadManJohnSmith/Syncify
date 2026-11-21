@@ -1555,9 +1555,23 @@ async fn prefetch_local_destination_album_matches(
             sep.push_bind(&album.external_id);
         }
         qb.push(")");
-        if let Ok(rows) = qb.build_query_as::<(String, String)>().fetch_all(db).await {
-            for (src_id, dest_id) in rows {
-                map.insert(src_id, dest_id);
+        match qb.build_query_as::<(String, String)>().fetch_all(db).await {
+            Ok(rows) => {
+                for (src_id, dest_id) in rows {
+                    map.insert(src_id, dest_id);
+                }
+            }
+            // A failed read leaves the map empty, so this chunk's albums are
+            // matched without the mirror and land as honest no-matches: log
+            // it instead of letting every album of the batch look unknown.
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to read the album mirror for {} -> {} ({} albums): {}; they are matched without it",
+                    source_service,
+                    destination_service,
+                    chunk.len(),
+                    e
+                );
             }
         }
     }
@@ -2428,9 +2442,11 @@ pub async fn start_migration<R: tauri::Runtime>(
 
     // Album collection (M01): match and write the job's favorite albums
     // after the track favorites, through the same job, counters and
-    // progress stream. A cancelled album phase leaves the job cancelled.
+    // progress stream. A cancelled album phase leaves the job cancelled,
+    // and a job the track phase already found cancelled does not open the
+    // album phase at all: its pending rows would outlive the cancellation.
     let mut album_cancelled = false;
-    if albums_requested && !albums.is_empty() {
+    if albums_requested && !albums.is_empty() && !cancelled {
         album_cancelled = run_album_collection(
             &state.db,
             &app,

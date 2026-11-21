@@ -776,7 +776,7 @@
                     Destination: {{ getServiceName(dest) }} · account {{ destinationAccounts[dest] ?? 'default' }}
                     · {{ previewedPairMatches(dest) ? `${previewSummary.total ?? 0} items previewed` : 'not previewed' }}
                   </p>
-                  <p class="mt-2">Content selected: {{ selectedContent.join(', ') }}. The existing engine does not filter every content category independently; the preview is for its actual source selection.</p>
+                  <p class="mt-2">Content selected: {{ selectedContent.join(', ') }}. Tracks and albums are read and matched independently; playlists are mirrored from the transferred tracks. The preview counts tracks only.</p>
                   <p v-if="destinationServices.length !== 1" class="mt-2 font-medium text-amber-700 dark:text-amber-300" data-testid="batch-blocked">Batch writes are disabled: each destination account needs a verified preview and explicit confirmation.</p>
                   <label v-else class="mt-3 flex items-start gap-2 cursor-pointer">
                     <input v-model="transferConfirmed" type="checkbox" data-testid="confirm-transfer" class="mt-1" :disabled="!previewedPairMatches(destinationServices[0])">
@@ -1719,12 +1719,22 @@ function collectionDeclaredAnywhere(collection: string): boolean {
 
 const selectedContent = ref<string[]>(['favorites'])
 
-/** Wire collections (M01) the selected content maps to, in selection order. */
-const selectedCollections = computed(() =>
-  selectedContent.value
+/** Wire collections (M01) the selected content maps to, in selection order.
+ *
+ * The playlist mirror has no read of its own — the engine builds destination
+ * playlists from the track items the job transferred — so a selection that
+ * carries 'playlists' without 'tracks' would start an empty job (the server
+ * refuses it, and before that refusal it closed as an empty "completed").
+ * Playlists never travel alone: the track favorites read is added here. */
+const selectedCollections = computed(() => {
+  const collections = selectedContent.value
     .map(contentId => MIGRATION_COLLECTION_BY_CONTENT[contentId])
     .filter((collection): collection is string => Boolean(collection))
-)
+  if (collections.includes('playlists') && !collections.includes('tracks')) {
+    collections.unshift('tracks')
+  }
+  return collections
+})
 
 /** Selected content the chosen destinations do not declare (M00 gating). */
 const capabilityConflicts = computed(() => {

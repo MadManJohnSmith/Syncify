@@ -134,6 +134,35 @@ describe('M01 favorite albums in the transfer wizard', () => {
     wrapper.unmount()
   })
 
+  it('never sends playlists without the track read that feeds them', async () => {
+    const calls: InvokeCalls = []
+    backend(calls)
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-service-id="spotify"]').trigger('click')
+    await clickNext(wrapper) // -> content
+    await selectContent(wrapper, 'Favorites & Tracks') // deselect the default
+    await selectContent(wrapper, 'Playlists')
+    await clickNext(wrapper) // -> destinations
+    await wrapper.find('[data-service-id="qobuz"]').trigger('click')
+    await flushPromises()
+    await clickNext(wrapper) // -> review (preview runs)
+    await clickNext(wrapper) // -> transfer step
+
+    await wrapper.find('[data-testid="start-transfer-btn"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="confirm-transfer"]').setValue(true)
+    await wrapper.find('[data-testid="start-transfer-btn"]').trigger('click')
+    await flushPromises()
+
+    const call = calls.find(c => c.cmd === 'start_migration')
+    expect(call, 'start_migration should have been invoked').toBeTruthy()
+    // The playlist mirror is built from the transferred track favorites: the
+    // wire carries the track read even though only Playlists was selected.
+    expect((call!.args as { collections?: string[] }).collections).toEqual(['tracks', 'playlists'])
+    wrapper.unmount()
+  })
+
   it('keeps albums out of the wire when only favorites are selected', async () => {
     const calls: InvokeCalls = []
     backend(calls)

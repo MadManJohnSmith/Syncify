@@ -768,3 +768,106 @@ async fn test_playlists_collection_alone_is_refused_before_the_job_exists() {
         "the refusal happens before the job row, so nothing can close empty"
     );
 }
+
+/// Una cancelación que aterriza durante la fase de pistas no abre la fase de
+/// álbumes: el job cancelado no gana filas de álbum `pending` que sobrevivan a
+/// la cancelación (la fase solo arranca si `!cancelled`).
+#[tokio::test]
+async fn test_cancelled_track_phase_does_not_open_the_album_phase() {
+    let pool = setup_test_db().await;
+    seed_albums_fixture(&pool).await;
+
+    // Una pista de la biblioteca del origen: sin ella la fase de pistas no
+    // llega a comprobar el estado del job y la cancelación no tiene ventana.
+    let track_album_id: i64 =
+        sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Track Album') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title, album_id, duration_ms) VALUES ('Song One', ?, 200000) RETURNING id",
+    )
+    .bind(track_album_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Fixture Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')")
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, 'sp-one')")
+        .bind(track_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // La cancelación llega con el primer ítem de pista, como si el usuario
+    // hubiera pulsado Cancelar durante la fase de pistas. Un trigger la hace
+    // determinista: no compite con el bucle por la BD.
+    sqlx::query(
+        r#"CREATE TRIGGER cancel_job_on_first_track_item
+           AFTER INSERT ON migration_items
+           WHEN NEW.kind = 'track'
+           BEGIN
+               UPDATE migration_jobs SET status = 'cancelled' WHERE id = NEW.job_id;
+           END"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let app = test_app(pool.clone());
+    // Sin cuenta de origen explícita, la lectura es la del espejo de servicio
+    // entero: la pista sembrada entra sin necesidad de library_entries.
+    let job_id = start_albums_job(
+        &app,
+        "qobuz",
+        None,
+        None,
+        vec!["tracks", "albums"],
+        albums_options(),
+    )
+    .await
+    .expect("job must start");
+
+    let (status,): (String,) = sqlx::query_as("SELECT status FROM migration_jobs WHERE id = ?")
+        .bind(&job_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        status, "cancelled",
+        "the cancelled track phase closes the job as cancelled"
+    );
+
+    let album_items: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM migration_items WHERE job_id = ? AND kind = 'album'",
+    )
+    .bind(&job_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        album_items, 0,
+        "no pending album row outlives the cancellation"
+    );
+
+    let track_items: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM migration_items WHERE job_id = ? AND kind = 'track'",
+    )
+    .bind(&job_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        track_items, 1,
+        "the track items were the ones already written"
+    );
+}
