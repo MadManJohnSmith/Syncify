@@ -224,8 +224,8 @@ async fn test_artists_collection_is_offered_only_where_follow_exists() {
 /// `collections` como JSON de nombres de cable, y el espejo de artistas (0002,
 /// 0038, 0045, 0065) ya guarda `is_favorite` y los ids por servicio. Un ítem
 /// `kind = 'artist'` y un job `collections = '["artists"]'` se insertan hoy sin
-/// migración nueva — y la última migración aplicada sigue siendo la 0113, que
-/// no se toca.
+/// migración nueva — el assert es un suelo (`>= 113`, la 0113 de M01): las
+/// migraciones posteriores de otros carriles no rompen esta caracterización.
 #[tokio::test]
 async fn test_schema_already_accepts_artist_items_and_collections() {
     let pool = setup_test_db().await;
