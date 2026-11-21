@@ -9,6 +9,7 @@ use syncify_core_domain::errors::ErrorTaxonomy;
 
 use crate::services::operation_recovery::classify_operation_error;
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
@@ -289,21 +290,6 @@ fn sqlite_utc_timestamp(at: std::time::Instant) -> String {
     let when = std::time::SystemTime::now() + delay;
     let dt: chrono::DateTime<chrono::Utc> = when.into();
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
-}
-
-/// Formato por extensión cuando la inspección física no pudo leer el fichero:
-/// la misma heurística que `mark_complete` usa para etiquetar sin inspector.
-fn extension_format(file_path: &str) -> String {
-    let lower = file_path.to_lowercase();
-    if lower.ends_with(".mp3") {
-        "MP3".to_string()
-    } else if lower.ends_with(".m4a") || lower.ends_with(".aac") {
-        "AAC".to_string()
-    } else if lower.ends_with(".opus") {
-        "OPUS".to_string()
-    } else {
-        "FLAC".to_string()
-    }
 }
 
 /// Punto 3: ¿procede intentar una resolución viva por ISRC cuando el resolver
@@ -832,16 +818,17 @@ impl DownloadWorker {
                 tracing::warn!("D05: inspección física cancelada en el gate: {e}");
                 None
             });
-            let (bd, sr, fmt) = phys
-                .as_ref()
-                .map(|p| (p.bit_depth, p.sample_rate, p.format.clone()))
-                .unwrap_or_else(|| {
-                    (
-                        res.bit_depth,
-                        res.sample_rate,
-                        extension_format(&res.file_path),
-                    )
-                });
+            // #338: bajo política estricta, una reinspección fallida NO cae a
+            // los valores anunciados por el proveedor (no son evidencia). Antes
+            // de este cierre, un FLAC/M4A ilegible se evaluaba con lo declarado.
+            let Some(phys) = phys else {
+                return Err(format!(
+                    "RejectedQuality: physical re-inspection failed for '{}'; \
+                     strict quality policy does not trust declared values",
+                    res.file_path
+                ));
+            };
+            let (bd, sr, fmt) = (phys.bit_depth, phys.sample_rate, phys.format.clone());
             let physical_tier = syncify_core_domain::quality::classify_audio_tier(
                 Some(bd),
                 Some(sr),
@@ -866,6 +853,228 @@ impl DownloadWorker {
             }
         }
         Ok(())
+    }
+
+    /// D05/#338: costura observable del orden gate → `mark_complete`.
+    ///
+    /// La producción y los tests usan esta misma llamada: si el gate rechaza,
+    /// la fila NO se promociona y el fichero promovido sale de la biblioteca
+    /// junto con la fila que la propia entrega hubiera escrito antes del gate
+    /// (la propiedad la prueba el journal de la descarga, no el `track_id`).
+    /// Antes, el orden solo se vigilaba buscando cadenas en el fuente.
+    pub async fn verify_then_complete(
+        &self,
+        queue_id: i64,
+        res: &crate::download::DownloadResult,
+        expected: crate::download::verification::ExpectedDelivery,
+        require_cover: bool,
+        strict_quality: bool,
+        extra_tolerance_secs: f64,
+    ) -> Result<(), String> {
+        match self
+            .verify_delivery_before_complete(
+                queue_id,
+                res,
+                expected,
+                require_cover,
+                strict_quality,
+                extra_tolerance_secs,
+            )
+            .await
+        {
+            Ok(()) => {
+                self.mark_complete(queue_id, res).await;
+                Ok(())
+            }
+            Err(reason) => {
+                let quarantined = self
+                    .discard_rejected_delivery(queue_id, &res.file_path)
+                    .await;
+                match quarantined {
+                    Some(path) => Err(format!(
+                        "{reason} (rejected file quarantined at {})",
+                        path.display()
+                    )),
+                    None => Err(reason),
+                }
+            }
+        }
+    }
+
+    /// #338: un rechazo de verificación no deja en la biblioteca ni el fichero
+    /// ni la fila de la propia entrega. Algunas rutas —Tidal escribe en
+    /// `tidal_pipeline` §9 y hace commit— crean la fila de `downloads` ANTES
+    /// del gate, así que la limpieza necesita saber si esa fila es de esta
+    /// entrega: la propia se retira y el audio rechazado se mueve a cuarentena
+    /// explícita. Sin prueba de propiedad, fila y fichero se conservan, y un
+    /// fallo del ledger tampoco autoriza a tocar nada.
+    ///
+    /// Devuelve la ruta de cuarentena cuando movió el fichero, para que el
+    /// motivo del fallo la nombre.
+    async fn discard_rejected_delivery(&self, queue_id: i64, file_path: &str) -> Option<PathBuf> {
+        let rows: Result<Vec<i64>, sqlx::Error> =
+            sqlx::query_scalar("SELECT id FROM downloads WHERE file_path = ?")
+                .bind(file_path)
+                .fetch_all(&self.db)
+                .await;
+        let rows = match rows {
+            Ok(rows) => rows,
+            Err(e) => {
+                // Un fallo del ledger no autoriza a borrar: el fichero se
+                // conserva y el aviso deja rastro. Borrar a ciegas podría
+                // destruir una entrega que otra pista ya posee.
+                tracing::warn!(
+                    queue_id,
+                    file_path,
+                    error = %e,
+                    "[Worker] Cannot confirm ledger ownership of a rejected delivery; keeping the file"
+                );
+                return None;
+            }
+        };
+
+        if !rows.is_empty() {
+            let owns_delivery = match self
+                .delivery_journal_claims_output(queue_id, file_path)
+                .await
+            {
+                Ok(owns) => owns,
+                Err(e) => {
+                    tracing::warn!(
+                        queue_id,
+                        file_path,
+                        error = %e,
+                        "[Worker] Cannot read the delivery journal; keeping the ledger row and the file"
+                    );
+                    return None;
+                }
+            };
+            if !owns_delivery {
+                tracing::warn!(
+                    queue_id,
+                    file_path,
+                    rows = rows.len(),
+                    "[Worker] Rejected delivery kept: no journal entry of this delivery claims the path"
+                );
+                return None;
+            }
+
+            // §9 de `tidal_pipeline` ya borró las filas ajenas de este path en
+            // la misma transacción, así que la que queda —si hay alguna— es de
+            // esta entrega aunque su `track_id` no coincida con el de la cola.
+            if let Err(e) = sqlx::query("DELETE FROM downloads WHERE file_path = ?")
+                .bind(file_path)
+                .execute(&self.db)
+                .await
+            {
+                // La fila de la entrega sigue ahí: mover el fichero dejaría una
+                // fila apuntando a una ruta que ya no existe.
+                tracing::warn!(
+                    queue_id,
+                    file_path,
+                    error = %e,
+                    "[Worker] Cannot withdraw the rejected delivery's ledger row; keeping the file"
+                );
+                return None;
+            }
+            tracing::warn!(
+                queue_id,
+                file_path,
+                rows = rows.len(),
+                "[Worker] Rejected delivery withdrew the ledger row written before the gate"
+            );
+        }
+
+        self.quarantine_rejected_file(queue_id, file_path).await
+    }
+
+    /// #338: prueba de propiedad de la entrega que el worker fija justo antes
+    /// del gate: `DownloadJournal::start` abre la entrada con
+    /// `entity_id = queue_id` y `checkpoint_promoted` registra el
+    /// `expected_output_path` promovido. Una entrada del journal que declara
+    /// esta ruta demuestra que la escribió esta descarga, sin depender del
+    /// `track_id` del ledger: `tidal_pipeline` §9 puede resolver o crear una
+    /// pista canónica distinta a la de la cola.
+    async fn delivery_journal_claims_output(
+        &self,
+        queue_id: i64,
+        file_path: &str,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM operation_journal \
+             WHERE entity_id = ? AND expected_output_path = ?",
+        )
+        .bind(queue_id.to_string())
+        .bind(file_path)
+        .fetch_one(&self.db)
+        .await
+        .map(|count| count > 0)
+    }
+
+    /// #338: aparta el fichero de una entrega rechazada sin destruir audio
+    /// válido. La cuarentena es hermana del fichero
+    /// (`<directorio>/.syncify-quarantine/`), oculta e ignorada por la
+    /// biblioteca, y el nombre lleva el `queue_id` para rastrear el rechazo.
+    /// Si el movimiento falla se borra el fichero como último recurso: la
+    /// invariante es que la biblioteca no lo indexe.
+    async fn quarantine_rejected_file(&self, queue_id: i64, file_path: &str) -> Option<PathBuf> {
+        let source = Path::new(file_path);
+        let parent = source.parent().unwrap_or_else(|| Path::new("."));
+        let quarantine_dir = parent.join(".syncify-quarantine");
+        let stem = source
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "track".to_string());
+        let file_name = match source.extension() {
+            Some(ext) => format!("{stem}.rejected-q{queue_id}.{}", ext.to_string_lossy()),
+            None => format!("{stem}.rejected-q{queue_id}"),
+        };
+        let target = quarantine_dir.join(file_name);
+
+        if let Err(e) = tokio::fs::create_dir_all(&quarantine_dir).await {
+            tracing::warn!(
+                queue_id,
+                dir = %quarantine_dir.display(),
+                error = %e,
+                "[Worker] Cannot create the rejection quarantine; removing the rejected file instead"
+            );
+        } else {
+            match tokio::fs::rename(source, &target).await {
+                Ok(()) => {
+                    tracing::warn!(
+                        queue_id,
+                        from = file_path,
+                        to = %target.display(),
+                        "[Worker] Rejected delivery quarantined"
+                    );
+                    return Some(target);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+                Err(e) => tracing::warn!(
+                    queue_id,
+                    from = file_path,
+                    to = %target.display(),
+                    error = %e,
+                    "[Worker] Cannot quarantine the rejected delivery; removing it instead"
+                ),
+            }
+        }
+
+        match tokio::fs::remove_file(source).await {
+            Ok(()) => tracing::warn!(
+                queue_id,
+                file_path,
+                "[Worker] Rejected delivery removed: quarantine was not possible"
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(
+                queue_id,
+                file_path,
+                error = %e,
+                "[Worker] Failed to remove a rejected promoted file"
+            ),
+        }
+        None
     }
 
     /// La calidad pedida original de la fila (la misma fuente que usa
@@ -2543,7 +2752,7 @@ impl DownloadWorker {
                 // la entrega por debajo de lo pedido. Si falla: fallo de
                 // verificación y el ledger de `downloads` NO se escribe.
                 let delivery_gate = self
-                    .verify_delivery_before_complete(
+                    .verify_then_complete(
                         queue_id,
                         &download_result,
                         expected_delivery,
@@ -2580,7 +2789,6 @@ impl DownloadWorker {
                     return;
                 }
 
-                self.mark_complete(queue_id, &download_result).await;
                 self.schedule_bpm_postprocess(queue_id, track_id).await;
 
                 // BD-9: cerrar la entrada del journal. Sin esto la operación

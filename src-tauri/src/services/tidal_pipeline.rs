@@ -18,7 +18,7 @@ use crate::services::mp4_writer::{apply_and_verify_mp4_tags, Mp4Metadata};
 use syncify_core_domain::byte_validators::AudioByteValidator;
 use syncify_core_domain::events::{PipelineProgressEvent, PipelineStepStatus, ResolvedTrackInfo};
 use syncify_core_domain::manifest::TrackManifestEntry;
-use syncify_core_domain::quality::QualityPolicy;
+use syncify_core_domain::quality::{provider_lossy_floor_kbps, QualityPolicy};
 use syncify_core_domain::{FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext};
 
 use crate::services::repair_guardrail::{
@@ -3554,7 +3554,7 @@ where
         "tidal",
         !allow_fallback,
         allow_fallback,
-        320, // matriz Tidal: el piso lossy global de esta ruta de streaming sigue siendo 320
+        provider_lossy_floor_kbps("tidal", false), // D05/#338: matriz única, sin 320 duplicado
     );
 
     // Prevent UNIQUE constraint collision on downloads.file_path if another track formerly occupied it
@@ -3755,7 +3755,7 @@ where
         "tidal",
         !allow_fallback,
         allow_fallback,
-        320, // matriz Tidal: el piso lossy global de esta ruta de streaming sigue siendo 320
+        provider_lossy_floor_kbps("tidal", false), // D05/#338: matriz única, sin 320 duplicado
     );
     let download_result_str = q_eval.decision.to_string();
 
