@@ -44,6 +44,14 @@ de integrarse. Anti-3008: commit + push en cada micro-hito (caracterización,
 núcleo, puertas). Fuente: handoff del despacho del Lote 2 en
 `~/.local/state/syncify/`.
 
+**Lección fechada 2026-11-21:** para saber si un carril interrumpido dejó
+commits sin pushear, no te fíes del ref remoto local `origin/<rama>` — puede
+no existir aunque el delegado ya pusheó (falso «0 sin push» medido en el
+carril #69, que sí había pusheado). Verifica con `git ls-remote origin
+<rama>`. Al relanzar un carril muerto: pushear/preservar la rama, capturar el
+WIP sin commit como patch en la carpeta de estado del dueño, liberar el
+worktree muerto y re-delegar con `git checkout -b <rama> origin/<rama>`.
+
 ## Histórico
 
 Las entradas fechadas del 2026-11-13 al 2026-11-19 (decisiones del
