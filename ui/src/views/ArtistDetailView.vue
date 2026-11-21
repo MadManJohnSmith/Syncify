@@ -70,14 +70,18 @@
               <div class="flex gap-3 mt-4 items-center">
                 <button 
                   @click="downloadArtistTracks" 
-                  class="flex items-center gap-2 px-4 py-2 bg-primary text-on-accent rounded-lg hover:bg-primary-hover transition-colors"
+                  :disabled="collectionLoading"
+                  data-testid="artist-download-all"
+                  class="flex items-center gap-2 px-4 py-2 bg-primary text-on-accent rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-60 disabled:cursor-progress"
                 >
                   <span class="material-symbols-outlined text-[18px]">download</span>
                   Download All
                 </button>
                 <button 
                   @click="shufflePlay"
-                  class="flex items-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors"
+                  :disabled="collectionLoading"
+                  data-testid="artist-shuffle-play"
+                  class="flex items-center gap-2 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors disabled:opacity-60 disabled:cursor-progress"
                 >
                   <span class="material-symbols-outlined text-[18px]">shuffle</span>
                   Shuffle Play
@@ -250,6 +254,8 @@ import TrackCover from '@/components/TrackCover.vue'
 import type { ArtistDetail, ArtistTrackRow } from '@/api/types'
 
 const TRACK_PAGE_SIZE = 100
+/** Página máxima que acepta el servidor: la enumeración completa va a bloque lleno. */
+const FULL_COLLECTION_PAGE_SIZE = 200
 const TRACK_ROW_HEIGHT = 64
 const TRACK_OVERSCAN = 8
 const TRACK_SCROLL_THROTTLE_MS = 120
@@ -270,44 +276,14 @@ const tracks = ref<ArtistTrackRow[]>([])
 const tracksTotal = ref(0)
 const tracksLoadingMore = ref(false)
 const tracksError = ref<string | null>(null)
+/** Enumeración completa en vuelo: Download All / Shuffle Play esperan su colección. */
+const collectionLoading = ref(false)
 let tracksRequestSeq = 0
 
 const hasMoreTracks = computed(() => tracks.value.length < tracksTotal.value)
 
 // Get artist ID from route params
 const artistId = Number(route.params.id)
-
-/**
- * Normaliza la primera página (`top_tracks`) y las páginas del servidor al
- * mismo contrato. `top_tracks` ya trae el contrato camelCase de L08; se
- * toleran los nombres snake_case por si llega una respuesta antigua.
- */
-function asTrackRow(raw: unknown): ArtistTrackRow {
-  const rec = (raw ?? {}) as Record<string, unknown>
-  const nullableNumber = (value: unknown): number | null =>
-    typeof value === 'number' && Number.isFinite(value) ? value : null
-  return {
-    id: Number(rec.id ?? 0),
-    title: typeof rec.title === 'string' ? rec.title : '',
-    album: typeof rec.album === 'string' ? rec.album : null,
-    albumId: nullableNumber(rec.albumId ?? rec.album_id),
-    durationMs: nullableNumber(rec.durationMs ?? rec.duration_ms),
-    collaborators: Array.isArray(rec.collaborators)
-      ? rec.collaborators.filter((name): name is string => typeof name === 'string')
-      : [],
-    sources: Array.isArray(rec.sources)
-      ? rec.sources.map((source) => {
-          const s = (source ?? {}) as Record<string, unknown>
-          return {
-            serviceId: Number(s.serviceId ?? s.service_id ?? 0),
-            serviceName: typeof (s.serviceName ?? s.service_name) === 'string'
-              ? String(s.serviceName ?? s.service_name)
-              : '',
-          }
-        })
-      : [],
-  }
-}
 
 const {
   containerRef,
@@ -344,8 +320,7 @@ async function loadMoreTracks(): Promise<void> {
     })
     if (seq !== tracksRequestSeq) return
     const known = new Set(tracks.value.map((track) => track.id))
-    for (const raw of result.tracks) {
-      const track = asTrackRow(raw)
+    for (const track of result.tracks) {
       if (!known.has(track.id)) {
         tracks.value.push(track)
         known.add(track.id)
@@ -392,13 +367,58 @@ function coverByAlbumTitle(albumTitle: string | null | undefined): string | null
   return artist.value.albums.find(a => a.title === albumTitle)?.cover_url ?? null
 }
 
+/**
+ * Colección COMPLETA de pistas vivas del artista (#336). Download All y
+ * Shuffle Play operan sobre el total que anuncia la cabecera, no sobre la
+ * primera página de `top_tracks`: se pagina el MISMO
+ * `query_library_artist_tracks` que alimenta la lista, a bloque lleno.
+ * Si el artista ya está cargado entero en pantalla, se reutiliza.
+ */
+async function loadArtistCollection(): Promise<ArtistTrackRow[]> {
+  if (!hasMoreTracks.value && tracks.value.length > 0) return [...tracks.value]
+
+  const collected: ArtistTrackRow[] = []
+  const seen = new Set<number>()
+  let offset = 0
+  for (;;) {
+    const page = await queryLibraryArtistTracks({
+      artistId,
+      offset,
+      limit: FULL_COLLECTION_PAGE_SIZE,
+    })
+    for (const track of page.tracks) {
+      if (seen.has(track.id)) continue
+      seen.add(track.id)
+      collected.push(track)
+    }
+    // Una página vacía corta también un `hasMore` incoherente: sin avance no
+    // hay nada más que pedir.
+    if (!page.hasMore || page.tracks.length === 0) break
+    offset += page.tracks.length
+  }
+  return collected
+}
+
 async function downloadArtistTracks() {
-  const firstPage = artist.value?.top_tracks ?? []
-  if (firstPage.length === 0) return
-  const trackIds = firstPage.map(t => t.id)
+  if (!artist.value) return
+  const artistName = artist.value.name
+  collectionLoading.value = true
+  let collection: ArtistTrackRow[]
+  try {
+    collection = await loadArtistCollection()
+  } catch (err: any) {
+    const errStr = String(err?.message || err || '')
+    toast.error('Failed to load the artist tracks', errStr)
+    return
+  } finally {
+    collectionLoading.value = false
+  }
+  if (collection.length === 0) return
+
+  const trackIds = collection.map(t => t.id)
   try {
     const res = await addBatchToQueue({ trackIds, allowFallback: true, jobKind: 'artist' })
-    toast.success('Queued for download', `${res.added} tracks from ${artist.value?.name}`)
+    toast.success('Queued for download', `${res.added} tracks from ${artistName}`)
   } catch (err: any) {
     const errStr = String(err?.message || err || '')
     if (errStr.includes('SourceIdentityMissing')) {
@@ -410,13 +430,28 @@ async function downloadArtistTracks() {
 }
 
 async function shufflePlay() {
-  const firstPage = artist.value?.top_tracks ?? []
-  if (!artist.value || firstPage.length === 0) {
+  if (!artist.value) {
     toast.warning('No tracks available', 'This artist has no indexed tracks to play.')
     return
   }
   const artistName = artist.value.name
-  const shuffled = [...firstPage]
+  collectionLoading.value = true
+  let collection: ArtistTrackRow[]
+  try {
+    collection = await loadArtistCollection()
+  } catch (err: any) {
+    const errStr = String(err?.message || err || '')
+    toast.error('Failed to load the artist tracks', errStr)
+    return
+  } finally {
+    collectionLoading.value = false
+  }
+  if (collection.length === 0) {
+    toast.warning('No tracks available', 'This artist has no indexed tracks to play.')
+    return
+  }
+
+  const shuffled = [...collection]
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
@@ -505,9 +540,10 @@ async function loadArtist() {
     const result = await getArtist(artistId)
     if (result) {
       artist.value = result
-      // top_tracks ES la primera página de la consulta del detalle (L08).
+      // `top_tracks` ES la primera página de la consulta del detalle (L08) y
+      // ya llega normalizada por `getArtist` (un solo normalizador, #336).
       tracksRequestSeq += 1
-      tracks.value = (result.top_tracks ?? []).map(asTrackRow)
+      tracks.value = result.top_tracks ?? []
       tracksTotal.value = result.tracks_total ?? tracks.value.length
       tracksError.value = null
       tracksLoadingMore.value = false

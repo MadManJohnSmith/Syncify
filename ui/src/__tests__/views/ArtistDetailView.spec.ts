@@ -37,7 +37,7 @@ describe('ArtistDetailView', () => {
         bio: 'Legendary rock band',
         image_url: null,
         album_count: 12,
-        track_count: 213,
+        tracks_total: 213,
         albums: [
             { id: 10, title: 'Abbey Road', release_year: 1969, track_count: 17, cover_art_url: null }
         ],
@@ -64,7 +64,8 @@ describe('ArtistDetailView', () => {
         const invokeCalls: { cmd: string; args: any }[] = [];
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
-            if (cmd === 'get_artist') return mockArtist;
+            // Artista ya completo en la primera página: 2 de 2 vivas.
+            if (cmd === 'get_artist') return { ...mockArtist, tracks_total: 2 };
             if (cmd === 'add_batch_to_queue') return { added: 2, skipped: 0 };
             return null;
         });
@@ -86,24 +87,29 @@ describe('ArtistDetailView', () => {
         });
     });
 
-    // Caracterización #336: hoy Download All encola SOLO la primera página
-    // (`top_tracks`, ≤5) aunque la cabecera muestre `tracks_total`. El test
-    // pinza el comportamiento actual para que el cambio de colección completa
-    // sea observable (hito 2 lo invierte).
-    it('Download All encola hoy solo top_tracks aunque tracks_total sea mayor', async () => {
+    // #336: Download All encola TODA la colección viva del artista, no la
+    // primera página de `top_tracks` que muestra la cabecera parcial.
+    it('Download All encola todas las pistas vivas del artista, no solo top_tracks', async () => {
         const invokeCalls: { cmd: string; args: any }[] = [];
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
             if (cmd === 'get_artist') return { ...mockArtist, tracks_total: 7 };
-            if (cmd === 'add_batch_to_queue') return { added: 2, skipped: 0 };
+            if (cmd === 'add_batch_to_queue') return { added: 7, skipped: 0 };
             if (cmd === 'query_library_artist_tracks') {
-                const query = args?.query as { offset: number };
+                const query = args?.query as { offset: number; limit: number };
+                // Servidor: 7 pistas vivas, de una en una página de 2.
+                const pageSize = 2;
+                const ids = [101, 102, 103, 104, 105, 106, 107];
+                const slice = ids.slice(query.offset, query.offset + pageSize);
                 return {
-                    tracks: [{ id: 103 + query.offset, title: `Later ${query.offset}`, album: 'Abbey Road', albumId: 10, durationMs: 200000, collaborators: [], sources: [] }],
-                    total: 7,
+                    tracks: slice.map(id => ({
+                        id, title: `Track ${id}`, album: 'Abbey Road', albumId: 10,
+                        durationMs: 200000, collaborators: [], sources: [],
+                    })),
+                    total: ids.length,
                     offset: query.offset,
-                    limit: 100,
-                    hasMore: true,
+                    limit: query.limit,
+                    hasMore: query.offset + slice.length < ids.length,
                 };
             }
             return null;
@@ -112,33 +118,75 @@ describe('ArtistDetailView', () => {
         const wrapper = mount(ArtistDetailView);
         await flushPromises();
 
-        await wrapper.findAll('button').find(b => b.text().includes('Download All'))!.trigger('click');
+        await wrapper.find('[data-testid="artist-download-all"]').trigger('click');
         await flushPromises();
 
         const batchCall = invokeCalls.find(c => c.cmd === 'add_batch_to_queue');
-        expect(batchCall?.args.trackIds).toEqual([101, 102]);
-        // No se enumera el resto del artista para la acción.
-        expect(invokeCalls.some(c => c.cmd === 'query_library_artist_tracks')).toBe(false);
+        expect(batchCall?.args).toEqual({
+            trackIds: [101, 102, 103, 104, 105, 106, 107],
+            allowFallback: true,
+            jobKind: 'artist',
+        });
+        // La enumeración completa pagina el MISMO query del detalle y no
+        // toca la lista virtualizada (sigue con las 2 de `top_tracks`).
+        const pages = invokeCalls.filter(c => c.cmd === 'query_library_artist_tracks');
+        expect(pages.map(c => (c.args.query as { offset: number }).offset)).toEqual([0, 2, 4, 6]);
+        expect(wrapper.findAll('[data-testid="artist-track-row"]')).toHaveLength(0);
     });
 
-    // Caracterización #336: Shuffle Play reproduce hoy solo `top_tracks`, no
-    // la colección completa que anuncia la cabecera.
-    it('Shuffle Play reproduce hoy solo top_tracks aunque tracks_total sea mayor', async () => {
-        mockInvoke((cmd) => {
-            if (cmd === 'get_artist') return { ...mockArtist, tracks_total: 7 };
+    // #336: Shuffle Play reproduce la misma colección completa.
+    it('Shuffle Play reproduce todas las pistas vivas del artista', async () => {
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_artist') return { ...mockArtist, tracks_total: 4 };
+            if (cmd === 'query_library_artist_tracks') {
+                const query = args?.query as { offset: number };
+                const ids = [101, 102, 103, 104];
+                const slice = ids.slice(query.offset, query.offset + 200);
+                return {
+                    tracks: slice.map(id => ({
+                        id, title: `Track ${id}`, album: 'Abbey Road', albumId: 10,
+                        durationMs: 200000, collaborators: [], sources: [],
+                    })),
+                    total: ids.length,
+                    offset: query.offset,
+                    limit: 200,
+                    hasMore: query.offset + slice.length < ids.length,
+                };
+            }
             return null;
         });
 
         const wrapper = mount(ArtistDetailView);
         await flushPromises();
 
-        await wrapper.findAll('button').find(b => b.text().includes('Shuffle Play'))!.trigger('click');
+        await wrapper.find('[data-testid="artist-shuffle-play"]').trigger('click');
         await flushPromises();
 
         expect(mockReplaceQueueAndPlay).toHaveBeenCalledTimes(1);
         const queued = mockReplaceQueueAndPlay.mock.calls[0][0] as { id: number }[];
-        // Barajado: el conjunto es el de `top_tracks`, sin las otras 5.
-        expect(queued.map(t => t.id).sort((a, b) => a - b)).toEqual([101, 102]);
+        // Barajado: el conjunto es el de las 4 pistas vivas.
+        expect(queued.map(t => t.id).sort((a, b) => a - b)).toEqual([101, 102, 103, 104]);
+    });
+
+    // #336: si la enumeración completa falla, la acción no encola nada y lo
+    // avisa; no se encola la página parcial que sí estaba en pantalla.
+    it('no encola una colección parcial si la enumeración completa falla', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_artist') return { ...mockArtist, tracks_total: 7 };
+            if (cmd === 'query_library_artist_tracks') throw new Error('network down');
+            return null;
+        });
+
+        const wrapper = mount(ArtistDetailView);
+        await flushPromises();
+
+        await wrapper.find('[data-testid="artist-download-all"]').trigger('click');
+        await flushPromises();
+
+        expect(invokeCalls.some(c => c.cmd === 'add_batch_to_queue')).toBe(false);
+        expect(wrapper.find('[data-testid="artist-download-all"]').attributes('disabled')).toBeUndefined();
     });
 
     it('enqueues single track download with add_to_queue', async () => {
@@ -301,7 +349,7 @@ describe('ArtistDetailView', () => {
 
     it('handles SourceIdentityMissing error on artist download gracefully', async () => {
         mockInvoke((cmd) => {
-            if (cmd === 'get_artist') return mockArtist;
+            if (cmd === 'get_artist') return { ...mockArtist, tracks_total: 2 };
             if (cmd === 'add_batch_to_queue') {
                 throw new Error('SourceIdentityMissing: tracks have no streaming source');
             }

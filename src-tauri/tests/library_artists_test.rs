@@ -14,10 +14,12 @@
 //! - `top_tracks` es la primera página de la MISMA consulta del detalle;
 //! - colaboraciones cross-service con sus fuentes (spotify + qobuz);
 //! - filtros por texto, cuenta y servicio; orden por nombre, pistas y fecha
-//!   añadida;
+//!   añadida (con `library_added_at` NULL al final en ambas direcciones);
 //! - paginación en servidor, total exacto y `has_more`;
 //! - el contador `artists` de la cabecera cuenta artistas distintos con
 //!   pistas vivas en el filtro;
+//! - un solo contador de pistas en el detalle (`tracks_total`); el viejo
+//!   `track_count` ya no viaja en el payload (#336);
 //! - plan de consulta por índices.
 
 use sqlx::sqlite::SqlitePoolOptions;
@@ -525,15 +527,15 @@ async fn orden_por_fecha_anadida_deja_los_nulos_al_final() {
 }
 
 // ==========================================================================
-// Detalle: track_count viejo frente a tracks_total
+// Detalle: un solo contador de pistas (tracks_total)
 // ==========================================================================
 
-// Caracterización #336: `LibraryArtistDetail.track_count` cuenta FILAS de
-// `track_artists` (roles duplicados y pistas sin pertenencia viva incluidas)
-// mientras `tracks_total` cuenta pistas vivas DISTINTAS. El test pinza la
-// divergencia actual del payload; el hito 2 la elimina.
+// #336: el detalle publica SOLO `tracks_total` (pistas vivas distintas). El
+// viejo `track_count` contaba filas de `track_artists` —roles duplicados y
+// pistas sin pertenencia viva incluidas— y divergía del total visible. Ya no
+// existe en el payload: la pista repetida y la no viva no mueven la cifra.
 #[tokio::test]
-async fn track_count_del_detalle_divergen_hoy_de_tracks_total() {
+async fn detalle_publica_un_solo_contador_de_pistas() {
     let pool = seed().await;
 
     // T1 ya cuenta para Alpha: un segundo rol para el mismo artista duplica
@@ -555,10 +557,15 @@ async fn track_count_del_detalle_divergen_hoy_de_tracks_total() {
 
     let detail = fetch_artist(&pool, 1).await.unwrap();
     assert_eq!(detail.tracks_total, 8, "pistas vivas distintas");
-    assert_eq!(
-        detail.track_count, 10,
-        "filas de track_artists: 8 vivas + rol duplicado + pista no viva"
+
+    let payload = serde_json::to_value(&detail).unwrap();
+    assert!(
+        payload.get("track_count").is_none(),
+        "el detalle ya no publica un segundo contador que diverge: {payload}"
     );
+    assert_eq!(payload["tracks_total"], 8);
+    // La cabecera sigue prometiendo lo que la acción encola: el total vive.
+    assert!(detail.top_tracks.len() <= TOP_TRACKS_LIMIT as usize);
 }
 
 // ==========================================================================

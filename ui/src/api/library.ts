@@ -6,7 +6,7 @@
 
 import { invokeCommand } from './tauri';
 import { invalidateLibraryPages } from '@/composables/libraryCacheInvalidation';
-import { asArray, asNumber, asString, asBoolean, asRecord, pick, pickArray, pickNumber, optionalNumber } from './normalize';
+import { asArray, asNumber, asString, asBoolean, asRecord, pick, pickArray, pickNumber, optionalNumber, optionalString } from './normalize';
 import type { LibraryTrack, LibraryPage, LibraryStats, Playlist, SearchResult, AlbumDetail, ArtistDetail, TopArtist, TopGenre, QualityBucket, TrackSourceAvailability, TrackPreflightResult } from './types';
 import type {
     LibraryQuery,
@@ -254,6 +254,31 @@ export async function queryLibraryArtists(query: LibraryArtistQuery): Promise<Li
 }
 
 /**
+ * Normalizador ÚNICO de una pista del detalle de artista (L08, #336). Lo usan
+ * `getArtist` (para `top_tracks`) y `queryLibraryArtistTracks`: el backend
+ * serializa ambos por el MISMO `ArtistTrackRow` camelCase de este release, así
+ * que no se toleran alias snake_case (era defensa muerta del mismo release).
+ */
+export function normalizeArtistTrackRow(raw: unknown): ArtistTrackRow {
+    const rec = asRecord(raw) ?? {};
+    return {
+        id: asNumber(rec.id),
+        title: asString(rec.title, ''),
+        album: optionalString(rec.album),
+        albumId: optionalNumber(rec.albumId) ?? null,
+        durationMs: optionalNumber(rec.durationMs) ?? null,
+        collaborators: asArray(rec.collaborators).map((name) => asString(name, '')),
+        sources: asArray(rec.sources).map((source) => {
+            const s = asRecord(source) ?? {};
+            return {
+                serviceId: asNumber(s.serviceId),
+                serviceName: asString(s.serviceName, ''),
+            };
+        }),
+    };
+}
+
+/**
  * Página del detalle de un artista (L08, #105): TODAS sus pistas vivas, con
  * colaboradores y fuentes por servicio. `top_tracks` de `get_artist` es la
  * primera página de esta misma consulta.
@@ -262,27 +287,8 @@ export async function queryLibraryArtistTracks(
     query: ArtistTracksQuery
 ): Promise<ArtistTracksResult> {
     const raw = asRecord(await invokeCommand<unknown>('query_library_artist_tracks', { query }));
-    const nullableNumber = (value: unknown): number | null => optionalNumber(value) ?? null;
-    const normalizeTrack = (track: unknown): ArtistTrackRow => {
-        const rec = asRecord(track) ?? {};
-        return {
-            id: asNumber(rec.id),
-            title: asString(rec.title, ''),
-            album: typeof (rec.album) === 'string' ? (rec.album as string) : null,
-            albumId: nullableNumber(rec.albumId ?? rec.album_id),
-            durationMs: nullableNumber(rec.durationMs ?? rec.duration_ms),
-            collaborators: asArray(rec.collaborators).map((name) => asString(name, '')),
-            sources: asArray(rec.sources).map((source) => {
-                const s = asRecord(source) ?? {};
-                return {
-                    serviceId: asNumber(s.serviceId ?? s.service_id),
-                    serviceName: asString(s.serviceName ?? s.service_name, ''),
-                };
-            }),
-        };
-    };
     return {
-        tracks: asArray(raw?.tracks).map((track) => normalizeTrack(track)),
+        tracks: asArray(raw?.tracks).map((track) => normalizeArtistTrackRow(track)),
         total: asNumber(raw?.total),
         offset: asNumber(raw?.offset, query.offset ?? 0),
         limit: asNumber(raw?.limit, query.limit ?? 0),
@@ -622,10 +628,20 @@ export async function getAlbum(albumId: number): Promise<AlbumDetail> {
 }
 
 /**
- * Get artist detail with albums and top tracks
+ * Get artist detail with albums and top tracks.
+ *
+ * `top_tracks` pasa por [`normalizeArtistTrackRow`], el mismo normalizador que
+ * usa `queryLibraryArtistTracks` (#336): la vista no normaliza pistas.
  */
 export async function getArtist(artistId: number): Promise<ArtistDetail> {
-    return invokeCommand<ArtistDetail>('get_artist', { artistId: artistId });
+    const raw = await invokeCommand<unknown>('get_artist', { artistId: artistId });
+    const rec = asRecord(raw) ?? {};
+    const detail = rec as unknown as ArtistDetail;
+    return {
+        ...detail,
+        top_tracks: asArray(rec.top_tracks).map((track) => normalizeArtistTrackRow(track)),
+        tracks_total: optionalNumber(rec.tracks_total),
+    };
 }
 
 /**

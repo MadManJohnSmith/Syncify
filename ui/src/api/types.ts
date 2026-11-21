@@ -1232,11 +1232,14 @@ export interface ArtistDetail {
     bio: string | null;
     image_url: string | null;
     album_count: number;
-    track_count: number;
     albums: ArtistAlbum[];
     /** Primera página de la misma consulta que pagina el detalle (L08). */
     top_tracks: ArtistTrackRow[];
-    /** Pistas vivas distintas del artista (todas las páginas). */
+    /**
+     * Pistas vivas distintas del artista (todas las páginas). Único contador
+     * de pistas del detalle: el viejo `track_count` (filas de `track_artists`,
+     * con roles duplicados y pistas no vivas) se retiró en #336.
+     */
     tracks_total?: number;
 }
 

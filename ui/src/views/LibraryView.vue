@@ -2092,9 +2092,11 @@ const headerChips = computed<HeaderChip[]>(() => [
     icon: 'artist',
     // L08 (#105): la pestaña de artistas ya existe. El chip cuenta artistas
     // distintos con al menos una pista viva en el filtro (contador del
-    // servidor) y navega a la lista; no aplica una dimensión de pista.
+    // servidor) y navega a la lista; no aplica una dimensión de pista. El
+    // tooltip no promete «el filtro actual»: al navegar solo heredan texto y
+    // orden (#336), no estado de descarga, calidad ni favoritos.
     disabled: false,
-    reason: 'Browse artists with at least one live track in the current filter',
+    reason: 'Browse artists with at least one live track; only the search text and order carry over to the artists list',
     count: libraryCounts.value?.artists ?? null,
     active: false,
   },

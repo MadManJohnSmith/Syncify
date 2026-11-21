@@ -212,11 +212,10 @@ describe('LibraryHeaderChips — cinco chips de estado (L03 #100)', () => {
         expect(router.currentRoute.value.query.sort).toBe('title');
     });
 
-    // Caracterización #336: el tooltip del chip Artistas promete «the current
-    // filter», pero al navegar la lista solo hereda texto y orden (la pestaña
-    // de artistas no lleva estado de descarga, calidad ni favoritos). El test
-    // pinza el texto actual; el hito 2 lo alinea con el estado que viaja.
-    it('el tooltip del chip Artistas dice hoy «in the current filter»', async () => {
+    // #336: el tooltip del chip Artistas ya no promete «el filtro actual»: al
+    // abrir la lista solo heredan texto y orden (sin estado de descarga,
+    // calidad ni favoritos), y eso es lo que dice.
+    it('el tooltip del chip Artistas dice qué estado viaja de verdad', async () => {
         mockInvoke((cmd) => {
             if (cmd === 'query_library') {
                 return pageWithCounts([createTestTrack(1, 'One')], {
@@ -229,8 +228,9 @@ describe('LibraryHeaderChips — cinco chips de estado (L03 #100)', () => {
         const { wrapper } = await mountLibrary({ q: 'amo', sort: 'title' });
         const artists = wrapper.find('[data-testid="library-chip-artists"]');
         expect(artists.attributes('title')).toBe(
-            'Browse artists with at least one live track in the current filter'
+            'Browse artists with at least one live track; only the search text and order carry over to the artists list'
         );
+        expect(artists.attributes('title')).not.toContain('current filter');
     });
 
     it('los chips sin dependencia van deshabilitados con su motivo y no alteran la consulta', async () => {
