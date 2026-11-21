@@ -211,6 +211,12 @@ async fn test_fixture_repetitions_within_import() {
         vec![(10, 1), (10, 2), (10, 3)],
         "la repetición de la misma pista se conserva"
     );
+    let (track_count,): (i64,) = sqlx::query_as("SELECT track_count FROM playlists WHERE id = ?")
+        .bind(result.playlist_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(track_count, 3, "track_count cuenta las tres ocurrencias");
 }
 
 #[tokio::test]

@@ -1828,46 +1828,76 @@ pub async fn get_playlists(state: State<'_, AppState>) -> Result<Vec<Playlist>, 
 }
 
 /// Add tracks to a playlist
+///
+/// PL02 (#155): cada alta es una OCURRENCIA nueva. Añadir una pista que ya
+/// está en la lista la repite al final en vez de no hacer nada; el alta es una
+/// transacción con la inserción y el recuento, y un `track_id` inexistente
+/// falla en vez de ignorarse en silencio.
 #[tauri::command]
 pub async fn add_to_playlist(
     state: State<'_, AppState>,
     playlist_id: i64,
     track_ids: Vec<i64>,
 ) -> Result<String, String> {
+    let added = add_to_playlist_core(&state.db, playlist_id, &track_ids).await?;
+    Ok(format!("Added {} tracks to playlist", added))
+}
+
+/// Núcleo testeable de `add_to_playlist`: posiciones contiguas al final de la
+/// lista y `playlists.track_count` = número de ocurrencias, en la misma
+/// transacción.
+pub async fn add_to_playlist_core(
+    db: &sqlx::SqlitePool,
+    playlist_id: i64,
+    track_ids: &[i64],
+) -> Result<usize, String> {
+    if track_ids.is_empty() {
+        return Ok(0);
+    }
+
     tracing::info!(
         "add_to_playlist: {} tracks to playlist {}",
         track_ids.len(),
         playlist_id
     );
 
-    let mut added = 0;
-    for track_id in track_ids.iter() {
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to start transaction: {}", e))?;
+
+    let mut added = 0usize;
+    for track_id in track_ids {
         let result = sqlx::query(
             r#"
-            INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position, added_at)
+            INSERT INTO playlist_tracks (playlist_id, track_id, position, added_at)
             VALUES (?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM playlist_tracks WHERE playlist_id = ?), CURRENT_TIMESTAMP)
-            "#
+            "#,
         )
         .bind(playlist_id)
         .bind(track_id)
         .bind(playlist_id)
-        .execute(&state.db)
-        .await;
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to add track {} to playlist: {}", track_id, e))?;
 
-        if result.is_ok() {
-            added += 1;
-        }
+        added += result.rows_affected() as usize;
     }
 
-    // Update track count
-    let _ = crate::db::write_or_log("add_to_playlist", sqlx::query(
-        "UPDATE playlists SET track_count = (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?) WHERE id = ?"
+    sqlx::query(
+        "UPDATE playlists SET track_count = (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?",
     )
     .bind(playlist_id)
     .bind(playlist_id)
-    .execute(&state.db)).await;
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to update playlist track count: {}", e))?;
 
-    Ok(format!("Added {} tracks to playlist", added))
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit track additions: {}", e))?;
+
+    Ok(added)
 }
 
 /// Create a new playlist

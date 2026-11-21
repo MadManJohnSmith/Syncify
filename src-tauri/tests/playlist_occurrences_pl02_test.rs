@@ -1,15 +1,14 @@
 //! PL02 (#155) — ocurrencias de la misma pista en una playlist local.
 //!
-//! Hito 1 (caracterización): fotografía lo que el CRUD y el import HACEN HOY
-//! sobre una playlist con la misma pista repetida, antes de tocar la semántica
-//! de ocurrencias. Los dos últimos tests documentan los huecos conocidos y se
-//! reescriben en el hito 2 con la semántica nueva:
+//! Cubre la semántica de ocurrencias sobre el modelo de 0110:
+//! - añadir una pista que ya está crea una ocurrencia nueva;
+//! - quitar una entrada del payload quita UNA ocurrencia, no todas;
+//! - reordenar mapea cada entrada a su ocurrencia y persiste 1..N;
+//! - `track_count` cuenta ocurrencias, no pistas distintas;
+//! - el import de archivo conserva las repeticiones.
 //!
-//! - `add_to_playlist` ya crea una ocurrencia nueva al repetir una pista.
-//! - `import_playlist_from_file_core` ya conserva las repeticiones del archivo.
-//! - `remove_from_playlist` borra HOY todas las ocurrencias de la pista.
-//! - `reorder_playlist_tracks` pierde HOY el destino de una pista repetida
-//!   cuando el payload la mueve al principio.
+//! Todo corre contra el esquema real (`sqlx::migrate!`) en `:memory:` o en un
+//! fichero temporal desechable; nunca contra la base personal.
 
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
@@ -179,10 +178,9 @@ async fn el_import_de_archivo_ya_conserva_las_repeticiones() {
     );
 }
 
-/// Caracterización del hueco de PL02: hoy quitar una pista borra TODAS sus
-/// ocurrencias. El hito 2 invierte esta aserción a «queda la otra».
+/// Aceptación #155: quitar una ocurrencia deja la otra.
 #[tokio::test]
-async fn caracterizacion_quitar_hoy_borra_todas_las_ocurrencias() {
+async fn quitar_una_ocurrencia_deja_la_otra() {
     let pool = migrated_pool().await;
     let account_id = seed_account(&pool).await;
     let playlist_id = seed_playlist(&pool, account_id, "Quitar").await;
@@ -198,30 +196,64 @@ async fn caracterizacion_quitar_hoy_borra_todas_las_ocurrencias() {
         .expect("remove must succeed");
 
     let remaining = occurrences(&pool, playlist_id).await;
-    assert_eq!(removed, 2, "caracterización: hoy caen las dos ocurrencias");
+    assert_eq!(
+        removed, 1,
+        "una entrada del payload quita una sola ocurrencia"
+    );
     assert_eq!(
         remaining
             .iter()
-            .map(|(_, track, _)| *track)
+            .map(|(_, track, pos)| (*track, *pos))
             .collect::<Vec<_>>(),
-        vec![track_b],
-        "caracterización: no queda ninguna ocurrencia de la pista quitada"
+        vec![(track_b, 1), (track_a, 2)],
+        "queda la otra ocurrencia y las posiciones se recompactan"
+    );
+    assert_eq!(
+        track_count(&pool, playlist_id).await,
+        2,
+        "track_count sigue contando las ocurrencias que quedan"
     );
 }
 
-/// Caracterización del hueco de PL02: con la pista repetida, el reorden actual
-/// reasigna la segunda ocurrencia al hueco negativo y la pista movida al
-/// principio acaba al final. El hito 2 lo sustituye por un mapeo
-/// ocurrencia-por-ocurrencia del orden completo.
+/// Si el payload repite la pista, cada repetición consume la siguiente
+/// ocurrencia: dos entradas quitan dos de las tres.
 #[tokio::test]
-async fn caracterizacion_reordenar_con_repeticiones_hoy_desplaza_la_pista_movida() {
+async fn quitar_la_misma_pista_dos_veces_quita_dos_ocurrencias() {
+    let pool = migrated_pool().await;
+    let account_id = seed_account(&pool).await;
+    let playlist_id = seed_playlist(&pool, account_id, "Quitar dos").await;
+    let track_a = seed_track(&pool, "Track A").await;
+    seed_occurrences(&pool, playlist_id, &[track_a, track_a, track_a]).await;
+
+    let app = test_state(pool.clone());
+    let state: State<'_, AppState> = app.state::<AppState>();
+
+    let removed = remove_from_playlist(state, playlist_id, vec![track_a, track_a])
+        .await
+        .expect("remove must succeed");
+
+    let remaining = occurrences(&pool, playlist_id).await;
+    assert_eq!(removed, 2);
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(
+        remaining[0].2, 1,
+        "la ocurrencia que queda vuelve a la posición 1"
+    );
+    assert_eq!(track_count(&pool, playlist_id).await, 1);
+}
+
+/// Aceptación #155: reordenar con repeticiones persiste el orden pedido y cada
+/// entrada del payload mueve su ocurrencia, no cualquier repetición.
+#[tokio::test]
+async fn reordenar_con_repeticiones_persiste_el_orden_pedido() {
     let pool = migrated_pool().await;
     let account_id = seed_account(&pool).await;
     let playlist_id = seed_playlist(&pool, account_id, "Reordenar").await;
     let track_a = seed_track(&pool, "Track A").await;
     let track_b = seed_track(&pool, "Track B").await;
-    // Orden actual: [A, B, A]. Destino: [B, A, A].
+    // Orden actual: [A1, B, A2]. Destino: [B, A1, A2].
     seed_occurrences(&pool, playlist_id, &[track_a, track_b, track_a]).await;
+    let before = occurrences(&pool, playlist_id).await;
 
     let app = test_state(pool.clone());
     let state: State<'_, AppState> = app.state::<AppState>();
@@ -250,13 +282,91 @@ async fn caracterizacion_reordenar_con_repeticiones_hoy_desplaza_la_pista_movida
     let rows = occurrences(&pool, playlist_id).await;
     assert_eq!(
         rows.iter().map(|(_, track, _)| *track).collect::<Vec<_>>(),
-        vec![track_a, track_b, track_a],
-        "caracterización: el payload pedía [B, A, A] y hoy queda [A, B, A]"
+        vec![track_b, track_a, track_a],
+        "el orden pedido [B, A, A] queda persistido"
     );
     assert_eq!(
         rows.iter().map(|(_, _, pos)| *pos).collect::<Vec<_>>(),
-        vec![1, 2, 3]
+        vec![1, 2, 3],
+        "posiciones contiguas 1..N"
     );
+    assert_eq!(
+        rows.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(),
+        vec![before[1].0, before[0].0, before[2].0],
+        "cada entrada mueve su ocurrencia: B, luego A1 y A2 en su orden"
+    );
+    assert_eq!(track_count(&pool, playlist_id).await, 3);
+}
+
+/// Aceptación #155: el orden sobrevive a reabrir la base (reinicio de la app).
+#[tokio::test]
+async fn el_orden_reordenado_persiste_al_reabrir_la_base() {
+    let path = std::env::temp_dir().join(format!(
+        "syncify_pl02_{}_{}.sqlite",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let url = format!("sqlite://{}?mode=rwc", path.display());
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("file DB must open");
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("All migrations must apply cleanly");
+    let account_id = seed_account(&pool).await;
+    let playlist_id = seed_playlist(&pool, account_id, "Persistente").await;
+    let track_a = seed_track(&pool, "Track A").await;
+    let track_b = seed_track(&pool, "Track B").await;
+    seed_occurrences(&pool, playlist_id, &[track_a, track_b, track_a]).await;
+
+    {
+        let app = test_state(pool.clone());
+        let state: State<'_, AppState> = app.state::<AppState>();
+        reorder_playlist_tracks(
+            state,
+            playlist_id,
+            vec![
+                syncify_tauri_lib::commands::PlaylistTrackPosition {
+                    track_id: track_b,
+                    new_position: 1,
+                },
+                syncify_tauri_lib::commands::PlaylistTrackPosition {
+                    track_id: track_a,
+                    new_position: 2,
+                },
+                syncify_tauri_lib::commands::PlaylistTrackPosition {
+                    track_id: track_a,
+                    new_position: 3,
+                },
+            ],
+        )
+        .await
+        .expect("reorder must succeed");
+    }
+    pool.close().await;
+
+    let reopened = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("file DB must reopen");
+    let rows = occurrences(&reopened, playlist_id).await;
+    assert_eq!(
+        rows.iter()
+            .map(|(_, track, pos)| (*track, *pos))
+            .collect::<Vec<_>>(),
+        vec![(track_b, 1), (track_a, 2), (track_a, 3)],
+        "el orden pedido sigue ahí tras reabrir"
+    );
+    reopened.close().await;
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+    let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
 }
 
 /// Guarda de humo: el esquema real admite la misma pista dos veces y solo es
