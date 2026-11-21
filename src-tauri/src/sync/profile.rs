@@ -36,6 +36,10 @@ pub const ACCOUNT_PROFILE_KEY_PREFIX: &str = "sync_profile:account:";
 /// Motivo estable que la UI muestra junto al modo no disponible (decisión 18).
 pub const BIDIRECTIONAL_UNAVAILABLE_REASON: &str = "write_back_not_available";
 
+/// Motivo de los modos espejo: su motor (cuarentena y conciliación) llega con
+/// T06/T07; hasta entonces se modelan, no se ofrecen.
+pub const MIRROR_ENGINE_UNAVAILABLE_REASON: &str = "mirror_engine_not_available";
+
 /// Modos canónicos del contrato de sincronización (ADR-0006, decisión 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

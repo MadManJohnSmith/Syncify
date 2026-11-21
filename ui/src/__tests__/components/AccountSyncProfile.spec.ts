@@ -23,8 +23,8 @@ const resolved: SyncProfile = {
     collections_source: 'service',
     modes: [
         { value: 'import_only', enabled: true, reason: null },
-        { value: 'mirror_quarantine', enabled: true, reason: null },
-        { value: 'strict_mirror', enabled: true, reason: null },
+        { value: 'mirror_quarantine', enabled: false, reason: 'mirror_engine_not_available' },
+        { value: 'strict_mirror', enabled: false, reason: 'mirror_engine_not_available' },
         { value: 'bidirectional', enabled: false, reason: 'write_back_not_available' },
     ],
 };
@@ -48,7 +48,7 @@ describe('account_sync_profile', () => {
         expect(summary.text()).toContain('Favorites');
     });
 
-    it('muestra el bidireccional deshabilitado con su motivo', async () => {
+    it('solo ofrece import_only como modo ejecutable y nombra el motivo de los demás', async () => {
         mockInvoke((command) => (command === 'get_sync_profile' ? resolved : null));
 
         const wrapper = mount(AccountSyncProfile, { props: { accountId: 42 } });
@@ -57,17 +57,25 @@ describe('account_sync_profile', () => {
         await flushPromises();
 
         const mode = wrapper.get('[data-testid="sync-profile-mode-42"]');
-        const bidirectional = mode
-            .findAll('option')
-            .find((option) => option.attributes('value') === 'bidirectional');
-        expect(bidirectional).toBeDefined();
-        expect(bidirectional!.attributes('disabled')).toBeDefined();
+        for (const value of ['mirror_quarantine', 'strict_mirror', 'bidirectional']) {
+            const option = mode
+                .findAll('option')
+                .find((candidate) => candidate.attributes('value') === value);
+            expect(option, `${value} must be modelled`).toBeDefined();
+            expect(option!.attributes('disabled'), `${value} must not be selectable`).toBeDefined();
+        }
 
-        const reason = wrapper.get('[data-testid="sync-profile-bidirectional-reason-42"]');
-        expect(reason.text()).toContain('write_back_not_available');
+        expect(
+            wrapper.get('[data-testid="sync-profile-unavailable-42-bidirectional"]').text()
+        ).toContain('write_back_not_available');
+        for (const value of ['mirror_quarantine', 'strict_mirror']) {
+            expect(
+                wrapper.get(`[data-testid="sync-profile-unavailable-42-${value}"]`).text()
+            ).toContain('mirror_engine_not_available');
+        }
     });
 
-    it('guarda el override (toggle, modo, intervalo y colecciones) y muestra el perfil nuevo', async () => {
+    it('guarda el override (toggle, intervalo y colecciones) y muestra el perfil nuevo', async () => {
         let updateArgs: unknown = null;
         mockInvoke((command, args) => {
             if (command === 'get_sync_profile') return resolved;
@@ -76,11 +84,9 @@ describe('account_sync_profile', () => {
                 return {
                     ...resolved,
                     enabled: false,
-                    mode: 'mirror_quarantine',
-                    mode_source: 'account',
                     interval_hours: 6,
                     interval_source: 'account',
-                    collections: { favorites: true, playlists: false, albums: true, artists: false },
+                    collections: { favorites: true, playlists: false, albums: true, artists: true },
                     collections_source: 'account',
                 };
             }
@@ -93,7 +99,6 @@ describe('account_sync_profile', () => {
         await flushPromises();
 
         await wrapper.get('[data-testid="sync-profile-enabled-42"]').setValue(false);
-        await wrapper.get('[data-testid="sync-profile-mode-42"]').setValue('mirror_quarantine');
         await wrapper.get('[data-testid="sync-profile-interval-42"]').setValue(6);
         await wrapper
             .get('[data-testid="sync-profile-collection-42-playlists"]')
@@ -105,20 +110,20 @@ describe('account_sync_profile', () => {
             accountId: 42,
             profile: {
                 enabled: false,
-                mode: 'mirror_quarantine',
+                mode: 'import_only',
                 interval_hours: 6,
                 collections: { favorites: true, playlists: false, albums: true, artists: true },
             },
         });
 
         const effective = wrapper.get('[data-testid="sync-profile-effective-42"]');
-        expect(effective.text()).toContain('Mirror with quarantine');
+        expect(effective.text()).toContain('Import only');
         expect(effective.text()).toContain('every 6 h');
         expect(effective.text()).toContain('paused');
         expect(effective.text()).not.toContain('Playlists');
     });
 
-    it('rechaza un intervalo fuera de rango antes de llamar al backend', async () => {
+    it('rechaza un intervalo fuera de rango sin cerrar el formulario', async () => {
         const calls: string[] = [];
         mockInvoke((command) => {
             calls.push(command);
@@ -135,8 +140,20 @@ describe('account_sync_profile', () => {
         await flushPromises();
 
         expect(calls).not.toContain('update_sync_profile');
-        expect(wrapper.get('[data-testid="sync-profile-error-42"]').text()).toContain(
+
+        // El error se pinta DENTRO del formulario: los controles sobreviven y
+        // la ficha sigue siendo cerrable (no se queda atascada sin salida).
+        const panel = wrapper.get('[data-testid="sync-profile-panel-42"]');
+        expect(panel.get('[data-testid="sync-profile-error-42"]').text()).toContain(
             'between 1 and 720'
         );
+        expect(panel.find('[data-testid="sync-profile-interval-42"]').exists()).toBe(true);
+        expect(panel.find('[data-testid="sync-profile-save-42"]').exists()).toBe(true);
+        expect(panel.find('[data-testid="sync-profile-close-42"]').exists()).toBe(true);
+
+        await wrapper.get('[data-testid="sync-profile-close-42"]').trigger('click');
+        await flushPromises();
+        expect(wrapper.find('[data-testid="sync-profile-panel-42"]').exists()).toBe(false);
+        expect(wrapper.find('[data-testid="sync-profile-open-42"]').exists()).toBe(true);
     });
 });

@@ -8,6 +8,7 @@ use syncify_tauri_lib::{
     commands::backup::{export_library_with_bases, import_library_with_bases},
     crypto,
     settings_defaults::SETTINGS_KV_KEYS,
+    sync::profile::{self as sync_profile, SyncProfileUpdate},
     worker::DownloadWorkerState,
     AppState, EnrichmentWorkerState,
 };
@@ -597,6 +598,63 @@ async fn v2_import_restores_settings_and_accounts_await_reauth() {
         max_conc_after, 5,
         "settings must be stable across reimports"
     );
+}
+
+/// Round-trip del perfil de sincronización por cuenta: la KV `settings` es
+/// configuración de usuario (ADR-0020, decisión 1), así que viaja en el
+/// manifest y vuelve al restaurar; un override perdido reactivaría en
+/// silencio una cuenta pausada.
+#[tokio::test]
+async fn v2_roundtrip_restores_the_per_account_sync_profile_override() {
+    let db = create_test_db().await;
+
+    // La cuenta viaja por identidad externa: el restore la deduplica y conserva
+    // el id con el que está escrita la clave del perfil.
+    sqlx::query(
+        "INSERT INTO accounts (id, service_id, display_name, email, external_user_id, is_active)
+         VALUES (7, 3, 'Tidal Main', 'main@example.com', 'ext-usr-sync', 1)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let update = SyncProfileUpdate {
+        enabled: false,
+        mode: None,
+        interval_hours: Some(6),
+        collections: None,
+    };
+    sync_profile::save_account_profile(&db, 7, &update)
+        .await
+        .expect("guardar el override");
+    let key = sync_profile::account_profile_key(7);
+
+    let app = create_test_app(db.clone());
+    let backup = get_test_backup_path("manifest_v2_sync_profile");
+    let manifest = export_to(&app, &backup).await;
+
+    let exported = manifest["settings"]["kv"][&key]
+        .as_str()
+        .unwrap_or_else(|| panic!("sync profile override must travel in the manifest: {manifest}"));
+    assert!(exported.contains("\"enabled\":false"), "{exported}");
+    assert!(exported.contains("\"interval_hours\":6"), "{exported}");
+
+    // Se borra el override y se restaura: vuelve intacto.
+    sqlx::query("DELETE FROM settings WHERE key = ?")
+        .bind(&key)
+        .execute(&db)
+        .await
+        .unwrap();
+    let state = app.state::<AppState>();
+    import_library_with_bases(state, backup.path.clone(), None, &backup.allowed_bases)
+        .await
+        .expect("el manifest se restaura sobre la misma base");
+
+    let restored = sync_profile::load_sync_profile(&db, 7)
+        .await
+        .expect("perfil restaurado");
+    assert!(!restored.enabled, "la cuenta restaurada sigue pausada");
+    assert_eq!(restored.interval_hours, 6);
 }
 
 #[tokio::test]

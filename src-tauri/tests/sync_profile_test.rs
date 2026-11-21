@@ -16,6 +16,7 @@ use syncify_tauri_lib::commands::settings::{
 use syncify_tauri_lib::sync::profile::{
     self, AccountSyncOverride, ProfileSource, ServiceSyncDefaults, SyncCollections, SyncMode,
     SyncProfileUpdate, BIDIRECTIONAL_UNAVAILABLE_REASON, DEFAULT_INTERVAL_HOURS,
+    MIRROR_ENGINE_UNAVAILABLE_REASON,
 };
 
 async fn setup_test_db() -> sqlx::SqlitePool {
@@ -217,8 +218,10 @@ fn resolve_account_override_wins_on_mode_collections_and_interval() {
 }
 
 /// Criterio 3: el bidireccional existe, está deshabilitado y lleva su motivo.
+/// Los modos espejo tampoco son seleccionables hasta que exista su motor: la
+/// UI no debe ofrecer un modo que nadie ejecuta.
 #[test]
-fn resolve_exposes_bidirectional_as_unavailable_with_reason() {
+fn resolve_exposes_only_import_only_as_selectable() {
     let service = service_defaults(
         SyncMode::ImportOnly,
         DEFAULT_INTERVAL_HOURS,
@@ -226,19 +229,30 @@ fn resolve_exposes_bidirectional_as_unavailable_with_reason() {
     );
 
     let profile = profile::resolve(7, &service, None);
-    let bidirectional = profile
-        .modes
-        .iter()
-        .find(|option| option.value == SyncMode::Bidirectional)
-        .expect("el modo bidireccional está modelado");
 
-    assert!(!bidirectional.enabled);
-    assert_eq!(bidirectional.reason, Some(BIDIRECTIONAL_UNAVAILABLE_REASON));
-    assert!(profile
-        .modes
-        .iter()
-        .filter(|option| option.value != SyncMode::Bidirectional)
-        .all(|option| option.enabled));
+    let option = |mode: SyncMode| {
+        profile
+            .modes
+            .iter()
+            .find(|option| option.value == mode)
+            .unwrap_or_else(|| panic!("{:?} must be modelled", mode))
+    };
+
+    assert!(option(SyncMode::ImportOnly).enabled);
+    assert_eq!(option(SyncMode::ImportOnly).reason, None);
+    for mode in [SyncMode::MirrorQuarantine, SyncMode::StrictMirror] {
+        assert!(!option(mode).enabled, "{mode:?} has no engine yet");
+        assert_eq!(
+            option(mode).reason,
+            Some(MIRROR_ENGINE_UNAVAILABLE_REASON),
+            "{mode:?} must name why it is unavailable"
+        );
+    }
+    assert!(!option(SyncMode::Bidirectional).enabled);
+    assert_eq!(
+        option(SyncMode::Bidirectional).reason,
+        Some(BIDIRECTIONAL_UNAVAILABLE_REASON)
+    );
 }
 
 /// Persistencia: lo guardado por la ficha se lee de vuelta y gana al servicio.
@@ -252,7 +266,7 @@ async fn persisted_override_roundtrips_and_wins_over_service_defaults() {
 
     let update = SyncProfileUpdate {
         enabled: true,
-        mode: Some("strict_mirror".to_string()),
+        mode: None,
         interval_hours: Some(12),
         collections: Some(SyncCollections {
             favorites: true,
@@ -265,10 +279,15 @@ async fn persisted_override_roundtrips_and_wins_over_service_defaults() {
         .await
         .expect("guardar el perfil");
 
-    assert_eq!(saved.mode, SyncMode::StrictMirror);
-    assert_eq!(saved.mode_source, ProfileSource::Account);
+    // El modo sigue siendo el único ejecutable; el override es de intervalo y
+    // colecciones.
+    assert_eq!(saved.mode, SyncMode::ImportOnly);
+    assert_eq!(saved.mode_source, ProfileSource::Service);
     assert_eq!(saved.interval_hours, 12);
+    assert_eq!(saved.interval_source, ProfileSource::Account);
     assert!(saved.collections.albums);
+    assert!(!saved.collections.artists);
+    assert_eq!(saved.collections_source, ProfileSource::Account);
 
     let loaded = profile::load_sync_profile(&pool, account_id)
         .await
@@ -341,23 +360,29 @@ async fn disabled_toggle_excludes_the_account_from_bulk_services() {
     assert!(!loaded.enabled);
 }
 
-/// Validación: el bidireccional no se puede seleccionar.
+/// Validación: ningún modo sin motor se puede seleccionar, y cada uno nombra
+/// su motivo en el error.
 #[tokio::test]
-async fn update_rejects_bidirectional_with_its_reason() {
+async fn update_rejects_modes_without_an_engine() {
     let pool = setup_test_db().await;
     let (account_id, _) = seed_account(&pool, "qobuz").await;
 
-    let update = SyncProfileUpdate {
-        enabled: true,
-        mode: Some("bidirectional".to_string()),
-        interval_hours: None,
-        collections: None,
-    };
-    let error = profile::save_account_profile(&pool, account_id, &update)
-        .await
-        .expect_err("el bidireccional no es seleccionable");
-
-    assert!(error.contains(BIDIRECTIONAL_UNAVAILABLE_REASON), "{error}");
+    for (raw, reason) in [
+        ("bidirectional", BIDIRECTIONAL_UNAVAILABLE_REASON),
+        ("mirror_quarantine", MIRROR_ENGINE_UNAVAILABLE_REASON),
+        ("strict_mirror", MIRROR_ENGINE_UNAVAILABLE_REASON),
+    ] {
+        let update = SyncProfileUpdate {
+            enabled: true,
+            mode: Some(raw.to_string()),
+            interval_hours: None,
+            collections: None,
+        };
+        let error = profile::save_account_profile(&pool, account_id, &update)
+            .await
+            .expect_err("un modo sin motor no es seleccionable");
+        assert!(error.contains(reason), "mode '{}': {error}", raw);
+    }
 }
 
 /// Validación: modo desconocido e intervalo fuera de rango.
@@ -416,7 +441,7 @@ async fn deleting_the_profile_clears_the_override() {
 
     let update = SyncProfileUpdate {
         enabled: false,
-        mode: Some("mirror_quarantine".to_string()),
+        mode: None,
         interval_hours: Some(48),
         collections: None,
     };
@@ -435,6 +460,66 @@ async fn deleting_the_profile_clears_the_override() {
     assert_eq!(loaded.mode, SyncMode::ImportOnly);
     assert_eq!(loaded.interval_hours, DEFAULT_INTERVAL_HOURS);
     assert_eq!(loaded.mode_source, ProfileSource::Service);
+}
+
+/// Las DOS vías de borrado de cuenta limpian el override, no solo la del
+/// borrado completo: `remove_account` (Settings → Services) borra la fila de
+/// `accounts` sin pasar por `perform_delete_account`, y la clave de la KV no
+/// tiene FK que la arrastre.
+#[tokio::test]
+async fn both_account_deletion_routes_clear_the_override() {
+    use syncify_tauri_lib::commands::accounts::{perform_delete_account, perform_remove_account};
+
+    let pool = setup_test_db().await;
+
+    async fn override_rows(pool: &sqlx::SqlitePool, account_id: i64) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM settings WHERE key = ?")
+            .bind(profile::account_profile_key(account_id))
+            .fetch_one(pool)
+            .await
+            .expect("consulta de la KV")
+    }
+
+    let update = SyncProfileUpdate {
+        enabled: false,
+        mode: None,
+        interval_hours: Some(6),
+        collections: None,
+    };
+
+    // Vía 1: borrado completo de la cuenta (issue #85).
+    let (full_delete_id, _) = seed_account(&pool, "qobuz").await;
+    profile::save_account_profile(&pool, full_delete_id, &update)
+        .await
+        .expect("override de la vía de borrado completo");
+    perform_delete_account(&pool, full_delete_id, false)
+        .await
+        .expect("borrado completo");
+    assert_eq!(
+        override_rows(&pool, full_delete_id).await,
+        0,
+        "el borrado completo no debe dejar la KV huérfana"
+    );
+
+    // Vía 2: `remove_account` de Settings → Services.
+    let (remove_id, _) = seed_account(&pool, "tidal").await;
+    profile::save_account_profile(&pool, remove_id, &update)
+        .await
+        .expect("override de la vía de Settings");
+    perform_remove_account(&pool, remove_id)
+        .await
+        .expect("remove_account");
+    assert_eq!(
+        override_rows(&pool, remove_id).await,
+        0,
+        "remove_account no debe dejar la KV huérfana"
+    );
+
+    let remaining_accounts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
+        .fetch_one(&pool)
+        .await
+        .expect("consulta de cuentas");
+    assert_eq!(remaining_accounts, 0, "ambas vías borran la fila de cuenta");
 }
 
 /// Una cuenta inexistente no inventa un perfil.
