@@ -171,10 +171,17 @@ def aggregate(runs):
                 )
             presents.append(bool(ok) and not item["timed_out"])
 
-        if all(presents):
+        failed = [item for item in items if item["exit_code"] not in (0, None)]
+        if any(item["timed_out"] for item in items):
+            verdict = "sin veredicto (timeout)"
+        elif all(presents):
             verdict = "compone" if pixel_supported.get(backend) else "compone (sin prueba de píxel)"
         elif any(presents):
             verdict = "inestable"
+        elif failed:
+            verdict = "no compone (falla de proceso: %s)" % ",".join(
+                str(item["exit_code"]) for item in failed
+            )
         else:
             verdict = "no compone"
 

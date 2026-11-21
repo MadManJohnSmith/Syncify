@@ -82,7 +82,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 OUT_DIR="${OUT_DIR:-$HOME/.local/state/syncify-wk01/$LABEL}"
-mkdir -p "$OUT_DIR"
 
 # ── Comprobaciones de entorno ────────────────────────────────────────────────
 
@@ -149,15 +148,26 @@ ROUTE_ENV_FOR() {
   return 1
 }
 
-mapfile -t SELECTED_BACKENDS < <(resolve_backends "$BACKENDS")
+BACKEND_LIST="$(resolve_backends "$BACKENDS")" || exit 2
+mapfile -t SELECTED_BACKENDS <<<"$BACKEND_LIST"
+if [[ ${#SELECTED_BACKENDS[@]} -eq 0 || -z "${SELECTED_BACKENDS[0]}" ]]; then
+  echo "ERROR: no hay backends seleccionados" >&2
+  exit 2
+fi
 
 if [[ "$ROUTES" == "all" ]]; then
   SELECTED_ROUTES=("${ALL_ROUTES[@]}")
 else
   IFS=',' read -r -a SELECTED_ROUTES <<<"$ROUTES"
 fi
+if [[ ${#SELECTED_ROUTES[@]} -eq 0 || -z "${SELECTED_ROUTES[0]}" ]]; then
+  echo "ERROR: no hay rutas seleccionadas" >&2
+  exit 2
+fi
 for route in "${SELECTED_ROUTES[@]}"; do
-  ROUTE_ENV_FOR "$route" >/dev/null
+  if ! ROUTE_ENV_FOR "$route" >/dev/null; then
+    exit 2
+  fi
 done
 
 for value in "$REPS" "$TIMEOUT_S"; do
@@ -166,6 +176,8 @@ for value in "$REPS" "$TIMEOUT_S"; do
     exit 2
   fi
 done
+
+mkdir -p "$OUT_DIR"
 
 # ── Metadatos de la máquina (sin datos personales) ──────────────────────────
 
@@ -188,7 +200,8 @@ fi
   printf 'webkit2gtk=%s\n' "$(pkg-config --modversion webkit2gtk-4.1 2>/dev/null || echo '?')"
   printf 'python=%s\n' "$("$PYTHON" --version 2>&1)"
   printf 'nvidia_driver=%s\n' "$(sed -n 's/^NVRM version: *//p' /proc/driver/nvidia/version 2>/dev/null | head -1)"
-  printf 'mesa=%s\n' "$(pkg-config --modversion gl 2>/dev/null || echo '?')"
+  printf 'egl=%s\n' "$(pkg-config --modversion egl 2>/dev/null || echo '?')"
+  printf 'gl=%s\n' "$(pkg-config --modversion gl 2>/dev/null || echo '?')"
 } >"$OUT_DIR/entorno.txt"
 
 echo "[wk01] etiqueta=$LABEL"
