@@ -776,7 +776,7 @@
                     Destination: {{ getServiceName(dest) }} · account {{ destinationAccounts[dest] ?? 'default' }}
                     · {{ previewedPairMatches(dest) ? `${previewSummary.total ?? 0} items previewed` : 'not previewed' }}
                   </p>
-                  <p class="mt-2">Content selected: {{ selectedContent.join(', ') }}. Tracks and albums are read and matched independently; playlists are mirrored from the transferred tracks. The preview counts tracks only.</p>
+                  <p class="mt-2">Content selected: {{ selectedContent.join(', ') }}. Tracks, albums and followed artists are read and matched independently; playlists are mirrored from the transferred tracks. The preview counts tracks only.</p>
                   <p v-if="destinationServices.length !== 1" class="mt-2 font-medium text-amber-700 dark:text-amber-300" data-testid="batch-blocked">Batch writes are disabled: each destination account needs a verified preview and explicit confirmation.</p>
                   <label v-else class="mt-3 flex items-start gap-2 cursor-pointer">
                     <input v-model="transferConfirmed" type="checkbox" data-testid="confirm-transfer" class="mt-1" :disabled="!previewedPairMatches(destinationServices[0])">
@@ -1048,7 +1048,7 @@
                     <div class="min-w-0">
                       <p class="text-sm font-medium text-gray-900 dark:text-white">
                         {{ track.source_track_title }}
-                        <span v-if="track.kind === 'album'" class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-500 align-middle" data-testid="item-kind-badge">album</span>
+                        <span v-if="track.kind === 'album' || track.kind === 'artist'" class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-500 align-middle" data-testid="item-kind-badge">{{ track.kind }}</span>
                       </p>
                       <p class="text-xs text-text-secondary">{{ track.source_track_artist }}</p>
                       <p class="text-xs text-error mt-1">{{ track.error_message || 'Transfer failed' }}</p>
@@ -1071,7 +1071,7 @@
                     <div class="min-w-0">
                       <p class="text-sm font-medium text-gray-900 dark:text-white">
                         {{ track.source_track_title }}
-                        <span v-if="track.kind === 'album'" class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-500 align-middle" data-testid="item-kind-badge">album</span>
+                        <span v-if="track.kind === 'album' || track.kind === 'artist'" class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-500 align-middle" data-testid="item-kind-badge">{{ track.kind }}</span>
                       </p>
                       <p class="text-xs text-text-secondary">{{ track.source_track_artist }}</p>
                       <p class="text-xs text-amber-500 mt-1">{{ track.error_message || 'No match found on the destination service' }}</p>
@@ -1706,7 +1706,7 @@ const contentTypes = computed(() => [
   { id: 'favorites', label: 'Favorites & Tracks', icon: 'favorite', description: 'Saved tracks and favorites', disabled: !collectionDeclaredAnywhere('tracks') },
   { id: 'playlists', label: 'Playlists', icon: 'queue_music', description: 'Playlists and playlist tracks', disabled: !collectionDeclaredAnywhere('playlists') },
   { id: 'albums', label: 'Favorite Albums', icon: 'album', description: 'Albums favorited on your source account', disabled: !collectionDeclaredAnywhere('albums') },
-  { id: 'artists', label: 'Followed Artists', icon: 'person', description: 'Tracks from followed artists in your library', disabled: !collectionDeclaredAnywhere('artists') },
+  { id: 'artists', label: 'Followed Artists', icon: 'person', description: 'Artists you follow on your source account', disabled: !collectionDeclaredAnywhere('artists') },
 ])
 
 /** True when any destination in the matrix declares the collection. */

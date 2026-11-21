@@ -7,9 +7,11 @@
 //!  1. un job legacy (sin `collections`) no migra artistas seguidos — los
 //!     favoritos de artista del espejo canónico y de la caché de cuenta quedan
 //!     fuera, como los álbumes en M01;
-//!  2. hoy la matriz no declara `artists` en ninguna fila y `start_migration`
-//!     rechaza la colección antes de crear el job (el pin que M02 cambia a
-//!     propósito: el commit del núcleo lo actualiza junto con la matriz);
+//!  2. la matriz declara `artists` exactamente donde el cliente del destino
+//!     puede seguir (M02: qobuz, tidal, spotify) y `start_migration` rechaza la
+//!     colección en el resto antes de crear el job (este pin nació en el hito 1
+//!     con «ningún destino declara artistas» y el hito 2 lo actualizó a
+//!     propósito junto con la matriz);
 //!  3. el esquema vigente (0113) ya acepta ítems `kind = 'artist'` y jobs con
 //!     `collections = '["artists"]'`: M02 no necesita migración nueva, que es
 //!     la verificación pedida antes de tocar el motor. La 0017, la 0045 y la
@@ -145,12 +147,11 @@ async fn test_legacy_job_does_not_migrate_followed_artists() {
     assert_eq!(job.1, None, "a legacy job keeps NULL collections");
 }
 
-/// Hoy ningún destino declara artistas (no hay camino de transferencia) y la
-/// matriz lo dice en todas las celdas; `start_migration` rechaza la colección
-/// antes de escribir el job. M02 cambia este pin en el commit del núcleo: la
-/// matriz pasa a declarar artistas donde existe follow en el cliente.
+/// M02 flips the M01 pin: the matrix declares artists exactly where the
+/// destination client can follow (Qobuz, Tidal, Spotify), and gates the
+/// collection everywhere else before the job row exists.
 #[tokio::test]
-async fn test_artists_collection_is_not_offered_before_m02() {
+async fn test_artists_collection_is_offered_only_where_follow_exists() {
     let pool = setup_test_db().await;
     seed_followed_artists(&pool).await;
     let app = test_app(pool.clone());
@@ -163,18 +164,20 @@ async fn test_artists_collection_is_not_offered_before_m02() {
             .iter()
             .find(|cell| cell.collection == MigrationCollection::Artists)
             .unwrap_or_else(|| panic!("{} has no artists cell", destination.service));
-        assert!(
-            !artists.supported,
-            "{} does not declare artists before M02",
+        let expected = matches!(destination.service.as_str(), "qobuz" | "tidal" | "spotify");
+        assert_eq!(
+            artists.supported, expected,
+            "{} artists support is the client's follow path",
             destination.service
         );
     }
 
+    // A destination without follow refuses the collection before the job row.
     let result = start_migration(
         app.handle().clone(),
         app.state::<AppState>(),
         "spotify".to_string(),
-        "qobuz".to_string(),
+        "deezer".to_string(),
         None,
         migration_options(),
         None,
@@ -182,7 +185,7 @@ async fn test_artists_collection_is_not_offered_before_m02() {
         Some(vec!["artists".to_string()]),
     )
     .await;
-    let error = result.expect_err("artists is gated until the engine carries it");
+    let error = result.expect_err("deezer cannot follow artists");
     assert!(
         error.contains("does not support the 'artists' collection"),
         "the refusal names the collection, got: {error}"
@@ -193,6 +196,28 @@ async fn test_artists_collection_is_not_offered_before_m02() {
         .await
         .unwrap();
     assert_eq!(jobs, 0, "the refusal happens before the job row");
+
+    // Qobuz declares it: the job starts and carries the collection on the wire.
+    let job_id = start_migration(
+        app.handle().clone(),
+        app.state::<AppState>(),
+        "spotify".to_string(),
+        "qobuz".to_string(),
+        None,
+        migration_options(),
+        None,
+        None,
+        Some(vec!["artists".to_string()]),
+    )
+    .await
+    .expect("qobuz declares artists");
+    let collections: Option<String> =
+        sqlx::query_scalar("SELECT collections FROM migration_jobs WHERE id = ?")
+            .bind(&job_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(collections.as_deref(), Some(r#"["artists"]"#));
 }
 
 /// La verificación de esquema de M02: la 0113 ya dejó `kind` como TEXT libre y

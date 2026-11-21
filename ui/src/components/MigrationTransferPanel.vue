@@ -48,7 +48,7 @@
       <div class="flex items-center gap-3 mb-6 px-4 py-3 bg-primary/5 border border-primary/20 rounded-lg">
         <span class="material-symbols-outlined text-primary animate-spin text-xl">sync</span>
         <span class="text-sm text-gray-700 dark:text-gray-300">
-          <span v-if="progress.currentKind === 'album'" class="mr-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-500" data-testid="current-kind-badge">album</span>
+          <span v-if="progress.currentKind === 'album' || progress.currentKind === 'artist'" class="mr-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-500" data-testid="current-kind-badge">{{ progress.currentKind }}</span>
           {{ progress.currentAction }}
         </span>
       </div>
@@ -165,7 +165,7 @@ export interface MigrationProgressDisplay {
   failed: number
   skipped: number
   currentAction: string
-  /** Collection kind of the item being processed (M01): '' | 'track' | 'album'. */
+  /** Collection kind of the item being processed (M01/M02): '' | 'track' | 'album' | 'artist'. */
   currentKind: string
   eta: string
   speed: string
