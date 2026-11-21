@@ -27,9 +27,9 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/syncify-target-$(basen
 cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
-cargo test --locked --no-fail-fast   # 356 objetivos de test: recuento real
+cargo test --locked --no-fail-fast   # 357 objetivos de test: recuento real
 cargo test --locked --test batch_50_audit_test -- --test-threads=1
-npm --prefix ui run build && npm --prefix ui run test:run                  # 155 ficheros de test UI
+npm --prefix ui run build && npm --prefix ui run test:run                  # 157 ficheros de test UI
 .venv/bin/python -m unittest discover -s scripts/tests                    # 480 tests (2 skipped)
 
 ```
