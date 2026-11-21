@@ -30,11 +30,16 @@
 //! Límite conocido de la duración: sale de la cabecera (STREAMINFO / mvhd), así
 //! que un fichero cortado por la cola conserva la duración completa y este
 //! check no lo detecta. Lo que sí detecta: un fichero con cabecera propia más
-//! corta que el catálogo (preview, edición o pista equivocadas) y una cabecera
-//! ilegible. La corroboración de longitud decodificable (decode/CRC de frames)
-//! queda fuera porque duplicaría un decode completo por pista; el test
-//! `characterization_header_duration_cannot_detect_tail_truncation` fija el
-//! límite y `shorter_header_detects_preview_or_wrong_file` el caso cubierto.
+//! corta que el catálogo (preview, edición o pista equivocadas). Si no hay
+//! ninguna duración física el check se salta por falta de evidencia; bajo
+//! política estricta el worker sí rechaza la reinspección fallida en vez de
+//! creer la calidad anunciada. La corroboración de longitud decodificable queda
+//! fuera porque duplicaría un decode completo por pista; el árbol ya tiene el
+//! verificador (`syncify_flac_writer::verify_flac_integrity_stream`: MD5 PCM de
+//! STREAMINFO o decode-check), pero su coste por pista debe medirse antes de
+//! cablearlo al gate. El test `characterization_header_duration_cannot_detect_tail_truncation`
+//! fija el límite y `shorter_header_detects_preview_or_wrong_file` el caso
+//! cubierto.
 
 use std::path::Path;
 

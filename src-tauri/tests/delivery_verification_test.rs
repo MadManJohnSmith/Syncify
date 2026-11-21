@@ -16,8 +16,12 @@
 //!    promociona a `complete` (defensa en `mark_complete`).
 //! 6. SoundCloud 128 está en el piso por proveedor: se acepta, se declara y
 //!    nunca se etiqueta lossless.
-//! 7. El gate corre ANTES de `mark_complete` en `process_download_internal`
-//!    (guardia estructural sobre el fuente).
+//! 7. El gate corre ANTES de `mark_complete`: `verify_then_complete` es la
+//!    costura que usa `process_download_internal` y el test la ejerce por
+//!    comportamiento (#338; antes era una guardia de cadenas sobre el fuente).
+//! 8. #338: un FLAC/M4A no vacío que el lector no puede parsear falla cerrado
+//!    (lector ausente ≠ lectura fallida) y un rechazo no deja el fichero
+//!    promovido sin dueño.
 
 use std::path::Path;
 
@@ -646,4 +650,125 @@ async fn unreadable_flac_and_m4a_never_complete() {
         );
         assert!(!path.exists(), "{name}: sin fichero huérfano");
     }
+}
+
+/// FLAC con bloque de tags correcto pero sin STREAMINFO: los tags se dejan
+/// leer, la cabecera de audio no. `inspect_physical_audio_file` no puede dar
+/// métricas de este fichero.
+fn write_tagged_flac_without_streaminfo(path: &Path) {
+    let mut tag = metaflac::Tag::new();
+    let vc = tag.vorbis_comments_mut();
+    vc.set("TITLE", vec!["Verified Track"]);
+    vc.set("ARTIST", vec!["Verified Artist"]);
+    vc.set("ALBUM", vec!["Verified Album"]);
+    vc.set("TRACKNUMBER", vec!["3"]);
+    vc.set("DISCNUMBER", vec!["1"]);
+    tag.write_to_path(path).unwrap();
+    assert!(
+        metaflac::Tag::read_from_path(path)
+            .unwrap()
+            .get_streaminfo()
+            .is_none(),
+        "el fixture no debe traer STREAMINFO"
+    );
+}
+
+/// #338 AC: bajo política estricta, una reinspección física fallida NO se
+/// sustituye por la calidad anunciada por el proveedor. Antes del cierre, el
+/// gate caía a `bit_depth`/`sample_rate` declarados (24-bit/96 kHz → hires) y
+/// un fichero sin métricas físicas se promocionaba como pérdida.
+#[tokio::test]
+async fn strict_policy_never_trusts_declared_values_when_inspection_fails() {
+    let dir = TempDir::new().unwrap();
+    let pool = migrated_pool(&dir, "strict-inspection.db").await;
+    let (queue_id, track_id) = seed_downloading_row(&pool, &dir, 0, "lossless").await;
+    let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+
+    let path = dir.path().join("no-streaminfo.flac");
+    write_tagged_flac_without_streaminfo(&path);
+    let res = delivered_result(&path);
+
+    // Sin política estricta, la falta de métricas físicas sigue siendo falta
+    // de evidencia: el gate físico no inventa un fallo.
+    worker
+        .verify_delivery_before_complete(
+            queue_id,
+            &res,
+            expected_delivery(200_000),
+            false,
+            false,
+            0.0,
+        )
+        .await
+        .expect("sin strict, la falta de métricas no es un fallo");
+
+    let reason = worker
+        .verify_delivery_before_complete(
+            queue_id,
+            &res,
+            expected_delivery(200_000),
+            false,
+            true,
+            0.0,
+        )
+        .await
+        .expect_err("la política estricta no puede confiar en lo anunciado");
+    assert!(
+        reason.contains("strict quality policy does not trust declared values"),
+        "motivo: {reason}"
+    );
+    assert_eq!(queue_status(&pool, queue_id).await, "downloading");
+    assert!(ledger_row(&pool, track_id).await.is_none(), "sin ledger");
+}
+
+/// #338: la limpieza no destruye una entrega ajena. Si el ledger ya posee el
+/// path (otra pista lo ocupa), el rechazo conserva el fichero; solo se borra
+/// cuando ninguna fila lo referencia.
+#[tokio::test]
+async fn rejected_delivery_keeps_a_path_the_ledger_already_owns() {
+    let dir = TempDir::new().unwrap();
+    let pool = migrated_pool(&dir, "owned-path.db").await;
+    let (queue_id, track_id) = seed_downloading_row(&pool, &dir, 1, "hires").await;
+    let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+
+    let path = dir.path().join("owned.flac");
+    write_verified_flac(&path, 197 * 44_100);
+    let other_track: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Other Track') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate) \
+         VALUES (?, ?, 'FLAC', 16, 44100)",
+    )
+    .bind(other_track)
+    .bind(path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let reason = worker
+        .verify_then_complete(
+            queue_id,
+            &delivered_result(&path),
+            expected_delivery(200_000),
+            true,
+            false,
+            0.0,
+        )
+        .await
+        .expect_err("el gate rechaza la duración fuera de tolerancia");
+    assert!(
+        reason.contains("duration out of tolerance"),
+        "motivo: {reason}"
+    );
+    assert!(
+        path.exists(),
+        "el path ya tiene dueño en el ledger: la limpieza no debe borrarlo"
+    );
+    assert!(
+        ledger_row(&pool, track_id).await.is_none(),
+        "sin ledger propio"
+    );
 }

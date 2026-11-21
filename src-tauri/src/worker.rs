@@ -291,8 +291,6 @@ fn sqlite_utc_timestamp(at: std::time::Instant) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-/// Formato por extensión cuando la inspección física no pudo leer el fichero:
-/// la misma heurística que `mark_complete` usa para etiquetar sin inspector.
 /// Punto 3: ¿procede intentar una resolución viva por ISRC cuando el resolver
 /// no encontró ninguna fuente descargable?
 ///
@@ -898,17 +896,31 @@ impl DownloadWorker {
     /// deja el fichero promovido sin dueño. Si ninguna fila del ledger lo
     /// referencia se borra; si ya tiene dueño se conserva y se registra.
     async fn discard_unowned_promoted_file(&self, queue_id: i64, file_path: &str) {
-        let owner: Option<i64> =
-            sqlx::query_scalar("SELECT track_id FROM downloads WHERE file_path = ? LIMIT 1")
+        let owner: Result<Option<i64>, sqlx::Error> =
+            sqlx::query_scalar("SELECT id FROM downloads WHERE file_path = ? LIMIT 1")
                 .bind(file_path)
                 .fetch_optional(&self.db)
-                .await
-                .unwrap_or(None);
-        if let Some(track_id) = owner {
+                .await;
+        let owner = match owner {
+            Ok(owner) => owner,
+            Err(e) => {
+                // Un fallo del ledger no autoriza a borrar: el fichero se
+                // conserva y el aviso deja rastro. Borrar a ciegas podría
+                // destruir una entrega que otra pista ya posee.
+                tracing::warn!(
+                    queue_id,
+                    file_path,
+                    error = %e,
+                    "[Worker] Cannot confirm ledger ownership of a rejected delivery; keeping the file"
+                );
+                return;
+            }
+        };
+        if let Some(downloads_id) = owner {
             tracing::warn!(
                 queue_id,
                 file_path,
-                track_id,
+                downloads_id,
                 "[Worker] Rejected delivery kept: the ledger already owns this path"
             );
             return;
