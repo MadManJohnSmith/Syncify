@@ -32,6 +32,7 @@ use syncify_core_domain::quality::{
 };
 use syncify_tauri_lib::download::progress::DownloadResult;
 use syncify_tauri_lib::download::verification::ExpectedDelivery;
+use syncify_tauri_lib::services::operation_recovery::{DownloadJournal, DownloadJournalParams};
 use syncify_tauri_lib::worker::{DownloadWorker, DownloadWorkerState};
 use tempfile::TempDir;
 
@@ -166,6 +167,53 @@ async fn ledger_row(
     .fetch_optional(pool)
     .await
     .unwrap()
+}
+
+/// Fila de `downloads` tal como la escribe `tidal_pipeline` §9: `INSERT ...
+/// ON CONFLICT(track_id)`, confirmada antes de que el worker corra el gate.
+async fn seed_pipeline_ledger_row(pool: &sqlx::SqlitePool, track_id: i64, path: &Path) {
+    sqlx::query(
+        "INSERT INTO downloads (track_id, source_service_id, file_path, file_format, \
+         bit_depth, sample_rate, file_size_bytes, metadata_completeness, requested_quality, \
+         effective_quality, requested_format, effective_format, quality_decision, \
+         provider_fallback_used, quality_fallback_used) \
+         VALUES (?, 1, ?, 'FLAC', 24, 96000, 4096, 100, 'hires', \
+         'FLAC 24-bit / 96.0kHz', 'FLAC', 'FLAC', 'CompletedExactQuality', 0, 0)",
+    )
+    .bind(track_id)
+    .bind(path.to_string_lossy().to_string())
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Prueba de propiedad que la producción fija antes del gate: el journal de la
+/// descarga (`DownloadJournal::start` + `checkpoint_promoted`, worker.rs) deja
+/// `entity_id = queue_id` y `expected_output_path` con la ruta promovida.
+async fn seed_delivery_journal(
+    pool: &sqlx::SqlitePool,
+    queue_id: i64,
+    track_id: i64,
+    dir: &TempDir,
+    path: &Path,
+) {
+    let journal = DownloadJournal::start(
+        pool,
+        &DownloadJournalParams {
+            operation_id: format!("op-gate-{queue_id}"),
+            queue_id,
+            track_id,
+            provider: Some("tidal".to_string()),
+            input_identity: None,
+            output_dir: dir.path().to_string_lossy().to_string(),
+            allow_fallback: false,
+        },
+    )
+    .await
+    .expect("el journal de la entrega abre");
+    journal
+        .checkpoint_promoted(&path.to_string_lossy(), None)
+        .await;
 }
 
 /// Nombres de los ficheros que la limpieza de un rechazo conserva en la
@@ -734,14 +782,14 @@ async fn strict_policy_never_trusts_declared_values_when_inspection_fails() {
     assert!(ledger_row(&pool, track_id).await.is_none(), "sin ledger");
 }
 
-/// #338: la limpieza no destruye una entrega ajena. Si el ledger ya posee el
-/// path (otra pista lo ocupa), el rechazo conserva el fichero; solo se borra
-/// cuando ninguna fila lo referencia.
+/// #338: sin prueba de propiedad, la limpieza no destruye una entrega ajena.
+/// El journal de esta descarga no declara el path (no hay entrega registrada
+/// que lo escribiera), así que una fila de otra pista conserva fila y fichero.
 #[tokio::test]
 async fn rejected_delivery_keeps_a_path_the_ledger_already_owns() {
     let dir = TempDir::new().unwrap();
     let pool = migrated_pool(&dir, "owned-path.db").await;
-    let (queue_id, track_id) = seed_downloading_row(&pool, &dir, 1, "hires").await;
+    let (queue_id, _queue_track) = seed_downloading_row(&pool, &dir, 1, "hires").await;
     let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
 
     let path = dir.path().join("owned.flac");
@@ -751,15 +799,7 @@ async fn rejected_delivery_keeps_a_path_the_ledger_already_owns() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    sqlx::query(
-        "INSERT INTO downloads (track_id, file_path, file_format, bit_depth, sample_rate) \
-         VALUES (?, ?, 'FLAC', 16, 44100)",
-    )
-    .bind(other_track)
-    .bind(path.to_string_lossy().to_string())
-    .execute(&pool)
-    .await
-    .unwrap();
+    seed_pipeline_ledger_row(&pool, other_track, &path).await;
 
     let reason = worker
         .verify_then_complete(
@@ -778,19 +818,24 @@ async fn rejected_delivery_keeps_a_path_the_ledger_already_owns() {
     );
     assert!(
         path.exists(),
-        "el path ya tiene dueño en el ledger: la limpieza no debe borrarlo"
+        "sin prueba de que la entrega escribió el path, la limpieza no lo toca"
     );
     assert!(
-        ledger_row(&pool, track_id).await.is_none(),
-        "sin ledger propio"
+        ledger_row(&pool, other_track).await.is_some(),
+        "la fila de la otra pista sigue siendo suya"
+    );
+    assert!(
+        quarantined_files(dir.path()).is_empty(),
+        "no se aparta un fichero que no consta como entrega de esta cola"
     );
 }
 
 /// #338 (revisión de #356): la ruta real de Tidal escribe la fila del ledger
 /// en `tidal_pipeline` §9 y hace commit ANTES de que el worker ejecute el
-/// gate. Esa fila es de la propia entrega (mismo `track_id` que la cola), no
-/// de otra pista: si el gate la rechaza, la fila y el fichero no pueden quedar
-/// en la biblioteca mientras la cola se marca `failed`.
+/// gate. El journal de la descarga (`entity_id = queue_id`) ya declara el path
+/// promovido, así que la fila es de la propia entrega: si el gate la rechaza,
+/// la fila y el fichero no pueden quedar en la biblioteca mientras la cola se
+/// marca `failed`.
 #[tokio::test]
 async fn rejected_delivery_removes_the_pipeline_row_of_the_same_delivery() {
     let dir = TempDir::new().unwrap();
@@ -801,21 +846,8 @@ async fn rejected_delivery_removes_the_pipeline_row_of_the_same_delivery() {
     let path = dir.path().join("pipeline-owned.flac");
     write_verified_flac(&path, 197 * 44_100);
 
-    // Fila tal como la escribe `tidal_pipeline` §9 (ON CONFLICT(track_id)), ya
-    // confirmada antes del gate.
-    sqlx::query(
-        "INSERT INTO downloads (track_id, source_service_id, file_path, file_format, \
-         bit_depth, sample_rate, file_size_bytes, metadata_completeness, requested_quality, \
-         effective_quality, requested_format, effective_format, quality_decision, \
-         provider_fallback_used, quality_fallback_used) \
-         VALUES (?, 1, ?, 'FLAC', 24, 96000, 4096, 100, 'hires', \
-         'FLAC 24-bit / 96.0kHz', 'FLAC', 'FLAC', 'CompletedExactQuality', 0, 0)",
-    )
-    .bind(track_id)
-    .bind(path.to_string_lossy().to_string())
-    .execute(&pool)
-    .await
-    .unwrap();
+    seed_pipeline_ledger_row(&pool, track_id, &path).await;
+    seed_delivery_journal(&pool, queue_id, track_id, &dir, &path).await;
     assert!(
         ledger_row(&pool, track_id).await.is_some(),
         "fixture: la fila de la propia entrega ya existe cuando corre el gate"
@@ -855,4 +887,117 @@ async fn rejected_delivery_removes_the_pipeline_row_of_the_same_delivery() {
         "downloading",
         "el gate no promociona la fila; el llamador la marca failed"
     );
+}
+
+/// #338 (revisión de #356): `tidal_pipeline` rechaza el hint por mismatch de
+/// identidad y resuelve por `track_sources`/ISRC/artista+título, o crea una
+/// pista nueva. La fila que escribe §9 puede llevar un `track_id` DIVERGENTE
+/// al de la cola, así que la propiedad no puede comparar `track_id`: es el
+/// journal de la entrega (`expected_output_path`) quien prueba que el path lo
+/// escribió esta descarga.
+#[tokio::test]
+async fn rejected_delivery_removes_a_pipeline_row_with_a_diverged_track_id() {
+    let dir = TempDir::new().unwrap();
+    let pool = migrated_pool(&dir, "pipeline-diverged.db").await;
+    let (queue_id, queue_track) = seed_downloading_row(&pool, &dir, 1, "hires").await;
+    let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+
+    let path = dir.path().join("diverged-owned.flac");
+    write_verified_flac(&path, 197 * 44_100);
+
+    let diverged_track: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title) VALUES ('Verified Track (Remaster)') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_ne!(
+        diverged_track, queue_track,
+        "fixture: la fila de §9 describe otra pista canónica"
+    );
+    seed_pipeline_ledger_row(&pool, diverged_track, &path).await;
+    seed_delivery_journal(&pool, queue_id, queue_track, &dir, &path).await;
+
+    let reason = worker
+        .verify_then_complete(
+            queue_id,
+            &delivered_result(&path),
+            expected_delivery(200_000),
+            true,
+            false,
+            0.0,
+        )
+        .await
+        .expect_err("el gate rechaza la duración fuera de tolerancia");
+    assert!(
+        reason.contains("duration out of tolerance"),
+        "motivo: {reason}"
+    );
+
+    assert!(
+        ledger_row(&pool, diverged_track).await.is_none(),
+        "la fila de la entrega se retira aunque su track_id diverja del de la cola"
+    );
+    assert!(
+        ledger_row(&pool, queue_track).await.is_none(),
+        "el rechazo no deja ledger para el track de la cola"
+    );
+    assert!(
+        !path.exists(),
+        "el fichero rechazado no puede quedar en la ruta de la biblioteca"
+    );
+    assert_eq!(
+        quarantined_files(dir.path()).len(),
+        1,
+        "el audio rechazado se conserva en cuarentena explícita"
+    );
+}
+
+/// #338: sin entrada de journal que declare el path, una fila con `track_id`
+/// divergente es indistinguible de la entrega de otra pista; el rechazo
+/// conserva fila y fichero (no se destruye evidencia ajena).
+#[tokio::test]
+async fn rejected_delivery_keeps_a_diverged_row_no_journal_claims() {
+    let dir = TempDir::new().unwrap();
+    let pool = migrated_pool(&dir, "diverged-no-journal.db").await;
+    let (queue_id, queue_track) = seed_downloading_row(&pool, &dir, 1, "hires").await;
+    let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+
+    let path = dir.path().join("diverged-unclaimed.flac");
+    write_verified_flac(&path, 197 * 44_100);
+
+    let diverged_track: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title) VALUES ('Another Canonical Track') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    seed_pipeline_ledger_row(&pool, diverged_track, &path).await;
+
+    let reason = worker
+        .verify_then_complete(
+            queue_id,
+            &delivered_result(&path),
+            expected_delivery(200_000),
+            true,
+            false,
+            0.0,
+        )
+        .await
+        .expect_err("el gate rechaza la duración fuera de tolerancia");
+    assert!(
+        reason.contains("duration out of tolerance"),
+        "motivo: {reason}"
+    );
+
+    assert!(
+        ledger_row(&pool, diverged_track).await.is_some(),
+        "sin journal no se puede atribuir la fila a esta entrega"
+    );
+    assert!(
+        path.exists(),
+        "tampoco se toca un fichero sin prueba de autoría"
+    );
+    assert!(ledger_row(&pool, queue_track).await.is_none());
+    assert!(quarantined_files(dir.path()).is_empty());
 }
