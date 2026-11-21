@@ -2137,7 +2137,21 @@ impl TidalDownloader {
                 }
                 let init_url = parts[1];
                 let media_template = parts[2];
-                let total_segments: u32 = parts[3].parse().unwrap_or(1);
+                // DLX-04: parse estricto, sin `unwrap_or(1)`. Un recuento
+                // malformado o cero truncaría silenciosamente la descarga a un
+                // único segmento; el fichero saldría incompleto y la cabecera
+                // del init (ftyp) no lo delataría.
+                let total_segments: u32 = parts[3].parse().map_err(|_| {
+                    anyhow!(
+                        "InvalidDashSpec: DASH segment count {:?} is not a valid u32",
+                        parts[3]
+                    )
+                })?;
+                if total_segments == 0 {
+                    return Err(anyhow!(
+                        "InvalidDashSpec: DASH manifest declares 0 media segments"
+                    ));
+                }
 
                 if total_segments > MAX_DASH_SEGMENTS {
                     return Err(anyhow!(
@@ -2152,6 +2166,13 @@ impl TidalDownloader {
                     "[Tidal DASH] Starting DASH MPD stream download"
                 );
                 let mut file = File::create(&temp_file_path).await?;
+
+                // DLX-04: libro de consumo en orden. Cada segmento consumido
+                // se anota por su índice (0 = init); antes de validar se
+                // comprueba que 0..=N están todos y en orden, sin saltos ni
+                // repetidos. Un bucle que pida fuera de orden o se salte un
+                // segmento no puede promocionar el fichero.
+                let mut consumed: Vec<u32> = Vec::with_capacity(total_segments as usize + 1);
 
                 // 1. Download Init Segment with retries
                 let mut init_downloaded = false;
@@ -2184,6 +2205,7 @@ impl TidalDownloader {
                                 "[Tidal DASH] Init segment downloaded successfully"
                             );
                             progress_callback(0, total_segments, downloaded);
+                            consumed.push(0);
                             init_downloaded = true;
                             break;
                         }
@@ -2264,6 +2286,7 @@ impl TidalDownloader {
                                     "[Tidal DASH] Segment downloaded successfully"
                                 );
                                 progress_callback(seg_num, total_segments, downloaded);
+                                consumed.push(seg_num);
                                 seg_success = true;
                                 break;
                             }
@@ -2304,6 +2327,17 @@ impl TidalDownloader {
                             last_seg_err
                         ));
                     }
+                }
+
+                // DLX-04: sin saltos. El libro debe contener exactamente
+                // 0..=N en orden estricto antes de cerrar y validar.
+                let esperado: Vec<u32> = (0..=total_segments).collect();
+                if consumed != esperado {
+                    let _ = tokio::fs::remove_file(&temp_file_path).await;
+                    return Err(anyhow!(
+                        "SegmentSequenceGap: DASH consumed segments {:?} do not match expected 0..={}",
+                        consumed, total_segments
+                    ));
                 }
 
                 file.flush().await?;
@@ -2380,6 +2414,19 @@ impl TidalDownloader {
                         last_direct_err
                     ));
                 }
+            }
+
+            // DLX-04: el payload se valida sólo completo. La longitud en
+            // disco debe coincidir con los bytes consumidos antes de leer
+            // cabecera, remuxear o promocionar: un fichero truncado o
+            // parcialmente escrito no llega a validarse.
+            let on_disk_len = tokio::fs::metadata(&temp_file_path).await?.len();
+            if on_disk_len != downloaded {
+                let _ = tokio::fs::remove_file(&temp_file_path).await;
+                return Err(anyhow!(
+                    "PayloadIncomplete: staged payload has {} bytes on disk but {} bytes were consumed",
+                    on_disk_len, downloaded
+                ));
             }
 
             if downloaded == 0 {
