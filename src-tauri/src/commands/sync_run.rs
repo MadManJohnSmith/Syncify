@@ -86,9 +86,21 @@ pub async fn start_sync_run(
         );
     }
 
-    // Modo del contrato: solo importar es el default de la beta (decisión 1).
-    let run_id =
-        runs::insert_running_run(&db, account_id, service_id, scope_parsed, "import_only").await?;
+    // Perfil resuelto (issue #69): la corrida registra el modo del perfil
+    // efectivo. Hoy ese modo siempre es `import_only` — los espejo no tienen
+    // motor en este árbol y no son seleccionables (T06/T07) —, así que la fila
+    // no afirma nada que el job no ejecute. El toggle de participación NO se
+    // consulta aquí: «sync ahora» siempre puede forzar una corrida aunque la
+    // cuenta esté pausada (ADR-0006, decisión 4).
+    let profile = crate::sync::profile::load_sync_profile(&db, account_id).await?;
+    let run_id = runs::insert_running_run(
+        &db,
+        account_id,
+        service_id,
+        scope_parsed,
+        profile.mode.as_str(),
+    )
+    .await?;
 
     let meta = RunMeta {
         run_id,

@@ -7,7 +7,8 @@ use std::sync::Arc;
 use syncify_tauri_lib::{
     commands::backup::{export_library_with_bases, import_library_with_bases},
     crypto,
-    settings_defaults::SETTINGS_KV_KEYS,
+    settings_defaults::is_user_settings_kv_key,
+    sync::profile::{self as sync_profile, SyncProfileUpdate},
     worker::DownloadWorkerState,
     AppState, EnrichmentWorkerState,
 };
@@ -282,7 +283,7 @@ async fn manifest_v2_excludes_every_secret_from_settings_kv() {
     let kv = manifest["settings"]["kv"].as_object().unwrap();
     for key in kv.keys() {
         assert!(
-            SETTINGS_KV_KEYS.contains(&key.as_str()),
+            is_user_settings_kv_key(key),
             "exported KV key '{}' must be part of the user-settings catalog",
             key
         );
@@ -597,6 +598,132 @@ async fn v2_import_restores_settings_and_accounts_await_reauth() {
         max_conc_after, 5,
         "settings must be stable across reimports"
     );
+}
+
+/// Round-trip del perfil de sincronización por cuenta: la KV `settings` es
+/// configuración de usuario (ADR-0020, decisión 1), así que viaja en el
+/// manifest y vuelve al restaurar; un override perdido reactivaría en
+/// silencio una cuenta pausada.
+#[tokio::test]
+async fn v2_roundtrip_restores_the_per_account_sync_profile_override() {
+    let db = create_test_db().await;
+
+    // La cuenta viaja por identidad externa: el restore la deduplica y conserva
+    // el id con el que está escrita la clave del perfil.
+    sqlx::query(
+        "INSERT INTO accounts (id, service_id, display_name, email, external_user_id, is_active)
+         VALUES (7, 3, 'Tidal Main', 'main@example.com', 'ext-usr-sync', 1)",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let update = SyncProfileUpdate {
+        enabled: false,
+        mode: None,
+        interval_hours: Some(6),
+        collections: None,
+    };
+    sync_profile::save_account_profile(&db, 7, &update)
+        .await
+        .expect("guardar el override");
+    let key = sync_profile::account_profile_key(7);
+
+    let app = create_test_app(db.clone());
+    let backup = get_test_backup_path("manifest_v2_sync_profile");
+    let manifest = export_to(&app, &backup).await;
+
+    let exported = manifest["settings"]["kv"][&key]
+        .as_str()
+        .unwrap_or_else(|| panic!("sync profile override must travel in the manifest: {manifest}"));
+    assert!(exported.contains("\"enabled\":false"), "{exported}");
+    assert!(exported.contains("\"interval_hours\":6"), "{exported}");
+
+    // Se borra el override y se restaura: vuelve intacto.
+    sqlx::query("DELETE FROM settings WHERE key = ?")
+        .bind(&key)
+        .execute(&db)
+        .await
+        .unwrap();
+    let state = app.state::<AppState>();
+    import_library_with_bases(state, backup.path.clone(), None, &backup.allowed_bases)
+        .await
+        .expect("el manifest se restaura sobre la misma base");
+
+    let restored = sync_profile::load_sync_profile(&db, 7)
+        .await
+        .expect("perfil restaurado");
+    assert!(!restored.enabled, "la cuenta restaurada sigue pausada");
+    assert_eq!(restored.interval_hours, 6);
+}
+
+/// Restaurar en otra máquina no puede reanclar el override si la cuenta recibe
+/// otro id: el manifest v2 no transporta ids de cuenta. La clave no se queda
+/// huérfana (un id reutilizado heredaría un perfil ajeno) y el resultado lo
+/// dice.
+#[tokio::test]
+async fn restore_into_a_fresh_database_drops_orphan_sync_profiles() {
+    let source_db = create_test_db().await;
+    sqlx::query(
+        "INSERT INTO accounts (id, service_id, display_name, email, external_user_id, is_active)
+         VALUES (7, 3, 'Tidal Main', 'main@example.com', 'ext-usr-sync', 1)",
+    )
+    .execute(&source_db)
+    .await
+    .unwrap();
+    let update = SyncProfileUpdate {
+        enabled: false,
+        mode: None,
+        interval_hours: Some(6),
+        collections: None,
+    };
+    sync_profile::save_account_profile(&source_db, 7, &update)
+        .await
+        .expect("guardar el override");
+
+    let source_app = create_test_app(source_db);
+    let backup = get_test_backup_path("manifest_v2_sync_profile_orphan");
+    export_to(&source_app, &backup).await;
+
+    // BD destino limpia: la cuenta entra con un id nuevo (no el 7).
+    let target_db = create_test_db().await;
+    let target_app = create_test_app(target_db.clone());
+    let res = {
+        let state = target_app.state::<AppState>();
+        import_library_with_bases(state, backup.path.clone(), None, &backup.allowed_bases)
+            .await
+            .expect("el manifest se restaura en una BD limpia")
+    };
+
+    let restored_id: i64 =
+        sqlx::query_scalar("SELECT id FROM accounts WHERE external_user_id = 'ext-usr-sync'")
+            .fetch_one(&target_db)
+            .await
+            .unwrap();
+    assert_ne!(restored_id, 7, "la cuenta restaurada recibe un id nuevo");
+
+    let orphans: Vec<String> = sqlx::query_scalar(
+        "SELECT key FROM settings WHERE key LIKE 'sync\\_profile:account:%' ESCAPE '\\'",
+    )
+    .fetch_all(&target_db)
+    .await
+    .unwrap();
+    assert!(
+        orphans.is_empty(),
+        "no debe quedar un override apuntando a una cuenta inexistente: {orphans:?}"
+    );
+    assert!(
+        res.message.contains("per-account sync profile(s) dropped"),
+        "el resultado debe decirlo: {}",
+        res.message
+    );
+
+    // Y el perfil de la cuenta restaurada vuelve a los defaults del servicio.
+    let profile = sync_profile::load_sync_profile(&target_db, restored_id)
+        .await
+        .expect("perfil de la cuenta restaurada");
+    assert!(profile.enabled);
+    assert_eq!(profile.interval_hours, 24);
 }
 
 #[tokio::test]

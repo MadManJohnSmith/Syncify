@@ -432,10 +432,13 @@ async fn export_settings_table_rows(
     Ok(rows.iter().map(sqlite_row_to_json).collect())
 }
 
-/// Exporta la KV de ajustes: solo las claves del catálogo de usuario
-/// (`SETTINGS_KV_KEYS`, el mismo universo que borra el reset) y, dentro de
-/// él, ninguna clave sensible: tokens, claves de API ni credenciales de
-/// ningún tipo se quedan fuera del manifest (contrato testeable).
+/// Exporta la KV de ajustes: solo las claves que son ajustes de usuario
+/// ([`crate::settings_defaults::is_user_settings_kv_key`], el mismo universo
+/// que borra el reset: claves enumeradas y prefijos con instancia por entidad)
+/// y, dentro de él, ninguna clave sensible: tokens, claves de API ni
+/// credenciales de ningún tipo se quedan fuera del manifest (contrato
+/// testeable). El override del perfil de sync viaja con su id de cuenta; si al
+/// restaurar no encuentra esa cuenta, `drop_orphan_sync_profiles` lo retira.
 async fn export_settings_kv(
     db: &crate::DbPool,
 ) -> Result<std::collections::BTreeMap<String, String>, String> {
@@ -448,8 +451,7 @@ async fn export_settings_kv(
     Ok(rows
         .into_iter()
         .filter(|(key, _)| {
-            crate::settings_defaults::SETTINGS_KV_KEYS.contains(&key.as_str())
-                && !is_sensitive_setting_key(key)
+            crate::settings_defaults::is_user_settings_kv_key(key) && !is_sensitive_setting_key(key)
         })
         .collect())
 }
@@ -957,18 +959,18 @@ async fn restore_settings_surface(
     Ok(rows.len() as i64)
 }
 
-/// Restaura la KV de ajustes con la misma selección del export: solo claves
-/// del catálogo de usuario y ninguna sensible. Un manifest que traiga una
-/// clave sensible o desconocida no la escribe: la restauración no fabrica
-/// credenciales (contrato testeable de ADR-0020).
+/// Restaura la KV de ajustes con la misma selección del export: solo claves de
+/// usuario (enumeradas o bajo un prefijo con instancia por entidad) y ninguna
+/// sensible. Un manifest que traiga una clave sensible o desconocida no la
+/// escribe: la restauración no fabrica credenciales (contrato testeable de
+/// ADR-0020).
 async fn restore_settings_kv(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     kv: &std::collections::BTreeMap<String, String>,
 ) -> Result<i64, String> {
     let mut restored = 0i64;
     for (key, value) in kv {
-        if !crate::settings_defaults::SETTINGS_KV_KEYS.contains(&key.as_str())
-            || is_sensitive_setting_key(key)
+        if !crate::settings_defaults::is_user_settings_kv_key(key) || is_sensitive_setting_key(key)
         {
             continue;
         }
@@ -1195,6 +1197,54 @@ async fn restore_account_metadata(
         }
     }
     Ok(awaiting_reauth)
+}
+
+/// Retira los overrides del perfil de sync cuya cuenta no existe en esta BD.
+/// El manifest v2 no transporta ids de cuenta, así que restaurar en otra
+/// máquina puede dejar `sync_profile:account:{id}` apuntando a un id que aquí
+/// no es el suyo; un id reutilizado heredaría un perfil ajeno.
+async fn drop_orphan_sync_profiles(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+) -> Result<u64, String> {
+    let prefix = crate::sync::profile::ACCOUNT_PROFILE_KEY_PREFIX;
+    let keys: Vec<(String,)> = sqlx::query_as("SELECT key FROM settings")
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| format!("Failed to inspect settings KV: {e}"))?;
+
+    let mut dropped = 0u64;
+    for (key,) in keys {
+        let Some(raw_id) = key.strip_prefix(prefix) else {
+            continue;
+        };
+        let exists = match raw_id.parse::<i64>() {
+            Ok(account_id) => {
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE id = ?")
+                    .bind(account_id)
+                    .fetch_one(&mut **tx)
+                    .await
+                    .map_err(|e| format!("Failed to inspect account {}: {e}", account_id))?
+                    > 0
+            }
+            Err(_) => false,
+        };
+        if !exists {
+            sqlx::query("DELETE FROM settings WHERE key = ?")
+                .bind(&key)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| format!("Failed to drop orphan sync profile '{}': {e}", key))?;
+            dropped += 1;
+        }
+    }
+
+    if dropped > 0 {
+        tracing::warn!(
+            "restore: {} per-account sync profile(s) dropped: the restored account got a different id",
+            dropped
+        );
+    }
+    Ok(dropped)
 }
 
 /// ¿Trae este nombre de artista del manifest un artista restaurable?
@@ -1620,6 +1670,12 @@ pub async fn import_library_with_bases(
     } else {
         Vec::new()
     };
+    // El override del perfil de sync se exporta con el id de cuenta del origen
+    // (ver `export_settings_kv`) y el manifest v2 no transporta ids: si el
+    // restore creó la cuenta con otro id, la clave no apunta a nadie. Se retira
+    // con aviso en vez de dejarla huérfana, que un id reutilizado heredaría un
+    // perfil ajeno.
+    let orphan_sync_profiles = drop_orphan_sync_profiles(&mut tx).await?;
     let accounts_restored = manifest
         .accounts
         .as_ref()
@@ -1641,6 +1697,12 @@ pub async fn import_library_with_bases(
             "; {} account(s) await re-authentication: {}",
             accounts_awaiting_reauth.len(),
             accounts_awaiting_reauth.join(", ")
+        ));
+    }
+    if orphan_sync_profiles > 0 {
+        message.push_str(&format!(
+            "; {} per-account sync profile(s) dropped: their account got a different id in this database",
+            orphan_sync_profiles
         ));
     }
 
