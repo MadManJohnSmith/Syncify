@@ -2000,6 +2000,10 @@ async fn resolve_migration_account(
 /// the destination, or nothing starts — the matrix is authoritative even
 /// when the UI is stale or bypassed (the M00 rule, now per collection).
 /// Returns the deduplicated requested collections, empty for the legacy call.
+///
+/// It also gates the combinations the matrix cannot see: `playlists` has no
+/// source read of its own (the mirror joins the job's transferred track
+/// items), so it is only startable next to `tracks`. See the check below.
 fn validate_requested_collections(
     destination_service: &str,
     collections: Option<&[String]>,
@@ -2024,6 +2028,23 @@ fn validate_requested_collections(
     }
     if requested.is_empty() {
         return Err("The migration must request at least one collection".to_string());
+    }
+    // The playlist mirror has no read of its own: it joins the job's
+    // transferred track items back to the source playlists named in
+    // `source_playlist_ids` (`fetch_job_destination_playlists`). A request
+    // asking for `playlists` without `tracks` carries no source read, so the
+    // job starts with `total_items = 0`, mirrors nothing and used to close as
+    // an empty "completed" — BD-4's failure mode on a route the wizard shows.
+    // The wizard computes the same rule when it builds the request (it adds
+    // `tracks` to a playlists selection); this is the invariant that holds
+    // for any caller, stale UI included.
+    if requested.contains(&MigrationCollection::Playlists)
+        && !requested.contains(&MigrationCollection::Tracks)
+    {
+        return Err(
+            "The 'playlists' collection cannot run on its own: destination playlists are mirrored from the job's transferred track favorites and from the source playlists it selects, so the migration must also request 'tracks'; the migration was not started"
+                .to_string(),
+        );
     }
     Ok(requested)
 }

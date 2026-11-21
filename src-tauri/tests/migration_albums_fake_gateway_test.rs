@@ -727,3 +727,44 @@ async fn test_collections_gating_refuses_undeclared_or_unknown_requests() {
         .unwrap();
     assert_eq!(jobs, 0, "no gating refusal leaves a job row behind");
 }
+
+/// Una petición `collections: ["playlists"]` a solas se rechaza antes de
+/// existir el job: el espejo de listas se alimenta de los ítems de pista
+/// transferidos por el propio job, así que sin la lectura de favoritos de
+/// pistas no hay nada que leer ni que espejar y el job cerraría como
+/// "completed" vacío (antes de M01 ese mismo clic migraba los favoritos, así
+/// que la ruta visible no puede quedarse en un éxito hueco). El invariante
+/// vive en el servidor para cubrir también una UI obsoleta que no lo calcule.
+#[tokio::test]
+async fn test_playlists_collection_alone_is_refused_before_the_job_exists() {
+    let pool = setup_test_db().await;
+    let account = seed_albums_fixture(&pool).await;
+    let app = test_app(pool.clone());
+
+    // Qobuz declara Playlists, así que la petición pasa el gating de matriz y
+    // llega al invariante de combinación: el rechazo es por la combinación,
+    // no por capacidad.
+    let result = start_albums_job(
+        &app,
+        "qobuz",
+        Some(account),
+        None,
+        vec!["playlists"],
+        albums_options(),
+    )
+    .await;
+    let error = result.expect_err("playlists alone must not start a job");
+    assert!(
+        error.contains("cannot run on its own") && error.contains("'tracks'"),
+        "the refusal names the missing collection, got: {error}"
+    );
+
+    let jobs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM migration_jobs")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        jobs, 0,
+        "the refusal happens before the job row, so nothing can close empty"
+    );
+}
