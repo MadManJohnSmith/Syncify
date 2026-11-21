@@ -433,7 +433,7 @@
         <!-- Track Rows -->
         <div 
           v-for="(track, index) in playlistTracks" 
-          :key="track.id"
+          :key="track.rowKey"
           class="track-row px-4 py-2 flex items-center hover:bg-gray-50 dark:hover:bg-surface-highlight group cursor-pointer"
           :class="{ 'bg-primary/5': selectedTracks.includes(track.id) }"
           draggable="true"
@@ -840,13 +840,19 @@ const canDeleteSelectedPlaylist = computed(() => {
 })
 
 // Map LibraryTrack to UI Track
-function mapToTrack(item: LibraryTrack, _index: number) {
+function mapToTrack(item: LibraryTrack, index: number) {
   const durationSec = (item.duration_ms ?? 0) / 1000;
   const mins = Math.floor(durationSec / 60);
   const secs = Math.floor(durationSec % 60);
 
+  // PL02 (#155): la misma pista puede aparecer varias veces en una playlist.
+  // `position` distingue las ocurrencias y `rowKey` da a cada fila una clave
+  // estable dentro de la carga (un `:key` por track.id duplicaría claves).
+  const position = item.position ?? null;
   return {
     id: item.id,
+    position,
+    rowKey: position === null ? `${item.id}:i${index}` : `${item.id}:p${position}`,
     title: item.title,
     artist: item.artist_name || 'Unknown Artist',
     album: item.album_name || 'Unknown Album',
@@ -952,6 +958,8 @@ async function selectPlaylist(playlist: any) {
 
     const page = await libraryApi.getPlaylistTracks(playlist.id, 0, PLAYLIST_PAGE_SIZE)
     playlistTracks.value = page.tracks.map((t, i) => mapToTrack(t, i))
+    // PL02 (#155): `total` cuenta ocurrencias, no pistas distintas.
+    playlist.track_count = page.total
     tracksTruncated.value = page.has_more
   } catch (error) {
     playlistTracks.value = []
@@ -1202,9 +1210,15 @@ async function addTracksById() {
 async function removeTrack(track: any) {
   if (!canMutateSelectedPlaylist.value) return
   try {
-    await playlistsApi.removeTracksFromPlaylist(selectedPlaylist.value.id, [track.id])
-    playlistTracks.value = playlistTracks.value.filter(item => item.id !== track.id)
-    selectedPlaylist.value.track_count = Math.max(0, Number(selectedPlaylist.value.track_count || 0) - 1)
+    // PL02 (#155): el backend quita UNA ocurrencia de esa pista, no todas.
+    // Recargar en vez de filtrar por id mantiene las demás repeticiones y el
+    // contador tal como quedaron en la base.
+    const removed = await playlistsApi.removeTracksFromPlaylist(selectedPlaylist.value.id, [track.id])
+    await selectPlaylist(selectedPlaylist.value)
+    if (!removed) {
+      toast.error('Track was no longer in the playlist')
+      return
+    }
     toast.success('Track removed from playlist')
   } catch (error) {
     toast.error('Failed to remove track', String(error))
@@ -1618,6 +1632,9 @@ async function onTrackDrop(event: DragEvent, newIndex: number) {
   tracks.splice(newIndex, 0, track)
   playlistTracks.value = tracks
   try {
+    // PL02 (#155): el payload es el orden completo y cada entrada mueve UNA
+    // ocurrencia; con repeticiones, el trackId se repite y el backend consume
+    // las ocurrencias en el orden del payload.
     await playlistsApi.reorderPlaylistTracks(
       selectedPlaylist.value.id,
       tracks.map((item, index) => ({ trackId: item.id, newPosition: index + 1 })),
