@@ -7,6 +7,7 @@
 pub mod cache;
 pub mod client;
 pub mod config;
+pub mod failures;
 pub mod flac;
 pub mod hooks;
 pub mod pipeline;
@@ -16,6 +17,10 @@ pub mod types;
 pub use cache::{clear_lyrics_cache, set_cached_lyrics};
 pub use client::{is_valid_lyrics, LyricsClient};
 pub use config::{LyricsEngineConfig, LyricsSourceSetting, LYRICS_SOURCE_IDS};
+pub use failures::{
+    classify_failure_message, classify_source_error, LyricsCascadeReport, LyricsFailureKind,
+    LyricsResolutionReport, LyricsSourceFailure,
+};
 pub use flac::validate_and_embed_flac_lyrics;
 pub use hooks::{EngineHooks, NoopHooks};
 pub use pipeline::{generate_sidecar_lrc, LyricsPipelineService};

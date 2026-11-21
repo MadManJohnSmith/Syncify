@@ -1,5 +1,9 @@
-//! LY03 (#184) — upgrade real de la migración 0114
-//! (`lyrics_resolution_failures`, caché negativa de resolución de letras).
+//! LY03 (#184) — caché negativa persistente de resolución de letras.
+//!
+//! Upgrade real de la migración 0114 (`lyrics_resolution_failures`) y
+//! comportamiento IPC contra una BD `:memory:` migrada de verdad: salto de
+//! Fuentes con fallo vigente, caducidad y refresco, clasificación del motivo y
+//! separación de la Marca de borrado.
 //!
 //! Mina de AGENTS: una BD `:memory:` recién migrada **no** demuestra que el
 //! upgrade funcione. Molde de `migration_item_kinds_upgrade_test` (#166): el
@@ -14,6 +18,14 @@
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Pool, Sqlite};
+
+use std::sync::Arc;
+use syncify_lyrics_domain::ResolutionStatus;
+use syncify_lyrics_engine::{LyricsClient, LyricsEngineConfig, LyricsSourceSetting, NoopHooks};
+use syncify_tauri_lib::commands::lyrics::resolve_track_lyrics_with_client;
+use syncify_tauri_lib::services::lyrics_negative_cache::{
+    active_failed_sources, resolve_with_negative_cache, ttl_hours,
+};
 
 const MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
@@ -234,4 +246,195 @@ async fn test_0114_failure_rows_cascade_with_the_track() {
             .await
             .unwrap();
     assert_eq!(remaining, 0, "deleting the track removes its failures");
+}
+
+/// BD migrada de verdad (0001–0114) para los tests de comportamiento: la tabla
+/// de la caché negativa es la misma que verá la app, no una copia a mano.
+async fn setup_migrated_db() -> Pool<Sqlite> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&unique_memory_uri())
+        .await
+        .expect("Failed to connect to in-memory database");
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .unwrap();
+    MIGRATOR
+        .run(&pool)
+        .await
+        .expect("migraciones reales sobre una BD limpia");
+    sqlx::query("INSERT INTO tracks (id, title) VALUES (1, 'Song'), (2, 'Other')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool
+}
+
+/// Cliente hermético: Apple Music sin token en los hooks falla antes de tocar
+/// la red, así que el motivo queda clasificado sin contactar ningún servicio.
+fn offline_client() -> LyricsClient {
+    let mut config = LyricsEngineConfig::default();
+    config.retry_frequency = "hourly".to_string();
+    config.sources = vec![LyricsSourceSetting {
+        provider_id: "apple_music_ttml".to_string(),
+        enabled: true,
+        priority: 1,
+    }];
+    LyricsClient::with_parts_and_config(reqwest::Client::new(), Arc::new(NoopHooks), config)
+}
+
+/// Primera resolución: no hay letra, el fallo se guarda clasificado. Segunda:
+/// la Fuente con fallo vigente se salta y no se vuelve a sondear.
+#[tokio::test]
+async fn resolution_records_classified_failure_and_second_attempt_skips_it() {
+    let pool = setup_migrated_db().await;
+    let client = offline_client();
+
+    let first = resolve_with_negative_cache(
+        &pool,
+        &client,
+        Some(1),
+        "Artist",
+        "Song",
+        None,
+        180.0,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.resolution.status, ResolutionStatus::NotFound);
+    assert_eq!(first.skipped.len(), 0, "la primera pasada no salta nada");
+    assert_eq!(first.failures.len(), 1);
+
+    let (reason, detail): (String, String) = sqlx::query_as(
+        "SELECT reason, detail FROM lyrics_resolution_failures \
+         WHERE track_id = 1 AND provider_id = 'apple_music_ttml'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        reason, "requires_auth",
+        "el motivo llega clasificado a la BD"
+    );
+    assert!(
+        detail.contains("token"),
+        "el detalle conserva el diagnóstico: {detail}"
+    );
+
+    let second = resolve_with_negative_cache(
+        &pool,
+        &client,
+        Some(1),
+        "Artist",
+        "Song",
+        None,
+        180.0,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        second.skipped,
+        vec!["apple_music_ttml".to_string()],
+        "el fallo vigente se salta"
+    );
+    assert!(
+        second.failures.is_empty(),
+        "saltar una Fuente no produce un fallo nuevo"
+    );
+    let active = active_failed_sources(&pool, 1).await.unwrap();
+    assert!(active.contains("apple_music_ttml"));
+}
+
+/// Un fallo caducado deja de suprimir la Fuente: la siguiente resolución la
+/// vuelve a sondear y refresca la caducidad con el fallo recién observado.
+#[tokio::test]
+async fn expired_failure_is_probed_again_and_refreshed() {
+    let pool = setup_migrated_db().await;
+    let client = offline_client();
+
+    sqlx::query(
+        "INSERT INTO lyrics_resolution_failures \
+             (track_id, provider_id, reason, detail, expires_at) \
+         VALUES (1, 'apple_music_ttml', 'not_found', 'stale', datetime('now', '-1 minute'))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let report = resolve_with_negative_cache(
+        &pool,
+        &client,
+        Some(1),
+        "Artist",
+        "Song",
+        None,
+        180.0,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(
+        report.skipped.is_empty(),
+        "un fallo caducado no se salta: la Fuente se vuelve a sondear"
+    );
+    assert_eq!(report.failures.len(), 1);
+
+    let (reason, fresh): (String, i64) = sqlx::query_as(
+        "SELECT reason, expires_at > datetime('now') FROM lyrics_resolution_failures \
+         WHERE track_id = 1 AND provider_id = 'apple_music_ttml'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(reason, "requires_auth", "el refresco actualiza el motivo");
+    assert_eq!(fresh, 1, "el refresco vuelve a dejar la fila vigente");
+}
+
+/// La Marca de borrado es voluntad del usuario, no un fallo de resolución: la
+/// ruta de comando que la consulta termina sin escribir en la caché negativa.
+#[tokio::test]
+async fn tombstone_is_never_recorded_as_a_failure() {
+    let pool = setup_migrated_db().await;
+    sqlx::query("INSERT INTO lyrics_deletion_marks (track_id, format) VALUES (1, '*')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let client = offline_client();
+
+    let payload = resolve_track_lyrics_with_client(
+        &client,
+        &pool,
+        "Artist".to_string(),
+        "Song".to_string(),
+        None,
+        Some(180.0),
+        None,
+        Some(1),
+    )
+    .await
+    .unwrap();
+    assert_eq!(payload.status, ResolutionStatus::NotFound);
+
+    let failures: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM lyrics_resolution_failures WHERE track_id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        failures, 0,
+        "a tombstoned track keeps intent and evidence separate"
+    );
+}
+
+#[test]
+fn ttl_follows_the_retry_cadence_and_falls_back_to_weekly() {
+    assert_eq!(ttl_hours("hourly"), 1);
+    assert_eq!(ttl_hours("daily"), 24);
+    assert_eq!(ttl_hours("weekly"), 168);
+    assert_eq!(ttl_hours("never"), 168);
+    assert_eq!(ttl_hours("  DAILY "), 24);
+    assert_eq!(ttl_hours("unknown"), 168);
 }

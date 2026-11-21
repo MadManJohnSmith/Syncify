@@ -1071,3 +1071,97 @@ fn identity_cache_reuses_negative_resolution_without_expiry() {
         assert_eq!(sidecar, None);
     });
 }
+
+// LY03 (#184) — el clasificador es el vocabulario que persiste la caché
+// negativa: `reason` en `lyrics_resolution_failures`. Los mensajes vienen de
+// los fetchers reales del motor, no de ejemplos inventados.
+
+#[test]
+fn failure_classifier_covers_the_engine_vocabulary() {
+    use crate::failures::{classify_failure_message, LyricsFailureKind};
+
+    for (message, expected) in [
+        ("No lyrics found", LyricsFailureKind::NotFound),
+        (
+            "QQMusic: 0 matches for Artist - Song",
+            LyricsFailureKind::NotFound,
+        ),
+        (
+            "LRCLIB search failed: HTTP 429 Too Many Requests",
+            LyricsFailureKind::RateLimited,
+        ),
+        (
+            "Musixmatch token.get returned status 401",
+            LyricsFailureKind::RequiresAuth,
+        ),
+        (
+            "Spotify sp_dc token is not configured",
+            LyricsFailureKind::RequiresAuth,
+        ),
+        (
+            "NetEase search request failed: error sending request for url: connection refused",
+            LyricsFailureKind::SourceUnavailable,
+        ),
+        (
+            "LRCLIB request timed out after 10000ms",
+            LyricsFailureKind::SourceUnavailable,
+        ),
+        (
+            "Kugou search parse failed: error decoding response body",
+            LyricsFailureKind::Failed,
+        ),
+    ] {
+        assert_eq!(
+            classify_failure_message(message),
+            expected,
+            "mensaje clasificado mal: {message:?}"
+        );
+    }
+}
+
+#[test]
+fn cascade_skips_sources_with_a_fresh_failure_without_contacting_them() {
+    futures::executor::block_on(async {
+        let mut config = LyricsEngineConfig::default();
+        config.sources = vec![
+            LyricsSourceSetting {
+                provider_id: "lrclib_synced".into(),
+                enabled: true,
+                priority: 1,
+            },
+            LyricsSourceSetting {
+                provider_id: "kugou".into(),
+                enabled: true,
+                priority: 2,
+            },
+        ];
+        let client = LyricsClient::with_parts_and_config(
+            reqwest::Client::new(),
+            Arc::new(NoopHooks),
+            config,
+        );
+
+        let skip: std::collections::HashSet<String> =
+            ["kugou".to_string(), "lrclib_synced".to_string()]
+                .into_iter()
+                .collect();
+        let report = client
+            .fetch_all_sources_skipping("Artist", "Song", 180.0, &skip)
+            .await;
+
+        assert_eq!(
+            report.skipped,
+            vec!["lrclib_synced".to_string(), "kugou".to_string()],
+            "las fuentes con fallo vigente se saltan en el orden de prioridad"
+        );
+        assert!(
+            report.failures.is_empty(),
+            "saltar no inventa fallos nuevos"
+        );
+        assert!(report.response.is_none(), "no hay sondas, no hay candidato");
+        assert_eq!(
+            report.error.as_deref(),
+            Some("No lyrics matched enabled sources and lyrics policy")
+        );
+    });
+}

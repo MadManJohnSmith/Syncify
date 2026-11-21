@@ -1,7 +1,7 @@
 //! Cliente del motor: construcción inyectada (cliente HTTP + hooks),
 //! política de fuentes y orquestación de la cascada de resolución.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
@@ -11,6 +11,10 @@ use tokio::sync::Mutex as TokioMutex;
 use tracing::debug;
 
 use crate::config::{LyricsEngineConfig, LyricsSourceSetting, LYRICS_SOURCE_IDS};
+use crate::failures::{
+    classify_source_error, LyricsCascadeReport, LyricsFailureKind, LyricsResolutionReport,
+    LyricsSourceFailure,
+};
 use crate::hooks::EngineHooks;
 use crate::sources::musixmatch::MxmToken;
 use crate::types::LyricsResponse;
@@ -185,10 +189,40 @@ impl LyricsClient {
         track: &str,
         duration_sec: f64,
     ) -> Result<LyricsResponse> {
+        let report = self
+            .fetch_all_sources_skipping(artist, track, duration_sec, &HashSet::new())
+            .await;
+        report
+            .response
+            .ok_or_else(|| anyhow!(report.error.unwrap_or_default()))
+    }
+
+    /// Same cascade as `fetch_all_sources`, but `skip` names the Fuentes whose
+    /// known failure is still fresh in the persistent negative cache: they are
+    /// not contacted and the report says which ones were skipped. Every probed
+    /// Fuente that does not yield an acceptable candidate leaves a classified
+    /// failure in the report for the caller to persist.
+    pub async fn fetch_all_sources_skipping(
+        &self,
+        artist: &str,
+        track: &str,
+        duration_sec: f64,
+        skip: &HashSet<String>,
+    ) -> LyricsCascadeReport {
         let config = self.config();
         let mut selection = SequentialSelection::new(&config.min_sync_level);
+        let mut report = LyricsCascadeReport::default();
 
         for source in self.ordered_sources() {
+            if skip.contains(&source.provider_id) {
+                debug!(
+                    "[LyricsCascade] Skipping '{}' for '{} - {}': fresh failure in the negative cache",
+                    source.provider_id, artist, track
+                );
+                report.skipped.push(source.provider_id);
+                continue;
+            }
+
             let probe = match self
                 .fetch_source(&source.provider_id, artist, track, duration_sec)
                 .await
@@ -201,20 +235,45 @@ impl LyricsClient {
                         value: lyrics,
                     }
                 }
+                // A genuine payload rejected by policy is negative evidence
+                // too: re-probing the same Fuente would only reach the same
+                // verdict until the preference or the payload changes.
+                Ok(_) => {
+                    report.failures.push(LyricsSourceFailure {
+                        provider_id: source.provider_id.clone(),
+                        kind: LyricsFailureKind::PolicyRejected,
+                        detail: "lyrics rejected by the configured content policy".to_string(),
+                    });
+                    SourceOutcome::NoCandidate
+                }
                 // Per-source failures (rate limits, HTTP/network/parse errors,
-                // auth) and policy rejections only skip that source: the cascade
-                // never aborts. Classification of the final failure stays in
+                // auth) only skip that source: the cascade never aborts.
+                // Classification of the final failure stays in
                 // `orchestrate_resolution`.
-                _ => SourceOutcome::NoCandidate,
+                Err(error) => {
+                    report.failures.push(LyricsSourceFailure {
+                        provider_id: source.provider_id.clone(),
+                        kind: classify_source_error(&error),
+                        detail: error.to_string(),
+                    });
+                    SourceOutcome::NoCandidate
+                }
             };
             if selection.offer(probe) == SelectionOutcome::Stop {
                 break;
             }
         }
 
-        selection
-            .finish()
-            .ok_or_else(|| anyhow!("No lyrics matched enabled sources and lyrics policy"))
+        match selection.finish() {
+            Some(response) => {
+                report.response = Some(response);
+            }
+            None => {
+                report.error =
+                    Some("No lyrics matched enabled sources and lyrics policy".to_string());
+            }
+        }
+        report
     }
 
     /// Convert to LRC format string
@@ -233,23 +292,39 @@ impl LyricsClient {
         &self,
         artist: &str,
         track: &str,
-        _album: Option<&str>,
+        album: Option<&str>,
         duration_sec: f64,
     ) -> (LyricsResolution, u64) {
+        let report = self
+            .orchestrate_resolution_reporting(artist, track, album, duration_sec, &HashSet::new())
+            .await;
+        (report.resolution, report.elapsed_ms)
+    }
+
+    /// Same orchestration, returning the per-Fuente evidence the persistent
+    /// negative cache needs. `skip` carries the Fuentes with a fresh failure:
+    /// they are not contacted and appear in `skipped`.
+    pub async fn orchestrate_resolution_reporting(
+        &self,
+        artist: &str,
+        track: &str,
+        _album: Option<&str>,
+        duration_sec: f64,
+        skip: &HashSet<String>,
+    ) -> LyricsResolutionReport {
         let start = Instant::now();
 
         // 1. Try full multi-tier priority resolution cascade
-        match self.fetch_all_sources(artist, track, duration_sec).await {
-            Ok(resp) => {
-                let dur = start.elapsed().as_millis() as u64;
-                (resp.to_domain_resolution(), dur)
-            }
-            Err(e) => {
-                let dur = start.elapsed().as_millis() as u64;
-                let err_str = e.to_string();
-                let resolution = if err_str.contains("401")
-                    || err_str.contains("auth")
-                    || err_str.contains("sp_dc")
+        let cascade = self
+            .fetch_all_sources_skipping(artist, track, duration_sec, skip)
+            .await;
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+
+        let resolution = match cascade.response {
+            Some(response) => response.to_domain_resolution(),
+            None => {
+                let err_str = cascade.error.unwrap_or_default();
+                if err_str.contains("401") || err_str.contains("auth") || err_str.contains("sp_dc")
                 {
                     LyricsResolution::new_requires_auth("Spotify", "color_lyrics", err_str)
                 } else if err_str.contains("failed")
@@ -263,9 +338,15 @@ impl LyricsClient {
                     )
                 } else {
                     LyricsResolution::new_not_found("Orchestrator", "multi_provider_cascade")
-                };
-                (resolution, dur)
+                }
             }
+        };
+
+        LyricsResolutionReport {
+            resolution,
+            elapsed_ms,
+            failures: cascade.failures,
+            skipped: cascade.skipped,
         }
     }
 }

@@ -221,12 +221,25 @@ pub async fn resolve_track_lyrics_with_client(
     );
 
     let dur = duration_sec.unwrap_or(0.0);
-    let (resolution, latency_ms) = lyrics_client
-        .orchestrate_resolution(&artist, &title, album.as_deref(), dur)
-        .await;
+    let deletion_mark_standing = match track_id {
+        Some(track_id) => lyrics_track_blocked(db, track_id).await?,
+        None => false,
+    };
+    let report = crate::services::lyrics_negative_cache::resolve_with_negative_cache(
+        db,
+        lyrics_client,
+        track_id,
+        &artist,
+        &title,
+        album.as_deref(),
+        dur,
+        deletion_mark_standing,
+    )
+    .await?;
 
     let path_buf = file_path.as_deref().map(std::path::Path::new);
-    process_and_persist_resolution(db, resolution, latency_ms, path_buf, track_id).await
+    process_and_persist_resolution(db, report.resolution, report.elapsed_ms, path_buf, track_id)
+        .await
 }
 
 /// Process domain resolution, execute strict FLAC verification (if path provided),
@@ -634,16 +647,28 @@ async fn fetch_lyrics_params(
         None => return Err("Track not found".to_string()),
     };
 
-    // Fetch lyrics from online sources using configuration
+    // Fetch lyrics from online sources using configuration. A standing total
+    // deletion mark is the user's will, not a resolution failure: the fetch is
+    // still attempted (existing behaviour) but never recorded in the negative
+    // cache before the save gate blocks it.
     let config = load_lyrics_engine_config(db).await;
     let lyrics_client = crate::download::lyrics::lyrics_client_with_config(config);
     let dur_sec = duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0);
+    let deletion_mark_standing = lyrics_track_blocked(db, track_id).await?;
 
-    match lyrics_client
-        .fetch_all_sources(&artist, &title, dur_sec)
-        .await
-    {
-        Ok(response) => {
+    let report = crate::services::lyrics_negative_cache::fetch_with_negative_cache(
+        db,
+        &lyrics_client,
+        Some(track_id),
+        &artist,
+        &title,
+        dur_sec,
+        deletion_mark_standing,
+    )
+    .await?;
+
+    match report.response {
+        Some(response) => {
             // Determine format and content
             let (format, content, sync_level) = if !response.lines.is_empty() {
                 let lrc = crate::download::LyricsClient::to_lrc_string(&response);
@@ -672,8 +697,10 @@ async fn fetch_lyrics_params(
                 language: detected_lang,
             }))
         }
-        Err(e) => {
-            tracing::warn!("Failed to fetch lyrics: {}", e);
+        None => {
+            if let Some(error) = report.error {
+                tracing::warn!("Failed to fetch lyrics: {}", error);
+            }
             Ok(None)
         }
     }
@@ -3212,9 +3239,20 @@ pub async fn refetch_karaoke_lyrics(
                 .await;
 
             let duration_sec = tr.duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0);
-            let (resolution, _latency) = client
-                .orchestrate_resolution(&tr.artist, &tr.title, tr.album.as_deref(), duration_sec)
-                .await;
+            // A tombstoned track was skipped above; this route never records a
+            // deletion mark as a resolution failure.
+            let report = crate::services::lyrics_negative_cache::resolve_with_negative_cache(
+                &state.db,
+                &client,
+                Some(tr.track_id),
+                &tr.artist,
+                &tr.title,
+                tr.album.as_deref(),
+                duration_sec,
+                false,
+            )
+            .await?;
+            let resolution = report.resolution;
 
             if resolution.status != ResolutionStatus::Resolved {
                 result.failed += 1;
