@@ -288,6 +288,18 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   criterios de #45 eran DASH y esa rama solo tiene tests live `#[ignore]`).
 - **Cierra**: el truncado por intento con su test rojo→verde.
 
+### D-10 — Preview y confirmación del wizard de migración no conocen `collections`
+
+- **Observado (2026-11-21, review y re-check de PR #350, registrado como limitación en su cuerpo)**: tras M01 (#166), el job puede llevar `collections` con pistas y álbumes, pero el preview (`migration.rs:254`) no recibe colecciones y el wizard sigue mostrando `total_tracks` como «N items previewed» y «migrating N tracks»: un job solo-álbumes confirma con métricas de pistas. Además `pairKey` (`MigrationView.vue:1906`) no incluye la selección: se puede previsualizar con favoritos, volver atrás, añadir álbumes y el gate sigue considerando el preview «actual». ADR-0015 §5 (dry-run por colección) pide el preview por colección y sigue pendiente. Copia in-app que insinúa de más: el paso de revisión dice que «las listas se espejan de las pistas transferidas», cierto en el motor, pero el wizard nunca envía `playlist_ids`, así que hoy seleccionar Playlists no crea ninguna lista.
+- **Corrección que lo cerraría**: preview por colección (ADR-0015 §5), `pairKey` con la selección en la clave, métricas de confirmación por tipo, y condicionar o corregir la copia del espejo de listas.
+- **Cierra**: el preview por colección aterrizado con su test, y la copia sin promesas que el wire no cumple.
+
+### D-11 — Fila `pending` residual si la cancelación llega dentro de la fase de álbumes
+
+- **Observado (2026-11-21, re-check de PR #350)**: el fix de #350 (`&& !cancelled` en `migration.rs:2449`) impide ABRIR la fase de álbumes con el job ya cancelado, pero si la cancelación llega DENTRO de la fase, `run_album_collection` sigue insertando la fila `pending` del primer álbum antes de mirar el estado en la primera iteración. Comportamiento preexistente que la review no pidió cambiar; deja un ítem `pending` en un job cancelado.
+- **Corrección que lo cerraría**: comprobar `cancelled` antes de cada inserción (o capturar el estado al entrar en la iteración), con un test determinista del mismo molde que el de la fase ya arreglada (trigger sobre la primera fila).
+- **Cierra**: la comprobación por inserción con su test rojo→verde.
+
 ### D-12 — Estado obsoleto del detalle de artista al cambiar de artista in-place
 
 - **Observado (2026-11-21, re-check de PR #351)**: tras aterrizar la recarga real
