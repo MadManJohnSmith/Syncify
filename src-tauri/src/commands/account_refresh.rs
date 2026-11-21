@@ -10,13 +10,16 @@
 //! credencial inválida (decisión 12) y la política es la misma que S185
 //! aplicó al refresco de Tidal en `services/tidal_pipeline.rs`.
 //!
-//! Los dos puntos de llamada quedan para sus carriles: el pipeline de
-//! descarga (carril #117, `download/orchestrator.rs`) y el sync
-//! (`commands/service.rs`). Este módulo aporta la política, la persistencia
-//! y los puntos de entrada probados con reloj y tokens falsos; la adopción
-//! no cambia el comportamiento de los caminos ya existentes (Spotify y Tidal
-//! ya refrescan proactivamente antes de cada uso, y el sync y las descargas
-//! ya marcan al 401/403 con `mark_account_credentials_invalid`).
+//! Los dos puntos de llamada previstos ya consumen la puerta (adopción
+//! A03-ter, issue #342): el sync por `get_or_refresh_spotify_token` (Spotify)
+//! y `sync_reactive_credential_rejection` (reactivo del brazo Qobuz) en
+//! `commands/service.rs`, y la descarga por la puerta proactiva de
+//! `download_via_provider` y `persist_rejected_primary_account` en
+//! `download/orchestrator.rs`. Los caminos que ya tenían refresco propio se
+//! conservan: el brazo Tidal del sync refresca proactivamente por
+//! `tidal_pipeline` (FIX 2026-08-25) y reacciona al 401 con UN refresh
+//! forzado, y el brazo Qobuz del sync resuelve por el auto-login S186;
+//! ambos convergen en la misma puerta anti-bucle (`credentials_invalid`).
 //!
 //! Garantías de artefacto: la persistencia es un `UPDATE ... WHERE id` (nunca
 //! `INSERT`, así el refresco no duplica cuentas) y solo escribe tras un
@@ -24,15 +27,6 @@
 //! falla. El payload nuevo se construye por **fusión** sobre el actual, de
 //! modo que campos que el transporte no conoce (p. ej. `session_id` de Tidal)
 //! sobreviven al refresco.
-//
-// API pendiente de adopción: los puntos de llamada (sync en
-// `commands/service.rs` y pipeline de descarga en `download/orchestrator.rs`)
-// pertenecen a otros carriles (carril #117 para descargas). El objetivo bin
-// no consume todavía esta superficie y sobre ella dispara `dead_code`; el
-// objetivo lib no la mide por ser `pub`. El árbol ya usa este patrón
-// documentado (p. ej. `perform_sync_service` en `commands/service.rs`);
-// cuando la adopción aterrice, este `allow` se retira.
-#![allow(dead_code)]
 
 use serde_json::Value;
 
@@ -291,12 +285,12 @@ enum Attempt {
     Rejected,
 }
 
-async fn attempt_refresh<T: CredentialRefreshTransport>(
+async fn attempt_refresh(
     db: &sqlx::SqlitePool,
     service: &str,
     account_id: i64,
     creds: &Value,
-    transport: &T,
+    transport: &dyn CredentialRefreshTransport,
 ) -> Result<Attempt, String> {
     match transport.refresh(db, service, account_id, creds).await {
         Ok(new_payload) => {
@@ -336,11 +330,11 @@ async fn attempt_refresh<T: CredentialRefreshTransport>(
 ///
 /// El reloj va inyectado (`now_secs`): los tests deterministas no dependen de
 /// la pared. Producción llama con [`now_epoch_secs`].
-pub async fn refresh_account_credential<T: CredentialRefreshTransport>(
+pub async fn refresh_account_credential(
     db: &sqlx::SqlitePool,
     service: &str,
     account_id: i64,
-    transport: &T,
+    transport: &dyn CredentialRefreshTransport,
     now_secs: i64,
 ) -> Result<RefreshOutcome, String> {
     let account = load_account_credentials(db, service, account_id).await?;
@@ -384,12 +378,12 @@ pub async fn refresh_account_credential<T: CredentialRefreshTransport>(
 ///
 /// `reason` es texto arbitrario del pipeline de llamada y se sanea en la
 /// frontera de persistencia, igual que en el resto del árbol.
-pub async fn handle_credential_rejection<T: CredentialRefreshTransport>(
+pub async fn handle_credential_rejection(
     db: &sqlx::SqlitePool,
     service: &str,
     account_id: i64,
     status: u16,
-    transport: &T,
+    transport: &dyn CredentialRefreshTransport,
     reason: &str,
 ) -> Result<RejectionOutcome, String> {
     if !is_credential_rejection(status) {
