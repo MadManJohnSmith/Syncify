@@ -7,6 +7,13 @@ import { mount, flushPromises } from '@vue/test-utils';
 import ArtistDetailView from '@/views/ArtistDetailView.vue';
 import { mockInvoke, resetMocks } from '../setup';
 
+const mockReplaceQueueAndPlay = vi.fn().mockResolvedValue(undefined);
+vi.mock('@/composables/usePlayer', () => ({
+    usePlayer: () => ({
+        replaceQueueAndPlay: mockReplaceQueueAndPlay,
+    }),
+}));
+
 vi.mock('vue-router', () => ({
     useRoute: () => ({
         params: { id: '42' },
@@ -77,6 +84,61 @@ describe('ArtistDetailView', () => {
             allowFallback: true,
             jobKind: 'artist',
         });
+    });
+
+    // Caracterización #336: hoy Download All encola SOLO la primera página
+    // (`top_tracks`, ≤5) aunque la cabecera muestre `tracks_total`. El test
+    // pinza el comportamiento actual para que el cambio de colección completa
+    // sea observable (hito 2 lo invierte).
+    it('Download All encola hoy solo top_tracks aunque tracks_total sea mayor', async () => {
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_artist') return { ...mockArtist, tracks_total: 7 };
+            if (cmd === 'add_batch_to_queue') return { added: 2, skipped: 0 };
+            if (cmd === 'query_library_artist_tracks') {
+                const query = args?.query as { offset: number };
+                return {
+                    tracks: [{ id: 103 + query.offset, title: `Later ${query.offset}`, album: 'Abbey Road', albumId: 10, durationMs: 200000, collaborators: [], sources: [] }],
+                    total: 7,
+                    offset: query.offset,
+                    limit: 100,
+                    hasMore: true,
+                };
+            }
+            return null;
+        });
+
+        const wrapper = mount(ArtistDetailView);
+        await flushPromises();
+
+        await wrapper.findAll('button').find(b => b.text().includes('Download All'))!.trigger('click');
+        await flushPromises();
+
+        const batchCall = invokeCalls.find(c => c.cmd === 'add_batch_to_queue');
+        expect(batchCall?.args.trackIds).toEqual([101, 102]);
+        // No se enumera el resto del artista para la acción.
+        expect(invokeCalls.some(c => c.cmd === 'query_library_artist_tracks')).toBe(false);
+    });
+
+    // Caracterización #336: Shuffle Play reproduce hoy solo `top_tracks`, no
+    // la colección completa que anuncia la cabecera.
+    it('Shuffle Play reproduce hoy solo top_tracks aunque tracks_total sea mayor', async () => {
+        mockInvoke((cmd) => {
+            if (cmd === 'get_artist') return { ...mockArtist, tracks_total: 7 };
+            return null;
+        });
+
+        const wrapper = mount(ArtistDetailView);
+        await flushPromises();
+
+        await wrapper.findAll('button').find(b => b.text().includes('Shuffle Play'))!.trigger('click');
+        await flushPromises();
+
+        expect(mockReplaceQueueAndPlay).toHaveBeenCalledTimes(1);
+        const queued = mockReplaceQueueAndPlay.mock.calls[0][0] as { id: number }[];
+        // Barajado: el conjunto es el de `top_tracks`, sin las otras 5.
+        expect(queued.map(t => t.id).sort((a, b) => a - b)).toEqual([101, 102]);
     });
 
     it('enqueues single track download with add_to_queue', async () => {

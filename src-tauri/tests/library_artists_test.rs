@@ -457,6 +457,110 @@ async fn lista_pagina_en_servidor_con_total_exacto() {
     assert!(!third.has_more);
 }
 
+#[tokio::test]
+async fn orden_por_fecha_anadida_deja_los_nulos_al_final() {
+    let pool = seed().await;
+
+    // Artista con pistas vivas pero SIN fecha de añadido materializada: la
+    // pertenencia existe (`library_memberships`) y `tracks.library_added_at`
+    // sigue NULL porque nadie lo refrescó. Es el caso de una importación
+    // antigua o de una pista sin `added_at` en el proveedor.
+    sqlx::query("INSERT INTO artists (id, name) VALUES (6, 'Null Date')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (id, title, created_at) VALUES (13, 'Undated', '2025-12-01T09:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (13, 6, 'primary')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO library_memberships (account_id, track_id, collection_type, collection_id, provider_item, added_at) \
+         VALUES (1, 13, 'album', 9, 'sp-alb-undated', NULL)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let by_date_desc = artist_names(
+        &pool,
+        LibraryArtistQuery {
+            sort: LibraryArtistSortKey::DateAdded,
+            direction: SortDirection::Desc,
+            ..q()
+        },
+    )
+    .await;
+    assert_eq!(
+        by_date_desc,
+        vec!["Alpha Band", "Guest Vocalist", "Beta Trio", "Null Date"],
+        "los nulos van al final en descendente"
+    );
+
+    let by_date_asc = artist_names(
+        &pool,
+        LibraryArtistQuery {
+            sort: LibraryArtistSortKey::DateAdded,
+            direction: SortDirection::Asc,
+            ..q()
+        },
+    )
+    .await;
+    assert_eq!(
+        by_date_asc,
+        vec!["Beta Trio", "Alpha Band", "Guest Vocalist", "Null Date"],
+        "los nulos van al final también en ascendente"
+    );
+
+    // Y el campo del payload lo dice: sin fecha, `date_added` va a None.
+    let result = query_library_artists_inner(&pool, q()).await.unwrap();
+    let undated = result.artists.iter().find(|a| a.artist_id == 6).unwrap();
+    assert_eq!(undated.track_count, 1);
+    assert_eq!(undated.date_added, None);
+}
+
+// ==========================================================================
+// Detalle: track_count viejo frente a tracks_total
+// ==========================================================================
+
+// Caracterización #336: `LibraryArtistDetail.track_count` cuenta FILAS de
+// `track_artists` (roles duplicados y pistas sin pertenencia viva incluidas)
+// mientras `tracks_total` cuenta pistas vivas DISTINTAS. El test pinza la
+// divergencia actual del payload; el hito 2 la elimina.
+#[tokio::test]
+async fn track_count_del_detalle_divergen_hoy_de_tracks_total() {
+    let pool = seed().await;
+
+    // T1 ya cuenta para Alpha: un segundo rol para el mismo artista duplica
+    // la fila. T13 es de Alpha pero no tiene pertenencia viva (no es visible).
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (1, 1, 'featured')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO tracks (id, title, created_at) VALUES (13, 'Hidden', '2025-12-01T09:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO track_artists (track_id, artist_id, role) VALUES (13, 1, 'primary')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let detail = fetch_artist(&pool, 1).await.unwrap();
+    assert_eq!(detail.tracks_total, 8, "pistas vivas distintas");
+    assert_eq!(
+        detail.track_count, 10,
+        "filas de track_artists: 8 vivas + rol duplicado + pista no viva"
+    );
+}
+
 // ==========================================================================
 // Detalle: todas las pistas, no solo cinco
 // ==========================================================================
