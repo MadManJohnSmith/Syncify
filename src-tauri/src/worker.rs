@@ -959,9 +959,9 @@ impl DownloadWorker {
                 return None;
             }
 
-            // La ruta la promovió esta operación, así que la fila —una sola: la
-            // ruta de Tidal borra las ajenas en la misma transacción— es de la
-            // entrega aunque su `track_id` no coincida con el de la cola.
+            // §9 de `tidal_pipeline` ya borró las filas ajenas de este path en
+            // la misma transacción, así que la que queda —si hay alguna— es de
+            // esta entrega aunque su `track_id` no coincida con el de la cola.
             if let Err(e) = sqlx::query("DELETE FROM downloads WHERE file_path = ?")
                 .bind(file_path)
                 .execute(&self.db)
