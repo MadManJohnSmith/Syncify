@@ -1373,7 +1373,7 @@ export interface MigrationItem {
     source_track_album: string | null;
     source_playlist_id: string | null;
     source_playlist_name: string | null;
-    /** Collection the item belongs to (0113): 'track' | 'album'. */
+    /** Collection the item belongs to (0113): 'track' | 'album' | 'artist'. */
     kind: string;
     destination_track_id: string | null;
     match_confidence: number | null;

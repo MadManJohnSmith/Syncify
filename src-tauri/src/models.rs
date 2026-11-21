@@ -390,9 +390,9 @@ pub struct MigrationProgress {
     pub eta: String,
     /// Human readable description of the operation being performed.
     pub current_action: String,
-    /// Collection kind of the item being processed (0113): 'track' | 'album'.
-    /// Absent in the events that do not address a specific item (start,
-    /// playlist mirror, close).
+    /// Collection kind of the item being processed (0113): 'track' | 'album' |
+    /// 'artist'. Absent in the events that do not address a specific item
+    /// (start, playlist mirror, close).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_kind: Option<String>,
 }
