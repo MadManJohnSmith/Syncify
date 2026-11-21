@@ -117,7 +117,7 @@ pub async fn get_migration_history(
 ) -> Result<Vec<MigrationJob>, String> {
     let limit = limit.unwrap_or(50);
     sqlx::query_as::<_, MigrationJob>(
-        r#"SELECT id, source_service, destination_service, source_playlist_ids, options, status,
+        r#"SELECT id, source_service, destination_service, source_playlist_ids, collections, options, status,
             total_items, completed_items, failed_items, skipped_items, started_at, completed_at,
             error_message, created_at, source_account_id, destination_account_id FROM migration_jobs ORDER BY created_at DESC LIMIT ?"#,
     )
@@ -487,6 +487,9 @@ fn build_migration_progress(
         speed,
         eta,
         current_action,
+        // Only the album phase addresses the current item's kind; the other
+        // emitters leave it absent (start, playlist mirror, close).
+        current_kind: None,
     }
 }
 
@@ -676,9 +679,9 @@ pub async fn insert_migration_item(
     track: &MigrationSourceTrack,
 ) -> Result<Option<i64>, String> {
     sqlx::query_scalar(
-        r#"INSERT INTO migration_items (job_id, source_track_id, source_track_title, source_track_artist,
+        r#"INSERT INTO migration_items (job_id, kind, source_track_id, source_track_title, source_track_artist,
                                         source_track_album, source_playlist_id, source_playlist_name, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+           VALUES (?, 'track', ?, ?, ?, ?, ?, ?, 'pending')
            RETURNING id"#,
     )
     .bind(job_id)
@@ -691,6 +694,31 @@ pub async fn insert_migration_item(
     .fetch_optional(db)
     .await
     .map_err(|e| format!("Failed to insert migration item: {}", e))
+}
+
+/// Insert one pending album migration item and return its row id (M01): the
+/// album counterpart of `insert_migration_item`, carrying `kind = 'album'`.
+/// The item's ids live in the same track-shaped columns: `source_track_id`
+/// holds the album's source-service external id, and the destination id lands
+/// in the destination columns once matched.
+pub async fn insert_migration_album_item(
+    db: &sqlx::SqlitePool,
+    job_id: &str,
+    album: &MigrationSourceAlbum,
+) -> Result<Option<i64>, String> {
+    sqlx::query_scalar(
+        r#"INSERT INTO migration_items (job_id, kind, source_track_id, source_track_title,
+                                        source_track_artist, status)
+           VALUES (?, 'album', ?, ?, ?, 'pending')
+           RETURNING id"#,
+    )
+    .bind(job_id)
+    .bind(&album.external_id)
+    .bind(&album.title)
+    .bind(&album.artist)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Failed to insert migration album item: {}", e))
 }
 
 /// Collections the migration engine can transfer into a destination, in the
@@ -747,16 +775,153 @@ macro_rules! migration_capability_matrix {
 migration_capability_matrix! {
     // Real capability today: every destination receives track favorites
     // (`DestinationClients::add_favorite`); only Qobuz and Tidal can create
-    // and fill remote playlists (`supports_playlist_creation`). Albums and
-    // artists have client read/write methods in places (Qobuz, Tidal,
-    // Spotify, Apple Music) but no engine transfer path yet, so no row
-    // declares them (see docs/MATRIZ_PARIDAD_IMPORTACION.md, migración).
-    ("qobuz", [Tracks, Playlists]),
-    ("tidal", [Tracks, Playlists]),
-    ("spotify", [Tracks]),
+    // and fill remote playlists (`supports_playlist_creation`). Album
+    // favorites (M01) match on the local mirror's destination-service id
+    // (prefetch_local_destination_album_matches) and write through the
+    // client's favorite-album call, so a row declares Albums exactly where
+    // both halves exist (Qobuz, Tidal, Spotify) and the albums table has an
+    // id column for the service; remote album search does not exist on any
+    // client yet, so an album unknown to the mirror honestly fails or skips.
+    // Artists have client read/write methods in places but no engine
+    // transfer path, so no row declares them (see
+    // docs/MATRIZ_PARIDAD_IMPORTACION.md, migración).
+    ("qobuz", [Tracks, Albums, Playlists]),
+    ("tidal", [Tracks, Albums, Playlists]),
+    ("spotify", [Tracks, Albums]),
     ("deezer", [Tracks]),
     ("soundcloud", [Tracks]),
     ("apple_music", [Tracks]),
+}
+
+/// Wire name of a collection — the same strings the capability matrix serves
+/// the UI (`get_migration_capabilities`) and the ones `start_migration`
+/// accepts in its `collections` argument.
+fn migration_collection_wire_name(collection: MigrationCollection) -> &'static str {
+    match collection {
+        MigrationCollection::Tracks => "tracks",
+        MigrationCollection::Albums => "albums",
+        MigrationCollection::Artists => "artists",
+        MigrationCollection::Playlists => "playlists",
+    }
+}
+
+/// Inverse of `migration_collection_wire_name`, case-insensitive so a stale
+/// or hand-written caller cannot fail on capitalization.
+fn parse_migration_collection(name: &str) -> Option<MigrationCollection> {
+    match name.trim().to_lowercase().as_str() {
+        "tracks" => Some(MigrationCollection::Tracks),
+        "albums" => Some(MigrationCollection::Albums),
+        "artists" => Some(MigrationCollection::Artists),
+        "playlists" => Some(MigrationCollection::Playlists),
+        _ => None,
+    }
+}
+
+/// A source album selected for a migration job (M01): one favorite album of
+/// the source service or account, identified by that service's own external
+/// id.
+#[derive(Debug, Clone)]
+pub struct MigrationSourceAlbum {
+    pub external_id: String,
+    pub title: String,
+    pub artist: String,
+}
+
+/// External-id column of the `albums` mirror per service. Only the three
+/// services with a canonical-id column (0036 spotify, 0037 tidal,
+/// 0063 qobuz) can seed the legacy service-wide album read or match a
+/// destination album from the mirror; the rest have no mirror to consult.
+fn album_mirror_column(service: &str) -> Option<&'static str> {
+    match service.to_lowercase().as_str() {
+        "spotify" => Some("spotify_id"),
+        "tidal" => Some("tidal_id"),
+        "qobuz" => Some("qobuz_id"),
+        _ => None,
+    }
+}
+
+/// Resolve the favorite albums a migration job will process (M01).
+///
+/// With `source_account_id` the read is the account's own favorites cache
+/// (0045): `favorites` rows of kind 'album', which carry the source service's
+/// own album id. With `None` the read is the service-wide mirror, the album
+/// analogue of `fetch_migration_source_tracks`'s `track_sources` walk: a
+/// favorite album of the service is an `albums` row with the service's id
+/// column set and `is_favorite = 1` (stubs included — the migration writes
+/// the album's destination id, which does not need local tracks). Services
+/// without an albums-table id column have no mirror, so the service-wide
+/// read is empty for them rather than fabricated.
+///
+/// Same paging discipline as the track read (BD-3): the result set is walked
+/// in pages until a short page arrives, so the total the job reports is the
+/// real one.
+pub async fn fetch_migration_source_albums(
+    db: &sqlx::SqlitePool,
+    source_service: &str,
+    source_account_id: Option<i64>,
+) -> Result<Vec<MigrationSourceAlbum>, String> {
+    const ALBUM_SOURCE_PAGE_SIZE: i64 = 500;
+    let mut albums: Vec<MigrationSourceAlbum> = Vec::new();
+    let mut offset = 0i64;
+
+    loop {
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
+        if let Some(account_id) = source_account_id {
+            // Per-account cache (0045): the favorites rows of kind 'album'
+            // carry the source service's own album id.
+            query.push(
+                r#"SELECT f.service_item_id, f.title,
+                          COALESCE(NULLIF(f.artist_name, ''), 'Unknown Artist')
+                   FROM favorites f
+                   JOIN services s ON s.id = f.service_id
+                   WHERE s.name = "#,
+            );
+            query.push_bind(source_service);
+            query
+                .push(" AND f.account_id = ")
+                .push_bind(account_id)
+                .push(" AND f.item_type = 'album' ORDER BY f.service_item_id LIMIT ");
+        } else {
+            // Service-wide mirror, the album analogue of the track read's
+            // track_sources walk. Only the id columns the albums table
+            // actually has; the column name comes from the fixed map above,
+            // never from user input.
+            let Some(column) = album_mirror_column(source_service) else {
+                return Ok(Vec::new());
+            };
+            query.push(format!(
+                r#"SELECT al.{column}, al.title,
+                          COALESCE((SELECT a.name FROM album_artists aa JOIN artists a ON a.id = aa.artist_id WHERE aa.album_id = al.id AND aa.is_primary = 1 LIMIT 1), 'Unknown Artist')
+                   FROM albums al
+                   WHERE al.{column} IS NOT NULL AND al.is_favorite = 1
+                   ORDER BY al.{column} LIMIT "#
+            ));
+        }
+        query
+            .push_bind(ALBUM_SOURCE_PAGE_SIZE)
+            .push(" OFFSET ")
+            .push_bind(offset);
+
+        let rows: Vec<(String, String, String)> = query
+            .build_query_as()
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("Failed to load migration albums: {}", e))?;
+        let fetched = rows.len();
+        albums.extend(
+            rows.into_iter()
+                .map(|(external_id, title, artist)| MigrationSourceAlbum {
+                    external_id,
+                    title,
+                    artist,
+                }),
+        );
+        if (fetched as i64) < ALBUM_SOURCE_PAGE_SIZE {
+            break;
+        }
+        offset += ALBUM_SOURCE_PAGE_SIZE;
+    }
+    Ok(albums)
 }
 
 /// Destination clients used by the migration engine to match and transfer
@@ -1301,6 +1466,104 @@ impl DestinationClients {
     }
 }
 
+/// Destination seam for the album collection (M01): match one source album
+/// on the destination and write a matched album to the destination account.
+/// The engine's gateway is `DestinationClients`; tests inject fakes through
+/// the same trait (the mold of `LibrarySource` + `FakeLibrarySource`).
+///
+/// Matching is mirror-first by design: the destination-side ids the local
+/// mirror already knows (prefetch_local_destination_album_matches) are the
+/// real match source, and no client exposes an album search yet, so the real
+/// gateway's own pass finds nothing — an album unknown to the mirror lands on
+/// the honest unmatched path instead of a fabricated match.
+pub trait AlbumTransferGateway: Send + Sync {
+    /// Look one source album up on the destination service. `Ok(None)` means
+    /// no match; the item then follows the threshold/skip mapping like an
+    /// unmatched track. A found match carries the destination album id, its
+    /// confidence and the method that found it.
+    fn match_album(
+        &self,
+        album: &MigrationSourceAlbum,
+    ) -> impl std::future::Future<Output = Result<Option<(String, f64, &'static str)>, String>> + Send;
+
+    /// Write one matched album to the destination account — favorite (Qobuz,
+    /// Tidal), saved album (Spotify) or the service's nearest equivalent.
+    fn write_album(
+        &self,
+        dest_album_id: &str,
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send;
+}
+
+impl AlbumTransferGateway for DestinationClients {
+    async fn match_album(
+        &self,
+        _album: &MigrationSourceAlbum,
+    ) -> Result<Option<(String, f64, &'static str)>, String> {
+        // No client exposes an album search yet; the mirror prefetch is what
+        // finds albums. Returning None keeps unknown albums on the honest
+        // threshold/skip path.
+        Ok(None)
+    }
+
+    async fn write_album(&self, dest_album_id: &str) -> Result<(), String> {
+        if let Some(ref client) = self.qobuz {
+            client.add_favorite_album(dest_album_id).await
+        } else if let Some(ref client) = self.tidal {
+            // Tidal album ids are numeric; the mirror stores them as text.
+            let album_id: i64 = dest_album_id
+                .parse()
+                .map_err(|_| format!("Tidal album id '{dest_album_id}' is not numeric"))?;
+            client.add_favorite_album(album_id).await
+        } else if let Some(ref client) = self.spotify {
+            client.save_album(dest_album_id).await
+        } else {
+            Err(format!(
+                "Destination account {:?} client unavailable; the album could not be transferred",
+                self.account_id
+            ))
+        }
+    }
+}
+
+/// Destination-service album ids the local mirror already knows, keyed by the
+/// source album's external id (M01) — the album flow's analogue of
+/// `prefetch_local_destination_matches` for tracks. The albums table is one
+/// canonical row per album with a column per service, so a row holding both
+/// the source and the destination id is a match made without any network
+/// call. One side without an id column (service without a mirror) means
+/// nothing can match and the map stays empty.
+async fn prefetch_local_destination_album_matches(
+    db: &sqlx::SqlitePool,
+    source_service: &str,
+    destination_service: &str,
+    albums: &[MigrationSourceAlbum],
+) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let (Some(source_column), Some(destination_column)) = (
+        album_mirror_column(source_service),
+        album_mirror_column(destination_service),
+    ) else {
+        return map;
+    };
+    for chunk in albums.chunks(400) {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(format!(
+            "SELECT al.{source_column}, al.{destination_column} FROM albums al
+             WHERE al.{destination_column} IS NOT NULL AND al.{source_column} IN ("
+        ));
+        let mut sep = qb.separated(", ");
+        for album in chunk {
+            sep.push_bind(&album.external_id);
+        }
+        qb.push(")");
+        if let Ok(rows) = qb.build_query_as::<(String, String)>().fetch_all(db).await {
+            for (src_id, dest_id) in rows {
+                map.insert(src_id, dest_id);
+            }
+        }
+    }
+    map
+}
+
 /// Most recent match a user attached by hand to this source track on a
 /// previous migration job toward the exact destination account. Legacy NULL
 /// jobs only match a NULL destination; a concrete account must not inherit
@@ -1365,6 +1628,231 @@ pub async fn record_migration_item_result(
     .await
     .map(|_| ())
     .map_err(|e| format!("Failed to update migration item: {}", e))
+}
+
+/// Running job counters shared by the collection phases (tracks and albums):
+/// the same three totals `migration_jobs` stores per job, folded by every
+/// phase the job runs.
+#[derive(Debug, Default)]
+pub struct MigrationCounters {
+    pub completed: i64,
+    pub failed: i64,
+    pub skipped: i64,
+}
+
+impl MigrationCounters {
+    fn processed(&self) -> i64 {
+        self.completed + self.failed + self.skipped
+    }
+}
+
+/// Run the album collection of a migration job (M01): insert one item per
+/// source album (kind = 'album'), match it — the destination-side mirror
+/// first, then the gateway's own search — and write the matched album through
+/// the gateway, with the same statuses, threshold/skip mapping, per-item
+/// result rows and progress events the track flow uses. The counters are the
+/// caller's running totals, so one job's phases add up on the same numbers;
+/// `base_index` is the item count already processed by earlier phases, and
+/// the returned flag says whether the user cancelled mid-phase (the caller
+/// must then close the job as cancelled, never completed).
+pub async fn run_album_collection<G: AlbumTransferGateway, R: tauri::Runtime>(
+    db: &sqlx::SqlitePool,
+    app: &tauri::AppHandle<R>,
+    job_id: &str,
+    source_service: &str,
+    destination_service: &str,
+    destination_account_id: Option<i64>,
+    albums: &[MigrationSourceAlbum],
+    gateway: &G,
+    options: &MigrationOptions,
+    counters: &mut MigrationCounters,
+    base_index: i64,
+    total_items: i64,
+    started_at: std::time::Instant,
+) -> bool {
+    // Pending items first, one row per album, same transaction shape as the
+    // track phase: the rows are what cancellation and progress address, and
+    // `kind` is what makes them album items (0113).
+    let mut item_ids: Vec<Option<i64>> = Vec::with_capacity(albums.len());
+    {
+        let mut tx = db.begin().await.ok();
+        for album in albums {
+            let item_id = if let Some(ref mut transaction) = tx {
+                sqlx::query_scalar(
+                    r#"INSERT INTO migration_items (job_id, kind, source_track_id, source_track_title,
+                                                  source_track_artist, status)
+                       VALUES (?, 'album', ?, ?, ?, 'pending')
+                       RETURNING id"#,
+                )
+                .bind(job_id)
+                .bind(&album.external_id)
+                .bind(&album.title)
+                .bind(&album.artist)
+                .fetch_optional(&mut **transaction)
+                .await
+                .ok()
+                .flatten()
+            } else {
+                insert_migration_album_item(db, job_id, album)
+                    .await
+                    .ok()
+                    .flatten()
+            };
+            item_ids.push(item_id);
+        }
+        if let Some(transaction) = tx {
+            let _ = transaction.commit().await;
+        }
+    }
+
+    // Albums the destination side already has in the local mirror: matched
+    // without any network call, before the gateway's own pass.
+    let mirror_matches =
+        prefetch_local_destination_album_matches(db, source_service, destination_service, albums)
+            .await;
+
+    let mut cancelled = false;
+    for (i, (album, item_id)) in albums.iter().zip(item_ids.iter()).enumerate() {
+        // Same cancellation contract as the track loop: a cancelled job stops
+        // early and is reported as cancelled, never completed.
+        let job: Option<(String,)> =
+            sqlx::query_as("SELECT status FROM migration_jobs WHERE id = ?")
+                .bind(job_id)
+                .fetch_optional(db)
+                .await
+                .ok()
+                .flatten();
+        if job.as_ref().map(|j| j.0.as_str()) == Some("cancelled") {
+            cancelled = true;
+            break;
+        }
+
+        // Mirror match first (no network), then the gateway's own search.
+        let (match_confidence, match_method, dest_album_id, match_error): (
+            f64,
+            &str,
+            Option<String>,
+            Option<String>,
+        ) = if let Some(dest_id) = mirror_matches.get(&album.external_id) {
+            match gateway.write_album(dest_id).await {
+                Ok(_) => (1.0, "mirror", Some(dest_id.clone()), None),
+                Err(e) => (
+                    1.0,
+                    "mirror",
+                    None,
+                    Some(format!("Failed to add album to favorites: {}", e)),
+                ),
+            }
+        } else {
+            match gateway.match_album(album).await {
+                Ok(Some((dest_id, confidence, method))) => {
+                    match gateway.write_album(&dest_id).await {
+                        Ok(_) => (confidence, method, Some(dest_id), None),
+                        Err(e) => {
+                            tracing::warn!("Failed to add album to favorites: {}", e);
+                            // Match found but transfer failed
+                            (
+                                confidence,
+                                method,
+                                None,
+                                Some(format!("Failed to add album to favorites: {}", e)),
+                            )
+                        }
+                    }
+                }
+                Ok(None) => (0.0, "none", None, None),
+                Err(e) => (0.0, "none", None, Some(e)),
+            }
+        };
+
+        // Same status vocabulary and threshold/skip mapping as the tracks.
+        let status = if match_confidence >= options.match_threshold && dest_album_id.is_some() {
+            counters.completed += 1;
+            "transferred"
+        } else if match_confidence >= options.match_threshold && dest_album_id.is_none() {
+            counters.failed += 1;
+            "failed"
+        } else if options.skip_unmatched {
+            counters.skipped += 1;
+            "skipped"
+        } else {
+            counters.failed += 1;
+            "failed"
+        };
+
+        let error_message = if status == "failed" {
+            Some(match match_error {
+                Some(err) => format!(
+                    "Destination {} album account {:?}: {}",
+                    destination_service, destination_account_id, err
+                ),
+                None => format!(
+                    "No match found on {} album account {:?}",
+                    destination_service, destination_account_id
+                ),
+            })
+        } else {
+            None
+        };
+
+        if let Some(item_id) = item_id {
+            if let Err(e) = record_migration_item_result(
+                db,
+                *item_id,
+                status,
+                match_confidence,
+                match_method,
+                dest_album_id.as_deref(),
+                error_message.as_deref(),
+            )
+            .await
+            {
+                tracing::warn!("Failed to record migration album result: {}", e);
+            }
+        }
+
+        let current_action = if status == "transferred" {
+            format!("Transferring album {}", album.title)
+        } else {
+            format!("Searching for album {}", album.title)
+        };
+        let mut progress = build_migration_progress(
+            started_at.elapsed().as_secs_f64(),
+            job_id,
+            base_index + i as i64 + 1,
+            total_items,
+            format!("{} - {}", album.artist, album.title),
+            current_action,
+            "running",
+            counters.completed,
+            counters.failed,
+            counters.skipped,
+        );
+        progress.current_kind = Some("album".to_string());
+        let _ = app.emit("migration-progress", progress);
+
+        // Same counter-write cadence as the track loop.
+        if i % 5 == 0 || i + 1 == albums.len() {
+            sqlx::query(
+                "UPDATE migration_jobs SET completed_items = ?, failed_items = ?, skipped_items = ? WHERE id = ?",
+            )
+            .bind(counters.completed)
+            .bind(counters.failed)
+            .bind(counters.skipped)
+            .bind(job_id)
+            .execute(db)
+            .await
+            .ok();
+        }
+
+        // Small delay to avoid rate limiting (lower for local mirror matches).
+        if mirror_matches.contains_key(&album.external_id) {
+            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        } else {
+            tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+        }
+    }
+    cancelled
 }
 
 /// Upper bound for one `addTracks` call against a destination playlist: keeps
@@ -1504,6 +1992,42 @@ async fn resolve_migration_account(
     .map_err(|e| format!("Failed to resolve active account for {service}: {e}"))
 }
 
+/// Parse and gate the requested collections (M01). An absent list keeps the
+/// legacy semantics — track favorites (plus the playlist mirror driven by
+/// `options.create_playlists`) and nothing else, which is what every caller
+/// before M01 asked for. A present list names collections with the
+/// capability matrix's wire names; every one of them must be declared for
+/// the destination, or nothing starts — the matrix is authoritative even
+/// when the UI is stale or bypassed (the M00 rule, now per collection).
+/// Returns the deduplicated requested collections, empty for the legacy call.
+fn validate_requested_collections(
+    destination_service: &str,
+    collections: Option<&[String]>,
+) -> Result<Vec<MigrationCollection>, String> {
+    let Some(names) = collections else {
+        return Ok(Vec::new());
+    };
+    let mut requested: Vec<MigrationCollection> = Vec::with_capacity(names.len());
+    for name in names {
+        let collection = parse_migration_collection(name).ok_or_else(|| {
+            format!("Unknown migration collection '{name}'; the migration was not started")
+        })?;
+        if !migration_supports_collection(destination_service, collection) {
+            return Err(format!(
+                "Destination '{}' does not support the '{}' collection; the migration was not started",
+                destination_service, name
+            ));
+        }
+        if !requested.contains(&collection) {
+            requested.push(collection);
+        }
+    }
+    if requested.is_empty() {
+        return Err("The migration must request at least one collection".to_string());
+    }
+    Ok(requested)
+}
+
 /// Start a new migration
 #[tauri::command]
 pub async fn start_migration<R: tauri::Runtime>(
@@ -1515,6 +2039,9 @@ pub async fn start_migration<R: tauri::Runtime>(
     options: MigrationOptions,
     source_account_id: Option<i64>,
     destination_account_id: Option<i64>,
+    // M01: collections the job carries, in the capability matrix's wire
+    // names. None keeps the legacy track-favorites flow.
+    collections: Option<Vec<String>>,
 ) -> Result<String, String> {
     // An explicit inactive account is eligible; its credentials may still work.
     validate_migration_account_pair(
@@ -1523,8 +2050,12 @@ pub async fn start_migration<R: tauri::Runtime>(
         source_account_id,
         destination_account_id,
     )?;
-    // M00 gating: a collection the destination does not declare is not started,
-    // even if the UI is stale or bypassed — the matrix is authoritative.
+    // M00/M01 gating: every requested collection must be declared for the
+    // destination, and a collection flag the destination does not declare
+    // is not started, even if the UI is stale or bypassed — the matrix is
+    // authoritative.
+    let requested_collections =
+        validate_requested_collections(&destination_service, collections.as_deref())?;
     validate_migration_options_supported(&destination_service, &options)?;
     resolve_migration_account(&state.db, &source_service, source_account_id).await?;
     let effective_destination =
@@ -1534,11 +2065,25 @@ pub async fn start_migration<R: tauri::Runtime>(
     let playlist_ids_json = playlist_ids
         .as_ref()
         .and_then(|ids| serde_json::to_string(ids).ok());
+    // The job records what it carries; NULL keeps meaning the legacy
+    // track-favorites flow (same scope rule as source_playlist_ids).
+    let collections_json = if requested_collections.is_empty() {
+        None
+    } else {
+        let names: Vec<&str> = requested_collections
+            .iter()
+            .map(|c| migration_collection_wire_name(*c))
+            .collect();
+        serde_json::to_string(&names).ok()
+    };
+    let albums_requested = requested_collections.contains(&MigrationCollection::Albums);
+    let tracks_requested = requested_collections.is_empty()
+        || requested_collections.contains(&MigrationCollection::Tracks);
 
     // Create migration job
     sqlx::query(
-        r#"INSERT INTO migration_jobs (id, source_service, destination_service, source_playlist_ids, options, status, source_account_id, destination_account_id)
-           VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)"#
+        r#"INSERT INTO migration_jobs (id, source_service, destination_service, source_playlist_ids, options, status, source_account_id, destination_account_id, collections)
+           VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)"#
     )
     .bind(&job_id)
     .bind(&source_service)
@@ -1549,6 +2094,7 @@ pub async fn start_migration<R: tauri::Runtime>(
     // Keep NULL so playlist reconstruction also retains the legacy scope.
     .bind(source_account_id)
     .bind(effective_destination)
+    .bind(&collections_json)
     .execute(&state.db)
     .await
     .map_err(|e| format!("Failed to create migration job: {}", e))?;
@@ -1559,33 +2105,62 @@ pub async fn start_migration<R: tauri::Runtime>(
     // BD-4: a failed read used to become an empty list, so the job stored
     // total_items = 0 and closed as `completed`, telling the user everything
     // migrated when not a single track had been read.
-    let tracks = match fetch_migration_source_tracks(
-        &state.db,
-        &source_service,
-        playlist_ids.as_deref(),
-        // None reads the entire legacy service mirror.
-        source_account_id,
-    )
-    .await
-    {
-        Ok(tracks) => tracks,
-        Err(e) => {
-            tracing::error!("Migration {} failed reading source tracks: {}", job_id, e);
-            let _ = crate::db::write_or_log(
-                "start_migration_mark_failed",
-                sqlx::query(
-                    "UPDATE migration_jobs SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+    // M01: a job that did not request the tracks collection reads none.
+    let tracks = if tracks_requested {
+        match fetch_migration_source_tracks(
+            &state.db,
+            &source_service,
+            playlist_ids.as_deref(),
+            // None reads the entire legacy service mirror.
+            source_account_id,
+        )
+        .await
+        {
+            Ok(tracks) => tracks,
+            Err(e) => {
+                tracing::error!("Migration {} failed reading source tracks: {}", job_id, e);
+                let _ = crate::db::write_or_log(
+                    "start_migration_mark_failed",
+                    sqlx::query(
+                        "UPDATE migration_jobs SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    )
+                    .bind(&e)
+                    .bind(&job_id)
+                    .execute(&state.db),
                 )
-                .bind(&e)
-                .bind(&job_id)
-                .execute(&state.db),
-            )
-            .await;
-            return Err(e);
+                .await;
+                return Err(e);
+            }
         }
+    } else {
+        Vec::new()
     };
 
-    let total_items = tracks.len() as i64;
+    // Favorite albums (M01): same read-failure honesty as the track read —
+    // a failed read fails the job instead of silently migrating nothing.
+    let albums = if albums_requested {
+        match fetch_migration_source_albums(&state.db, &source_service, source_account_id).await {
+            Ok(albums) => albums,
+            Err(e) => {
+                tracing::error!("Migration {} failed reading source albums: {}", job_id, e);
+                let _ = crate::db::write_or_log(
+                    "start_migration_mark_failed",
+                    sqlx::query(
+                        "UPDATE migration_jobs SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    )
+                    .bind(&e)
+                    .bind(&job_id)
+                    .execute(&state.db),
+                )
+                .await;
+                return Err(e);
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    let total_items = (tracks.len() + albums.len()) as i64;
 
     // Update job with total items
     sqlx::query("UPDATE migration_jobs SET total_items = ?, status = 'running', started_at = CURRENT_TIMESTAMP WHERE id = ?")
@@ -1622,11 +2197,11 @@ pub async fn start_migration<R: tauri::Runtime>(
         for track in &tracks {
             let item_id = if let Some(ref mut transaction) = tx {
                 sqlx::query_scalar(
-                    r#"INSERT INTO migration_items (job_id, source_track_id, source_track_title,
+                    r#"INSERT INTO migration_items (job_id, kind, source_track_id, source_track_title,
                                                   source_track_artist, source_track_album,
                                                   source_playlist_id, source_playlist_name,
                                                   status)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+                       VALUES (?, 'track', ?, ?, ?, ?, ?, ?, 'pending')
                        RETURNING id"#,
                 )
                 .bind(&job_id)
@@ -1658,7 +2233,7 @@ pub async fn start_migration<R: tauri::Runtime>(
     let clients =
         DestinationClients::for_destination(&state.db, &destination_service, effective_destination)
             .await;
-    if !clients.available() && !tracks.is_empty() {
+    if !clients.available() && !(tracks.is_empty() && albums.is_empty()) {
         tracing::warn!(
             "Migration {} has no usable destination account {:?} for {}",
             job_id,
@@ -1674,10 +2249,9 @@ pub async fn start_migration<R: tauri::Runtime>(
     let manual_matches =
         prefetch_manual_matches(&state.db, &destination_service, effective_destination).await;
 
-    // Process tracks with real matching
-    let mut completed = 0i64;
-    let mut failed = 0i64;
-    let mut skipped = 0i64;
+    // Process tracks with real matching. The counters are the job's running
+    // totals across every collection phase (tracks, then albums).
+    let mut counters = MigrationCounters::default();
     // Set when cancel_migration flipped the job while the loop was running:
     // the loop stops early, so the job must not be reported as completed.
     let mut cancelled = false;
@@ -1740,17 +2314,17 @@ pub async fn start_migration<R: tauri::Runtime>(
 
         // Determine status based on match
         let status = if match_confidence >= options.match_threshold && dest_track_id.is_some() {
-            completed += 1;
+            counters.completed += 1;
             "transferred"
         } else if match_confidence >= options.match_threshold && dest_track_id.is_none() {
             // Match found but transfer failed
-            failed += 1;
+            counters.failed += 1;
             "failed"
         } else if options.skip_unmatched {
-            skipped += 1;
+            counters.skipped += 1;
             "skipped"
         } else {
-            failed += 1;
+            counters.failed += 1;
             "failed"
         };
 
@@ -1805,18 +2379,18 @@ pub async fn start_migration<R: tauri::Runtime>(
                 format!("{} - {}", artist, title),
                 current_action,
                 "running",
-                completed,
-                failed,
-                skipped,
+                counters.completed,
+                counters.failed,
+                counters.skipped,
             ),
         );
 
         // Update job progress in DB periodically or on last item to reduce disk write contention
         if i % 5 == 0 || i + 1 == tracks.len() {
             sqlx::query("UPDATE migration_jobs SET completed_items = ?, failed_items = ?, skipped_items = ? WHERE id = ?")
-                .bind(completed)
-                .bind(failed)
-                .bind(skipped)
+                .bind(counters.completed)
+                .bind(counters.failed)
+                .bind(counters.skipped)
                 .bind(&job_id)
                 .execute(&state.db)
                 .await
@@ -1831,6 +2405,29 @@ pub async fn start_migration<R: tauri::Runtime>(
         }
     }
 
+    // Album collection (M01): match and write the job's favorite albums
+    // after the track favorites, through the same job, counters and
+    // progress stream. A cancelled album phase leaves the job cancelled.
+    let mut album_cancelled = false;
+    if albums_requested && !albums.is_empty() {
+        album_cancelled = run_album_collection(
+            &state.db,
+            &app,
+            &job_id,
+            &source_service,
+            &destination_service,
+            effective_destination,
+            &albums,
+            &clients,
+            &options,
+            &mut counters,
+            tracks.len() as i64,
+            total_items,
+            started_at,
+        )
+        .await;
+    }
+
     // `create_playlists` (migration options): when it is on, the source
     // playlists that contributed transferred tracks are mirrored on the
     // destination account; when it is off, the transfer stays favorites-only
@@ -1839,8 +2436,8 @@ pub async fn start_migration<R: tauri::Runtime>(
     // job, and here is where it finally changes behavior. Failures in this
     // phase never fail the job — every track is already transferred and
     // reported — they are logged and the job closes with its real status.
-    if options.create_playlists && !cancelled {
-        let processed = completed + failed + skipped;
+    if options.create_playlists && !cancelled && !album_cancelled {
+        let processed = counters.processed();
         if !clients.supports_playlist_creation() {
             tracing::info!(
                 "Migration {}: destination '{}' does not support remote playlist creation; skipping playlist mirror",
@@ -1864,9 +2461,9 @@ pub async fn start_migration<R: tauri::Runtime>(
                                 format!("{} - {}", destination_service, playlist_name),
                                 format!("Creating playlist '{}'...", playlist_name),
                                 "running",
-                                completed,
-                                failed,
-                                skipped,
+                                counters.completed,
+                                counters.failed,
+                                counters.skipped,
                             ),
                         );
 
@@ -1921,7 +2518,8 @@ pub async fn start_migration<R: tauri::Runtime>(
     // Close the job with the status it really ended in: a job the user
     // cancelled stopped early, so writing 'completed' here would claim a
     // transfer that never finished (and the UI would show it as finished).
-    let processed = completed + failed + skipped;
+    let cancelled = cancelled || album_cancelled;
+    let processed = counters.processed();
     let (final_status, final_message) = if cancelled {
         ("cancelled", "Migration cancelled")
     } else {
@@ -1931,9 +2529,9 @@ pub async fn start_migration<R: tauri::Runtime>(
         "UPDATE migration_jobs SET status = ?, completed_items = ?, failed_items = ?, skipped_items = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?"
     )
     .bind(final_status)
-    .bind(completed)
-    .bind(failed)
-    .bind(skipped)
+    .bind(counters.completed)
+    .bind(counters.failed)
+    .bind(counters.skipped)
     .bind(&job_id)
     .execute(&state.db)
     .await
@@ -1950,9 +2548,9 @@ pub async fn start_migration<R: tauri::Runtime>(
             final_message.to_string(),
             final_message.to_string(),
             final_status,
-            completed,
-            failed,
-            skipped,
+            counters.completed,
+            counters.failed,
+            counters.skipped,
         ),
     );
 
@@ -2279,32 +2877,32 @@ mod migration_tests {
     }
 
     #[test]
-    fn qobuz_declares_tracks_and_playlists_only() {
+    fn qobuz_declares_tracks_albums_and_playlists() {
         let declared = destination_row("qobuz");
-        assert_eq!(declared, &[Tracks, Playlists]);
+        assert_eq!(declared, &[Tracks, Albums, Playlists]);
         assert!(migration_supports_collection("qobuz", Tracks));
+        assert!(migration_supports_collection("qobuz", Albums));
         assert!(migration_supports_collection("qobuz", Playlists));
-        assert!(!migration_supports_collection("qobuz", Albums));
         assert!(!migration_supports_collection("qobuz", Artists));
     }
 
     #[test]
-    fn tidal_declares_tracks_and_playlists_only() {
+    fn tidal_declares_tracks_albums_and_playlists() {
         let declared = destination_row("tidal");
-        assert_eq!(declared, &[Tracks, Playlists]);
+        assert_eq!(declared, &[Tracks, Albums, Playlists]);
         assert!(migration_supports_collection("tidal", Tracks));
+        assert!(migration_supports_collection("tidal", Albums));
         assert!(migration_supports_collection("tidal", Playlists));
-        assert!(!migration_supports_collection("tidal", Albums));
         assert!(!migration_supports_collection("tidal", Artists));
     }
 
     #[test]
-    fn spotify_declares_only_tracks() {
+    fn spotify_declares_tracks_and_albums() {
         let declared = destination_row("spotify");
-        assert_eq!(declared, &[Tracks]);
+        assert_eq!(declared, &[Tracks, Albums]);
         assert!(migration_supports_collection("spotify", Tracks));
+        assert!(migration_supports_collection("spotify", Albums));
         assert!(!migration_supports_collection("spotify", Playlists));
-        assert!(!migration_supports_collection("spotify", Albums));
         assert!(!migration_supports_collection("spotify", Artists));
     }
 
@@ -2380,8 +2978,8 @@ mod migration_tests {
         };
         assert_eq!(qobuz.collections.len(), MIGRATION_ALL_COLLECTIONS.len());
         assert!(by_collection(Tracks));
+        assert!(by_collection(Albums));
         assert!(by_collection(Playlists));
-        assert!(!by_collection(Albums));
         assert!(!by_collection(Artists));
     }
 

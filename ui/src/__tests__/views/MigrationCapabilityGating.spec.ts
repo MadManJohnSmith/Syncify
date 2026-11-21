@@ -102,7 +102,7 @@ describe('M00 capability matrix gating', () => {
     const unavailable = wrapper.findAll('[data-testid="content-unavailable"]')
     expect(unavailable.length).toBe(2)
     const disabledCards = unavailable.map(p => p.element.closest('button')!.textContent ?? '')
-    expect(disabledCards.join(' ')).toContain('Saved Albums')
+    expect(disabledCards.join(' ')).toContain('Favorite Albums')
     expect(disabledCards.join(' ')).toContain('Followed Artists')
     for (const card of disabledCards) {
       expect(card).toContain('Not available on any migration destination')

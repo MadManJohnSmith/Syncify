@@ -289,6 +289,7 @@ async fn test_start_migration_fails_the_job_when_the_source_read_fails() {
         loose_options(),
         None,
         None,
+        None,
     )
     .await
     .expect_err("BD-4: a failed source read must not start a migration");
