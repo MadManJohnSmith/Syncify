@@ -24,8 +24,8 @@ use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 
 use syncify_tauri_lib::commands::migration::{
-    run_artist_collection, start_migration, ArtistTransferGateway, MigrationCounters,
-    MigrationSourceArtist,
+    fetch_migration_source_artists, run_artist_collection, start_migration, ArtistTransferGateway,
+    MigrationCounters, MigrationSourceArtist,
 };
 use syncify_tauri_lib::models::MigrationOptions;
 use syncify_tauri_lib::worker::DownloadWorkerState;
@@ -443,6 +443,120 @@ async fn test_artist_phase_stops_when_the_job_is_cancelled() {
     .await
     .unwrap();
     assert_eq!(pending, 1, "the pending row is left for the cancellation");
+}
+
+// ============================================================================
+// La lectura de origen: qué artistas seguidos entran al job
+// ============================================================================
+
+/// Con cuenta de origen explícita, la lectura son los favoritos de artista de
+/// ESA cuenta y ESE servicio (0045): ni las pistas de la misma cuenta ni los
+/// artistas de otra cuenta entran, y un título vacío no produce un ítem sin
+/// nombre.
+#[tokio::test]
+async fn test_source_artist_read_scopes_the_account_cache() {
+    let pool = setup_test_db().await;
+    sqlx::query("INSERT OR IGNORE INTO services (id, name) VALUES (1, 'spotify'), (2, 'qobuz')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let account_a: i64 = sqlx::query_scalar(
+        "INSERT INTO accounts (service_id, email, credentials_json, is_active) VALUES (1, 'a@test.dev', '{}', 1) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let account_b: i64 = sqlx::query_scalar(
+        "INSERT INTO accounts (service_id, email, credentials_json, is_active) VALUES (1, 'b@test.dev', '{}', 1) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for (account, item_type, service_id, external_id, title) in [
+        (account_a, "artist", 1, "sp-a", "Artist A"),
+        (account_a, "track", 1, "sp-track", "Track A"),
+        (account_a, "artist", 1, "sp-empty", ""),
+        (account_b, "artist", 1, "sp-b", "Artist B"),
+    ] {
+        sqlx::query(
+            "INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(account)
+        .bind(service_id)
+        .bind(item_type)
+        .bind(external_id)
+        .bind(title)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let artists = fetch_migration_source_artists(&pool, "spotify", Some(account_a))
+        .await
+        .unwrap();
+    let pairs: Vec<(String, String)> = artists
+        .into_iter()
+        .map(|a| (a.external_id, a.name))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![
+            ("sp-a".to_string(), "Artist A".to_string()),
+            ("sp-empty".to_string(), "Unknown Artist".to_string()),
+        ],
+        "only this account's artist favorites enter, with an honest name"
+    );
+}
+
+/// Sin cuenta de origen la lectura es el espejo del servicio: filas de
+/// `artists` con la columna del servicio y `is_favorite = 1`. Un servicio sin
+/// columna de espejo no inventa artistas: lee cero.
+#[tokio::test]
+async fn test_source_artist_read_falls_back_to_the_service_mirror() {
+    let pool = setup_test_db().await;
+    sqlx::query("INSERT OR IGNORE INTO services (id, name) VALUES (1, 'spotify'), (2, 'qobuz')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (name, is_favorite, spotify_id, qobuz_id) in [
+        ("Favorite Mirror", 1, Some("sp-fav"), Some("qb-fav")),
+        ("Not A Favorite", 0, Some("sp-no"), Some("qb-no")),
+        ("Qobuz Only", 1, None, Some("qb-only")),
+    ] {
+        sqlx::query(
+            "INSERT INTO artists (name, is_favorite, spotify_id, qobuz_id) VALUES (?, ?, ?, ?)",
+        )
+        .bind(name)
+        .bind(is_favorite)
+        .bind(spotify_id)
+        .bind(qobuz_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let artists = fetch_migration_source_artists(&pool, "spotify", None)
+        .await
+        .unwrap();
+    let pairs: Vec<(String, String)> = artists
+        .into_iter()
+        .map(|a| (a.external_id, a.name))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![("sp-fav".to_string(), "Favorite Mirror".to_string())],
+        "the service-wide read is the favorite mirror rows with the service id"
+    );
+
+    for service in ["deezer", "soundcloud", "apple_music"] {
+        let artists = fetch_migration_source_artists(&pool, service, None)
+            .await
+            .unwrap();
+        assert!(
+            artists.is_empty(),
+            "{service} has no artists mirror column, so the read is empty"
+        );
+    }
 }
 
 // ============================================================================

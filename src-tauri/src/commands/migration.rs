@@ -1001,9 +1001,10 @@ pub async fn fetch_migration_source_artists(
         if let Some(account_id) = source_account_id {
             // Per-account cache (0045): the favorites rows of kind 'artist'
             // carry the source service's own artist id and the artist's name in
-            // `title`.
+            // `title`; an empty title falls back to the same honest label the
+            // album read uses instead of a blank item name.
             query.push(
-                r#"SELECT f.service_item_id, f.title
+                r#"SELECT f.service_item_id, COALESCE(NULLIF(f.title, ''), 'Unknown Artist')
                    FROM favorites f
                    JOIN services s ON s.id = f.service_id
                    WHERE s.name = "#,

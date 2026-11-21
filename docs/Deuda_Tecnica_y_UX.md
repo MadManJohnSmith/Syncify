@@ -292,13 +292,15 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
 
 - **Observado (2026-11-21, review y re-check de PR #350, registrado como limitación en su cuerpo)**: tras M01 (#166), el job puede llevar `collections` con pistas y álbumes, pero el preview (`migration.rs:254`) no recibe colecciones y el wizard sigue mostrando `total_tracks` como «N items previewed» y «migrating N tracks»: un job solo-álbumes confirma con métricas de pistas. Además `pairKey` (`MigrationView.vue:1906`) no incluye la selección: se puede previsualizar con favoritos, volver atrás, añadir álbumes y el gate sigue considerando el preview «actual». ADR-0015 §5 (dry-run por colección) pide el preview por colección y sigue pendiente. Copia in-app que insinúa de más: el paso de revisión dice que «las listas se espejan de las pistas transferidas», cierto en el motor, pero el wizard nunca envía `playlist_ids`, así que hoy seleccionar Playlists no crea ninguna lista.
 - **Corrección que lo cerraría**: preview por colección (ADR-0015 §5), `pairKey` con la selección en la clave, métricas de confirmación por tipo, y condicionar o corregir la copia del espejo de listas.
+- **Alcance ampliado (2026-11-21, M02 #167)**: el job también puede llevar artistas seguidos y el preview sigue sin conocerlos: un job solo-artistas confirma con `total_tracks = 0` y la copia de revisión no distingue las tres colecciones de ítems. El preview por colección debe cubrir pistas, álbumes y artistas.
 - **Cierra**: el preview por colección aterrizado con su test, y la copia sin promesas que el wire no cumple.
 
-### D-11 — Fila `pending` residual si la cancelación llega dentro de la fase de álbumes
+### D-11 — Fila `pending` residual si la cancelación llega dentro de una fase de colección
 
 - **Observado (2026-11-21, re-check de PR #350)**: el fix de #350 (`&& !cancelled` en `migration.rs:2449`) impide ABRIR la fase de álbumes con el job ya cancelado, pero si la cancelación llega DENTRO de la fase, `run_album_collection` sigue insertando la fila `pending` del primer álbum antes de mirar el estado en la primera iteración. Comportamiento preexistente que la review no pidió cambiar; deja un ítem `pending` en un job cancelado.
+- **Alcance ampliado (2026-11-21, M02 #167)**: la fase de artistas (`run_artist_collection`) reproduce el molde exacto y hereda la misma ventana: sus filas `pending` se insertan antes de la primera comprobación de cancelación. El test `test_artist_phase_stops_when_the_job_is_cancelled` pincha el comportamiento actual (fila `pending` residual) a propósito; el arreglo de esta deuda debe cubrir las dos fases a la vez.
 - **Corrección que lo cerraría**: comprobar `cancelled` antes de cada inserción (o capturar el estado al entrar en la iteración), con un test determinista del mismo molde que el de la fase ya arreglada (trigger sobre la primera fila).
-- **Cierra**: la comprobación por inserción con su test rojo→verde.
+- **Cierra**: la comprobación por inserción con su test rojo→verde, en álbumes y artistas.
 
 ### D-12 — Estado obsoleto del detalle de artista al cambiar de artista in-place
 
