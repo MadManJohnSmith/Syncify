@@ -853,9 +853,9 @@ impl QualityPolicy {
 }
 
 /// Parses the first numeric bitrate (kbps) embedded in a quality string
-/// ("MP3 128kbps" → 128, "320" → 320, "96k" → 96). Returns `None` when the
-/// string carries no numeric bitrate evidence, so each caller keeps its own
-/// fallback instead of silently inventing one.
+/// ("MP3 128kbps" → 128, "320" → 320, "AAC 256" → 256, "96k" → 96). Returns
+/// `None` when the string carries no numeric bitrate evidence, so each caller
+/// keeps its own fallback instead of silently inventing one.
 pub fn parse_bitrate_kbps(quality: &str) -> Option<i32> {
     let q = quality.trim().to_lowercase();
     // Contrato de etiquetas (#338):

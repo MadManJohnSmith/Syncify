@@ -217,7 +217,8 @@ no deja el fichero promovido sin dueño: se borra si ninguna fila del ledger lo
 referencia (si ya la tiene, se conserva) y un fallo al consultar el ledger no
 autoriza a borrar. El orden gate → `mark_complete` se prueba por
 comportamiento con `verify_then_complete`, la misma costura que usa el worker,
-no buscando cadenas en el fuente.
+no buscando cadenas en el fuente; en producción `mark_complete` no tiene otra
+llamada, así que no hay ruta de promoción que esquive el gate.
 
 **Límites de evidencia (#338).** «Falta de lector» y «lectura fallida» son
 cosas distintas: MP3 sigue sin lector hasta D16 y sus checks se saltan, pero un
@@ -238,17 +239,19 @@ módulo.
 
 **Piso de bitrate por proveedor** (matriz en
 `syncify_core_domain::quality::provider_lossy_floor_kbps`, consumida por
-`quality_reconcile` y por los adaptadores D11/D12): SoundCloud 128, Deezer 320
+`quality_reconcile` y, cuando aterricen, por los adaptadores D11/D12):
+SoundCloud 128, Deezer 320
 (128 en cuentas free), Qobuz/Tidal/Amazon 320 por su matriz. El piso global de
 320 dejó de aplicarse en duro; la reconciliación y el orquestador consultan la
 matriz del servicio que entrega. Un MP3 128 se declara como lo que es
 (`lossy`), nunca se etiqueta lossless. Ningún adaptador repite el `320` a
 mano: Tidal también resuelve su piso por la matriz. La mitad `account_free`
 del piso de Deezer **sigue abierta** y queda como entregable de D11 (el
-adaptador nativo de Deezer; D12 es su gemelo de SoundCloud): no existe
-adaptador de descarga de Deezer ni `accounts` persiste el plan, así que ninguna
-ruta productiva la resuelve todavía; cuando el adaptador aterrice debe pasar la
-capa de la cuenta en vez del `false` fijo de `quality_reconcile`.
+adaptador nativo de Deezer; D12 es su gemelo de SoundCloud): el registro de
+`download/providers/` solo tiene Qobuz, Tidal y Amazon, así que ninguna ruta
+de descarga entrega con `service = "deezer"`, y `accounts` tampoco persiste el
+plan; cuando el adaptador aterrice debe pasar la capa de la cuenta en vez del
+`false` fijo de `quality_reconcile`.
 
 **Atribución de cuenta**: `DownloadResult.account_id` viaja desde
 `ProviderDelivery.account_id` y el ledger escribe `downloads.account_id` con
