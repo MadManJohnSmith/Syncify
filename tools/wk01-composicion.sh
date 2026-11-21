@@ -41,14 +41,14 @@ FIXTURE="$REPO_ROOT/tools/wk01/fixture.html"
 PYTHON="${WK01_PYTHON:-/usr/bin/python3}"
 
 BACKENDS="auto"
-ROUTES="compatible"
+ROUTES="all"
 REPS=1
 TIMEOUT_S=30
 KEEP=0
 LABEL="$(date +%Y%m%dT%H%M%S)"
 OUT_DIR=""
 
-ALL_ROUTES=("compatible")
+ALL_ROUTES=("compatible" "acelerada" "dmabuf-off")
 BACKEND_ORDER=("x11" "wayland")
 
 ROUTE_ENV=(
@@ -269,9 +269,12 @@ PY
   return 0
 }
 
+# Repeticiones intercaladas: dentro de cada repetición se recorren todas las
+# rutas seguidas, para que un cambio de carga de la máquina no caiga entero en
+# una sola ruta.
 for backend in "${SELECTED_BACKENDS[@]}"; do
-  for route in "${SELECTED_ROUTES[@]}"; do
-    for ((rep = 1; rep <= REPS; rep++)); do
+  for ((rep = 1; rep <= REPS; rep++)); do
+    for route in "${SELECTED_ROUTES[@]}"; do
       run_one "$backend" "$route" "$rep"
     done
   done
