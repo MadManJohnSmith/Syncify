@@ -36,6 +36,7 @@ const reviewJob: MigrationJob = {
     source_account_id: 11,
     destination_account_id: 20,
   source_playlist_ids: null,
+    collections: null,
   options: '{}',
   status: 'completed',
   total_items: 1,

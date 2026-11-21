@@ -278,7 +278,11 @@ pub struct MigrationJob {
     pub source_account_id: Option<i64>,
     pub destination_account_id: Option<i64>,
     pub source_playlist_ids: Option<String>, // JSON array
-    pub options: String,                     // JSON MigrationOptions
+    /// JSON array of the collections the job carries (0113); NULL keeps
+    /// meaning the legacy track-favorites flow.
+    #[serde(default)]
+    pub collections: Option<String>,
+    pub options: String, // JSON MigrationOptions
     pub status: String,
     pub total_items: i64,
     pub completed_items: i64,
@@ -290,7 +294,7 @@ pub struct MigrationJob {
     pub created_at: String,
 }
 
-/// Individual migration item (track)
+/// Individual migration item (one unit of a collection being migrated)
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct MigrationItem {
     pub id: i64,
@@ -301,6 +305,11 @@ pub struct MigrationItem {
     pub source_track_album: Option<String>,
     pub source_playlist_id: Option<String>,
     pub source_playlist_name: Option<String>,
+    /// Collection the item belongs to (0113): 'track' for the legacy
+    /// track-favorites flow, 'album' for favorite albums. All kinds share
+    /// the id/match/status columns, named for the track flow they grew from.
+    #[serde(default)]
+    pub kind: String,
     pub destination_track_id: Option<String>,
     pub match_confidence: Option<f64>,
     pub match_method: Option<String>,
@@ -381,6 +390,11 @@ pub struct MigrationProgress {
     pub eta: String,
     /// Human readable description of the operation being performed.
     pub current_action: String,
+    /// Collection kind of the item being processed (0113): 'track' | 'album'.
+    /// Absent in the events that do not address a specific item (start,
+    /// playlist mirror, close).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_kind: Option<String>,
 }
 
 /// Migration schema audit report

@@ -65,7 +65,8 @@ export function useMigration() {
         percent: 0,
         speed: 0,
         eta: '',
-        current_action: ''
+        current_action: '',
+        current_kind: undefined
     });
 
     // Manual matching
@@ -220,6 +221,7 @@ export function useMigration() {
         progress.total_items = 0;
         progress.current_track = '';
         progress.current_action = '';
+        progress.current_kind = undefined;
         progress.completed_count = 0;
         progress.failed_count = 0;
         progress.skipped_count = 0;
@@ -235,7 +237,8 @@ export function useMigration() {
         playlistIds?: string[],
         options: MigrationOptions = defaultOptions,
         sourceAccountId?: number | null,
-        destinationAccountId?: number | null
+        destinationAccountId?: number | null,
+        collections?: string[]
     ): Promise<string | null> {
         isStartingMigration.value = true;
         resetProgress();
@@ -246,7 +249,8 @@ export function useMigration() {
                 playlistIds,
                 options,
                 sourceAccountId,
-                destinationAccountId
+                destinationAccountId,
+                collections
             );
             currentJobId.value = jobId;
             // start_migration resolves only when the job is over: from here on
@@ -404,6 +408,7 @@ export function useMigration() {
             progress.speed = p.speed;
             progress.eta = p.eta;
             progress.current_action = p.current_action;
+            progress.current_kind = p.current_kind;
 
             // Refresh history when the job reaches a terminal state
             if (p.status === 'completed' || p.status === 'cancelled') {

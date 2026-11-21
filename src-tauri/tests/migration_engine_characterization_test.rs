@@ -175,6 +175,8 @@ async fn job_row(pool: &SqlitePool, job_id: &str) -> (i64, i64, i64, i64, String
     .unwrap()
 }
 
+/// Legacy caller shape (M00 and earlier): no collections requested, which
+/// keeps the pre-M01 semantics — track favorites only.
 async fn start(
     app: &tauri::App<tauri::test::MockRuntime>,
     destination: &str,
@@ -182,6 +184,27 @@ async fn start(
     options: MigrationOptions,
     source_account_id: Option<i64>,
     destination_account_id: Option<i64>,
+) -> Result<String, String> {
+    start_with_collections(
+        app,
+        destination,
+        playlist_ids,
+        options,
+        source_account_id,
+        destination_account_id,
+        None,
+    )
+    .await
+}
+
+async fn start_with_collections(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    destination: &str,
+    playlist_ids: Option<Vec<String>>,
+    options: MigrationOptions,
+    source_account_id: Option<i64>,
+    destination_account_id: Option<i64>,
+    collections: Option<Vec<String>>,
 ) -> Result<String, String> {
     start_migration(
         app.handle().clone(),
@@ -192,6 +215,7 @@ async fn start(
         options,
         source_account_id,
         destination_account_id,
+        collections,
     )
     .await
 }
