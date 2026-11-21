@@ -222,9 +222,14 @@ deduce del `track_id`: el journal de la descarga (`operation_journal`,
 `entity_id = queue_id`) fija el `expected_output_path` justo antes del gate, y
 solo cuando una entrada de esta entrega declara la ruta se retira su fila —por
 `file_path`, que en esa ruta ya es única porque §9 borra las ajenas en la misma
-transacción— y se aparta el fichero. Sin esa prueba, fila y fichero se
-conservan; también se conserva todo si falla la consulta o el borrado del
-ledger. El fichero se mueve a una cuarentena explícita
+transacción— y se aparta el fichero. Hay tres casos en el rechazo: con prueba
+del journal, fila (por `file_path`) y fichero se retiran; con filas en la ruta
+pero sin prueba se conservan fila y fichero, porque podrían pertenecer a otra
+pista; y si no hay ninguna fila para el path —el caso dominante fuera de
+Tidal, pues solo el pipeline de Tidal escribe en `downloads` antes del gate—
+el fichero va directo a cuarentena. También se conserva todo si falla la
+consulta o el borrado del ledger. El fichero se mueve a una cuarentena
+explícita
 (`<directorio de la entrega>/.syncify-quarantine/`, con el `queue_id` en el
 nombre) para conservar el audio válido de un rechazo por portada, tags o
 calidad; la biblioteca no lo indexa (tampoco lo hace con el fichero original,
