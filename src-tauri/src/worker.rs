@@ -9,6 +9,7 @@ use syncify_core_domain::errors::ErrorTaxonomy;
 
 use crate::services::operation_recovery::classify_operation_error;
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
@@ -857,9 +858,9 @@ impl DownloadWorker {
     /// D05/#338: costura observable del orden gate → `mark_complete`.
     ///
     /// La producción y los tests usan esta misma llamada: si el gate rechaza,
-    /// la fila NO se promociona y el fichero promovido no queda sin dueño
-    /// (se borra cuando ninguna fila del ledger lo referencia). Antes, el
-    /// orden solo se vigilaba buscando cadenas en el fuente.
+    /// la fila NO se promociona y el fichero promovido sale de la biblioteca
+    /// junto con la fila que la propia entrega hubiera escrito antes del gate.
+    /// Antes, el orden solo se vigilaba buscando cadenas en el fuente.
     pub async fn verify_then_complete(
         &self,
         queue_id: i64,
@@ -885,24 +886,67 @@ impl DownloadWorker {
                 Ok(())
             }
             Err(reason) => {
-                self.discard_unowned_promoted_file(queue_id, &res.file_path)
+                let quarantined = self
+                    .discard_rejected_delivery(queue_id, &res.file_path)
                     .await;
-                Err(reason)
+                match quarantined {
+                    Some(path) => Err(format!(
+                        "{reason} (rejected file quarantined at {})",
+                        path.display()
+                    )),
+                    None => Err(reason),
+                }
             }
         }
     }
 
-    /// #338: un rechazo de verificación después de `checkpoint_promoted` no
-    /// deja el fichero promovido sin dueño. Si ninguna fila del ledger lo
-    /// referencia se borra; si ya tiene dueño se conserva y se registra.
-    async fn discard_unowned_promoted_file(&self, queue_id: i64, file_path: &str) {
-        let owner: Result<Option<i64>, sqlx::Error> =
-            sqlx::query_scalar("SELECT id FROM downloads WHERE file_path = ? LIMIT 1")
-                .bind(file_path)
+    /// #338: un rechazo de verificación no deja en la biblioteca ni el fichero
+    /// ni la fila de la propia entrega. Algunas rutas —Tidal escribe en
+    /// `tidal_pipeline` §9 y hace commit— crean la fila de `downloads` ANTES
+    /// del gate, así que la limpieza distingue esa fila (mismo `track_id` que
+    /// la cola) de una fila ajena que ocupa el path: la propia se retira y el
+    /// audio rechazado se mueve a cuarentena explícita en vez de destruirse.
+    /// Una fila de otra pista conserva fila y fichero, y un fallo del ledger no
+    /// autoriza a tocar nada.
+    ///
+    /// Devuelve la ruta de cuarentena cuando movió el fichero, para que el
+    /// motivo del fallo la nombre.
+    async fn discard_rejected_delivery(&self, queue_id: i64, file_path: &str) -> Option<PathBuf> {
+        let queue_track: Result<Option<i64>, sqlx::Error> =
+            sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
+                .bind(queue_id)
                 .fetch_optional(&self.db)
                 .await;
-        let owner = match owner {
-            Ok(owner) => owner,
+        let queue_track = match queue_track {
+            Ok(Some(track_id)) => track_id,
+            Ok(None) => {
+                // Sin fila de cola no hay forma de saber qué fila del ledger es
+                // de esta entrega: no se destruye evidencia.
+                tracing::warn!(
+                    queue_id,
+                    file_path,
+                    "[Worker] Rejected delivery kept: the queue row is gone, ownership is unknowable"
+                );
+                return None;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    queue_id,
+                    file_path,
+                    error = %e,
+                    "[Worker] Cannot confirm queue ownership of a rejected delivery; keeping the file"
+                );
+                return None;
+            }
+        };
+
+        let owners: Result<Vec<(i64, i64)>, sqlx::Error> =
+            sqlx::query_as("SELECT id, track_id FROM downloads WHERE file_path = ?")
+                .bind(file_path)
+                .fetch_all(&self.db)
+                .await;
+        let owners = match owners {
+            Ok(owners) => owners,
             Err(e) => {
                 // Un fallo del ledger no autoriza a borrar: el fichero se
                 // conserva y el aviso deja rastro. Borrar a ciegas podría
@@ -913,32 +957,119 @@ impl DownloadWorker {
                     error = %e,
                     "[Worker] Cannot confirm ledger ownership of a rejected delivery; keeping the file"
                 );
-                return;
+                return None;
             }
         };
-        if let Some(downloads_id) = owner {
+
+        let owns_delivery = owners.iter().any(|(_, track_id)| *track_id == queue_track);
+        let foreign_owner = owners
+            .iter()
+            .find(|(_, track_id)| *track_id != queue_track)
+            .map(|(downloads_id, _)| *downloads_id);
+
+        if owns_delivery {
+            if let Err(e) =
+                sqlx::query("DELETE FROM downloads WHERE file_path = ? AND track_id = ?")
+                    .bind(file_path)
+                    .bind(queue_track)
+                    .execute(&self.db)
+                    .await
+            {
+                // La fila de la entrega sigue ahí: mover el fichero dejaría una
+                // fila apuntando a una ruta que ya no existe.
+                tracing::warn!(
+                    queue_id,
+                    file_path,
+                    error = %e,
+                    "[Worker] Cannot withdraw the rejected delivery's ledger row; keeping the file"
+                );
+                return None;
+            }
+            tracing::warn!(
+                queue_id,
+                file_path,
+                track_id = queue_track,
+                "[Worker] Rejected delivery withdrew the ledger row written before the gate"
+            );
+        }
+
+        if let Some(downloads_id) = foreign_owner {
             tracing::warn!(
                 queue_id,
                 file_path,
                 downloads_id,
-                "[Worker] Rejected delivery kept: the ledger already owns this path"
+                "[Worker] Rejected delivery kept: the ledger owns this path for another track"
             );
-            return;
+            return None;
         }
-        match tokio::fs::remove_file(file_path).await {
+
+        self.quarantine_rejected_file(queue_id, file_path).await
+    }
+
+    /// #338: aparta el fichero de una entrega rechazada sin destruir audio
+    /// válido. La cuarentena es hermana del fichero
+    /// (`<directorio>/.syncify-quarantine/`), oculta e ignorada por la
+    /// biblioteca, y el nombre lleva el `queue_id` para rastrear el rechazo.
+    /// Si el movimiento falla se borra el fichero como último recurso: la
+    /// invariante es que la biblioteca no lo indexe.
+    async fn quarantine_rejected_file(&self, queue_id: i64, file_path: &str) -> Option<PathBuf> {
+        let source = Path::new(file_path);
+        let parent = source.parent().unwrap_or_else(|| Path::new("."));
+        let quarantine_dir = parent.join(".syncify-quarantine");
+        let stem = source
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "track".to_string());
+        let file_name = match source.extension() {
+            Some(ext) => format!("{stem}.rejected-q{queue_id}.{}", ext.to_string_lossy()),
+            None => format!("{stem}.rejected-q{queue_id}"),
+        };
+        let target = quarantine_dir.join(file_name);
+
+        if let Err(e) = tokio::fs::create_dir_all(&quarantine_dir).await {
+            tracing::warn!(
+                queue_id,
+                dir = %quarantine_dir.display(),
+                error = %e,
+                "[Worker] Cannot create the rejection quarantine; removing the rejected file instead"
+            );
+        } else {
+            match tokio::fs::rename(source, &target).await {
+                Ok(()) => {
+                    tracing::warn!(
+                        queue_id,
+                        from = file_path,
+                        to = %target.display(),
+                        "[Worker] Rejected delivery quarantined"
+                    );
+                    return Some(target);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+                Err(e) => tracing::warn!(
+                    queue_id,
+                    from = file_path,
+                    to = %target.display(),
+                    error = %e,
+                    "[Worker] Cannot quarantine the rejected delivery; removing it instead"
+                ),
+            }
+        }
+
+        match tokio::fs::remove_file(source).await {
             Ok(()) => tracing::warn!(
                 queue_id,
                 file_path,
-                "[Worker] Rejected delivery removed: promoted file had no ledger owner"
+                "[Worker] Rejected delivery removed: quarantine was not possible"
             ),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => tracing::warn!(
                 queue_id,
                 file_path,
                 error = %e,
-                "[Worker] Failed to remove rejected promoted file"
+                "[Worker] Failed to remove a rejected promoted file"
             ),
         }
+        None
     }
 
     /// La calidad pedida original de la fila (la misma fuente que usa

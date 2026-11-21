@@ -21,7 +21,8 @@
 //!    comportamiento (#338; antes era una guardia de cadenas sobre el fuente).
 //! 8. #338: un FLAC/M4A no vacío que el lector no puede parsear falla cerrado
 //!    (lector ausente ≠ lectura fallida) y un rechazo no deja el fichero
-//!    promovido sin dueño.
+//!    promovido sin dueño ni la fila que la propia entrega (Tidal,
+//!    `tidal_pipeline` §9) escribió antes del gate.
 
 use std::path::Path;
 

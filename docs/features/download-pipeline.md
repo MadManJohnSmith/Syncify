@@ -210,15 +210,24 @@ la costura única gate → `mark_complete`:
   `CompletedWithQualityFallback`, `quality_fallback_used = 1` y motivo).
 
 Si el gate falla, la fila se marca `failed` con el prefijo
-`DeliveryVerificationFailed:` y **no se escribe el ledger de `downloads`**.
-`mark_complete` conserva además una defensa: una decisión `RejectedQuality`
-nunca se promociona a `complete`. Un rechazo después de `checkpoint_promoted`
-no deja el fichero promovido sin dueño: se borra si ninguna fila del ledger lo
-referencia (si ya la tiene, se conserva) y un fallo al consultar el ledger no
-autoriza a borrar. El orden gate → `mark_complete` se prueba por
-comportamiento con `verify_then_complete`, la misma costura que usa el worker,
-no buscando cadenas en el fuente; en producción `mark_complete` no tiene otra
-llamada, así que no hay ruta de promoción que esquive el gate.
+`DeliveryVerificationFailed:` y **no queda fila de esa entrega en el ledger de
+`downloads`**. `mark_complete` conserva además una defensa: una decisión
+`RejectedQuality` nunca se promociona a `complete`. Un rechazo después de
+`checkpoint_promoted` retira el rastro de la propia entrega: algunas rutas
+(Tidal, `tidal_pipeline` §9) escriben su fila de `downloads` y hacen commit
+antes del gate, así que la limpieza distingue la fila de esta entrega —mismo
+`track_id` que la cola— de una fila ajena que ocupa el path. La propia se
+borra y el fichero se mueve a una cuarentena explícita
+(`<directorio de la entrega>/.syncify-quarantine/`, con el `queue_id` en el
+nombre) en vez de destruirse: el audio válido de un rechazo por portada, tags
+o calidad se conserva para inspección y la biblioteca no lo indexa (tampoco lo
+hace con el fichero original, que ya no está). El motivo del fallo incluye la
+ruta de cuarentena. Una fila de otra pista conserva fila y fichero, y un fallo
+al consultar o borrar el ledger no autoriza a tocar el fichero. El orden
+gate → `mark_complete` se prueba por comportamiento con `verify_then_complete`,
+la misma costura que usa el worker, no buscando cadenas en el fuente; en
+producción `mark_complete` no tiene otra llamada, así que no hay ruta de
+promoción que esquive el gate.
 
 **Límites de evidencia (#338).** «Falta de lector» y «lectura fallida» son
 cosas distintas: MP3 sigue sin lector hasta D16 y sus checks se saltan, pero un
