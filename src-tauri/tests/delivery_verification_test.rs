@@ -167,6 +167,18 @@ async fn ledger_row(
     .unwrap()
 }
 
+/// Nombres de los ficheros que la limpieza de un rechazo conserva en la
+/// cuarentena hermana del directorio de la entrega.
+fn quarantined_files(parent: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(parent.join(".syncify-quarantine")) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect()
+}
+
 fn delivered_result(file: &Path) -> DownloadResult {
     DownloadResult {
         file_path: file.to_string_lossy().to_string(),
@@ -770,5 +782,76 @@ async fn rejected_delivery_keeps_a_path_the_ledger_already_owns() {
     assert!(
         ledger_row(&pool, track_id).await.is_none(),
         "sin ledger propio"
+    );
+}
+
+/// #338 (revisión de #356): la ruta real de Tidal escribe la fila del ledger
+/// en `tidal_pipeline` §9 y hace commit ANTES de que el worker ejecute el
+/// gate. Esa fila es de la propia entrega (mismo `track_id` que la cola), no
+/// de otra pista: si el gate la rechaza, la fila y el fichero no pueden quedar
+/// en la biblioteca mientras la cola se marca `failed`.
+#[tokio::test]
+async fn rejected_delivery_removes_the_pipeline_row_of_the_same_delivery() {
+    let dir = TempDir::new().unwrap();
+    let pool = migrated_pool(&dir, "pipeline-row.db").await;
+    let (queue_id, track_id) = seed_downloading_row(&pool, &dir, 1, "hires").await;
+    let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+
+    let path = dir.path().join("pipeline-owned.flac");
+    write_verified_flac(&path, 197 * 44_100);
+
+    // Fila tal como la escribe `tidal_pipeline` §9 (ON CONFLICT(track_id)), ya
+    // confirmada antes del gate.
+    sqlx::query(
+        "INSERT INTO downloads (track_id, source_service_id, file_path, file_format, \
+         bit_depth, sample_rate, file_size_bytes, metadata_completeness, requested_quality, \
+         effective_quality, requested_format, effective_format, quality_decision, \
+         provider_fallback_used, quality_fallback_used) \
+         VALUES (?, 1, ?, 'FLAC', 24, 96000, 4096, 100, 'hires', \
+         'FLAC 24-bit / 96.0kHz', 'FLAC', 'FLAC', 'CompletedExactQuality', 0, 0)",
+    )
+    .bind(track_id)
+    .bind(path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        ledger_row(&pool, track_id).await.is_some(),
+        "fixture: la fila de la propia entrega ya existe cuando corre el gate"
+    );
+
+    let reason = worker
+        .verify_then_complete(
+            queue_id,
+            &delivered_result(&path),
+            expected_delivery(200_000),
+            true,
+            false,
+            0.0,
+        )
+        .await
+        .expect_err("el gate rechaza la duración fuera de tolerancia");
+    assert!(
+        reason.contains("duration out of tolerance"),
+        "motivo: {reason}"
+    );
+
+    assert!(
+        ledger_row(&pool, track_id).await.is_none(),
+        "la fila escrita por la propia entrega no puede sobrevivir al rechazo"
+    );
+    assert!(
+        !path.exists(),
+        "el fichero rechazado no puede quedar en la ruta de la biblioteca"
+    );
+    assert_eq!(
+        quarantined_files(dir.path()).len(),
+        1,
+        "el audio rechazado se conserva en cuarentena explícita, no se destruye"
+    );
+    assert_eq!(
+        queue_status(&pool, queue_id).await,
+        "downloading",
+        "el gate no promociona la fila; el llamador la marca failed"
     );
 }
