@@ -17,6 +17,12 @@ use tokio::sync::{Notify, Semaphore};
 // BPM DSP is CPU intensive; never run more than one analysis per worker process.
 static BPM_ANALYSIS_SLOTS: Semaphore = Semaphore::const_new(1);
 
+/// S222/Q6: a partir de aquí una inspección física deja `warn` (visible con
+/// `RUST_LOG=info`, el nivel de `prueba-limpia.sh`). Una inspección normal va
+/// por debajo de 100 ms; el elapsed incluye la espera del pool de blocking,
+/// así que un pico delata saturación del pool o ficheros enormes.
+const SLOW_INSPECT_WARN_MS: u64 = 500;
+
 fn bpm_postprocess_key(queue_id: i64) -> String {
     format!("bpm_postprocess_queue_{queue_id}")
 }
@@ -285,6 +291,21 @@ fn sqlite_utc_timestamp(at: std::time::Instant) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+/// Formato por extensión cuando la inspección física no pudo leer el fichero:
+/// la misma heurística que `mark_complete` usa para etiquetar sin inspector.
+fn extension_format(file_path: &str) -> String {
+    let lower = file_path.to_lowercase();
+    if lower.ends_with(".mp3") {
+        "MP3".to_string()
+    } else if lower.ends_with(".m4a") || lower.ends_with(".aac") {
+        "AAC".to_string()
+    } else if lower.ends_with(".opus") {
+        "OPUS".to_string()
+    } else {
+        "FLAC".to_string()
+    }
+}
+
 /// Punto 3: ¿procede intentar una resolución viva por ISRC cuando el resolver
 /// no encontró ninguna fuente descargable?
 ///
@@ -304,6 +325,7 @@ fn should_live_resolve_missing_source(
         && matches!(
             error,
             crate::download::ResolutionError::NoDownloadableSource { .. }
+                | crate::download::ResolutionError::NoProvider { .. }
         )
 }
 
@@ -542,6 +564,7 @@ pub struct DownloadWorker {
     db: SqlitePool,
     state: DownloadWorkerState,
     app_handle: Option<tauri::AppHandle>,
+    breaker: crate::download::breaker::ProviderBreaker,
 }
 
 impl DownloadWorker {
@@ -550,6 +573,7 @@ impl DownloadWorker {
             db,
             state,
             app_handle: None,
+            breaker: Default::default(),
         }
     }
 
@@ -667,8 +691,23 @@ impl DownloadWorker {
     /// un `next_attempt_at` vencido (reintento automático programado). La misma
     /// condición se aplica al UPDATE para que una cancelación entre el SELECT y
     /// el claim gane la carrera.
+    ///
+    /// Q4: los proveedores con el circuito abierto (`ProviderBreaker`) no se
+    /// reclaman; el resto de la cola sigue avanzando mientras el proveedor
+    /// caído descansa. El breaker solo modula el ritmo: la fila abierta
+    /// conserva su propio `next_attempt_at`.
     pub async fn claim_next_item(&self) -> Option<(i64, i64, String, String)> {
-        let item: Option<(i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
+        let open = self.breaker.open_services(std::time::Instant::now());
+        let exclusion = if open.is_empty() {
+            String::new()
+        } else {
+            let placeholders = std::iter::repeat("?")
+                .take(open.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(r#" AND LOWER(COALESCE(dq.service_name, '')) NOT IN ({placeholders})"#)
+        };
+        let sql = format!(
             r#"
             SELECT dq.id, dq.track_id,
                    COALESCE(dq.target_title, t.title) as title,
@@ -681,13 +720,16 @@ impl DownloadWorker {
                OR (dq.status = 'failed'
                    AND dq.next_attempt_at IS NOT NULL
                    AND dq.next_attempt_at <= datetime('now'))
+            {exclusion}
             ORDER BY dq.priority DESC, dq.position ASC, dq.created_at ASC
             LIMIT 1
-            "#,
-        )
-        .fetch_optional(&self.db)
-        .await
-        .ok()?;
+            "#
+        );
+        let mut query = sqlx::query_as::<_, (i64, i64, Option<String>, Option<String>)>(&sql);
+        for service in &open {
+            query = query.bind(service);
+        }
+        let item = query.fetch_optional(&self.db).await.ok()?;
 
         if let Some((qid, tid, title, artist)) = item {
             let res = sqlx::query(
@@ -728,11 +770,150 @@ impl DownloadWorker {
         }
     }
 
+    /// D05 (#117): gate de verificación de entrega antes de `complete`.
+    ///
+    /// Combina la verificación física del fichero (duración dentro de
+    /// tolerancia frente al catálogo, tags releídos, portada válida cuando se
+    /// pidió incrustarla) con la política de calidad estricta: una decisión
+    /// `RejectedQuality` de la política compartida, o una entrega física por
+    /// debajo de lo pedido bajo la política estricta, rechaza la entrega.
+    ///
+    /// Un `Err(motivo)` NO marca `complete` y NO escribe el ledger de
+    /// `downloads`: el llamador persiste el fallo de verificación en la fila.
+    /// La inspección es IO síncrona y corre en el pool de blocking (S222).
+    /// Público como seam de prueba: los tests de verificación de entrega lo
+    /// ejercitan sin red, igual que el registro de proveedores.
+    pub async fn verify_delivery_before_complete(
+        &self,
+        queue_id: i64,
+        res: &crate::download::DownloadResult,
+        expected: crate::download::verification::ExpectedDelivery,
+        require_cover: bool,
+        strict_quality: bool,
+        extra_tolerance_secs: f64,
+    ) -> Result<(), String> {
+        let file_path = std::path::PathBuf::from(&res.file_path);
+        let gate = {
+            let file_path = file_path.clone();
+            let expected = expected.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::download::verification::verify_delivery(
+                    &file_path,
+                    &expected,
+                    require_cover,
+                    extra_tolerance_secs,
+                )
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("D05: verificación de entrega cancelada: {e}");
+                Err(vec!["delivery verification task was cancelled".to_string()])
+            })
+        };
+        if let Err(failures) = gate {
+            return Err(failures.join("; "));
+        }
+
+        // La calidad física entregada manda (issue #111: «la calidad entregada
+        // manda sobre la anunciada»). Bajo política estricta, por debajo de lo
+        // pedido la entrega se rechaza; con fallback permitido se completa y
+        // `mark_complete` declara la caída.
+        if let Some(qd) = &res.quality_decision {
+            if qd.decision == syncify_core_domain::quality::QualityDecisionKind::RejectedQuality {
+                return Err(qd.reason.clone().unwrap_or_else(|| qd.decision.to_string()));
+            }
+        }
+        if strict_quality {
+            let phys = tokio::task::spawn_blocking(move || {
+                crate::download::audio_inspector::inspect_physical_audio_file(&file_path)
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("D05: inspección física cancelada en el gate: {e}");
+                None
+            });
+            let (bd, sr, fmt) = phys
+                .as_ref()
+                .map(|p| (p.bit_depth, p.sample_rate, p.format.clone()))
+                .unwrap_or_else(|| {
+                    (
+                        res.bit_depth,
+                        res.sample_rate,
+                        extension_format(&res.file_path),
+                    )
+                });
+            let physical_tier = syncify_core_domain::quality::classify_audio_tier(
+                Some(bd),
+                Some(sr),
+                res.bitrate,
+                Some(&fmt),
+            );
+            let requested = self
+                .requested_quality_for_queue(queue_id)
+                .await
+                .unwrap_or_else(|| "lossless".to_string());
+            let inferior = syncify_core_domain::quality::QualityPolicy::is_quality_inferior(
+                Some(&requested),
+                Some(physical_tier.as_str()),
+                Some(&fmt),
+                Some(bd as i64),
+            );
+            if inferior {
+                return Err(format!(
+                    "RejectedQuality: requested {} but delivered {} under strict quality policy",
+                    requested, physical_tier
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// La calidad pedida original de la fila (la misma fuente que usa
+    /// `mark_complete` para declarar el shortfall).
+    async fn requested_quality_for_queue(&self, queue_id: i64) -> Option<String> {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT requested_quality FROM download_queue WHERE id = ?",
+        )
+        .bind(queue_id)
+        .fetch_optional(&self.db)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+    }
+
     /// Mark item as complete
     pub async fn mark_complete(&self, queue_id: i64, res: &crate::download::DownloadResult) {
+        // Q4: una entrega es la respuesta definitiva del proveedor; cierra el
+        // circuito abierto (si lo estaba) del servicio que entregó la descarga.
+        let delivered_service = res.effective_service.as_deref().unwrap_or(&res.service);
+        self.breaker.record_success(delivered_service);
+
         // Inspect physical audio file on disk to get ground-truth audio metrics
-        let path = std::path::Path::new(&res.file_path);
-        let phys_info = crate::download::audio_inspector::inspect_physical_audio_file(path);
+        // S222-fix: la inspección es IO sync (metaflac / parsers en proceso);
+        // corre en el pool de blocking para no ocupar un hilo del runtime async
+        // mientras la cola está en plena actividad.
+        let inspect_path = std::path::PathBuf::from(&res.file_path);
+        let inspect_start = std::time::Instant::now();
+        let phys_info = tokio::task::spawn_blocking(move || {
+            crate::download::audio_inspector::inspect_physical_audio_file(&inspect_path)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("S222: inspección física cancelada en mark_complete: {e}");
+            None
+        });
+        let inspect_elapsed_ms = inspect_start.elapsed().as_millis() as u64;
+        tracing::debug!(
+            elapsed_ms = inspect_elapsed_ms,
+            "S222: inspect_physical_audio_file (mark_complete)"
+        );
+        if inspect_elapsed_ms >= SLOW_INSPECT_WARN_MS {
+            tracing::warn!(
+                elapsed_ms = inspect_elapsed_ms,
+                "S222: inspección física lenta (mark_complete)"
+            );
+        }
 
         let real_bit_depth = phys_info
             .as_ref()
@@ -804,6 +985,13 @@ impl DownloadWorker {
             }
         };
 
+        let entitlement_owner: Option<(i64, Option<i64>)> =
+            sqlx::query_as("SELECT track_id, resolved_account_id FROM download_queue WHERE id = ?")
+                .bind(queue_id)
+                .fetch_optional(&self.db)
+                .await
+                .unwrap_or(None);
+
         // A user cancel (or any terminal transition) that landed while the
         // transfer was in flight must never be overwritten by `complete`. The
         // queue row is the authoritative state, so the promotion is dropped
@@ -823,6 +1011,23 @@ impl DownloadWorker {
                     queue_id,
                     "[Worker] Dropping completion: queue row disappeared"
                 );
+                return;
+            }
+        }
+
+        // D05 (#117): una decisión `RejectedQuality` de la política de calidad
+        // no se promociona a `complete`: se marca el fallo y el ledger NO se
+        // escribe. El gate del worker (`verify_delivery_before_complete`)
+        // rechaza antes en producción; esta defensa cubre llamadas directas.
+        if let Some(qd) = &res.quality_decision {
+            if qd.decision == syncify_core_domain::quality::QualityDecisionKind::RejectedQuality {
+                let err_msg = format!(
+                    "RejectedQuality: {}",
+                    qd.reason.clone().unwrap_or_else(|| qd.decision.to_string())
+                );
+                tracing::warn!(queue_id, "{}", err_msg);
+                self.mark_permanent_failure(queue_id, "failed", &err_msg)
+                    .await;
                 return;
             }
         }
@@ -962,16 +1167,25 @@ impl DownloadWorker {
             .map(|m| m.len() as i64)
             .ok();
         let effective_srv = res.effective_service.as_deref().unwrap_or(&res.service);
+        // D05 (#117): el ledger atribuye la entrega a la cuenta que la sirvió.
+        // La cuenta del `ProviderDelivery` (`res.account_id`) manda; el
+        // `resolved_account_id` de la fila es el fallback para rutas que no
+        // pasan por el gateway.
+        let delivering_account_id = res
+            .account_id
+            .or(entitlement_owner.as_ref().and_then(|(_, account)| *account));
         let ledger_written = match sqlx::query(
             r#"
             INSERT INTO downloads (
                 track_id, source_service_id, file_path, file_format, bit_depth, sample_rate, file_size_bytes, downloaded_at,
                 origin_service, origin_service_track_id, effective_service, effective_service_track_id, fallback_reason, match_method, match_confidence,
-                requested_quality, effective_quality, requested_format, effective_format, quality_decision, provider_fallback_used, quality_fallback_used, decision_reason
+                requested_quality, effective_quality, requested_format, effective_format, quality_decision, provider_fallback_used, quality_fallback_used, decision_reason,
+                account_id
             )
             SELECT track_id, (SELECT id FROM services WHERE LOWER(name) = LOWER(?)), ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
                    ?, ?, ?, ?, ?, ?, ?,
-                   ?, ?, ?, ?, ?, ?, ?, ?
+                   ?, ?, ?, ?, ?, ?, ?, ?,
+                   ?
             FROM download_queue WHERE id = ?
             ON CONFLICT(track_id) DO UPDATE SET
                 file_path = excluded.file_path,
@@ -994,6 +1208,7 @@ impl DownloadWorker {
                 provider_fallback_used = excluded.provider_fallback_used,
                 quality_fallback_used = excluded.quality_fallback_used,
                 decision_reason = excluded.decision_reason,
+                account_id = excluded.account_id,
                 downloaded_at = CURRENT_TIMESTAMP
             "#,
         )
@@ -1018,6 +1233,7 @@ impl DownloadWorker {
         .bind(if prov_fb { 1i64 } else { 0i64 })
         .bind(qual_fallback)
         .bind(&dec_reason)
+        .bind(delivering_account_id)
         .bind(queue_id)
         .execute(&self.db)
         .await
@@ -1032,6 +1248,31 @@ impl DownloadWorker {
                 false
             }
         };
+
+        // D04: una entrega correcta es evidencia reutilizable durante 30 días,
+        // con la calidad FÍSICA verificada en este mismo método.
+        if ledger_written && !effective_srv.trim().is_empty() {
+            if let Some((track_id, Some(account_id))) = entitlement_owner {
+                if let Err(error) = crate::download::entitlements::record_granted(
+                    &self.db,
+                    track_id,
+                    effective_srv,
+                    account_id,
+                    &eff_q,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        queue_id,
+                        track_id,
+                        account_id,
+                        service = %effective_srv,
+                        error = %error,
+                        "[Worker] Could not persist granted entitlement evidence"
+                    );
+                }
+            }
+        }
 
         // Synchronize tracks.audio_quality based on actual physical audio on disk
         let track_id_opt: Option<i64> =
@@ -1110,19 +1351,22 @@ impl DownloadWorker {
                             .unwrap_or(None);
                     if let Some(tid) = track_id_opt {
                         let is_embedded = physical_format.to_uppercase() == "FLAC";
-                        let _ = sqlx::query(
-                            r#"INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
-                               VALUES (?, 'lrc', 'line', 'sidecar', ?, NULL, ?)
-                               ON CONFLICT(track_id, format) DO UPDATE SET
-                                   content = excluded.content,
-                                   sync_level = COALESCE(lyrics.sync_level, excluded.sync_level),
-                                   source = COALESCE(lyrics.source, excluded.source),
-                                   embedded_in_file = excluded.embedded_in_file"#
+                        let _ = crate::db::write_or_log(
+                            "worker_mark_complete_sidecar_lyrics",
+                            sqlx::query(
+                                r#"INSERT INTO lyrics (track_id, format, sync_level, source, content, language, embedded_in_file)
+                                   VALUES (?, 'lrc', 'line', 'sidecar', ?, NULL, ?)
+                                   ON CONFLICT(track_id, format) DO UPDATE SET
+                                       content = excluded.content,
+                                       sync_level = COALESCE(lyrics.sync_level, excluded.sync_level),
+                                       source = COALESCE(lyrics.source, excluded.source),
+                                       embedded_in_file = excluded.embedded_in_file"#
+                            )
+                            .bind(tid)
+                            .bind(&content)
+                            .bind(if is_embedded { 1i64 } else { 0i64 })
+                            .execute(&self.db),
                         )
-                        .bind(tid)
-                        .bind(&content)
-                        .bind(if is_embedded { 1i64 } else { 0i64 })
-                        .execute(&self.db)
                         .await;
                     }
                 }
@@ -1180,11 +1424,25 @@ impl DownloadWorker {
         );
         let failure_class = failure_class_for(&taxonomy);
         let attempts = u32::try_from(retry_count_prev.max(0)).unwrap_or(u32::MAX);
-        let next_attempt_at = match syncify_core_domain::job_state::JobState::Failed.retry_verdict(
-            &taxonomy,
-            attempts,
-            std::time::Instant::now(),
-        ) {
+        let now = std::time::Instant::now();
+        // Q4: señal para el breaker por proveedor. La fila guarda su propio
+        // reintento (con jitter por semilla para que la tormenta no vuelva
+        // sincronizada); el breaker añade la pausa compartida del proveedor.
+        if let Some(service) = service_name.as_deref() {
+            if self.breaker.record_failure(service, &taxonomy, now) {
+                tracing::warn!(
+                    service,
+                    "Q4: circuito abierto por tormenta de transporte; el claim saltará este proveedor"
+                );
+            }
+        }
+        let next_attempt_at = match syncify_core_domain::job_state::JobState::Failed
+            .retry_verdict_jittered(
+                &taxonomy,
+                attempts,
+                now,
+                u64::try_from(queue_id.max(0)).unwrap_or(u64::MAX),
+            ) {
             syncify_core_domain::job_state::RetryVerdict::RetryAt(at) => {
                 Some(sqlite_utc_timestamp(at))
             }
@@ -1204,6 +1462,46 @@ impl DownloadWorker {
         .await
         {
             tracing::error!("Failed to mark queue item {} as failed: {}", queue_id, e);
+        }
+    }
+
+    /// Cierra una fila sin destino con adaptador como omitida, no como fallo.
+    /// La pista queda fuera del trabajo pendiente y el job suma `skipped_count`
+    /// con el motivo `no_provider`.
+    async fn mark_no_provider(&self, queue_id: i64, job_id: Option<i64>, reason: &str) {
+        let updated = crate::db::write_or_log(
+            "worker_mark_no_provider",
+            sqlx::query(
+                "UPDATE download_queue SET status = 'cancelled', error_message = ?, \
+                 last_error = ?, failure_class = 'no_provider', next_attempt_at = NULL, \
+                 decision_reason = COALESCE(?, decision_reason) \
+                 WHERE id = ? AND status = 'downloading'",
+            )
+            .bind(reason)
+            .bind(reason)
+            .bind(reason)
+            .bind(queue_id)
+            .execute(&self.db),
+        )
+        .await;
+        if updated.is_some_and(|result| result.rows_affected() == 0) {
+            tracing::debug!(
+                queue_id,
+                "No-provider row was no longer downloading; skip not counted"
+            );
+            return;
+        }
+        if let Some(job_id) = job_id {
+            let recorded =
+                crate::download::jobs::record_skipped(&self.db, job_id, "no_provider", 1).await;
+            if let Err(error) = recorded {
+                tracing::warn!(
+                    queue_id,
+                    job_id,
+                    error = %error,
+                    "[Worker] Could not count no-provider skip on the job"
+                );
+            }
         }
     }
 
@@ -1233,6 +1531,46 @@ impl DownloadWorker {
 
         let taxonomy = classify_operation_error(download_operation_type(None), "unknown", error);
         let failure_class = permanent_failure_class_for(error, &taxonomy);
+
+        // D04: un 401/403 o un rechazo de calidad es evidencia `denied` durante
+        // una hora para esa pista y cuenta. El resolver la lee y no vuelve a
+        // ofrecer esa cuenta; el fallo de la escritura no cambia el veredicto.
+        let evidence_error_class = if is_rejected_q {
+            Some("rejected_quality")
+        } else if is_auth {
+            Some("auth")
+        } else {
+            None
+        };
+        if let Some(error_class) = evidence_error_class {
+            let row: Option<(i64, Option<String>, Option<i64>)> = sqlx::query_as(
+                "SELECT track_id, service_name, resolved_account_id \
+                 FROM download_queue WHERE id = ? AND status = 'downloading'",
+            )
+            .bind(queue_id)
+            .fetch_optional(&self.db)
+            .await
+            .unwrap_or(None);
+            if let Some((track_id, Some(service_name), Some(account_id))) = row {
+                if let Err(record_error) = crate::download::entitlements::record_denied(
+                    &self.db,
+                    track_id,
+                    &service_name,
+                    account_id,
+                    error_class,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        queue_id,
+                        track_id,
+                        account_id,
+                        error = %record_error,
+                        "[Worker] Could not persist denied entitlement evidence"
+                    );
+                }
+            }
+        }
 
         if let Err(e) = sqlx::query(
             "UPDATE download_queue SET status = ?, error_message = ?, last_error = ?, retry_count = retry_count + 1, failure_class = ?, next_attempt_at = NULL, quality_decision = COALESCE(?, quality_decision), decision_reason = COALESCE(?, decision_reason) WHERE id = ? AND status = 'downloading'"
@@ -1536,12 +1874,18 @@ impl DownloadWorker {
             Option<String>, // quality_preference
             Option<i64>,    // smart_studio_origin
             Option<i64>,    // allow_fallback
+            Option<i64>,    // job_id
+            Option<String>, // destination_service (preferencia del job)
+            Option<i64>,    // preferred_account_id (override del job)
         )> = sqlx::query_as(
             r#"
-            SELECT service_name, service_track_id, service_album_id,
-                   target_title, target_artist, target_album, target_isrc,
-                   quality_preference, smart_studio_origin, allow_fallback
-            FROM download_queue WHERE id = ?
+            SELECT dq.service_name, dq.service_track_id, dq.service_album_id,
+                   dq.target_title, dq.target_artist, dq.target_album, dq.target_isrc,
+                   dq.quality_preference, dq.smart_studio_origin, dq.allow_fallback,
+                   dq.job_id, j.destination_service, j.preferred_account_id
+            FROM download_queue dq
+            LEFT JOIN download_jobs j ON j.id = dq.job_id
+            WHERE dq.id = ?
             "#,
         )
         .bind(queue_id)
@@ -1561,6 +1905,9 @@ impl DownloadWorker {
             q_pref,
             smart_studio,
             allow_fb,
+            job_id,
+            destination_service,
+            preferred_account_id,
         ) = queue_meta.unwrap_or((
             None,
             None,
@@ -1572,6 +1919,9 @@ impl DownloadWorker {
             None,
             Some(0),
             Some(0),
+            None,
+            None,
+            None,
         ));
 
         let effective_title = t_title.unwrap_or_else(|| title.to_string());
@@ -1624,6 +1974,22 @@ impl DownloadWorker {
 
         let is_allowed_fallback = allow_fb.unwrap_or(0) != 0;
         let is_smart_studio = smart_studio.unwrap_or(0) != 0;
+
+        // D05 (#117): `fallback_action` de Ajustes manda de verdad en el
+        // worker, que hoy lo ignoraba. 'skip' = estricto: la calidad pedida
+        // no disponible falla; 'try_next' (default) degrada con aviso
+        // declarado. El job sin `allow_fallback` es estricto por sí mismo:
+        // la política efectiva es la conjunción de ambos.
+        let fallback_action_raw: Option<(String,)> =
+            sqlx::query_as("SELECT fallback_action FROM folder_settings WHERE id = 1")
+                .fetch_optional(&self.db)
+                .await
+                .ok()
+                .flatten();
+        let strict_from_settings = fallback_action_raw
+            .as_ref()
+            .is_some_and(|(v,)| v.trim().eq_ignore_ascii_case("skip"));
+        let strict_quality = strict_from_settings || !is_allowed_fallback;
 
         if !is_allowed_fallback
             && !is_smart_studio
@@ -1709,12 +2075,21 @@ impl DownloadWorker {
 
         let resolver_intent = crate::download::DownloadIntent {
             canonical_track_id: track_id,
-            requested_service: s_name.clone(),
+            // Fuente y destino son selectores distintos (D04): la fila de cola
+            // aporta la identidad de la fuente; el destino preferido y la cuenta
+            // vienen del job. El lock histórico solo se aplica sin fallback.
+            requested_service: if is_allowed_fallback {
+                None
+            } else {
+                s_name.clone()
+            },
+            destination_service: destination_service.clone(),
+            source_service: s_name.clone(),
             requested_quality: q_pref.clone(),
-            strict_quality: !is_allowed_fallback,
+            strict_quality,
             allow_fallback: is_allowed_fallback,
             locked_track_source_id,
-            preferred_account_id: None,
+            preferred_account_id,
         };
         let (quality, resolution_plan, live_dispatch_identity) =
             match crate::download::resolve_download_plan(
@@ -1822,6 +2197,30 @@ impl DownloadWorker {
                             }
                         }
                         (quality, Some(plan), dispatch_identity)
+                    } else if let crate::download::ResolutionError::NoProvider { reason } =
+                        &resolution_error
+                    {
+                        // Una pista solo Spotify/Apple sin destino con adaptador
+                        // se omite: no es un fallo de descarga.
+                        self.mark_no_provider(queue_id, job_id, reason).await;
+                        self.emit_progress(DownloadProgressEvent {
+                            queue_id,
+                            track_id,
+                            title: effective_title.clone(),
+                            artist: effective_artist.clone(),
+                            status: "skipped".to_string(),
+                            progress_percent: 0.0,
+                            message: Some(reason.clone()),
+                            bytes_downloaded: 0,
+                            total_bytes: None,
+                            percent: None,
+                            instant_kbps: 0.0,
+                            average_kbps: 0.0,
+                            phase: "skipped".to_string(),
+                            terminal: true,
+                            phase_timings: None,
+                        });
+                        return;
                     } else if s_track_id
                         .as_deref()
                         .is_some_and(|id| !id.trim().is_empty())
@@ -1854,12 +2253,41 @@ impl DownloadWorker {
                 }
             };
 
-        // Punto 3: cuando el plan nació de una resolución viva, la petición debe
-        // viajar con ESA identidad (servicio + edición del candidato primario),
-        // no con la de la fila catálogo-solo: el orquestador despacha por
-        // `service_name` y el adaptador nativo exige que petición y plan
-        // coincidan. Sin resolución viva, la identidad de la fila no se toca.
-        let (s_name, s_track_id) = match live_dispatch_identity {
+        // D04: la cuenta elegida por el resolver se persiste en la fila para que
+        // la entrega y la evidencia (`download_entitlements`) sean atribuibles.
+        if let Some(account_id) = resolution_plan
+            .as_ref()
+            .and_then(|plan| plan.primary())
+            .and_then(|candidate| candidate.account.as_ref())
+            .map(|account| account.account_id)
+        {
+            let _ = crate::db::write_or_log(
+                "worker_persist_resolved_account",
+                sqlx::query(
+                    "UPDATE download_queue SET resolved_account_id = ? \
+                     WHERE id = ? AND status = 'downloading'",
+                )
+                .bind(account_id)
+                .bind(queue_id)
+                .execute(&self.db),
+            )
+            .await;
+        }
+
+        // Punto 3: la petición viaja con la identidad del candidato primario.
+        // Cubre la resolución viva por ISRC y también el destino preferido del
+        // job: el orquestador despacha por `service_name` y los adaptadores
+        // exigen que petición y plan coincidan.
+        let plan_dispatch_identity = resolution_plan
+            .as_ref()
+            .and_then(|plan| plan.primary())
+            .map(|candidate| {
+                (
+                    candidate.service_name.clone(),
+                    candidate.service_track_id.clone(),
+                )
+            });
+        let (s_name, s_track_id) = match live_dispatch_identity.or(plan_dispatch_identity) {
             Some((service_name, service_track_id)) => (Some(service_name), Some(service_track_id)),
             None => (s_name, s_track_id),
         };
@@ -1900,6 +2328,25 @@ impl DownloadWorker {
                 None
             }
         });
+        // D05: lo que el catálogo promete para el gate de verificación se
+        // captura antes de que `track_meta` se mueva a la rama primaria.
+        let expected_delivery = crate::download::verification::ExpectedDelivery {
+            title: effective_title.clone(),
+            artist: effective_artist.clone(),
+            album: track_meta
+                .as_ref()
+                .and_then(|meta| meta.album_name.clone())
+                .filter(|album| !album.trim().is_empty()),
+            track_number: track_meta
+                .as_ref()
+                .and_then(|meta| meta.track_number)
+                .map(i64::from),
+            disc_number: track_meta
+                .as_ref()
+                .and_then(|meta| meta.disc_number)
+                .map(i64::from),
+            catalog_duration_ms: track_meta.as_ref().and_then(|meta| meta.duration_ms),
+        };
         let result: Result<crate::download::DownloadResult, String> = if let Some(meta) = track_meta
         {
             // Create download request with locked source identity
@@ -1932,7 +2379,7 @@ impl DownloadWorker {
                 artifact_policy,
                 smart_studio_origin: is_smart_studio,
                 allow_fallback: is_allowed_fallback,
-                strict_quality: !is_allowed_fallback,
+                strict_quality,
                 resolution_plan,
             };
 
@@ -1981,7 +2428,7 @@ impl DownloadWorker {
                 artifact_policy,
                 smart_studio_origin: smart_studio.unwrap_or(0) != 0,
                 allow_fallback: allow_fb.unwrap_or(0) != 0,
-                strict_quality: allow_fb.unwrap_or(0) == 0,
+                strict_quality,
                 // Mismo plan que la rama primaria: esta rama solo se alcanza
                 // cuando la fila de pista no tiene metadatos (`track_meta` fue
                 // None), así que el resolutor no tenía nada que resolver.
@@ -2025,10 +2472,24 @@ impl DownloadWorker {
                 // here; the only exclusion path in the trimmer is an explicit flag
                 // (see services::silence_trimmer). A future schema column can be wired
                 // into `process_file_with_config(.., gapless_exempt)` in one line.
-                crate::download::DownloadOrchestrator::trim_downloaded_track_silence(
-                    &mut download_result,
-                )
-                .await;
+                let trim_report =
+                    crate::download::DownloadOrchestrator::trim_downloaded_track_silence(
+                        &mut download_result,
+                    )
+                    .await;
+                // D05: el silencio recortado es una diferencia legítima frente
+                // a la duración del catálogo; el gate lo absorbe en su
+                // tolerancia en vez de fallar un fichero correcto.
+                let trim_tolerance_secs = trim_report
+                    .as_ref()
+                    .filter(|report| report.trimmed)
+                    .and_then(|report| {
+                        report
+                            .duration_ms_before
+                            .zip(report.duration_ms_after)
+                            .map(|(before, after)| before.saturating_sub(after) as f64 / 1000.0)
+                    })
+                    .unwrap_or(0.0);
 
                 // BD-9: the physical file is now at its final library path. Record it
                 // as the expected output so a crash before/inside mark_complete is
@@ -2049,6 +2510,50 @@ impl DownloadWorker {
                         "FileVerificationFailed: Downloaded audio file not found on disk or empty at '{}'",
                         file_path
                     );
+                    tracing::error!(queue_id, "{}", err_msg);
+                    self.mark_permanent_failure(queue_id, "failed", &err_msg)
+                        .await;
+                    self.emit_progress(DownloadProgressEvent {
+                        queue_id,
+                        track_id,
+                        title: effective_title.clone(),
+                        artist: effective_artist.clone(),
+                        status: "failed".to_string(),
+                        progress_percent: 0.0,
+                        message: Some(err_msg.clone()),
+                        bytes_downloaded: 0,
+                        total_bytes: None,
+                        percent: None,
+                        instant_kbps: 0.0,
+                        average_kbps: 0.0,
+                        phase: "failed".to_string(),
+                        terminal: true,
+                        phase_timings: None,
+                    });
+                    if let Some(ref j) = journal {
+                        j.fail(&err_msg, true).await;
+                    }
+                    return;
+                }
+
+                // D05 (#117): gate de verificación de entrega ANTES de
+                // `complete`. Duración física dentro de tolerancia frente al
+                // catálogo, tags releídos y portada válida (cuando se pidió
+                // incrustarla); la política de calidad estricta rechaza aquí
+                // la entrega por debajo de lo pedido. Si falla: fallo de
+                // verificación y el ledger de `downloads` NO se escribe.
+                let delivery_gate = self
+                    .verify_delivery_before_complete(
+                        queue_id,
+                        &download_result,
+                        expected_delivery,
+                        embed_artwork,
+                        strict_quality,
+                        trim_tolerance_secs,
+                    )
+                    .await;
+                if let Err(reason) = delivery_gate {
+                    let err_msg = format!("DeliveryVerificationFailed: {}", reason);
                     tracing::error!(queue_id, "{}", err_msg);
                     self.mark_permanent_failure(queue_id, "failed", &err_msg)
                         .await;
@@ -2380,19 +2885,22 @@ impl DownloadWorker {
                     if let (Some(ref srv), Some(account_id)) =
                         (&target_service, attributable_account_id)
                     {
-                        let _ = sqlx::query(
-                            r#"
-                            UPDATE accounts
-                            SET last_auth_error = ?,
-                                last_auth_error_at = ?
-                            WHERE id = ? AND service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?))
-                            "#
+                        let _ = crate::db::write_or_log(
+                            "worker_record_entitlement_error",
+                            sqlx::query(
+                                r#"
+                                UPDATE accounts
+                                SET last_auth_error = ?,
+                                    last_auth_error_at = ?
+                                WHERE id = ? AND service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?))
+                                "#
+                            )
+                            .bind("Playback entitlement unavailable")
+                            .bind(&now_iso)
+                            .bind(account_id)
+                            .bind(srv)
+                            .execute(&self.db),
                         )
-                        .bind("Playback entitlement unavailable")
-                        .bind(&now_iso)
-                        .bind(account_id)
-                        .bind(srv)
-                        .execute(&self.db)
                         .await;
                     }
                 }
@@ -2556,11 +3064,19 @@ impl DownloadWorker {
             // 'failed' must also see the corresponding postprocess error.
             if let Some(message) = message {
                 // The queue remains complete; expose the postprocess error separately.
-                let _ = sqlx::query("UPDATE download_queue SET error_message = ? WHERE id = ? AND status = 'complete'")
-                    .bind(message).bind(queue_id).execute(&db).await;
+                let _ = crate::db::write_or_log(
+                    "worker_publish_postprocess_error",
+                    sqlx::query("UPDATE download_queue SET error_message = ? WHERE id = ? AND status = 'complete'")
+                        .bind(message).bind(queue_id).execute(&db),
+                )
+                .await;
             } else {
-                let _ = sqlx::query("UPDATE download_queue SET error_message = NULL WHERE id = ? AND status = 'complete'")
-                    .bind(queue_id).execute(&db).await;
+                let _ = crate::db::write_or_log(
+                    "worker_publish_postprocess_error",
+                    sqlx::query("UPDATE download_queue SET error_message = NULL WHERE id = ? AND status = 'complete'")
+                        .bind(queue_id).execute(&db),
+                )
+                .await;
             }
             if let Err(error) =
                 sqlx::query("UPDATE settings SET value = ? WHERE key = ? AND value = 'running'")
@@ -2625,18 +3141,26 @@ impl DownloadWorker {
         // Repair legacy queue rows with missing service_track_id
         Self::repair_unresolved_queue_sources(&self.db).await;
 
-        // FS-07: Restore persisted concurrency limit from SQLite on worker startup
-        if let Ok(Some((concurrency_str,))) = sqlx::query_as::<_, (String,)>(
-            "SELECT value FROM settings WHERE key = 'dl_concurrent_downloads' AND value IS NOT NULL AND TRIM(value) != ''"
+        // FS-07: Restore persisted concurrency limit from SQLite on worker
+        // startup. SB01 (#199): sync_settings es la superficie canónica; la
+        // clave KV `dl_concurrent_downloads` queda como lectura tolerante de
+        // restos legacy de versiones anteriores.
+        let restored_concurrency: Option<i64> = sqlx::query_scalar(
+            "SELECT COALESCE(
+                (SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1),
+                (SELECT CAST(value AS INTEGER) FROM settings
+                 WHERE key = 'dl_concurrent_downloads' AND value IS NOT NULL AND TRIM(value) != '')
+            )",
         )
         .fetch_optional(&self.db)
         .await
-        {
-            if let Ok(threads) = concurrency_str.trim().parse::<usize>() {
-                if (1..=10).contains(&threads) {
-                    self.state.set_max_concurrent(threads);
-                    tracing::info!("[Worker] Restored max_concurrent = {} on startup", threads);
-                }
+        .ok()
+        .flatten();
+        if let Some(threads) = restored_concurrency {
+            let threads = threads.max(0) as usize;
+            if (1..=10).contains(&threads) {
+                self.state.set_max_concurrent(threads);
+                tracing::info!("[Worker] Restored max_concurrent = {} on startup", threads);
             }
         }
 
@@ -2713,14 +3237,17 @@ impl DownloadWorker {
             if allow_fb.unwrap_or(0) == 0 {
                 let reason =
                     "SourceIdentityMissing: Legacy queue row without locked source identity";
-                let _ = sqlx::query(
-                    "UPDATE download_queue SET status = 'failed', error_message = ?, last_error = ?, decision_reason = COALESCE(?, decision_reason), retry_count = retry_count + 1, failure_class = 'identity_conflict', next_attempt_at = NULL WHERE id = ? AND status = 'queued'"
+                let _ = crate::db::write_or_log(
+                    "worker_quarantine_unresolved_row",
+                    sqlx::query(
+                        "UPDATE download_queue SET status = 'failed', error_message = ?, last_error = ?, decision_reason = COALESCE(?, decision_reason), retry_count = retry_count + 1, failure_class = 'identity_conflict', next_attempt_at = NULL WHERE id = ? AND status = 'queued'"
+                    )
+                    .bind(reason)
+                    .bind(reason)
+                    .bind(reason)
+                    .bind(qid)
+                    .execute(db),
                 )
-                .bind(reason)
-                .bind(reason)
-                .bind(reason)
-                .bind(qid)
-                .execute(db)
                 .await;
                 quarantined += 1;
             }

@@ -14,7 +14,23 @@
 //! each binary uses a different subset of these helpers.
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Renderiza una ruta como el STRING crudo que llega por IPC, sin el prefijo
+/// verbatim (`\\?\`) que Windows antepone a lo que produce canonicalize.
+///
+/// Los casos de traversal representan ese string: sobre un prefijo verbatim
+/// el parseo de `components()` de Rust no clasifica los `..` como ParentDir y
+/// el pre-check de traversal del validador no los ve (la contencion canonica
+/// sigue sosteniendo el sandbox). Sin prefijo, el rechazo de `..` aplica en
+/// ambas plataformas y el caso prueba la misma defensa que en Linux.
+pub fn render_ipc_string(path: &Path) -> String {
+    let rendered = path.to_string_lossy().to_string();
+    match rendered.strip_prefix(r"\\?\") {
+        Some(stripped) => stripped.to_string(),
+        None => rendered,
+    }
+}
 
 /// Returns the allowed base directories shared by every sandbox in `sandboxes`.
 ///

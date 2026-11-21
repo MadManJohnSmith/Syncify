@@ -6,7 +6,8 @@
  * plano. `estimateDownloadJob` es una consulta pura (sin escribir).
  */
 
-import { invokeCommand } from './tauri'
+import { invokeCommand, TauriEvents } from './tauri'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 
 export type DownloadJobKind =
     | 'favorites'
@@ -109,4 +110,55 @@ export async function getDownloadJobs(limit?: number): Promise<DownloadJob[]> {
 
 export async function getDownloadJob(id: number): Promise<DownloadJob> {
     return invokeCommand<DownloadJob>('get_download_job', { id })
+}
+
+// ── D07 (spec #111 / issue #119): ciclo de vida y evento de job ──────────────
+
+/**
+ * Payload de `syncify:download_job_progress`. El contrato es snake_case, tal
+ * como emite serde en `download/jobs.rs::DownloadJobProgressEvent`.
+ */
+export interface DownloadJobProgress {
+    job_id: number
+    label?: string | null
+    status: DownloadJobStatus
+    total: number
+    queued: number
+    downloading: number
+    completed: number
+    failed: number
+    cancelled: number
+    skipped: number
+    percent: number
+    terminal: boolean
+}
+
+/**
+ * Cancela las filas pendientes (`queued`) de un job; la descarga activa
+ * termina. Devuelve el job refrescado.
+ */
+export async function cancelDownloadJob(jobId: number): Promise<DownloadJob> {
+    return invokeCommand<DownloadJob>('cancel_download_job', { jobId })
+}
+
+/**
+ * Reencola las filas `failed` del job y lo reabre si estaba terminal.
+ * Devuelve el job refrescado.
+ */
+export async function retryDownloadJobFailed(jobId: number): Promise<DownloadJob> {
+    return invokeCommand<DownloadJob>('retry_download_job_failed', { jobId })
+}
+
+/** Borra del historial los jobs terminales. Devuelve cuántos cayeron. */
+export async function clearDownloadJobs(): Promise<number> {
+    return invokeCommand<number>('clear_download_jobs')
+}
+
+/** Escucha `syncify:download_job_progress` (creación, progreso con throttle, terminal). */
+export async function onDownloadJobProgress(
+    callback: (payload: DownloadJobProgress) => void,
+): Promise<UnlistenFn> {
+    return listen<DownloadJobProgress>(TauriEvents.DOWNLOAD_JOB_PROGRESS, (e) => {
+        callback(e.payload)
+    })
 }

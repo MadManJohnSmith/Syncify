@@ -18,7 +18,11 @@ import {
     syncFavorites,
     normalizeQualityPreference,
     syncLocalLibrary,
-    getTrackMetadata
+    getTrackMetadata,
+    queryLibraryAlbums,
+    queryLibraryArtists,
+    queryLibraryArtistTracks,
+    getArtist
 } from '@/api/library';
 import { resetMocks, mockInvoke } from '../setup';
 
@@ -521,6 +525,271 @@ describe('libraryApi', () => {
             expect(meta.track_id).toBe(7);
             expect(meta.title).toBe('T');
             expect(meta.file_path).toBe('/x.flac');
+        });
+    });
+
+    describe('queryLibraryAlbums', () => {
+        const query = {
+            text: null,
+            serviceIds: [],
+            accountIds: [],
+            coverage: [],
+            sort: 'dateAdded' as const,
+            direction: 'desc' as const,
+            offset: 0,
+            limit: 100,
+        };
+
+        it('calls query_library_albums and normalizes the album page', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'query_library_albums') {
+                    return {
+                        albums: [{
+                            albumId: 7,
+                            title: 'Nightfall',
+                            artistName: 'Alpha Band',
+                            releaseYear: 1999,
+                            trackCount: 3,
+                            downloadedCount: 1,
+                            queuedCount: 1,
+                            downloadingCount: 0,
+                            failedCount: 0,
+                            notDownloadedCount: 1,
+                            coverage: 1 / 3,
+                            accounts: [{ accountId: 1, displayName: 'A1', serviceName: 'spotify' }],
+                            services: [{ serviceId: 2, serviceName: 'qobuz' }],
+                            dateAdded: '2026-03-01T10:00:00Z',
+                            coverArtUrl: null,
+                        }],
+                        total: 1,
+                        offset: 0,
+                        limit: 100,
+                        hasMore: false,
+                    };
+                }
+                return null;
+            });
+
+            const result = await queryLibraryAlbums(query);
+
+            expect(invoke).toHaveBeenCalledWith('query_library_albums', { query });
+            expect(result.total).toBe(1);
+            expect(result.hasMore).toBe(false);
+            const album = result.albums[0];
+            expect(album.albumId).toBe(7);
+            expect(album.artistName).toBe('Alpha Band');
+            expect(album.trackCount).toBe(3);
+            expect(album.queuedCount).toBe(1);
+            expect(album.downloadingCount).toBe(0);
+            expect(album.failedCount).toBe(0);
+            expect(album.notDownloadedCount).toBe(1);
+            expect(album.accounts[0].displayName).toBe('A1');
+            expect(album.services[0].serviceName).toBe('qobuz');
+        });
+
+        it('keeps coverage null when the server reports no total', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'query_library_albums') {
+                    return {
+                        albums: [{ albumId: 1, title: 'Empty', trackCount: 0, downloadedCount: 0, coverage: null }],
+                        total: 1,
+                        offset: 0,
+                        limit: 100,
+                        hasMore: false,
+                    };
+                }
+                return null;
+            });
+
+            const result = await queryLibraryAlbums(query);
+
+            expect(result.albums[0].coverage).toBeNull();
+            expect(result.albums[0].trackCount).toBe(0);
+        });
+    });
+
+    describe('queryLibraryArtists', () => {
+        const query = {
+            text: null,
+            serviceIds: [],
+            accountIds: [],
+            sort: 'name' as const,
+            direction: 'asc' as const,
+            offset: 0,
+            limit: 100,
+        };
+
+        it('calls query_library_artists and normalizes the artist page', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'query_library_artists') {
+                    return {
+                        artists: [{
+                            artistId: 3,
+                            name: 'Alpha Band',
+                            imageUrl: null,
+                            trackCount: 8,
+                            albumCount: 3,
+                            collaborationCount: 1,
+                            accounts: [{ accountId: 1, displayName: 'A1', serviceName: 'spotify' }],
+                            services: [{ serviceId: 2, serviceName: 'qobuz' }],
+                            dateAdded: '2026-05-01T10:00:00Z',
+                        }],
+                        total: 1,
+                        offset: 0,
+                        limit: 100,
+                        hasMore: false,
+                    };
+                }
+                return null;
+            });
+
+            const result = await queryLibraryArtists(query);
+
+            expect(invoke).toHaveBeenCalledWith('query_library_artists', { query });
+            expect(result.total).toBe(1);
+            expect(result.hasMore).toBe(false);
+            const artist = result.artists[0];
+            expect(artist.artistId).toBe(3);
+            expect(artist.trackCount).toBe(8);
+            expect(artist.albumCount).toBe(3);
+            expect(artist.collaborationCount).toBe(1);
+            expect(artist.accounts[0].displayName).toBe('A1');
+            expect(artist.services[0].serviceName).toBe('qobuz');
+        });
+    });
+
+    describe('queryLibraryArtistTracks', () => {
+        const query = { artistId: 1, offset: 0, limit: 100 };
+
+        it('calls query_library_artist_tracks and normalizes collaborators and sources', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'query_library_artist_tracks') {
+                    return {
+                        tracks: [{
+                            id: 11,
+                            title: 'Joint',
+                            album: 'Guest Album',
+                            albumId: 4,
+                            durationMs: 240000,
+                            collaborators: ['Guest Vocalist'],
+                            sources: [
+                                { serviceId: 2, serviceName: 'qobuz' },
+                                { serviceId: 1, serviceName: 'spotify' },
+                            ],
+                        }],
+                        total: 8,
+                        offset: 0,
+                        limit: 100,
+                        hasMore: true,
+                    };
+                }
+                return null;
+            });
+
+            const result = await queryLibraryArtistTracks(query);
+
+            expect(invoke).toHaveBeenCalledWith('query_library_artist_tracks', { query });
+            expect(result.total).toBe(8);
+            expect(result.hasMore).toBe(true);
+            const track = result.tracks[0];
+            expect(track.title).toBe('Joint');
+            expect(track.collaborators).toEqual(['Guest Vocalist']);
+            expect(track.sources.map((s) => s.serviceName)).toEqual(['qobuz', 'spotify']);
+        });
+
+        it('never invents collaborators when the server omits them', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'query_library_artist_tracks') {
+                    return {
+                        tracks: [{ id: 1, title: 'Solo', durationMs: 1000 }],
+                        total: 1,
+                        offset: 0,
+                        limit: 100,
+                        hasMore: false,
+                    };
+                }
+                return null;
+            });
+
+            const result = await queryLibraryArtistTracks(query);
+
+            expect(result.tracks[0].collaborators).toEqual([]);
+            expect(result.tracks[0].sources).toEqual([]);
+        });
+    });
+
+    describe('getArtist', () => {
+        // #336: `top_tracks` pasa por el MISMO normalizador que
+        // `query_library_artist_tracks`; el backend serializa camelCase en
+        // este release, así que un alias snake_case ya no se interpreta.
+        it('normalizes top_tracks with the shared track normalizer', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'get_artist') {
+                    return {
+                        id: 42,
+                        name: 'The Beatles',
+                        bio: null,
+                        image_url: null,
+                        album_count: 1,
+                        albums: [],
+                        top_tracks: [{
+                            id: 101,
+                            title: 'Come Together',
+                            album: 'Abbey Road',
+                            albumId: 10,
+                            durationMs: 259000,
+                            collaborators: ['Guest'],
+                            sources: [{ serviceId: 1, serviceName: 'spotify' }],
+                        }],
+                        tracks_total: 7,
+                    };
+                }
+                return null;
+            });
+
+            const detail = await getArtist(42);
+
+            expect(detail.tracks_total).toBe(7);
+            expect(detail.top_tracks).toEqual([{
+                id: 101,
+                title: 'Come Together',
+                album: 'Abbey Road',
+                albumId: 10,
+                durationMs: 259000,
+                collaborators: ['Guest'],
+                sources: [{ serviceId: 1, serviceName: 'spotify' }],
+            }]);
+        });
+
+        it('does not resurrect snake_case aliases for detail tracks', async () => {
+            mockInvoke((cmd) => {
+                if (cmd === 'get_artist') {
+                    return {
+                        id: 42,
+                        name: 'The Beatles',
+                        album_count: 0,
+                        albums: [],
+                        top_tracks: [{
+                            id: 101,
+                            title: 'Come Together',
+                            album: null,
+                            album_id: 10,
+                            duration_ms: 259000,
+                            collaborators: null,
+                            sources: [{ service_id: 1, service_name: 'spotify' }],
+                        }],
+                        tracks_total: 1,
+                    };
+                }
+                return null;
+            });
+
+            const detail = await getArtist(42);
+            const track = detail.top_tracks[0];
+
+            expect(track.albumId).toBeNull();
+            expect(track.durationMs).toBeNull();
+            expect(track.sources).toEqual([{ serviceId: 0, serviceName: '' }]);
         });
     });
 });

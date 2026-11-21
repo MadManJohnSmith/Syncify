@@ -5,6 +5,7 @@
  */
 
 import { invokeCommand } from './tauri';
+import { invalidateLibraryPages } from '@/composables/libraryCacheInvalidation';
 import { asArray, asNumber, asRecord, pick, pickNumber, pickArray, optionalNumber, optionalBoolean } from './normalize';
 import type {
     QueueItem,
@@ -88,6 +89,8 @@ export async function addToQueue(params: {
         smartStudioOrigin: params.smartStudioOrigin,
         allowFallback: params.allowFallback ?? true,
     });
+    // L13 (#110): la fila pasa a «queued» hasta que el evento terminal avise.
+    invalidateLibraryPages('download');
     return typeof queued === 'number' ? queued : 0;
 }
 
@@ -104,6 +107,9 @@ export async function forceRedownloadTracks(
         priority,
         qualityPreference: qualityPreference ? normalizeQuality(qualityPreference) : undefined,
     });
+    // L14 (#109): la pista pasa a «queued» y su Download desaparece; la
+    // caché de páginas de la biblioteca deja de servir la fila anterior.
+    invalidateLibraryPages('download');
     return typeof queued === 'number' ? queued : 0;
 }
 
@@ -226,6 +232,7 @@ export async function enqueueEligibleBatch(params: {
         allowFallback: params.allowFallback ?? true,
         smartStudioOrigin: params.smartStudioOrigin,
     });
+    invalidateLibraryPages('download');
     return {
         submitted: pickNumber(raw, ['submitted']),
         added: pickNumber(raw, ['added']),
@@ -262,6 +269,7 @@ export async function addBatchToQueue(params: {
         allowFallback: params.allowFallback ?? true,
         jobKind: params.jobKind,
     });
+    invalidateLibraryPages('download');
     const summary = pick(raw, ['summary']);
     return {
         added: pickNumber(raw, ['added']),
@@ -346,7 +354,8 @@ export async function updatePriority(id: number, priority: number): Promise<void
  * Cancel a queue item
  */
 export async function cancelItem(id: number): Promise<void> {
-    return invokeCommand<void>('cancel_queue_item', { queueId: id });
+    await invokeCommand<void>('cancel_queue_item', { queueId: id });
+    invalidateLibraryPages('download');
 }
 
 
@@ -354,7 +363,8 @@ export async function cancelItem(id: number): Promise<void> {
  * Retry a failed queue item
  */
 export async function retryItem(id: number): Promise<void> {
-    return invokeCommand<void>('retry_queue_item', { queueId: id });
+    await invokeCommand<void>('retry_queue_item', { queueId: id });
+    invalidateLibraryPages('download');
 }
 
 

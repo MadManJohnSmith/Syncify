@@ -295,13 +295,18 @@ pub struct LibraryTrack {
     pub available_services: Option<String>, // Services verified available
     pub availability_summary: Option<String>, // JSON or summary of source statuses
     pub quality: Option<String>,  // e.g. "24/96", "16/44.1", "320kbps"
+    // L14 (#109): calidad efectiva del fichero descargado ('FLAC 24/96',
+    // 'MP3'); `None` si la pista no está descargada. Solo la proyecta
+    // `query_library`; las demás consultas la dejan en su default.
+    #[sqlx(default)]
+    pub download_quality: Option<String>,
     // FE-10: dashboard-compatible quality bucket ('Hi-Res (24-bit+)' |
     // 'CD Quality' | 'Lossy'), computed by get_library, search_tracks and
     // get_favorite_tracks (ADR-0025, decisión 5) so the /library?filter=quality
     // deep-link no longer degrades on FTS and favorites.
     #[sqlx(default)]
     pub quality_bucket: Option<String>,
-    pub download_status: Option<String>, // "downloaded", "queued", "not_downloaded"
+    pub download_status: Option<String>, // "downloaded", "queued", "downloading", "failed", "not_downloaded"
     pub metadata_score: Option<i32>,     // 0-100 based on field completeness
     pub lyrics_type: Option<String>,     // "synced", "timed", "plain", "none"
     pub cover_art_url: Option<String>,   // Album artwork URL
@@ -321,6 +326,8 @@ pub struct LibraryTrack {
     // keeps every other query decodable without selecting it.
     #[sqlx(default)]
     pub edition_item_id: Option<String>,
+    #[sqlx(default)]
+    pub musicbrainz_id: Option<String>,
     pub file_path: Option<String>,
     #[sqlx(default)]
     pub display_title: Option<String>,
@@ -373,11 +380,13 @@ pub struct DownloadItem {
 }
 
 /// Application settings
+///
+/// #197: `auto_download_favorites` retirado — el disparador de auto-descarga
+/// de favoritos no existe (PLAN A-04); se reabre al cablear el disparador.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub download_path: String,
     pub preferred_quality: String,
-    pub auto_download_favorites: bool,
 }
 
 /// Library statistics
@@ -505,6 +514,10 @@ pub struct ServiceNotification {
 }
 
 /// Unified Import Preferences per Service DTO
+///
+/// #197: `incremental_sync` retirado del contrato — ningún código lo leía para
+/// decidir el recorrido del sync (siempre recorrido completo, spec #64); la
+/// columna con DEFAULT 1 permanece en BD sin consumidores.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportPreferences {
     pub service_name: String,
@@ -515,7 +528,6 @@ pub struct ImportPreferences {
     pub purchases: bool,
     pub library_history: bool,
     pub include_appearances: bool,
-    pub incremental_sync: bool,
     #[serde(default)]
     pub force_retry_unavailable: bool,
 }
@@ -595,7 +607,6 @@ impl Default for ImportPreferences {
             purchases: false,
             library_history: false,
             include_appearances: false,
-            incremental_sync: true,
             force_retry_unavailable: false,
         }
     }
@@ -621,7 +632,6 @@ pub struct EffectiveDownloadPreferences {
     pub rate_limit_delay_ms: u32,
     pub max_retries: u32,
     pub retry_delay_seconds: u32,
-    pub auto_download_favorites: bool,
     pub generate_lyrics_lrc: bool,
     pub generate_cover_art: bool,
     pub generate_animated_cover: bool,

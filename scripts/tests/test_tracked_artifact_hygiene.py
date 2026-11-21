@@ -56,6 +56,14 @@ ALLOWED_TRACKED_TXT = (
     "requirements.txt",
     "scripts/requirements.txt",
     "src-tauri/tests/fixtures/playlists_import/sample.txt",
+    # Fuente única de las 11 globs SEC-011 (una por línea), consumida por los
+    # dos ensamblados: Linux con rsync --exclude-from (#244) y Windows desde
+    # #247 (assemble_portable.ps1).
+    "scripts/ci/exclusions.txt",
+    # Plantilla del LEEME que assemble_portable.ps1 copia tal cual a la raíz
+    # del portable Windows (#247): el texto vive en fichero, no en un
+    # here-string del workflow.
+    "scripts/ci/portable/LEEME.txt",
 )
 
 # Directories that are build output or dependencies, never repository content.
@@ -104,7 +112,7 @@ class SweepArtifactHygieneTests(unittest.TestCase):
             for path in (REPO_ROOT / root).rglob("*.txt"):
                 if any(part in IGNORED_TREES for part in path.parts):
                     continue
-                relative = str(path.relative_to(REPO_ROOT))
+                relative = path.relative_to(REPO_ROOT).as_posix()
                 if relative in ALLOWED_TRACKED_TXT:
                     continue
                 leftovers.append(relative)
@@ -189,6 +197,37 @@ class SweepArtifactHygieneTests(unittest.TestCase):
             '"sample.txt"',
             consumer,
             "the allowlisted fixture is no longer read by the playlist parser test; "
+            "drop it from the allowlist instead of keeping a dead exemption",
+        )
+
+    def test_the_allowed_packaging_exclusions_are_still_consumed_by_the_assembler(self):
+        """The exclusions allowlist entry is bound to its consumer.
+
+        A `.txt` allowed "for packaging" that no script reads is exactly the
+        kind of leftover this module exists to catch, so the exemption is
+        bound to the assembly script that applies it.
+        """
+        source = "scripts/ci/exclusions.txt"
+        self.assertIn(source, ALLOWED_TRACKED_TXT)
+        self.assertTrue(
+            (REPO_ROOT / source).is_file(), f"the allowlisted source is gone: {source}"
+        )
+        linux_consumer = (REPO_ROOT / "scripts/ci/assemble_raw.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "--exclude-from",
+            linux_consumer,
+            "the Linux assembler no longer applies the exclusions source; "
+            "drop it from the allowlist instead of keeping a dead exemption",
+        )
+        windows_consumer = (REPO_ROOT / "scripts/ci/assemble_portable.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            source,
+            windows_consumer,
+            "the Windows portable assembler no longer applies the exclusions source; "
             "drop it from the allowlist instead of keeping a dead exemption",
         )
 

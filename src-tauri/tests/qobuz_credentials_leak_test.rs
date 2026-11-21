@@ -65,11 +65,13 @@ fn scan_tree(
         }
         if let Ok(content) = fs::read_to_string(&file) {
             scanned += 1;
+            // Comparado con rutas canónicas escritas con '/': el separador
+            // nativo de Windows no decide la pertenencia.
             let relative = file
                 .strip_prefix(get_repo_root())
                 .unwrap_or(&file)
                 .to_string_lossy()
-                .to_string();
+                .replace('\\', "/");
             if let Some(violation) = predicate(&relative, &content) {
                 violations.push(violation);
             }

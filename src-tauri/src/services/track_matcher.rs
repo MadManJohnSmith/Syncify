@@ -68,11 +68,14 @@ pub async fn find_or_create_track_with_identity(
     .await
     {
         if let Some(alb_id) = album_id {
-            let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
-                .bind(alb_id)
-                .bind(existing_id)
-                .execute(db)
-                .await;
+            let _ = crate::db::write_or_log(
+                "find_or_create_track_with_identity",
+                sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
+                    .bind(alb_id)
+                    .bind(existing_id)
+                    .execute(db),
+            )
+            .await;
         }
         return Ok(TrackMatch {
             track_id: existing_id,
@@ -91,12 +94,15 @@ pub async fn find_or_create_track_with_identity(
         {
             if is_explicit_compatible(identity.explicit, existing_explicit) {
                 if let Some(alb_id) = album_id {
-                    let _ = sqlx::query(
-                        "UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?",
+                    let _ = crate::db::write_or_log(
+                        "find_or_create_track_with_identity",
+                        sqlx::query(
+                            "UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?",
+                        )
+                        .bind(alb_id)
+                        .bind(existing_id)
+                        .execute(db),
                     )
-                    .bind(alb_id)
-                    .bind(existing_id)
-                    .execute(db)
                     .await;
                 }
                 return Ok(TrackMatch {
@@ -136,12 +142,15 @@ pub async fn find_or_create_track_with_identity(
                     if is_fuzzy_track_match(safe_title, identity.duration_ms, &cand_title, cand_dur)
                     {
                         if let Some(valid_isrc) = identity.sanitized_isrc() {
-                            let _ = sqlx::query(
-                                "UPDATE tracks SET isrc = COALESCE(isrc, ?) WHERE id = ?",
+                            let _ = crate::db::write_or_log(
+                                "find_or_create_track_with_identity",
+                                sqlx::query(
+                                    "UPDATE tracks SET isrc = COALESCE(isrc, ?) WHERE id = ?",
+                                )
+                                .bind(valid_isrc)
+                                .bind(cand_id)
+                                .execute(db),
                             )
-                            .bind(valid_isrc)
-                            .bind(cand_id)
-                            .execute(db)
                             .await;
                         }
                         return Ok(TrackMatch {
@@ -200,19 +209,23 @@ pub async fn find_or_create_track_with_identity(
                             )
                         {
                             if let Some(valid_isrc) = identity.sanitized_isrc() {
-                                let _ = sqlx::query(
-                                    "UPDATE tracks SET isrc = COALESCE(isrc, ?) WHERE id = ?",
+                                let _ = crate::db::write_or_log(
+                                    "find_or_create_track_with_identity",
+                                    sqlx::query(
+                                        "UPDATE tracks SET isrc = COALESCE(isrc, ?) WHERE id = ?",
+                                    )
+                                    .bind(valid_isrc)
+                                    .bind(cand_id)
+                                    .execute(db),
                                 )
-                                .bind(valid_isrc)
-                                .bind(cand_id)
-                                .execute(db)
                                 .await;
                             }
                             if let Some(cand_alb_id) = cand_alb {
-                                let _ = sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
+                                let _ = crate::db::write_or_log("find_or_create_track_with_identity", sqlx::query("UPDATE tracks SET album_id = COALESCE(album_id, ?) WHERE id = ?")
                                     .bind(cand_alb_id)
                                     .bind(cand_id)
                                     .execute(db)
+                                    )
                                     .await;
                             }
                             return Ok(TrackMatch {

@@ -936,7 +936,10 @@
     <!-- Advanced Sync Editor Modal -->
     <Teleport to="body">
       <Transition name="fade">
-        <div v-if="showSyncEditor" class="sync-editor fixed inset-0 bg-black flex flex-col z-50" tabindex="-1" @keydown="onSyncEditorKeydown">
+        <!-- `data-playback-shortcuts="off"`: this editor owns Space and the
+             arrows while it is open; the window playback shortcuts stay out
+             (P04, #135). -->
+        <div v-if="showSyncEditor" data-playback-shortcuts="off" class="sync-editor fixed inset-0 bg-black flex flex-col z-50" tabindex="-1" @keydown="onSyncEditorKeydown">
           <!-- Header -->
           <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between bg-gray-900">
             <div class="flex items-center gap-4">

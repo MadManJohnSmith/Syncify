@@ -7,7 +7,9 @@
 //! 4. Process umask (0o077) enforces secure default creation modes.
 //! 5. Platform compatibility across Unix and non-Unix environments.
 
-use std::fs::{self, File};
+use std::fs;
+#[cfg(unix)]
+use std::fs::File;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use syncify_tauri_lib::crypto::{
@@ -168,7 +170,13 @@ fn test_ensure_secure_profile_permissions_creates_missing_directory() {
 
     assert!(!non_existent_profile.exists());
 
+    // El informe solo se audita en unix (los permisos 0700 son POSIX); en el
+    // resto de plataformas se verifica igualmente que la llamada crea el dir.
+    #[cfg(unix)]
     let report = ensure_secure_profile_permissions(&non_existent_profile)
+        .expect("ensure_secure_profile_permissions should create non-existent dir");
+    #[cfg(not(unix))]
+    let _ = ensure_secure_profile_permissions(&non_existent_profile)
         .expect("ensure_secure_profile_permissions should create non-existent dir");
 
     assert!(non_existent_profile.exists());

@@ -399,7 +399,8 @@ pub async fn search_library(
             FROM playlists p
             LEFT JOIN accounts a ON a.id = p.account_id
             LEFT JOIN services s ON s.id = a.service_id
-            WHERE (p.name LIKE ? OR p.description LIKE ?)
+            WHERE p.deleted_at IS NULL
+            AND (p.name LIKE ? OR p.description LIKE ?)
             AND (? = 'all' OR LOWER(s.name) = LOWER(?))
             "#,
         )
@@ -425,7 +426,8 @@ pub async fn search_library(
             FROM playlists p
             LEFT JOIN accounts a ON a.id = p.account_id
             LEFT JOIN services s ON s.id = a.service_id
-            WHERE (p.name LIKE ? OR p.description LIKE ?)
+            WHERE p.deleted_at IS NULL
+            AND (p.name LIKE ? OR p.description LIKE ?)
             AND (? = 'all' OR LOWER(s.name) = LOWER(?))
             ORDER BY p.name ASC
             LIMIT ? OFFSET ?

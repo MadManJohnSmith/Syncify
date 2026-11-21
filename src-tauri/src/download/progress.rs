@@ -339,6 +339,11 @@ pub struct DownloadResult {
     pub channels: Option<i32>,
     #[serde(default)]
     pub bitrate: Option<i32>,
+    /// D05 (#117): id de la cuenta que ENTREGÓ esta descarga, propagado desde
+    /// `ProviderDelivery.account_id`. El ledger `downloads.account_id` lo
+    /// persiste para auditar el enrutado; `None` en rutas sin cuenta.
+    #[serde(default)]
+    pub account_id: Option<i64>,
 }
 
 /// Download Phase state machine according to strict contract
@@ -932,6 +937,7 @@ impl Default for DownloadResult {
             quality_decision: None,
             channels: None,
             bitrate: None,
+            account_id: None,
         }
     }
 }

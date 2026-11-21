@@ -178,12 +178,12 @@ async fn test_fixture_m3u_matches_every_mechanism() {
 }
 
 #[tokio::test]
-async fn test_fixture_dedupe_within_import() {
+async fn test_fixture_repetitions_within_import() {
     let pool = create_test_db().await;
     seed_library(&pool).await;
 
-    // El ISRC y el título+artista resuelven al MISMO track 10; además la misma
-    // línea duplicada. La playlist debe quedar con una sola fila del track 10.
+    // PL00 (#153): el ISRC, el título+artista y la línea repetida resuelven a
+    // la MISMA pista; las tres entradas se conservan como repeticiones.
     let content = "#EXTM3U\n\
                    #EXTINF:304,Daft Punk - One More Time\n\
                    # ISRC: USUM71100999\n\
@@ -195,14 +195,22 @@ async fn test_fixture_dedupe_within_import() {
         .expect("import must succeed");
 
     assert_eq!(result.total_entries, 3);
-    assert_eq!(result.matched_count, 1, "3 entradas -> 1 pista única");
-    let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?")
-            .bind(result.playlist_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(
+        result.matched_count, 3,
+        "las 3 entradas enlazan, repeticiones incluidas"
+    );
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT track_id, position FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC",
+    )
+    .bind(result.playlist_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![(10, 1), (10, 2), (10, 3)],
+        "la repetición de la misma pista se conserva"
+    );
 }
 
 #[tokio::test]

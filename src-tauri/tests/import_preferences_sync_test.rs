@@ -53,7 +53,8 @@ async fn test_import_preferences_persistence_and_defaults() {
     assert!(default_prefs.playlists);
     assert!(!default_prefs.purchases);
     assert!(!default_prefs.library_history);
-    assert!(default_prefs.incremental_sync);
+    // #197 (SB02): `incremental_sync` fuera del contrato; el sync es siempre
+    // recorrido completo y la columna ya no se lee ni se escribe.
 
     // 2. Update preferences with custom granular toggles
     let custom_prefs = ImportPreferences {
@@ -65,7 +66,6 @@ async fn test_import_preferences_persistence_and_defaults() {
         purchases: true,
         library_history: true,
         include_appearances: true,
-        incremental_sync: false,
         ..Default::default()
     };
 
@@ -81,7 +81,6 @@ async fn test_import_preferences_persistence_and_defaults() {
     assert!(updated.purchases);
     assert!(updated.library_history);
     assert!(updated.include_appearances);
-    assert!(!updated.incremental_sync);
 
     // 3. Verify persistence across fresh query
     let fetched = perform_get_service_import_preferences(&pool, "qobuz")
@@ -90,6 +89,16 @@ async fn test_import_preferences_persistence_and_defaults() {
     assert_eq!(fetched.favorite_artists, true);
     assert_eq!(fetched.playlists, false);
     assert_eq!(fetched.include_appearances, true);
+
+    // Regresión #197: el guardado ya no escribe `incremental_sync`; la columna
+    // (DEFAULT 1) conserva su valor huérfano sin lectores.
+    let orphan: (bool,) = sqlx::query_as(
+        "SELECT incremental_sync FROM service_sync_settings WHERE service_name = 'qobuz'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("la columna huérfana sigue existiendo en la tabla");
+    assert!(orphan.0);
 }
 
 /// C-08, contrato completo de la migración `0092_import_preferences_defaults.sql`:

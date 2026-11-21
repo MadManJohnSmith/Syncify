@@ -37,8 +37,22 @@
 
       <!-- Connected Services Section (C-01: visible directly on enter) -->
       <section class="mb-10">
-        <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Connected Services</h2>
-        
+        <!-- Cero cuentas es un estado vacío, no un wizard (ADR-0007, decisión 15).
+             Las seis tarjetas se renderizan debajo desde el catálogo de servicios
+             del backend; cada una ofrece su botón Connect. El titular de la
+             sección solo tiene sentido cuando hay algo conectado. -->
+        <h2 v-if="rawAccounts.length > 0" class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Connected Services</h2>
+        <div
+          v-if="!isLoading && rawAccounts.length === 0"
+          data-testid="accounts-empty-state"
+          class="mb-4 rounded-xl border border-dashed border-primary/30 bg-primary/5 px-4 py-3"
+        >
+          <p class="text-sm font-medium text-gray-900 dark:text-white">No services connected yet</p>
+          <p class="text-xs text-text-secondary mt-1">
+            Choose one of the six services below to sign in. The login opens inside Syncify; no separate setup is needed.
+          </p>
+        </div>
+
         <div class="service-cards grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           
           <!-- Service Card Component -->
@@ -178,7 +192,7 @@
                  behind the "manage" disclosure to keep the card compact. -->
             <div v-if="service.accounts.length" class="mb-4">
               <div
-                v-for="account in orderedAccounts(service.accounts)"
+                v-for="account in orderedAccounts(service.accounts).filter(a => accountState(a) !== 'archived')"
                 :key="account.id"
                 :class="[
                   'rounded-lg border p-2.5 text-sm transition-colors',
@@ -189,6 +203,7 @@
                 ]"
                 :data-testid="`account-row-${account.id}`"
                 :data-active="account.is_active ? 'true' : 'false'"
+                :data-state="accountState(account)"
                 :data-invalid="account.credentials_invalid ? 'true' : 'false'"
                 :data-no-streaming="account.streaming_entitled === false ? 'true' : 'false'"
               >
@@ -229,17 +244,35 @@
                   </div>
                   <div class="flex items-center gap-1.5 shrink-0">
                     <span
-                      v-if="account.is_active"
+                      v-if="accountState(account) === 'archived'"
+                      class="px-1.5 py-0.5 rounded-full bg-gray-400/10 text-gray-400 text-[10px] font-semibold uppercase tracking-wide"
+                      data-testid="account-state-badge"
+                    >Archived</span>
+                    <span
+                      v-else-if="accountState(account) === 'disabled'"
+                      class="px-1.5 py-0.5 rounded-full bg-warning/10 text-warning text-[10px] font-semibold uppercase tracking-wide"
+                      data-testid="account-state-badge"
+                    >Disabled</span>
+                    <span
+                      v-else-if="account.is_active"
                       class="px-1.5 py-0.5 rounded-full bg-success/10 text-success text-[10px] font-semibold uppercase tracking-wide"
                     >Active</span>
                     <span
-                      v-else-if="account.credentials_invalid"
+                      v-if="account.credentials_invalid"
                       class="px-1.5 py-0.5 rounded-full bg-error/10 text-error text-[10px] font-semibold uppercase tracking-wide"
                     >Reauth</span>
                   </div>
                 </div>
                 <div v-if="!account.is_active" class="flex flex-wrap items-center gap-3 mt-2">
                   <button
+                    v-if="accountState(account) !== 'enabled'"
+                    type="button"
+                    @click="setAccountLifecycle(account.id, 'enabled')"
+                    class="text-xs text-primary hover:underline font-medium"
+                    data-testid="account-enable"
+                  >Enable</button>
+                  <button
+                    v-else
                     type="button"
                     @click="activateAccount(account.id)"
                     class="text-xs text-primary hover:underline font-medium"
@@ -256,7 +289,7 @@
                   >Disconnect</button>
                   <button
                     type="button"
-                    @click="deleteAccount(account.id)"
+                    @click="openDeleteDialog(account)"
                     class="text-xs text-text-secondary hover:text-error"
                   >Remove</button>
                 </div>
@@ -266,6 +299,18 @@
                     @click="reconnectAccount(account)"
                     class="text-xs text-text-secondary hover:text-primary"
                   >Reconnect</button>
+                  <button
+                    type="button"
+                    @click="setAccountLifecycle(account.id, 'disabled')"
+                    class="text-xs text-text-secondary hover:text-warning"
+                    data-testid="account-disable"
+                  >Disable</button>
+                  <button
+                    type="button"
+                    @click="setAccountLifecycle(account.id, 'archived')"
+                    class="text-xs text-text-secondary hover:text-text-secondary"
+                    data-testid="account-archive"
+                  >Archive</button>
                 </div>
               </div>
 
@@ -297,11 +342,16 @@
                       <span class="truncate">No streaming on this plan — downloads may be 30-second previews</span>
                     </div>
                     <div class="flex flex-wrap gap-3 mt-1">
-                      <span v-if="account.is_active" class="text-success font-medium">Active</span>
+                      <span v-if="accountState(account) === 'archived'" class="text-gray-400 font-medium">Archived</span>
+                      <span v-else-if="accountState(account) === 'disabled'" class="text-warning font-medium">Disabled</span>
+                      <span v-else-if="account.is_active" class="text-success font-medium">Active</span>
                       <span v-else-if="account.credentials_invalid" class="text-error">Reauth needed</span>
-                      <button v-if="!account.is_active" type="button" class="text-primary hover:underline" @click="activateAccount(account.id)">Use this</button>
+                      <button v-if="accountState(account) !== 'enabled'" type="button" class="text-primary hover:underline" @click="setAccountLifecycle(account.id, 'enabled')">Enable</button>
+                      <button v-else-if="!account.is_active" type="button" class="text-primary hover:underline" @click="activateAccount(account.id)">Use this</button>
+                      <button v-else type="button" class="text-text-secondary hover:text-warning" @click="setAccountLifecycle(account.id, 'disabled')">Disable</button>
+                      <button v-if="accountState(account) === 'enabled'" type="button" class="text-text-secondary hover:text-text-secondary" @click="setAccountLifecycle(account.id, 'archived')">Archive</button>
                       <button type="button" class="text-text-secondary hover:text-error" @click="disconnectService(service.id, account.id)">Disconnect</button>
-                      <button type="button" class="text-text-secondary hover:text-error" @click="deleteAccount(account.id)">Remove</button>
+                      <button type="button" class="text-text-secondary hover:text-error" @click="openDeleteDialog(account)">Remove</button>
                     </div>
                   </div>
                 </div>
@@ -375,6 +425,7 @@
                 <button 
                   @click="connectServiceFromCard(service.id)"
                   :disabled="authLoading !== null"
+                  :data-testid="`connect-service-${service.id}`"
                   class="flex-1 px-4 py-2.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
                 >
                   <span v-if="authLoading === service.id" class="material-symbols-outlined text-[18px] animate-spin">sync</span>
@@ -693,7 +744,7 @@
                       <div
                         v-for="acct in orderedAccounts(selectedService.accounts)"
                         :key="acct.id"
-                        class="flex items-center justify-between p-2 rounded bg-white dark:bg-surface-dark border text-xs"
+                        class="flex flex-wrap items-center justify-between p-2 rounded bg-white dark:bg-surface-dark border text-xs"
                         :class="acct.is_active ? 'border-primary/40' : 'border-gray-200 dark:border-border-dark'"
                         :data-testid="`settings-account-row-${acct.id}`"
                         :data-active="acct.is_active ? 'true' : 'false'"
@@ -752,6 +803,16 @@
                               Use this
                             </button>
                             <button
+                              v-if="canUseSyncRunsFor(selectedService?.id)"
+                              @click="syncAccountNow(acct)"
+                              :disabled="Boolean(liveRuns[acct.id] && !liveRuns[acct.id]!.terminal)"
+                              class="px-2 py-1 text-primary hover:bg-primary/10 rounded font-medium disabled:opacity-50"
+                              title="Sync this account's favorites now (progress, cancellation and history)"
+                              :data-testid="`sync-run-start-${acct.id}`"
+                            >
+                              Sync now
+                            </button>
+                            <button
                               @click="resyncAccount(selectedService?.id, acct.id)"
                               :disabled="syncingServices[selectedService?.id]"
                               class="px-2 py-1 text-primary hover:bg-primary/10 rounded font-medium disabled:opacity-50"
@@ -779,13 +840,57 @@
                               Disconnect
                             </button>
                             <button
-                              @click="deleteAccount(acct.id)"
+                              @click="openDeleteDialog(acct)"
                               class="px-2 py-1 text-error hover:bg-error/10 rounded"
                             >
                               Remove
                             </button>
                           </div>
                         </template>
+
+                        <!-- SyncRun: corrida en vivo (cuenta, fase, vistos e
+                             importados, tiempo) e historial reciente
+                             (issue #65, ADR-0006) -->
+                        <div
+                          v-if="isSyncRunVisibleFor(acct)"
+                          class="w-full mt-1 p-2 rounded bg-gray-50 dark:bg-surface-highlight/40 border border-gray-200 dark:border-border-dark text-xs space-y-1"
+                          :data-testid="`sync-run-panel-${acct.id}`"
+                        >
+                          <div
+                            v-if="liveRuns[acct.id] && !liveRuns[acct.id]!.terminal"
+                            class="flex items-center justify-between gap-2"
+                          >
+                            <div class="flex items-center gap-2 min-w-0">
+                              <span class="material-symbols-outlined text-[16px] animate-spin text-primary" aria-hidden="true">sync</span>
+                              <span class="font-medium text-gray-900 dark:text-white truncate">
+                                {{ syncRunPhaseLabel(liveRuns[acct.id]!.phase) }}
+                              </span>
+                              <span class="text-text-secondary shrink-0" :data-testid="`sync-run-counters-${acct.id}`">
+                                {{ liveRuns[acct.id]!.seen }} seen · {{ liveRuns[acct.id]!.imported }} imported
+                              </span>
+                            </div>
+                            <div class="flex items-center gap-2 shrink-0">
+                              <span class="text-text-secondary tabular-nums">{{ syncRunElapsed(acct.id) }}</span>
+                              <button
+                                @click="cancelAccountRun(acct)"
+                                class="px-2 py-0.5 text-error hover:bg-error/10 rounded font-medium"
+                                :data-testid="`sync-run-cancel-${acct.id}`"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                          <div v-else-if="runHistory[acct.id]?.length" class="flex items-center justify-between gap-2">
+                            <span class="text-text-secondary truncate">
+                              Last run:
+                              {{ syncRunStatusLabel(runHistory[acct.id]![0].status) }} ·
+                              {{ runHistory[acct.id]![0].imported_total }} imported
+                            </span>
+                            <span class="text-text-secondary shrink-0 tabular-nums">
+                              {{ formatRunDuration(runHistory[acct.id]![0]) }}
+                            </span>
+                          </div>
+                        </div>
                       </div>
                       <!-- /v-for acct -->
                     </div>
@@ -882,19 +987,10 @@
                 </div>
               </div>
               
-              <!-- Advanced Tab -->
-              <div v-else-if="activeSettingsTab === 'advanced'" class="space-y-6">
-                <div>
-                  <h4 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Sync Mode</h4>
-                  <label class="flex items-center justify-between p-3 bg-gray-50 dark:bg-surface-highlight/50 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-surface-highlight transition-colors">
-                    <div>
-                      <span class="text-sm font-medium text-gray-700 dark:text-gray-300 block">Incremental sync only</span>
-                      <span class="text-xs text-text-secondary">Only fetch tracks added since last sync</span>
-                    </div>
-                    <input type="checkbox" v-model="servicePreferencesData.incremental_sync" class="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary">
-                  </label>
-                </div>
-              </div>
+              <!-- #197 (SB02): la pestaña «Advanced» del modal se retira con
+                   el interruptor de sync incremental — ningún código lo leía
+                   para decidir el recorrido del sync (siempre recorrido
+                   completo). -->
             </div>
             
             <!-- Modal Footer -->
@@ -1015,6 +1111,55 @@
       @sync-completed="handleLocalSyncCompleted"
     />
 
+    <!-- Diálogo de baja de cuenta (issue #85, ADR-0007 decisión 3): explica
+         qué se borra y qué se conserva ANTES de ejecutarlo, y el audio solo se
+         borra con la casilla aparte, nunca implícito. -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div
+          v-if="deleteDialogAccount"
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          data-testid="delete-account-dialog"
+        >
+          <div class="bg-surface rounded-xl shadow-xl max-w-md w-full p-5 text-sm">
+            <h3 class="text-base font-semibold text-gray-900 dark:text-white mb-2">
+              Remove “{{ deleteDialogAccount.label }}”?
+            </h3>
+            <div class="space-y-1.5 text-text-secondary mb-4">
+              <p><span class="text-error font-medium">Deleted:</span> the account, its credentials, its imported library entries, favorites, playlists and sync history.</p>
+              <p><span class="text-success font-medium">Kept:</span> canonical tracks, track sources and your downloaded files, so nothing shared is lost.</p>
+              <p>This action cannot be undone.</p>
+            </div>
+            <label class="flex items-start gap-2 mb-4 rounded-lg bg-warning/5 border border-warning/30 p-2.5 cursor-pointer">
+              <input
+                v-model="deleteAudioChecked"
+                type="checkbox"
+                class="mt-0.5"
+                data-testid="delete-audio-checkbox"
+              />
+              <span class="text-text-secondary">
+                Also delete the audio files this account downloaded.
+                <span class="block text-xs">Unchecked: the files stay on disk and in your library.</span>
+              </span>
+            </label>
+            <div class="flex justify-end gap-2">
+              <button
+                type="button"
+                @click="cancelDeleteDialog"
+                class="px-4 py-2 rounded-lg text-text-secondary hover:bg-surface-highlight"
+              >Cancel</button>
+              <button
+                type="button"
+                @click="confirmDeleteAccount"
+                class="px-4 py-2 rounded-lg bg-error text-white hover:opacity-90"
+                data-testid="confirm-delete-account"
+              >Delete account</button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
     <!-- Spotify API Credentials Modal (C-01 / C-02: Hidden in modal unless deliberately opened) -->
     <Teleport to="body">
       <Transition name="fade">
@@ -1040,15 +1185,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import { accountsApi } from '@/api/accounts'
+import { syncRunsApi } from '@/api/syncRuns'
+import type { SyncRunRecord } from '@/api/syncRuns'
 import { libraryApi } from '@/api/library'
 import { playlistsApi } from '@/api/playlists'
 import type { ImportPlaylistFromFileResult } from '@/api/playlists'
 import { useToast } from '@/composables/useToast'
-import type { ImportResult } from '@/api/types'
+import type { AccountLifecycleState, ImportResult } from '@/api/types'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { useSyncSettings } from '@/composables/useSyncSettings'
@@ -1060,6 +1208,178 @@ import SpotifyApiConfigCard from '@/components/SpotifyApiConfigCard.vue'
 const router = useRouter()
 const toast = useToast()
 const eventBus = useEventBus()
+
+// ---- SyncRun: corridas con estado (issue #65, ADR-0006) ----
+// La ficha de cuenta muestra la corrida en vivo (cuenta, fase, vistos e
+// importados, tiempo) y permite cancelarla en el límite de página. El estado
+// vive aquí: llega por los eventos sync-run-* y se reconcilia con
+// get_sync_run al abrir la ficha.
+interface LiveSyncRun {
+    runId: number
+    phase: string
+    status: string
+    seen: number
+    imported: number
+    reportedTotal: number | null
+    elapsedMs: number
+    lastEventAt: number
+    terminal: boolean
+}
+
+const liveRuns = reactive<Record<number, LiveSyncRun | undefined>>({})
+const runHistory = reactive<Record<number, SyncRunRecord[]>>({})
+const runNow = ref(Date.now())
+let runTicker: ReturnType<typeof setInterval> | null = null
+
+function ensureRunTicker(): void {
+    if (runTicker === null) {
+        runTicker = setInterval(() => {
+            runNow.value = Date.now()
+        }, 1000)
+    }
+}
+
+function stopTickerIfIdle(): void {
+    const anyLive = Object.values(liveRuns).some(live => live && !live.terminal)
+    if (runTicker !== null && !anyLive) {
+        clearInterval(runTicker)
+        runTicker = null
+    }
+}
+
+function formatRunElapsed(ms: number): string {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+    const minutes = Math.floor(totalSeconds / 60)
+    const seconds = totalSeconds % 60
+    if (minutes >= 60) {
+        const hours = Math.floor(minutes / 60)
+        return `${hours}h ${minutes % 60}m`
+    }
+    return `${minutes}m ${String(seconds).padStart(2, '0')}s`
+}
+
+function syncRunElapsed(accountId: number): string {
+    const live = liveRuns[accountId]
+    if (!live) return ''
+    const elapsed = live.terminal
+        ? live.elapsedMs
+        : live.elapsedMs + (runNow.value - live.lastEventAt)
+    return formatRunElapsed(elapsed)
+}
+
+function syncRunPhaseLabel(phase: string): string {
+    const labels: Record<string, string> = {
+        started: 'Starting sync…',
+        authenticating: 'Authenticating…',
+        fetching_favorite_tracks: 'Fetching favorites…',
+        importing_favorite_tracks: 'Importing favorites…',
+        persisting: 'Persisting…',
+        completed: 'Completed',
+    }
+    return labels[phase] || phase
+}
+
+function syncRunStatusLabel(status: string): string {
+    const labels: Record<string, string> = {
+        running: 'Running',
+        completed: 'Completed',
+        partial: 'Partial (gaps)',
+        failed: 'Failed',
+        cancelled: 'Cancelled',
+    }
+    return labels[status] || status
+}
+
+function formatRunDuration(run: SyncRunRecord): string {
+    if (!run.started_at) return ''
+    const started = Date.parse(run.started_at.replace(' ', 'T') + 'Z')
+    const finished = run.finished_at
+        ? Date.parse(run.finished_at.replace(' ', 'T') + 'Z')
+        : Date.now()
+    if (Number.isNaN(started)) return ''
+    return formatRunElapsed(Math.max(0, finished - started))
+}
+
+function canUseSyncRunsFor(serviceId: string | undefined | null): boolean {
+    // El corte SyncRun actual es Qobuz + favoritos (issue #65): la UI no
+    // promete colecciones ni proveedores que el contrato aún no recorre.
+    return serviceId === 'qobuz'
+}
+
+function isSyncRunVisibleFor(acct: any): boolean {
+    return (
+        canUseSyncRunsFor(selectedService.value?.id) &&
+        (Boolean(liveRuns[acct.id]) || Boolean(runHistory[acct.id]?.length))
+    )
+}
+
+async function syncAccountNow(acct: any): Promise<void> {
+    try {
+        const response = await syncRunsApi.startSyncRun(acct.id)
+        liveRuns[acct.id] = {
+            runId: response.run_id,
+            phase: 'started',
+            status: 'running',
+            seen: 0,
+            imported: 0,
+            reportedTotal: null,
+            elapsedMs: 0,
+            lastEventAt: Date.now(),
+            terminal: false,
+        }
+        ensureRunTicker()
+    } catch (e) {
+        showToast(`${e instanceof Error ? e.message : String(e)}`, 'error')
+    }
+}
+
+async function cancelAccountRun(acct: any): Promise<void> {
+    const live = liveRuns[acct.id]
+    if (!live || live.terminal) return
+    try {
+        await syncRunsApi.cancelSyncRun(live.runId)
+        showToast('Cancel requested; the run stops at the next page boundary', 'info')
+    } catch (e) {
+        showToast(`${e instanceof Error ? e.message : String(e)}`, 'error')
+    }
+}
+
+async function refreshRunHistory(accountId: number): Promise<void> {
+    try {
+        runHistory[accountId] = await syncRunsApi.listSyncRuns(accountId, 5)
+    } catch (e) {
+        console.error('Failed to load sync run history:', e)
+    }
+}
+
+async function refreshRunHistoryForAccounts(accounts: any[]): Promise<void> {
+    if (!canUseSyncRunsFor(selectedService.value?.id)) return
+    await Promise.all(accounts.filter(acct => acct?.id).map(acct => refreshRunHistory(acct.id)))
+}
+
+// Reconciliación al abrir la ficha: si una corrida quedó a medio camino (o se
+// perdió un evento), get_sync_run trae el estado real de la fila.
+async function reconcileLiveRunsWithBackend(accounts: any[]): Promise<void> {
+    for (const acct of accounts.filter(item => item?.id)) {
+        const live = liveRuns[acct.id]
+        if (!live || live.terminal) continue
+        try {
+            const record = await syncRunsApi.getSyncRun(live.runId)
+            if (record.status !== 'running') {
+                live.status = record.status
+                live.imported = record.imported_total
+                live.reportedTotal = record.reported_total
+                live.terminal = true
+                stopTickerIfIdle()
+            }
+        } catch {
+            // La corrida ya no existe: limpiar el estado vivo.
+            delete liveRuns[acct.id]
+            stopTickerIfIdle()
+        }
+    }
+}
+
 const globalTasks = useGlobalTasks()
 const syncSettings = useSyncSettings()
 const downloadSettings = useDownloadSettings()
@@ -1067,6 +1387,7 @@ const {
   services,
   rawServices,
   rawAccounts,
+  isLoading,
   fetchData,
   findAccountForService,
   // Identity helpers are owned by useAccountsStatus (single source of truth) so
@@ -1094,6 +1415,47 @@ const syncingServices = reactive<Record<string, boolean>>({})
 const importUrl = ref('')
 const importUrlLoading = ref(false)
 const spotifyApiCard = ref<InstanceType<typeof SpotifyApiConfigCard> | null>(null)
+
+// ── Login en app por cuenta (issue #84) ────────────────────────────────────
+// `start_account_login` devuelve en cuanto la ventana de webview está abierta;
+// el desenlace del intento llega por `account-login-*`. La cuenta guardada se
+// anuncia además por `auth-state-updated`, que esta vista ya escucha.
+type AccountLoginOutcome = 'completed' | 'failed' | 'cancelled'
+interface AccountLoginPayload {
+  profile_key?: string
+  account_id?: number
+  error?: string | null
+}
+
+let loginOutcomeUnlisteners: UnlistenFn[] = []
+
+function unlistenLoginOutcome() {
+  loginOutcomeUnlisteners.forEach(unlisten => unlisten())
+  loginOutcomeUnlisteners = []
+}
+
+function awaitLoginOutcome(profileKey: string): Promise<{ outcome: AccountLoginOutcome; payload: AccountLoginPayload }> {
+  return new Promise(resolve => {
+    let settled = false
+    const settle = (outcome: AccountLoginOutcome) => async (event: { payload?: AccountLoginPayload }) => {
+      const payload = event?.payload ?? {}
+      // Un intento vivo a la vez por diseño (backend): el profile_key filtra
+      // cuando el payload lo trae.
+      if (settled || (payload.profile_key && payload.profile_key !== profileKey)) return
+      settled = true
+      unlistenLoginOutcome()
+      resolve({ outcome, payload })
+    }
+    listen<AccountLoginPayload>(TauriEvents.ACCOUNT_LOGIN_COMPLETED, settle('completed'))
+      .then(unlisten => loginOutcomeUnlisteners.push(unlisten))
+    listen<AccountLoginPayload>(TauriEvents.ACCOUNT_LOGIN_FAILED, settle('failed'))
+      .then(unlisten => loginOutcomeUnlisteners.push(unlisten))
+    listen<AccountLoginPayload>(TauriEvents.ACCOUNT_LOGIN_CANCELLED, settle('cancelled'))
+      .then(unlisten => loginOutcomeUnlisteners.push(unlisten))
+  })
+}
+
+onBeforeUnmount(unlistenLoginOutcome)
 
 /**
  * Identity line shown on a service card. Uses the shared resolver so it can
@@ -1220,62 +1582,37 @@ function safeAuthError(error: unknown): string {
     .slice(0, 300)
 }
 
-// Connect service
+// Connect service from the "Add New Service" modal.
 async function connectService(service: { id: string; name: string }) {
-  authLoading.value = service.id
   showServiceModal.value = false
-
-  try {
-    // S196: hydrate DB credential cache before the OAuth window opens.
-    if (service.id === 'spotify') await ensureSpotifyApiConfigLoaded()
-    // S65: Use native WebView2 for Spotify, Python bridge for others
-    const result = service.id === 'spotify'
-      ? await accountsApi.spotifyAuthWebview()
-      : await accountsApi.startAuthAndSave(service.id)
-
-    if (result.success) {
-      await fetchData()
-      highlightedAccountId.value = typeof result.data?.account_id === 'number' ? result.data.account_id : null
-    } else {
-      showToast(`Auth failed: ${safeAuthError(result.error)}`, 'error')
-      if (service.id === 'spotify' && result.error && isSpotifyCredentialsError(result.error)) {
-        handleSpotifyCredentialsError()
-      }
-    }
-  } catch (e) {
-    const errorMsg = String(e)
-    if (isSpotifyCredentialsError(errorMsg)) {
-      handleSpotifyCredentialsError()
-    } else {
-      showToast(`Failed to connect service: ${safeAuthError(e)}`, 'error')
-    }
-  } finally {
-    authLoading.value = null
-  }
+  await connectServiceFromCard(service.id)
 }
 
-// Connect service from card (simplified version)
+// Connect (or link another account) through the in-app webview login (issue
+// #84). The empty state uses this exact path: six cards, one click, no wizard.
 async function connectServiceFromCard(serviceId: string) {
   authLoading.value = serviceId
 
   try {
     // S196: hydrate DB credential cache before the OAuth window opens.
     if (serviceId === 'spotify') await ensureSpotifyApiConfigLoaded()
-    // S65: Use native WebView2 for Spotify, Python bridge for others
-    const result = serviceId === 'spotify'
-      ? await accountsApi.spotifyAuthWebview()
-      : await accountsApi.startAuthAndSave(serviceId)
+    const started = await accountsApi.startAccountLogin(serviceId)
+    const { outcome, payload } = await awaitLoginOutcome(started.profile_key)
 
-    if (result.success) {
+    if (outcome === 'completed') {
+      // Refresh in place: the empty state becomes the normal account list
+      // without reloading the view (ADR-0007 decision 15).
       await fetchData()
-      highlightedAccountId.value = typeof result.data?.account_id === 'number' ? result.data.account_id : null
+      highlightedAccountId.value = typeof payload.account_id === 'number' ? payload.account_id : null
       showToast(`Connected to ${serviceId} successfully!`, 'success')
-    } else {
-      showToast(`Failed to connect: ${safeAuthError(result.error)}`, 'error')
-      if (serviceId === 'spotify' && result.error && isSpotifyCredentialsError(result.error)) {
+    } else if (outcome === 'failed') {
+      const error = payload.error ?? 'Authentication failed'
+      showToast(`Failed to connect: ${safeAuthError(error)}`, 'error')
+      if (serviceId === 'spotify' && isSpotifyCredentialsError(String(error))) {
         handleSpotifyCredentialsError()
       }
     }
+    // `cancelled`: the window was closed; no account and no half profile exist.
   } catch (e) {
     const errorMsg = String(e)
     if (isSpotifyCredentialsError(errorMsg)) {
@@ -1302,14 +1639,39 @@ async function disconnectService(serviceId: string, accountId?: number) {
 
   authLoading.value = serviceId
   try {
-    // Desconectar never deletes the account or its library/playlists, including Spotify.
-    await accountsApi.logoutService(serviceId, id)
+    // Cerrar sesión (issue #91, ADR-0007 decisión 9): borra credencial y
+    // perfil cifrado de ESA cuenta, conserva la cuenta y su biblioteca y la
+    // deja «sin sesión» hasta reautenticar. Nunca borra la fila ni sus datos.
+    const summary = await accountsApi.logoutAccount(id)
+    applyLoggedOutAccount(summary.account_id)
     await fetchData()
-    showToast(`Disconnected from ${serviceId}`, 'success')
+    showToast(`Disconnected from ${serviceId}: account and library kept, reconnect to sync again`, 'success')
   } catch (e) {
     showToast(`Failed to disconnect: ${e}`, 'error')
   } finally {
     authLoading.value = null
+  }
+}
+
+/**
+ * Refleja el cierre de sesión en la lista ya cargada antes de que el backend
+ * vuelva a contestar: la tarjeta muestra «Reauth» y deja de aparecer activa
+ * sin esperar a una recarga (criterio del issue #91).
+ */
+function applyLoggedOutAccount(accountId: number) {
+  const account = rawAccounts.value.find(a => a.id === accountId)
+  if (!account) return
+  account.is_active = false
+  account.credentials_invalid = true
+  account.invalid_reason = 'logged_out'
+  account.last_auth_error = 'Session closed by the user'
+  account.credential_state = {
+    kind: 'none',
+    has_password: false,
+    has_cookie: false,
+    has_token: false,
+    has_credential: false,
+    auto_refreshable: false,
   }
 }
 
@@ -1323,10 +1685,65 @@ async function activateAccount(accountId: number) {
   }
 }
 
-async function deleteAccount(accountId: number) {
-  if (!window.confirm('Delete this account? Its library and playlists will also be deleted. This action cannot be undone.')) return
+// ---- Ciclo de vida de cuenta (issue #85, ADR-0007 decisión 3) ----
+
+/** Estado efectivo de la tarjeta: los payloads legacy (sin migración 0107) son habilitados. */
+function accountState(account: { state?: AccountLifecycleState } | null | undefined): AccountLifecycleState {
+  return account?.state ?? 'enabled'
+}
+
+/**
+ * Transition of the lifecycle state. Disabling or archiving stops sync and
+ * downloads of this account on the backend; archiving additionally hides the
+ * row from the main list (it stays reachable under "Manage accounts").
+ */
+async function setAccountLifecycle(accountId: number, newState: AccountLifecycleState) {
   try {
-    await accountsApi.removeAccount(accountId)
+    const change = await accountsApi.setAccountState(accountId, newState)
+    if (change.changed) {
+      showToast(
+        change.new_state === 'enabled'
+          ? 'Account enabled: sync and downloads resume'
+          : change.new_state === 'archived'
+            ? 'Account archived: hidden and stopped; everything kept'
+            : 'Account disabled: sync and downloads stopped; everything kept',
+        'success',
+      )
+    }
+    await fetchData()
+  } catch (e) {
+    showToast(`Failed to change account state: ${e}`, 'error')
+  }
+}
+
+// El diálogo de borrado explica consecuencias ANTES de ejecutarlas: pistas
+// canónicas, fuentes y archivos se conservan; el audio se borra solo con la
+// casilla aparte, nunca implícito (ADR-0007 decisión 3).
+const deleteDialogAccount = ref<{ id: number; label: string } | null>(null)
+const deleteAudioChecked = ref(false)
+
+function openDeleteDialog(account: { id: number; display_name?: string | null; email?: string | null }) {
+  deleteDialogAccount.value = { id: account.id, label: formatAccountLabel(account) }
+  deleteAudioChecked.value = false
+}
+
+function cancelDeleteDialog() {
+  deleteDialogAccount.value = null
+  deleteAudioChecked.value = false
+}
+
+async function confirmDeleteAccount() {
+  if (!deleteDialogAccount.value) return
+  const accountId = deleteDialogAccount.value.id
+  try {
+    const summary = await accountsApi.deleteAccount(accountId, deleteAudioChecked.value)
+    showToast(
+      summary.delete_audio
+        ? `Account deleted; ${summary.audio_files_deleted} audio file(s) removed`
+        : 'Account deleted. Canonical tracks, sources and downloaded files were kept',
+      'success',
+    )
+    cancelDeleteDialog()
     if (highlightedAccountId.value === accountId) highlightedAccountId.value = null
     await fetchData()
   } catch (e) {
@@ -1834,13 +2251,11 @@ const servicePreferencesData = reactive<any>({
   purchases: false,
   library_history: false,
   include_appearances: false,
-  incremental_sync: false,
 })
 
 const settingsTabs = [
   { id: 'import', label: 'Import Preferences' },
   { id: 'general', label: 'Account' },
-  { id: 'advanced', label: 'Advanced' },
 ]
 
 async function openServiceSettings(service: any) {
@@ -1848,6 +2263,11 @@ async function openServiceSettings(service: any) {
   activeSettingsTab.value = 'import'
   showSettingsModal.value = true
   loadingServicePreferences.value = true
+
+  // SyncRun: reconciliar corridas vivas y traer el historial reciente de las
+  // cuentas de este servicio (issue #65).
+  void reconcileLiveRunsWithBackend(service.accounts || [])
+  void refreshRunHistoryForAccounts(service.accounts || [])
   
   try {
     const prefs = await accountsApi.getServiceImportPreferences(service.id)
@@ -1859,7 +2279,6 @@ async function openServiceSettings(service: any) {
     servicePreferencesData.purchases = prefs.purchases
     servicePreferencesData.library_history = prefs.library_history
     servicePreferencesData.include_appearances = prefs.include_appearances
-    servicePreferencesData.incremental_sync = prefs.incremental_sync
   } catch (e) {
     console.error('Failed to load service import preferences:', e)
   } finally {
@@ -1880,7 +2299,6 @@ async function saveServicePreferences() {
       purchases: servicePreferencesData.purchases,
       library_history: servicePreferencesData.library_history,
       include_appearances: servicePreferencesData.include_appearances,
-      incremental_sync: servicePreferencesData.incremental_sync,
     })
     
     // Also notify global event bus
@@ -2182,6 +2600,60 @@ onMounted(async () => {
   await eventBus.on(TauriEvents.AUTH_STATE_UPDATED, async () => {
     await fetchData()
   })
+
+  // Ciclo de vida (issue #85): refrescar la tarjeta cuando el estado cambia,
+  // también desde otros puntos de la app.
+  await eventBus.on(TauriEvents.ACCOUNT_STATE_CHANGED, async () => {
+    await fetchData()
+  })
+
+  // ---- SyncRun: corrida en vivo por cuenta (issue #65, ADR-0006) ----
+  await eventBus.on(TauriEvents.SYNC_RUN_STARTED, (payload: any) => {
+    if (typeof payload?.account_id !== 'number') return
+    liveRuns[payload.account_id] = {
+      runId: payload.run_id,
+      phase: payload.phase || 'started',
+      status: payload.status || 'running',
+      seen: payload.seen || 0,
+      imported: payload.imported || 0,
+      reportedTotal: payload.reported_total ?? null,
+      elapsedMs: payload.elapsed_ms || 0,
+      lastEventAt: Date.now(),
+      terminal: false,
+    }
+    ensureRunTicker()
+  })
+
+  await eventBus.on(TauriEvents.SYNC_RUN_PROGRESS, (payload: any) => {
+    if (typeof payload?.account_id !== 'number') return
+    const live = liveRuns[payload.account_id]
+    if (!live || live.runId !== payload.run_id || live.terminal) return
+    live.phase = payload.phase
+    live.seen = payload.seen || live.seen
+    live.imported = payload.imported || live.imported
+    live.elapsedMs = payload.elapsed_ms || live.elapsedMs
+    live.lastEventAt = Date.now()
+  })
+
+  const onSyncRunTerminal = async (payload: any) => {
+    if (typeof payload?.account_id !== 'number') return
+    const live = liveRuns[payload.account_id]
+    if (live && live.runId === payload.run_id) {
+      live.status = payload.status
+      live.phase = payload.phase || 'finished'
+      live.seen = payload.seen || live.seen
+      live.imported = payload.imported || live.imported
+      live.reportedTotal = payload.reported_total ?? live.reportedTotal
+      live.elapsedMs = payload.elapsed_ms || live.elapsedMs
+      live.terminal = true
+      stopTickerIfIdle()
+    }
+    await refreshRunHistory(payload.account_id)
+    await fetchData()
+  }
+
+  await eventBus.on(TauriEvents.SYNC_RUN_FINISHED, onSyncRunTerminal)
+  await eventBus.on(TauriEvents.SYNC_RUN_ERROR, onSyncRunTerminal)
 })
 </script>
 

@@ -77,6 +77,9 @@ pub struct AccountInfo {
     pub display_name: Option<String>,
     pub email: Option<String>,
     pub is_active: bool,
+    /// Ciclo de vida explícito (issue #85, ADR-0007 decisión 3):
+    /// `enabled` | `disabled` | `archived`. Eliminar no es un estado.
+    pub state: String,
     pub last_synced: Option<String>,
     pub created_at: Option<String>,
     pub credentials_invalid: bool,
@@ -256,6 +259,7 @@ pub async fn perform_get_accounts(db: &sqlx::SqlitePool) -> Result<Vec<AccountIn
         Option<String>,
         Option<String>,
         i64,
+        String,
         Option<String>,
         Option<String>,
         i64,
@@ -264,7 +268,7 @@ pub async fn perform_get_accounts(db: &sqlx::SqlitePool) -> Result<Vec<AccountIn
         Option<String>,
         i64,
     )> = sqlx::query_as(
-        r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.last_synced, a.created_at,
+        r#"SELECT a.id, a.service_id, s.name, a.display_name, a.email, a.is_active, a.state, a.last_synced, a.created_at,
                   IFNULL(a.credentials_invalid, 0) as credentials_invalid, a.invalid_reason, a.last_auth_error,
                   a.credentials_json, a.streaming_entitled
            FROM accounts a
@@ -285,6 +289,7 @@ pub async fn perform_get_accounts(db: &sqlx::SqlitePool) -> Result<Vec<AccountIn
                 display_name,
                 email,
                 is_active,
+                state,
                 last_synced,
                 created_at,
                 credentials_invalid,
@@ -307,6 +312,7 @@ pub async fn perform_get_accounts(db: &sqlx::SqlitePool) -> Result<Vec<AccountIn
                     display_name,
                     email,
                     is_active: is_active != 0,
+                    state,
                     last_synced,
                     created_at,
                     credentials_invalid: credentials_invalid != 0,
@@ -419,6 +425,19 @@ pub async fn remove_account(
     state: State<'_, AppState>,
     account_id: i64,
 ) -> Result<(), String> {
+    // Eliminar borra también el perfil cifrado del webview (issue #86): el
+    // archivo en disco se borra explícito, antes de que la FK CASCADE quite
+    // la fila que lo señala.
+    if let Err(e) =
+        crate::commands::account_profiles::delete_profiles_for_account(&state.db, account_id).await
+    {
+        tracing::warn!(
+            "remove_account: profile of account {} no se pudo borrar: {}",
+            account_id,
+            e
+        );
+    }
+
     sqlx::query("DELETE FROM accounts WHERE id = ?")
         .bind(account_id)
         .execute(&state.db)
@@ -994,10 +1013,13 @@ pub async fn get_internal_account_credentials(
                     account_id,
                     e
                 );
-                let _ = sqlx::query("UPDATE accounts SET credentials_json = NULL WHERE id = ?")
-                    .bind(account_id)
-                    .execute(pool)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "clear_corrupted_credentials",
+                    sqlx::query("UPDATE accounts SET credentials_json = NULL WHERE id = ?")
+                        .bind(account_id)
+                        .execute(pool),
+                )
+                .await;
                 Err("Service credentials expired. Please reconnect your account.".to_string())
             }
             Err(e) => Err(e),
@@ -1209,6 +1231,14 @@ pub async fn get_service_fallback_account_ids(
         FROM accounts a
         JOIN services s ON s.id = a.service_id
         WHERE LOWER(s.name) = LOWER(?)
+          -- #85 ciclo de vida: una cuenta desactivada o archivada deja de
+          -- participar en sync y descargas, también en el orden de fallback
+          -- que consumen los puentes de descarga.
+          AND a.state = 'enabled'
+          -- #91: una cuenta con la sesión cerrada no descarga hasta
+          -- reautenticar (ADR-0007 decisión 9). No se excluyen otras
+          -- credenciales inválidas: su taxonomía y pausa son de #87.
+          AND IFNULL(a.invalid_reason, '') <> 'logged_out'
         "#,
     )
     .bind(service_name)
@@ -1303,10 +1333,13 @@ pub async fn purge_stale_credentials(
                     service_name,
                     e
                 );
-                let _ = sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
-                    .bind(account_id)
-                    .execute(&state.db)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "purge_stale_credentials",
+                    sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
+                        .bind(account_id)
+                        .execute(&state.db),
+                )
+                .await;
                 purged_count += 1;
                 purged_services.push(service_name.clone());
             }
@@ -1318,10 +1351,13 @@ pub async fn purge_stale_credentials(
                     service_name,
                     e
                 );
-                let _ = sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
-                    .bind(account_id)
-                    .execute(&state.db)
-                    .await;
+                let _ = crate::db::write_or_log(
+                    "purge_stale_credentials",
+                    sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
+                        .bind(account_id)
+                        .execute(&state.db),
+                )
+                .await;
                 purged_count += 1;
                 purged_services.push(service_name.clone());
             }
@@ -1478,6 +1514,673 @@ pub async fn activate_account_exclusive(
         .map_err(|e| format!("Failed to commit account activation: {}", e))?;
 
     Ok(service_id)
+}
+
+// ============================================================
+// Ciclo de vida de cuenta (issue #85, ADR-0007 decisión 3)
+// ============================================================
+
+/// Estado habilitado: sincroniza, descarga y es visible.
+pub const ACCOUNT_STATE_ENABLED: &str = "enabled";
+/// Estado desactivado: conserva todo pero detiene sync y descargas.
+pub const ACCOUNT_STATE_DISABLED: &str = "disabled";
+/// Estado archivado: como desactivado y además oculto de la vista principal.
+pub const ACCOUNT_STATE_ARCHIVED: &str = "archived";
+
+/// `accounts.invalid_reason` de una cuenta cuya sesión cerró el usuario (#91,
+/// ADR-0007 decisión 9). La cuenta y su biblioteca se conservan; la ficha
+/// ofrece reautenticar y el gate de sync/descargas la rechaza hasta entonces.
+pub const INVALID_REASON_LOGGED_OUT: &str = "logged_out";
+
+/// Los tres estados del ciclo de vida; eliminar no es un estado, la fila desaparece.
+pub fn is_valid_account_state(state: &str) -> bool {
+    matches!(
+        state,
+        ACCOUNT_STATE_ENABLED | ACCOUNT_STATE_DISABLED | ACCOUNT_STATE_ARCHIVED
+    )
+}
+
+/// Gate de sync (#85): una cuenta con ciclo de vida distinto de `enabled` no
+/// sincroniza. Una cuenta inexistente NO se rechaza aquí: la validación de
+/// existencia sigue en cada camino (auth-status, service_of_account) con sus
+/// errores propios.
+///
+/// #91: una cuenta cuya sesión se cerró tampoco sincroniza hasta reautenticar
+/// (ADR-0007 decisión 9). El estado de ciclo de vida sigue siendo el mismo;
+/// «sin sesión» es la marca `invalid_reason = logged_out`.
+pub async fn ensure_account_can_sync(db: &sqlx::SqlitePool, account_id: i64) -> Result<(), String> {
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT COALESCE(state, 'enabled'), invalid_reason FROM accounts WHERE id = ?",
+    )
+    .bind(account_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    match row {
+        None => Ok(()),
+        Some((state, _)) if state != ACCOUNT_STATE_ENABLED => Err(format!(
+            "AccountDisabled: account {} is '{}' and cannot sync; enable it first",
+            account_id, state
+        )),
+        Some((_, Some(reason))) if reason == INVALID_REASON_LOGGED_OUT => Err(format!(
+            "AccountSessionClosed: account {} has no session; reauthenticate it",
+            account_id
+        )),
+        Some(_) => Ok(()),
+    }
+}
+
+/// Resultado de una transición de ciclo de vida, seguro para IPC.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AccountLifecycleChange {
+    pub account_id: i64,
+    pub service_id: i64,
+    pub service: String,
+    /// Estado previo a la transición.
+    pub old_state: String,
+    pub new_state: String,
+    /// `is_active` tras la transición (el toggle de participación del ADR-0006
+    /// y el estado `disabled` son el mismo estado; no se duplica control).
+    pub is_active: bool,
+    /// `false` cuando el estado pedido era el que ya tenía (transición nula).
+    pub changed: bool,
+}
+
+/// DB half of [`set_account_state`]: aplica la transición de ciclo de vida y
+/// el mapping a `is_active` en UNA transacción.
+///
+/// Contracto (ADR-0007, regla derivada): `disabled` y `archived` implican
+/// deshabilitar (y archivar además oculta; la ocultación es decisión de la
+/// UI). `is_active` es hoy el flag de participación que consultan los
+/// resolvedores legacy (`is_active = 1`), así que desactivar/archivar lo baja
+/// para que el cese sea inmediato también en esos caminos; reactivar lo
+/// restaura SOLO si el servicio se quedó sin cuenta activa, para no robarle
+/// el rol a una hermana que el usuario dejó activa a propósito.
+pub async fn perform_set_account_state(
+    db: &sqlx::SqlitePool,
+    account_id: i64,
+    new_state: &str,
+) -> Result<AccountLifecycleChange, String> {
+    if !is_valid_account_state(new_state) {
+        return Err(format!(
+            "InvalidAccountState: '{}' is not one of enabled|disabled|archived",
+            new_state
+        ));
+    }
+
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to begin account state change: {}", e))?;
+
+    let row: Option<(i64, String, String)> = sqlx::query_as(
+        "SELECT a.service_id, COALESCE(a.state, 'enabled'), s.name FROM accounts a JOIN services s ON s.id = a.service_id WHERE a.id = ?",
+    )
+    .bind(account_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let (service_id, old_state, service_name) =
+        row.ok_or_else(|| format!("Account {} not found", account_id))?;
+    let changed = old_state != new_state;
+
+    sqlx::query("UPDATE accounts SET state = ? WHERE id = ?")
+        .bind(new_state)
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut is_active = old_state == ACCOUNT_STATE_ENABLED;
+    if new_state != ACCOUNT_STATE_ENABLED {
+        sqlx::query("UPDATE accounts SET is_active = 0 WHERE id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        is_active = false;
+    } else {
+        let active_siblings: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM accounts WHERE service_id = ? AND is_active = 1 AND id != ?",
+        )
+        .bind(service_id)
+        .bind(account_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        if active_siblings == 0 {
+            sqlx::query("UPDATE accounts SET is_active = 1 WHERE id = ?")
+                .bind(account_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+            is_active = true;
+        }
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit account state change: {}", e))?;
+
+    Ok(AccountLifecycleChange {
+        account_id,
+        service_id,
+        service: service_name,
+        old_state,
+        new_state: new_state.to_string(),
+        is_active,
+        changed,
+    })
+}
+
+// ============================================================
+// Cerrar sesión (issue #91, ADR-0007 decisión 9)
+// ============================================================
+
+/// Resumen de cerrar sesión en una cuenta, seguro para IPC.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AccountLogoutSummary {
+    pub account_id: i64,
+    pub service_id: i64,
+    pub service: String,
+    /// Ciclo de vida intacto: cerrar sesión no es desactivar ni archivar.
+    pub state: String,
+    /// `is_active` tras cerrar sesión: la cuenta deja de participar.
+    pub is_active: bool,
+    /// Cuenta hermana que hereda la participación, si la había.
+    pub new_active_account_id: Option<i64>,
+    /// Otras cuentas del servicio con credenciales utilizables. Decide si el
+    /// puente puede soltar su archivo de sesión compartido (uno por servicio).
+    pub remaining_accounts: i64,
+    /// Filas de `account_profiles` borradas junto con sus archivos cifrados.
+    pub profiles_deleted: u32,
+}
+
+/// DB half of [`logout_account`]: borra credenciales y perfil cifrado de ESA
+/// cuenta, conserva su fila y su biblioteca, la deja «sin sesión» y detiene sus
+/// descargas en cola.
+///
+/// Distinto de desactivar y archivar (issue #85): el estado de ciclo de vida NO
+/// cambia; la marca de sesión es `invalid_reason = logged_out`. Reautenticar
+/// reutiliza la misma fila (`upsert_service_account` casa por identidad) y
+/// limpia la marca sin tocar `library_entries`, `tracks` ni `track_sources`.
+///
+/// El perfil del webview se borra ANTES de devolver: archivo y fila. El borrado
+/// del fichero es explícito (la FK solo evita filas huérfanas); un fallo se
+/// registra y la higiene de arranque limpia el residuo.
+pub async fn perform_logout_account(
+    db: &sqlx::SqlitePool,
+    account_id: i64,
+) -> Result<AccountLogoutSummary, String> {
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to begin logout of account {}: {}", account_id, e))?;
+
+    let row: Option<(i64, String, String, i64)> = sqlx::query_as(
+        "SELECT a.service_id, s.name, COALESCE(a.state, 'enabled'), a.is_active
+         FROM accounts a JOIN services s ON s.id = a.service_id
+         WHERE a.id = ?",
+    )
+    .bind(account_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to resolve account {}: {}", account_id, e))?;
+    let (service_id, service_name, state, was_active) =
+        row.ok_or_else(|| format!("Account {} not found", account_id))?;
+
+    // Cerrar sesión es una acción de seguridad: la credencial y el perfil no
+    // sobreviven. La fila, su estado de ciclo de vida y su biblioteca sí.
+    sqlx::query(
+        r#"
+        UPDATE accounts
+        SET credentials_json = NULL,
+            credentials = NULL,
+            credentials_invalid = 1,
+            invalid_reason = ?,
+            last_auth_error = 'Session closed by the user',
+            last_auth_error_at = ?,
+            is_active = 0
+        WHERE id = ?
+        "#,
+    )
+    .bind(INVALID_REASON_LOGGED_OUT)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(account_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to clear account {} credentials: {}", account_id, e))?;
+
+    // Descargas: nada de esta cuenta sigue transfiriéndose tras cerrar sesión.
+    // El comando señaliza además el registro de cancelación del worker para las
+    // filas que ya están en vuelo (mismo cese que desactivar, issue #85).
+    sqlx::query(
+        "UPDATE download_queue SET status = 'cancelled'
+         WHERE resolved_account_id = ? AND status IN ('queued', 'downloading')",
+    )
+    .bind(account_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to stop account {} downloads: {}", account_id, e))?;
+
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE service_id = ? AND id != ? AND credentials_json IS NOT NULL AND IFNULL(credentials_invalid, 0) = 0")
+            .bind(service_id)
+            .bind(account_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to count remaining accounts: {}", e))?;
+
+    // Solo una cuenta activa entrega su participación; una hermana sin
+    // credenciales válidas nunca sucede (misma regla que logout_service).
+    let viable_successor: Option<i64> = if remaining > 0 && was_active != 0 {
+        sqlx::query_scalar(
+            "SELECT id FROM accounts
+             WHERE service_id = ? AND id != ?
+               AND credentials_json IS NOT NULL
+               AND IFNULL(credentials_invalid, 0) = 0
+             ORDER BY id DESC LIMIT 1",
+        )
+        .bind(service_id)
+        .bind(account_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to pick the next {} account: {}", service_name, e))?
+    } else {
+        None
+    };
+
+    let new_active_account_id = if let Some(successor) = viable_successor {
+        sqlx::query("UPDATE accounts SET is_active = 0 WHERE service_id = ? AND id != ?")
+            .bind(service_id)
+            .bind(successor)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to deactivate sibling accounts: {}", e))?;
+        sqlx::query("UPDATE accounts SET is_active = 1 WHERE id = ?")
+            .bind(successor)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to activate account {}: {}", successor, e))?;
+        tracing::info!(
+            "[Auth] {} account {} logged out; account {} is now the active one",
+            service_name,
+            account_id,
+            successor
+        );
+        Some(successor)
+    } else {
+        None
+    };
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit logout of account {}: {}", account_id, e))?;
+
+    let profiles_deleted = match crate::commands::account_profiles::delete_profiles_for_account(
+        db, account_id,
+    )
+    .await
+    {
+        Ok(deleted) => deleted,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to delete webview profile of account {}: {}",
+                account_id,
+                e
+            );
+            0
+        }
+    };
+
+    Ok(AccountLogoutSummary {
+        account_id,
+        service_id,
+        service: service_name,
+        state,
+        is_active: false,
+        new_active_account_id,
+        remaining_accounts: remaining,
+        profiles_deleted,
+    })
+}
+
+/// Cerrar sesión de una cuenta (issue #91).
+///
+/// Detiene el trabajo en vuelo de esa cuenta (corrida SyncRun viva y descargas
+/// en cola), borra su credencial y su perfil cifrado y conserva la fila y la
+/// biblioteca. Emite `auth-state-updated` con action "logout" (mismo canal que
+/// `logout_service`), así que las vistas refrescan sin recargar.
+#[tauri::command]
+pub async fn logout_account<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    account_id: i64,
+) -> Result<AccountLogoutSummary, String> {
+    // Corrida viva del contrato (#65): la bandera se atiende en el límite de
+    // página y la corrida queda `cancelled`.
+    let running_runs: Vec<(i64,)> =
+        sqlx::query_as("SELECT id FROM sync_runs WHERE account_id = ? AND status = 'running'")
+            .bind(account_id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+    for (run_id,) in &running_runs {
+        crate::sync::job::request_cancel(*run_id);
+    }
+
+    // Descargas en vuelo: se abortan por el registro de cancelación del
+    // ADR-0022; las filas quedan 'cancelled' en la transacción del logout.
+    let in_flight: Vec<(i64,)> = sqlx::query_as(
+        "SELECT id FROM download_queue WHERE resolved_account_id = ? AND status IN ('queued', 'downloading')",
+    )
+    .bind(account_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+    for (queue_id,) in &in_flight {
+        state.worker_state.cancellations().cancel(*queue_id);
+    }
+
+    let summary = perform_logout_account(&state.db, account_id).await?;
+
+    let _ = app.emit(
+        "auth-state-updated",
+        serde_json::json!({
+            "service": summary.service,
+            "action": "logout",
+            "account_id": summary.account_id,
+            "is_active": summary.is_active,
+        }),
+    );
+
+    Ok(summary)
+}
+
+/// Resumen del borrado de cuenta, seguro para IPC.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AccountDeletionSummary {
+    pub account_id: i64,
+    pub service: String,
+    /// Casilla marcada por el usuario: borrar audio es explícito, nunca implícito.
+    pub delete_audio: bool,
+    /// Ficheros de audio realmente eliminados del disco.
+    pub audio_files_deleted: u64,
+}
+
+/// DB half of [`delete_account`]: borra la cuenta y las filas que le son
+/// propias, conservando pistas canónicas (`tracks`), fuentes (`track_sources`)
+/// y los archivos descargados salvo casilla explícita.
+///
+/// Las tablas propiedad de la cuenta llevan `ON DELETE CASCADE`
+/// (library_entries, playlists, playlist_sources, favorites,
+/// account_import_counts, sync_runs), pero el borrado es explícito por tabla:
+/// no depende del orden de cascada y deja el efecto legible en el resumen.
+/// El perfil cifrado del webview (issue #86) se borra aquí abajo ANTES de
+/// la fila: eliminar borra el archivo; desactivar y archivar lo conservan.
+pub async fn perform_delete_account(
+    db: &sqlx::SqlitePool,
+    account_id: i64,
+    delete_audio: bool,
+) -> Result<AccountDeletionSummary, String> {
+    let account: Option<(String,)> = sqlx::query_as(
+        "SELECT s.name FROM accounts a JOIN services s ON s.id = a.service_id WHERE a.id = ?",
+    )
+    .bind(account_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let (service_name,) = account.ok_or_else(|| format!("Account {} not found", account_id))?;
+
+    // Audio: la vinculación fichero↔cuenta vive en downloads.account_id
+    // (migración 0103); se lee ANTES de borrar la fila porque la FK la pone a
+    // NULL al desaparecer la cuenta.
+    let audio_paths: Vec<(String,)> = if delete_audio {
+        sqlx::query_as("SELECT file_path FROM downloads WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_all(db)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
+
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to begin account deletion: {}", e))?;
+
+    // Cola: nada de esta cuenta debe seguir descargándose tras el borrado.
+    sqlx::query("DELETE FROM download_queue WHERE resolved_account_id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Filas propiedad de la cuenta (mismo set que reset_account_sync_data más
+    // corridas y descargas). tracks y track_sources NUNCA se tocan.
+    sqlx::query("DELETE FROM library_entries WHERE account_id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM playlist_sources WHERE account_id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM playlists WHERE account_id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM favorites WHERE account_id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM account_import_counts WHERE account_id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM sync_runs WHERE account_id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    if delete_audio {
+        sqlx::query("DELETE FROM downloads WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    // El perfil cifrado del webview se borra ANTES de la fila de cuenta:
+    // después de la FK CASCADE no habría fila que señale el archivo en disco
+    // (issue #86: eliminar borra el archivo; el borrado del fichero es
+    // explícito, nunca por cascada).
+    if let Err(e) =
+        crate::commands::account_profiles::delete_profiles_for_account(db, account_id).await
+    {
+        tracing::warn!(
+            "delete_account: profile of account {} no se pudo borrar: {}",
+            account_id,
+            e
+        );
+    }
+
+    sqlx::query("DELETE FROM accounts WHERE id = ?")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit account deletion: {}", e))?;
+
+    // El audio se borra tras confirmar la transacción: un fallo de disco no
+    // deja una cuenta borrada con audio huérfano reclamando restauración.
+    let mut audio_files_deleted: u64 = 0;
+    for (path,) in &audio_paths {
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => audio_files_deleted += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                audio_files_deleted += 1;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "delete_account: audio '{}' no se pudo borrar: {}",
+                    path,
+                    error
+                );
+            }
+        }
+    }
+
+    tracing::info!(
+        "Deleted account {} (service {}); audio requested={} files_deleted={}",
+        account_id,
+        service_name,
+        delete_audio,
+        audio_files_deleted
+    );
+
+    Ok(AccountDeletionSummary {
+        account_id,
+        service: service_name,
+        delete_audio,
+        audio_files_deleted,
+    })
+}
+
+/// Set the lifecycle state of an account (issue #85).
+///
+/// Además de la transición, cesa el trabajo en vuelo de esa cuenta: cancela la
+/// corrida SyncRun viva (bandera del límite de página) y las filas de cola en
+/// vuelo (`queued|downloading`) vía el registro de cancelación del ADR-0022.
+/// Emite `account-state-changed` (nuevo canal del contrato) y
+/// `auth-state-updated` (canal legacy que AccountsView ya escucha).
+#[tauri::command]
+pub async fn set_account_state<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    account_id: i64,
+    new_state: String,
+) -> Result<AccountLifecycleChange, String> {
+    let change = perform_set_account_state(&state.db, account_id, &new_state).await?;
+
+    if change.new_state != ACCOUNT_STATE_ENABLED {
+        // Corrida viva del contrato (#65): la bandera se atiende en el límite
+        // de página y la corrida queda `cancelled`.
+        let running_runs: Vec<(i64,)> =
+            sqlx::query_as("SELECT id FROM sync_runs WHERE account_id = ? AND status = 'running'")
+                .bind(account_id)
+                .fetch_all(&state.db)
+                .await
+                .map_err(|e| e.to_string())?;
+        for (run_id,) in &running_runs {
+            crate::sync::job::request_cancel(*run_id);
+        }
+
+        // Cola de descargas: en vuelo se aborta con el registro de
+        // cancelación; lo ya reclamado deja de transferirse en el siguiente
+        // punto de control del worker.
+        let in_flight: Vec<(i64,)> = sqlx::query_as(
+            "SELECT id FROM download_queue WHERE resolved_account_id = ? AND status IN ('queued', 'downloading')",
+        )
+        .bind(account_id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| e.to_string())?;
+        for (queue_id,) in &in_flight {
+            state.worker_state.cancellations().cancel(*queue_id);
+        }
+        if !in_flight.is_empty() {
+            sqlx::query(
+                "UPDATE download_queue SET status = 'cancelled' WHERE resolved_account_id = ? AND status IN ('queued', 'downloading')",
+            )
+            .bind(account_id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    let _ = app.emit(
+        "account-state-changed",
+        serde_json::json!({
+            "account_id": change.account_id,
+            "service": change.service,
+            "old_state": change.old_state,
+            "state": change.new_state,
+            "is_active": change.is_active,
+        }),
+    );
+    // Canal legacy que AccountsView ya refresca; mismo payload que
+    // toggle_account_active emite.
+    let _ = app.emit(
+        "auth-state-updated",
+        serde_json::json!({
+            "service": change.service,
+            "action": if change.new_state == ACCOUNT_STATE_ENABLED { "activated" } else { "toggled" },
+            "account_id": change.account_id,
+            "is_active": change.is_active,
+        }),
+    );
+
+    Ok(change)
+}
+
+/// Delete an account and the rows it owns (issue #85).
+///
+/// Conserva pistas canónicas, fuentes y archivos descargados; el audio solo se
+/// borra con la casilla explícita `delete_audio` (el diálogo de la UI la
+/// presenta aparte). Emite `auth-state-updated` action "removed" como
+/// remove_account para que las vistas refresquen.
+#[tauri::command]
+pub async fn delete_account<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    account_id: i64,
+    delete_audio: bool,
+) -> Result<AccountDeletionSummary, String> {
+    // En vuelo: mismo cese que una desactivación antes de borrar filas.
+    let in_flight: Vec<(i64,)> = sqlx::query_as(
+        "SELECT id FROM download_queue WHERE resolved_account_id = ? AND status IN ('queued', 'downloading')",
+    )
+    .bind(account_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+    for (queue_id,) in &in_flight {
+        state.worker_state.cancellations().cancel(*queue_id);
+    }
+
+    let running_runs: Vec<(i64,)> =
+        sqlx::query_as("SELECT id FROM sync_runs WHERE account_id = ? AND status = 'running'")
+            .bind(account_id)
+            .fetch_all(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+    for (run_id,) in &running_runs {
+        crate::sync::job::request_cancel(*run_id);
+    }
+
+    let summary = perform_delete_account(&state.db, account_id, delete_audio).await?;
+
+    let _ = app.emit(
+        "auth-state-updated",
+        serde_json::json!({
+            "action": "removed",
+            "account_id": account_id,
+        }),
+    );
+
+    Ok(summary)
 }
 
 /// Query real service authentication status for an account/service
@@ -2421,6 +3124,8 @@ mod accounts_tests {
                 last_synced TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 streaming_entitled INTEGER NOT NULL DEFAULT -1,
+                -- #85: ciclo de vida de cuenta; el fixture replica la migración 0107.
+                state TEXT NOT NULL DEFAULT 'enabled',
                 UNIQUE(service_id, email)
             )
         "#,

@@ -1,9 +1,9 @@
 /**
- * usePlayer × MPRIS (Fase 1): la UI publica metadatos y modos al panel MPRIS
- * del escritorio, y enruta las acciones del panel (media keys) por las mismas
- * funciones que usan la cola y el transporte. El estado de transporte lo
- * publica el backend desde su ticker; aquí sólo se prueba lo que la UI envía
- * (`playerMprisUpdate`) y lo que hace con lo que recibe (`player:mpris-action`).
+ * P02 (#133): la UI ya no publica metadatos MPRIS ni ejecuta acciones del
+ * panel. El backend es el dueño del transporte; aquí se prueba que la
+ * proyección local aplica `player:modes-changed` (incluido el orden de shuffle
+ * resuelto en Rust) y el `previous` del backend (`previousEntryId`), sin
+ * volver a invocar el comando retirado `player_mpris_update`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
@@ -23,21 +23,23 @@ vi.mock('../../api/player', () => ({
     onPlayerTick: vi.fn(),
     onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
-    playerMprisUpdate: vi.fn(() => Promise.resolve()),
-    onMprisAction: vi.fn(() => Promise.resolve()),
+    onPlayerAdvanced: vi.fn(),
+    onPlayerModesChanged: vi.fn(),
 }));
 
-import { invokeCommand } from '../../api/tauri'
+import * as tauriApi from '../../api/tauri'
 import * as playerApi from '../../api/player'
-import type { MprisActionPayload, MprisStateUpdate, PlayerTick } from '../../api/player'
+import type { PlayerAdvanced, PlayerModesChanged } from '../../api/player'
 import { usePlayer } from '../../composables/usePlayer'
 
-const mockInvoke = vi.mocked(invokeCommand);
+function mockInvoke(): ReturnType<typeof vi.mocked<typeof tauriApi.invokeCommand>> {
+    return vi.mocked(tauriApi.invokeCommand);
+}
 const engine = vi.mocked(playerApi);
 
 let seq = 0;
-let tickCb: ((tick: PlayerTick) => void) | null = null;
-let mprisCb: ((action: MprisActionPayload) => void) | null = null;
+let advancedCb: ((advanced: PlayerAdvanced) => void) | null = null;
+let modesCb: ((modes: PlayerModesChanged) => void) | null = null;
 
 function configureEngineMocks(): void {
     seq = 0;
@@ -49,22 +51,36 @@ function configureEngineMocks(): void {
     engine.playerSeek.mockReset().mockResolvedValue(undefined);
     engine.playerSetVolume.mockReset().mockResolvedValue(undefined);
     engine.playerSetRate.mockReset().mockResolvedValue(undefined);
-    engine.playerMprisUpdate.mockReset().mockResolvedValue(undefined);
-    engine.onPlayerTick.mockReset().mockImplementation((cb) => {
-        tickCb = cb;
+    engine.onPlayerTick.mockReset().mockResolvedValue(() => {});
+    engine.onPlayerStreamState.mockReset().mockResolvedValue(() => {});
+    engine.onPlayerEnded.mockReset().mockResolvedValue(() => {});
+    engine.onPlayerAdvanced.mockReset().mockImplementation((cb) => {
+        advancedCb = cb;
         return Promise.resolve(() => {});
     });
-    engine.onPlayerStreamState.mockReset().mockResolvedValue(() => {});
-    engine.onPlayerEnded.mockReset().mockImplementation(() => Promise.resolve(() => {}));
-    engine.onMprisAction.mockReset().mockImplementation((cb) => {
-        mprisCb = cb;
+    engine.onPlayerModesChanged.mockReset().mockImplementation((cb) => {
+        modesCb = cb;
         return Promise.resolve(() => {});
     });
 }
 
-function lastMprisUpdate(): MprisStateUpdate | undefined {
-    const calls = engine.playerMprisUpdate.mock.calls;
-    return calls[calls.length - 1]?.[0];
+function metadataFor(trackId: number): Record<string, unknown> {
+    return {
+        track_id: trackId,
+        title: `Track ${trackId}`,
+        artist_name: 'Artist',
+        album_name: null,
+        cover_art_url: null,
+        file_path: `/lib/${trackId}.flac`,
+    };
+}
+
+function stableQueueIds(): void {
+    mockInvoke().mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === 'get_track_metadata') return Promise.resolve(metadataFor(Number(args?.trackId)));
+        if (cmd === 'playback_queue_enqueue') return Promise.resolve([`be-${(args?.trackIds as number[])[0]}`]);
+        return Promise.resolve(undefined);
+    });
 }
 
 async function startTrack(id = 1): Promise<ReturnType<typeof usePlayer>> {
@@ -74,123 +90,69 @@ async function startTrack(id = 1): Promise<ReturnType<typeof usePlayer>> {
     return player;
 }
 
-describe('usePlayer × MPRIS (Fase 1)', () => {
+describe('usePlayer × backend MPRIS (P02)', () => {
     beforeEach(() => {
-        mockInvoke.mockReset();
+        mockInvoke().mockReset();
         configureEngineMocks();
         usePlayer().stop();
-        mockInvoke.mockClear();
+        mockInvoke().mockClear();
+        stableQueueIds();
     });
 
-    it('publica los metadatos de la pista al empezar a sonar', async () => {
+    it('no publica metadatos con player_mpris_update: el backend los resuelve', async () => {
         await startTrack(7);
-
-        expect(lastMprisUpdate()).toEqual({
-            trackId: 7,
-            title: 'Track 7',
-            artist: 'Artist',
-            album: null,
-            durationSec: 180,
-            artUrl: null,
-            shuffle: false,
-            loopStatus: 'None',
-        });
+        expect(mockInvoke().mock.calls.some(([cmd]) => cmd === 'player_mpris_update')).toBe(false);
     });
 
-    it('stop() limpia los metadatos publicados', async () => {
-        const player = await startTrack(3);
-        engine.playerMprisUpdate.mockClear();
-
-        player.stop();
-
-        expect(engine.playerMprisUpdate).toHaveBeenCalledTimes(1);
-        expect(lastMprisUpdate()?.trackId).toBeNull();
-        expect(lastMprisUpdate()?.title).toBeNull();
-        expect(lastMprisUpdate()?.durationSec).toBeNull();
-    });
-
-    it('toggleShuffle y cycleRepeat publican los modos', async () => {
+    it('aplica shuffle/repeat y el orden pendiente que decidió el backend', async () => {
         const player = await startTrack(1);
-        engine.playerMprisUpdate.mockClear();
+        await player.enqueue({ id: 2, title: 'Two', artist: 'X' });
+        await player.enqueue({ id: 3, title: 'Three', artist: 'X' });
+        const ids = player.queue.value.map(entry => entry.entryId);
+        expect(ids).toEqual(['be-2', 'be-3']);
 
-        player.toggleShuffle();
-        expect(lastMprisUpdate()?.shuffle).toBe(true);
+        modesCb!({ shuffle: true, repeat: 'all', pendingEntryIds: ['be-3', 'be-2'] });
+        await flushPromises();
 
-        player.cycleRepeat(); // off → all
-        expect(lastMprisUpdate()?.loopStatus).toBe('Playlist');
+        expect(player.shuffle.value).toBe(true);
+        expect(player.repeat.value).toBe('all');
+        expect(player.queue.value.map(entry => entry.entryId)).toEqual(['be-3', 'be-2']);
 
-        player.cycleRepeat(); // all → one
-        expect(lastMprisUpdate()?.loopStatus).toBe('Track');
+        modesCb!({ shuffle: false, repeat: 'one', pendingEntryIds: ['be-2', 'be-3'] });
+        await flushPromises();
+
+        expect(player.shuffle.value).toBe(false);
+        expect(player.repeat.value).toBe('one');
+        expect(player.queue.value.map(entry => entry.entryId)).toEqual(['be-2', 'be-3']);
     });
 
-    it('playPause del panel pausa cuando suena', async () => {
+    it('previous del backend devuelve la pista que sonaba al frente de la cola', async () => {
         const player = await startTrack(1);
-        expect(mprisCb).not.toBeNull();
-
-        mprisCb!({ action: 'playPause' });
-        await flushPromises();
-
-        expect(engine.playerPause).toHaveBeenCalledTimes(1);
-        expect(player.isPlaying.value).toBe(false);
-    });
-
-    it('seek relativo del panel parte de la posición actual', async () => {
-        await startTrack(1);
-        tickCb?.({ seq: 1, state: 'playing', positionSec: 10, durationSec: 180 });
-
-        mprisCb!({ action: 'seek', offsetUs: 5_000_000 });
-        await flushPromises();
-
-        expect(engine.playerSeek).toHaveBeenCalledWith(15);
-    });
-
-    it('setPosition del panel busca una posición absoluta', async () => {
-        await startTrack(1);
-        tickCb?.({ seq: 1, state: 'playing', positionSec: 10, durationSec: 180 });
-
-        mprisCb!({ action: 'setPosition', positionUs: 42_000_000 });
-        await flushPromises();
-
-        expect(engine.playerSeek).toHaveBeenCalledWith(42);
-    });
-
-    it('next del panel avanza la cola sin recargar la fuente actual', async () => {
-        const player = usePlayer();
-        await player.play({ id: 1, title: 'One', artist: 'X' });
         await player.playNext({ id: 2, title: 'Two', artist: 'X' });
-        const loadsBefore = engine.playerLoadTrack.mock.calls.length;
+        const firstEntry = [...mockInvoke().mock.calls]
+            .reverse()
+            .find(([cmd]) => cmd === 'playback_queue_set_current')?.[1]?.entryId as string;
+        expect(firstEntry).toBeTruthy();
 
-        mprisCb!({ action: 'next' });
+        // El backend avanza a 2: A pasa al historial y B sale de pendientes.
+        advancedCb!({ seq: ++seq, trackId: 2, entryId: 'be-2' });
         await flushPromises();
-
-        expect(engine.playerLoadTrack.mock.calls.length).toBe(loadsBefore + 1);
-        expect(engine.playerLoadTrack).toHaveBeenLastCalledWith(2, true, 1);
         expect(player.current.value?.id).toBe(2);
-    });
+        expect(player.history.value.map(entry => entry.entryId)).toEqual([firstEntry]);
+        expect(player.queue.value).toHaveLength(0);
 
-    it('stop del panel detiene y limpia el reproductor', async () => {
-        const player = await startTrack(2);
-        engine.playerStop.mockClear();
-
-        mprisCb!({ action: 'stop' });
+        // previous: la entrada 2 (historial) pasa a actual; A vuelve a pendientes.
+        advancedCb!({
+            seq: ++seq,
+            trackId: 1,
+            entryId: firstEntry,
+            previousEntryId: 'be-2',
+        });
         await flushPromises();
 
-        expect(engine.playerStop).toHaveBeenCalledTimes(1);
-        expect(player.current.value).toBeNull();
-        expect(player.isPlaying.value).toBe(false);
-    });
-
-    it('play del panel reanuda cuando está en pausa', async () => {
-        const player = await startTrack(1);
-        player.toggle();
-        await flushPromises();
-        expect(player.isPlaying.value).toBe(false);
-        engine.playerResume.mockClear();
-
-        mprisCb!({ action: 'play' });
-        await flushPromises();
-
-        expect(engine.playerResume).toHaveBeenCalledTimes(1);
-        expect(player.isPlaying.value).toBe(true);
+        expect(player.current.value?.id).toBe(1);
+        expect(player.history.value).toHaveLength(0);
+        expect(player.queue.value.map(entry => entry.entryId)).toEqual(['be-2']);
+        expect(player.queue.value[0]?.trackId).toBe(2);
     });
 });

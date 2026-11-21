@@ -646,29 +646,12 @@ impl QualityPolicy {
         _format: Option<&str>,
         bitrate_kbps: Option<i32>,
     ) -> bool {
-        if let Some(br) = bitrate_kbps {
-            if br > 0 && br < 320 {
-                return true;
-            }
-        }
-        if let Some(q) = quality {
-            let q_norm = q.trim().to_lowercase();
-            if matches!(
-                q_norm.as_str(),
-                "low" | "medium" | "low_lossy" | "96" | "128" | "160" | "192" | "256"
-            ) || q_norm.contains("96k")
-                || q_norm.contains("128k")
-                || q_norm.contains("160k")
-                || q_norm.contains("192k")
-                || q_norm.contains("256k")
-            {
-                return true;
-            }
-        }
-        false
+        is_below_provider_floor("", false, bitrate_kbps, quality)
     }
 
-    /// Evaluate post-stream-resolution quality outcome
+    /// Evaluate post-stream-resolution quality outcome. The lossy floor is per
+    /// provider (D05): the caller resolves it with [`provider_lossy_floor_kbps`]
+    /// for the delivering service instead of a global constant.
     #[allow(clippy::too_many_arguments)]
     pub fn evaluate_stream_resolution(
         requested_quality: &str,
@@ -680,6 +663,7 @@ impl QualityPolicy {
         target_service: &str,
         strict_quality: bool,
         allow_fallback: bool,
+        min_lossy_floor_kbps: i32,
     ) -> QualityDecision {
         let provider_fallback_used = !origin_service.eq_ignore_ascii_case(target_service);
         let req_class = match requested_quality.to_lowercase().as_str() {
@@ -722,15 +706,27 @@ impl QualityPolicy {
             };
         }
 
-        // FS-05 Minimum lossy floor: fallback allows dropping down to 320 kbps ("high" / "320"),
-        // but NEVER below 320 kbps (rejects "low", "medium", 96k, 128k, etc.).
-        let is_below_floor =
-            Self::is_below_minimum_floor(Some(stream_quality), Some(stream_codec), None);
+        // FS-05 minimum lossy floor, now per provider (D05): the caller passes
+        // the floor of the delivering service (SoundCloud 128, Deezer 128 on
+        // free accounts, 320 for the lossless matrix otherwise). The bitrate
+        // evidence comes from the physical quality string first ("MP3
+        // 128kbps"); coarse vocabulary tokens without a number stay below
+        // every floor above 128.
+        let is_below_floor = match parse_bitrate_kbps(stream_quality) {
+            Some(bitrate) => bitrate < min_lossy_floor_kbps,
+            None => {
+                matches!(
+                    stream_quality.trim().to_lowercase().as_str(),
+                    "low" | "medium" | "low_lossy"
+                ) && min_lossy_floor_kbps > 128
+            }
+        };
         if quality_downgrade && is_below_floor {
             let reason = format!(
-                "Provider returned quality '{}' ({}) which is below the minimum allowed floor of 320 kbps",
+                "Provider returned quality '{}' ({}) which is below the minimum allowed floor of {} kbps",
                 stream_quality,
-                stream_codec.to_uppercase()
+                stream_codec.to_uppercase(),
+                min_lossy_floor_kbps
             );
             return QualityDecision {
                 requested_quality: requested_quality.to_string(),
@@ -852,6 +848,65 @@ impl QualityPolicy {
                     "exact quality"
                 }
             ),
+        }
+    }
+}
+
+/// Parses the first numeric bitrate (kbps) embedded in a quality string
+/// ("MP3 128kbps" → 128, "320" → 320, "96k" → 96). Returns `None` when the
+/// string carries no numeric bitrate evidence, so each caller keeps its own
+/// fallback instead of silently inventing one.
+pub fn parse_bitrate_kbps(quality: &str) -> Option<i32> {
+    let q = quality.trim().to_lowercase();
+    // "128kbps" / "96k" tokens first; a bare "320" is the whole token.
+    let token = q
+        .split_whitespace()
+        .find(|t| t.ends_with("kbps") || t.ends_with('k'))
+        .unwrap_or(q.as_str());
+    let digits: String = token.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<i32>().ok().filter(|br| *br > 0)
+}
+
+/// D05 (#117): lossy bitrate floor per provider, in kbps. The floor replaces
+/// the global hard-coded 320: SoundCloud delivers MP3 128 and Deezer serves
+/// 128 on free accounts, while the lossless matrix of Qobuz/Tidal/Amazon
+/// bottoms out at 320 (Qobuz format_id 5, Tidal HIGH, Amazon 256/320). An
+/// unknown service inherits the conservative 320 floor. Consumed by the
+/// quality reconciliation (quality_reconcile) and by the D11/D12 adapters;
+/// never duplicated per adapter.
+pub fn provider_lossy_floor_kbps(service: &str, account_free: bool) -> i32 {
+    match service.trim().to_ascii_lowercase().as_str() {
+        "soundcloud" => 128,
+        "deezer" if account_free => 128,
+        _ => 320,
+    }
+}
+
+/// D05: is the delivered lossy quality below the provider's floor? The
+/// bitrate evidence is physical first (`bitrate_kbps`), then the numeric
+/// bitrate embedded in the quality string ("MP3 128kbps"). Coarse vocabulary
+/// tokens without a number ("low", "medium") stay below every floor above
+/// 128: a provider with a 128 floor declares its real bitrate, so the token
+/// only rejects when the floor is 320.
+pub fn is_below_provider_floor(
+    service: &str,
+    account_free: bool,
+    bitrate_kbps: Option<i32>,
+    quality: Option<&str>,
+) -> bool {
+    let floor = provider_lossy_floor_kbps(service, account_free);
+    let observed = bitrate_kbps
+        .filter(|br| *br > 0)
+        .or_else(|| quality.and_then(parse_bitrate_kbps));
+    match observed {
+        Some(bitrate) => bitrate < floor,
+        None => {
+            quality.is_some_and(|q| {
+                matches!(
+                    q.trim().to_lowercase().as_str(),
+                    "low" | "medium" | "low_lossy"
+                )
+            }) && floor > 128
         }
     }
 }
@@ -1246,14 +1301,14 @@ mod tests {
     fn test_quality_policy_evaluate_stream_resolution_matrix() {
         // 1. Exact lossless FLAC
         let s1 = QualityPolicy::evaluate_stream_resolution(
-            "lossless", "lossless", "FLAC", 16, 44100.0, "qobuz", "qobuz", true, false,
+            "lossless", "lossless", "FLAC", 16, 44100.0, "qobuz", "qobuz", true, false, 320,
         );
         assert_eq!(s1.decision, QualityDecisionKind::CompletedExactQuality);
         assert_eq!(s1.effective_format, "flac");
 
         // 2. Strict rejection of AAC stream
         let s2 = QualityPolicy::evaluate_stream_resolution(
-            "lossless", "lossy", "AAC", 16, 44100.0, "tidal", "tidal", true, false,
+            "lossless", "lossy", "AAC", 16, 44100.0, "tidal", "tidal", true, false, 320,
         );
         assert_eq!(s2.decision, QualityDecisionKind::RejectedQuality);
         assert!(!s2.retryable);
@@ -1264,7 +1319,7 @@ mod tests {
 
         // 3. Opt-in quality fallback AAC stream
         let s3 = QualityPolicy::evaluate_stream_resolution(
-            "lossless", "lossy", "AAC", 16, 44100.0, "tidal", "tidal", false, true,
+            "lossless", "lossy", "AAC", 16, 44100.0, "tidal", "tidal", false, true, 320,
         );
         assert_eq!(
             s3.decision,
@@ -1275,7 +1330,7 @@ mod tests {
 
         // 4. Provider fallback + exact quality
         let s4 = QualityPolicy::evaluate_stream_resolution(
-            "lossless", "lossless", "FLAC", 16, 44100.0, "spotify", "qobuz", true, false,
+            "lossless", "lossless", "FLAC", 16, 44100.0, "spotify", "qobuz", true, false, 320,
         );
         assert_eq!(
             s4.decision,
@@ -1286,7 +1341,7 @@ mod tests {
 
         // 5. Hi-Res requested, but 16/44.1 CD-quality FLAC delivered -> CompletedWithQualityShortfall
         let s5 = QualityPolicy::evaluate_stream_resolution(
-            "hires", "lossless", "FLAC", 16, 44100.0, "qobuz", "qobuz", true, false,
+            "hires", "lossless", "FLAC", 16, 44100.0, "qobuz", "qobuz", true, false, 320,
         );
         assert_eq!(
             s5.decision,
@@ -1297,14 +1352,14 @@ mod tests {
 
         // 6. Hi-Res requested with format_id "7", 24/96 delivered -> CompletedExactQuality
         let s6 = QualityPolicy::evaluate_stream_resolution(
-            "7", "hires", "FLAC", 24, 96000.0, "qobuz", "qobuz", true, false,
+            "7", "hires", "FLAC", 24, 96000.0, "qobuz", "qobuz", true, false, 320,
         );
         assert_eq!(s6.decision, QualityDecisionKind::CompletedExactQuality);
         assert!(!s6.quality_fallback_used);
 
         // 7. FS-05 Minimum floor: "low" (96k/128k) rejected even with allow_fallback=true
         let s7 = QualityPolicy::evaluate_stream_resolution(
-            "lossless", "low", "AAC", 16, 44100.0, "tidal", "tidal", false, true,
+            "lossless", "low", "AAC", 16, 44100.0, "tidal", "tidal", false, true, 320,
         );
         assert_eq!(s7.decision, QualityDecisionKind::RejectedQuality);
         assert!(s7
@@ -1315,7 +1370,7 @@ mod tests {
 
         // 8. FS-05 Minimum floor: "medium" rejected even with allow_fallback=true
         let s8 = QualityPolicy::evaluate_stream_resolution(
-            "lossless", "medium", "MP3", 16, 44100.0, "qobuz", "qobuz", false, true,
+            "lossless", "medium", "MP3", 16, 44100.0, "qobuz", "qobuz", false, true, 320,
         );
         assert_eq!(s8.decision, QualityDecisionKind::RejectedQuality);
         assert!(s8
@@ -1326,13 +1381,155 @@ mod tests {
 
         // 9. FS-05 Minimum floor: "high" (320 kbps) accepted with allow_fallback=true
         let s9 = QualityPolicy::evaluate_stream_resolution(
-            "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", false, true,
+            "lossless", "high", "AAC", 16, 44100.0, "tidal", "tidal", false, true, 320,
         );
         assert_eq!(
             s9.decision,
             QualityDecisionKind::CompletedWithQualityFallback
         );
         assert!(s9.quality_fallback_used);
+    }
+
+    #[test]
+    fn test_parse_bitrate_kbps_extracts_numeric_evidence() {
+        assert_eq!(parse_bitrate_kbps("MP3 128kbps"), Some(128));
+        assert_eq!(parse_bitrate_kbps("AAC 96k"), Some(96));
+        assert_eq!(parse_bitrate_kbps("320"), Some(320));
+        assert_eq!(parse_bitrate_kbps("lossless"), None);
+        assert_eq!(parse_bitrate_kbps("low"), None);
+        assert_eq!(parse_bitrate_kbps(""), None);
+        assert_eq!(parse_bitrate_kbps("0kbps"), None);
+    }
+
+    #[test]
+    fn test_provider_lossy_floor_matrix() {
+        // D05 matrix: SoundCloud 128; Deezer 320 (128 free); the lossless
+        // providers and every unknown service inherit 320.
+        assert_eq!(provider_lossy_floor_kbps("soundcloud", false), 128);
+        assert_eq!(provider_lossy_floor_kbps("SoundCloud", true), 128);
+        assert_eq!(provider_lossy_floor_kbps("deezer", false), 320);
+        assert_eq!(provider_lossy_floor_kbps("deezer", true), 128);
+        assert_eq!(provider_lossy_floor_kbps("qobuz", false), 320);
+        assert_eq!(provider_lossy_floor_kbps("tidal", true), 320);
+        assert_eq!(provider_lossy_floor_kbps("amazon", false), 320);
+        assert_eq!(provider_lossy_floor_kbps("unknown-service", false), 320);
+        assert_eq!(provider_lossy_floor_kbps("", false), 320);
+    }
+
+    #[test]
+    fn test_is_below_provider_floor_uses_numeric_evidence() {
+        // SoundCloud 128: an MP3 128kbps delivery is at the floor, not below.
+        assert!(!is_below_provider_floor(
+            "soundcloud",
+            false,
+            Some(128),
+            None
+        ));
+        assert!(!is_below_provider_floor(
+            "soundcloud",
+            false,
+            None,
+            Some("MP3 128kbps")
+        ));
+        assert!(is_below_provider_floor(
+            "soundcloud",
+            false,
+            Some(96),
+            Some("MP3 96kbps")
+        ));
+        // Deezer: 128 only passes on free accounts.
+        assert!(is_below_provider_floor("deezer", false, Some(128), None));
+        assert!(!is_below_provider_floor("deezer", true, Some(128), None));
+        assert!(!is_below_provider_floor("deezer", false, Some(320), None));
+        // Lossless matrix: below 320 rejects, 320 passes.
+        assert!(is_below_provider_floor("tidal", false, Some(256), None));
+        assert!(!is_below_provider_floor("qobuz", false, Some(320), None));
+        // Coarse tokens without a number stay below a 320 floor and pass a
+        // 128 floor (a 128-floor provider declares its real bitrate).
+        assert!(is_below_provider_floor("tidal", false, None, Some("low")));
+        assert!(is_below_provider_floor(
+            "qobuz",
+            false,
+            None,
+            Some("medium")
+        ));
+        assert!(!is_below_provider_floor(
+            "soundcloud",
+            false,
+            None,
+            Some("low")
+        ));
+        // No evidence at all is not a violation.
+        assert!(!is_below_provider_floor("qobuz", false, None, None));
+        assert!(!is_below_provider_floor(
+            "qobuz",
+            false,
+            None,
+            Some("lossless")
+        ));
+    }
+
+    #[test]
+    fn test_stream_resolution_floor_is_provider_aware() {
+        // With the legacy 320 floor an MP3 128kbps stream is rejected...
+        let legacy = QualityPolicy::evaluate_stream_resolution(
+            "lossless",
+            "MP3 128kbps",
+            "MP3",
+            16,
+            44100.0,
+            "soundcloud",
+            "soundcloud",
+            false,
+            true,
+            320,
+        );
+        assert_eq!(legacy.decision, QualityDecisionKind::RejectedQuality);
+        assert!(legacy
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("below the minimum allowed floor of 320 kbps"));
+
+        // ...but the SoundCloud floor accepts it as a declared fallback.
+        let soundcloud = QualityPolicy::evaluate_stream_resolution(
+            "lossless",
+            "MP3 128kbps",
+            "MP3",
+            16,
+            44100.0,
+            "soundcloud",
+            "soundcloud",
+            false,
+            true,
+            128,
+        );
+        assert_eq!(
+            soundcloud.decision,
+            QualityDecisionKind::CompletedWithQualityFallback
+        );
+        assert!(soundcloud.quality_fallback_used);
+        assert_eq!(soundcloud.effective_format, "mp3");
+
+        // The rejection reason carries the provider floor that fired.
+        let deezer = QualityPolicy::evaluate_stream_resolution(
+            "lossless",
+            "MP3 128kbps",
+            "MP3",
+            16,
+            44100.0,
+            "deezer",
+            "deezer",
+            false,
+            true,
+            320,
+        );
+        assert_eq!(deezer.decision, QualityDecisionKind::RejectedQuality);
+        assert!(deezer
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("below the minimum allowed floor of 320 kbps"));
     }
 
     #[test]

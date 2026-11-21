@@ -6,25 +6,28 @@
 //! de sesión y expone `org.mpris.MediaPlayer2` + `.Player` en
 //! `/org/mpris/MediaPlayer2` (nombre de bus `org.mpris.MediaPlayer2.syncify`).
 //!
-//! Reparto de responsabilidades:
-//! - El hilo MPRIS sólo LEE estado compartido y emite `PropertiesChanged`
-//!   cuando algo cambia (polling ligero, 250 ms). La posición queda fuera del
-//!   diff: los clientes MPRIS la consultan bajo demanda (como dicta la spec).
-//! - Las acciones de los clientes (PlayPause, Next, Seek…) NO tocan el motor:
-//!   se reenvían a la UI con el evento `player:mpris-action`; la UI es la dueña
-//!   de la cola, los modos y el crédito de escucha — el mismo reparto que tenía
-//!   `navigator.mediaSession`.
-//! - El estado lo alimentan el ticker del player (`update_playback`, cada
-//!   250 ms) y la UI (`player_mpris_update`: metadatos, shuffle, repeat).
+//! Desde P02 (#133) MPRIS lee y manda sobre el BACKEND, no sobre la webview:
+//! - El ticker alimenta transporte, posición y la identidad de la pista
+//!   cargada; los metadatos (título, artista, álbum, carátula) se resuelven
+//!   desde la biblioteca por `track_id`, sin que la UI los empuje.
+//! - Play/Pause/Next/Previous/Stop/Seek/SetPosition se ejecutan con
+//!   `services::player_control` sobre `PlayerState` y el agregado persistido
+//!   de cola. Las propiedades `Shuffle` y `LoopStatus` son escribibles y se
+//!   persisten en `player_state`.
+//! - La UI es una vista: recibe `player:advanced` y `player:modes-changed`.
 //!
 //! Sin bus de sesión disponible (o fuera de Linux) el servicio degrada a no-op:
 //! la app arranca igual y los comandos no fallan.
 
+// El Mutex solo lo tocan el estado compartido y lock_shared, plumbing del
+// hilo D-Bus de Linux; fuera de Linux el servicio es un stub.
+#[cfg(target_os = "linux")]
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use serde::Deserialize;
 use tauri::AppHandle;
+#[cfg(target_os = "linux")]
+use tauri::Manager;
 
 /// Estado de reproducción que ve MPRIS (`PlaybackStatus`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -36,6 +39,9 @@ pub enum PlaybackStatus {
 }
 
 impl PlaybackStatus {
+    // Solo el hilo D-Bus de Linux lo traduce a string; en el resto de
+    // plataformas el servicio es un stub y quedaria como codigo muerto.
+    #[cfg(target_os = "linux")]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Stopped => "Stopped",
@@ -45,8 +51,17 @@ impl PlaybackStatus {
     }
 }
 
+/// Identidad y duración de la pista que el motor tiene cargada. La publica el
+/// ticker; los metadatos textuales los completa el servicio desde SQLite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NowPlaying {
+    pub track_id: i64,
+    pub duration: Option<Duration>,
+}
+
 /// `LoopStatus` de MPRIS ("None" | "Track" | "Playlist").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg(target_os = "linux")]
 enum LoopStatus {
     #[default]
     None,
@@ -54,6 +69,7 @@ enum LoopStatus {
     Playlist,
 }
 
+#[cfg(target_os = "linux")]
 impl LoopStatus {
     fn as_str(self) -> &'static str {
         match self {
@@ -63,33 +79,21 @@ impl LoopStatus {
         }
     }
 
-    fn from_wire(value: Option<&str>) -> Self {
+    fn from_repeat(value: &str) -> Self {
         match value {
-            Some("Track") => Self::Track,
-            Some("Playlist") => Self::Playlist,
+            "one" => Self::Track,
+            "all" => Self::Playlist,
             _ => Self::None,
         }
     }
 }
 
-/// Metadatos y modos que la UI envía para el panel MPRIS del escritorio.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct MprisMetadataInput {
-    pub track_id: Option<i64>,
-    pub title: Option<String>,
-    pub artist: Option<String>,
-    pub album: Option<String>,
-    pub duration_sec: Option<f64>,
-    pub art_url: Option<String>,
-    #[serde(default)]
-    pub shuffle: bool,
-    #[serde(default)]
-    pub loop_status: Option<String>,
-}
-
 /// Copia interna (normalizada) de los metadatos.
+// El plumbing siguiente (MprisMetadata, Shared, Snapshot, lock_shared,
+// LoopStatus) solo lo consume el hilo D-Bus de Linux; en el resto de
+// plataformas el servicio es un stub y quedaria como codigo muerto.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg(target_os = "linux")]
 struct MprisMetadata {
     track_id: Option<i64>,
     title: Option<String>,
@@ -99,24 +103,9 @@ struct MprisMetadata {
     art_url: Option<String>,
 }
 
-impl From<&MprisMetadataInput> for MprisMetadata {
-    fn from(input: &MprisMetadataInput) -> Self {
-        Self {
-            track_id: input.track_id,
-            title: input.title.clone(),
-            artist: input.artist.clone(),
-            album: input.album.clone(),
-            duration_us: input
-                .duration_sec
-                .filter(|s| s.is_finite() && *s > 0.0)
-                .map(|s| (s * 1_000_000.0) as i64),
-            art_url: input.art_url.clone(),
-        }
-    }
-}
-
-/// Estado compartido entre el ticker/UI y el hilo D-Bus.
+/// Estado compartido entre el ticker/acciones y el hilo D-Bus.
 #[derive(Debug, Clone, Default)]
+#[cfg(target_os = "linux")]
 struct Shared {
     playback: PlaybackStatus,
     position_us: i64,
@@ -127,6 +116,7 @@ struct Shared {
 
 /// Subconjunto que decide si hay que emitir `PropertiesChanged`.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg(target_os = "linux")]
 struct Snapshot {
     playback: PlaybackStatus,
     metadata: MprisMetadata,
@@ -134,6 +124,7 @@ struct Snapshot {
     shuffle: bool,
 }
 
+#[cfg(target_os = "linux")]
 impl From<&Shared> for Snapshot {
     fn from(shared: &Shared) -> Self {
         Self {
@@ -145,6 +136,7 @@ impl From<&Shared> for Snapshot {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn lock_shared(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
     shared
         .lock()
@@ -174,6 +166,24 @@ impl MprisService {
                 shared: Arc::clone(&shared),
                 stop: Arc::clone(&stop),
             };
+            // Modos persistidos desde el arranque: MPRIS refleja la cola real
+            // antes de que la webview restaure nada.
+            if let Some(db) = app
+                .try_state::<crate::AppState>()
+                .map(|state| state.db.clone())
+            {
+                let shared = Arc::clone(&shared);
+                tauri::async_runtime::spawn(async move {
+                    match crate::commands::playback_queue::perform_get_playback_queue(&db).await {
+                        Ok(snapshot) => {
+                            let mut shared = lock_shared(&shared);
+                            shared.shuffle = snapshot.shuffle;
+                            shared.loop_status = LoopStatus::from_repeat(&snapshot.repeat);
+                        }
+                        Err(e) => tracing::warn!("mpris: no se pudieron leer los modos: {e}"),
+                    }
+                });
+            }
             let app = app.clone();
             let spawn = std::thread::Builder::new()
                 .name("syncify-mpris".into())
@@ -194,34 +204,108 @@ impl MprisService {
         }
     }
 
-    /// Publica el estado del motor (lo llama el ticker cada 250 ms).
-    pub fn update_playback(&self, status: PlaybackStatus, position: Duration) {
+    /// Publica el estado del motor (lo llama el ticker cada 250 ms). Si la
+    /// pista cambió, resuelve sus metadatos desde la biblioteca en segundo
+    /// plano; la UI no participa.
+    pub fn update_playback<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        status: PlaybackStatus,
+        position: Duration,
+        now_playing: Option<NowPlaying>,
+    ) {
         #[cfg(target_os = "linux")]
         {
-            let mut shared = lock_shared(&self.shared);
-            shared.playback = status;
-            shared.position_us = i64::try_from(position.as_micros()).unwrap_or(i64::MAX);
+            let mut fetch_track = None;
+            {
+                let mut shared = lock_shared(&self.shared);
+                shared.playback = status;
+                shared.position_us = i64::try_from(position.as_micros()).unwrap_or(i64::MAX);
+                let track_id = now_playing.map(|now| now.track_id);
+                if shared.metadata.track_id != track_id {
+                    shared.metadata = MprisMetadata {
+                        track_id,
+                        duration_us: now_playing
+                            .and_then(|now| now.duration)
+                            .and_then(|duration| i64::try_from(duration.as_micros()).ok()),
+                        ..MprisMetadata::default()
+                    };
+                    if let Some(track_id) = track_id {
+                        fetch_track = Some(track_id);
+                    }
+                } else if let Some(duration) = now_playing.and_then(|now| now.duration) {
+                    shared.metadata.duration_us =
+                        Some(i64::try_from(duration.as_micros()).unwrap_or(i64::MAX));
+                }
+            }
+            if let Some(track_id) = fetch_track {
+                spawn_metadata_fetch(app.clone(), track_id);
+            }
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (status, position);
+            let _ = (app, status, position, now_playing);
         }
     }
 
-    /// Publica metadatos y modos (lo llama `player_mpris_update`).
-    pub fn update_metadata(&self, input: &MprisMetadataInput) {
+    /// Publica shuffle/repeat persistidos. Lo llaman las acciones del backend
+    /// (`player_control`) y el comando `playback_state_set_modes`.
+    pub fn update_modes(&self, shuffle: bool, repeat: &str) {
         #[cfg(target_os = "linux")]
         {
             let mut shared = lock_shared(&self.shared);
-            shared.metadata = MprisMetadata::from(input);
-            shared.loop_status = LoopStatus::from_wire(input.loop_status.as_deref());
-            shared.shuffle = input.shuffle;
+            shared.shuffle = shuffle;
+            shared.loop_status = LoopStatus::from_repeat(repeat);
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = input;
+            let _ = (shuffle, repeat);
         }
     }
+
+    /// Rellena los metadatos textuales de la pista actual si sigue vigente.
+    /// Una consulta lenta de una pista ya sustituida no pisa la nueva.
+    #[cfg(target_os = "linux")]
+    fn apply_track_metadata(
+        &self,
+        track_id: i64,
+        metadata: &crate::commands::library::TrackMetadata,
+    ) {
+        let mut shared = lock_shared(&self.shared);
+        if shared.metadata.track_id != Some(track_id) {
+            return;
+        }
+        shared.metadata.title = Some(metadata.title.clone());
+        shared.metadata.artist = metadata.artist_name.clone();
+        shared.metadata.album = metadata.album_name.clone();
+        shared.metadata.art_url = metadata.cover_art_url.clone();
+        if shared.metadata.duration_us.is_none() {
+            shared.metadata.duration_us = metadata
+                .duration_ms
+                .and_then(|ms| i64::try_from(ms).ok())
+                .map(|ms| ms * 1_000);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_metadata_fetch<R: tauri::Runtime + 'static>(app: AppHandle<R>, track_id: i64) {
+    tauri::async_runtime::spawn(async move {
+        let Some(db) = app
+            .try_state::<crate::AppState>()
+            .map(|state| state.db.clone())
+        else {
+            return;
+        };
+        match crate::commands::library::fetch_track_metadata(&db, track_id).await {
+            Ok(metadata) => {
+                if let Some(service) = app.try_state::<MprisService>() {
+                    service.apply_track_metadata(track_id, &metadata);
+                }
+            }
+            Err(e) => tracing::debug!(track_id, "mpris: metadatos no disponibles: {e}"),
+        }
+    });
 }
 
 impl Drop for MprisService {
@@ -239,7 +323,7 @@ mod linux {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use tauri::{AppHandle, Emitter, Manager};
+    use tauri::{AppHandle, Manager};
     use zbus::blocking::object_server::InterfaceRef;
     use zbus::blocking::Connection;
     use zbus::fdo::Properties;
@@ -248,12 +332,11 @@ mod linux {
     use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 
     use super::{lock_shared, MprisMetadata, Shared, Snapshot};
+    use crate::services::player_control::{self, BackendAction, RepeatMode};
 
     const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
     const BUS_NAME: &str = "org.mpris.MediaPlayer2.syncify";
     const PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
-    /// Evento Tauri con la acción MPRIS que debe ejecutar la UI.
-    const ACTION_EVENT: &str = "player:mpris-action";
 
     /// Sirve ambos objetos D-Bus y bombea `PropertiesChanged` hasta que se alce
     /// la bandera `stop` (al soltar el servicio, al cerrar la app).
@@ -419,32 +502,32 @@ mod linux {
     #[interface(name = "org.mpris.MediaPlayer2.Player")]
     impl MprisPlayer {
         fn next(&self) {
-            self.emit_action("next", None, None);
+            player_control::spawn_action(self.app.clone(), BackendAction::Next);
         }
 
         fn previous(&self) {
-            self.emit_action("previous", None, None);
+            player_control::spawn_action(self.app.clone(), BackendAction::Previous);
         }
 
         fn pause(&self) {
-            self.emit_action("pause", None, None);
+            player_control::spawn_action(self.app.clone(), BackendAction::Pause);
         }
 
         fn play_pause(&self) {
-            self.emit_action("playPause", None, None);
+            player_control::spawn_action(self.app.clone(), BackendAction::PlayPause);
         }
 
         fn stop(&self) {
-            self.emit_action("stop", None, None);
+            player_control::spawn_action(self.app.clone(), BackendAction::Stop);
         }
 
         fn play(&self) {
-            self.emit_action("play", None, None);
+            player_control::spawn_action(self.app.clone(), BackendAction::Play);
         }
 
         /// Offset relativo en microsegundos (puede ser negativo).
         fn seek(&self, offset: i64) {
-            self.emit_action("seek", Some(offset), None);
+            player_control::spawn_action(self.app.clone(), BackendAction::SeekByMicros(offset));
         }
 
         /// Posición absoluta; se ignora si el trackid no es el actual (spec MPRIS).
@@ -454,7 +537,13 @@ mod linux {
                 track_id.as_str() == track_path(shared.metadata.track_id)
             };
             if is_current {
-                self.emit_action("setPosition", None, Some(position));
+                player_control::spawn_action(
+                    self.app.clone(),
+                    BackendAction::SetPositionMicros {
+                        track_id: lock_shared(&self.shared).metadata.track_id.unwrap_or(0),
+                        position_us: position,
+                    },
+                );
             }
         }
 
@@ -473,6 +562,13 @@ mod linux {
         }
 
         #[zbus(property)]
+        fn set_loop_status(&self, value: String) {
+            if let Some(repeat) = RepeatMode::from_mpris_loop_status(&value) {
+                player_control::spawn_set_repeat(self.app.clone(), repeat);
+            }
+        }
+
+        #[zbus(property)]
         fn rate(&self) -> f64 {
             1.0
         }
@@ -480,6 +576,11 @@ mod linux {
         #[zbus(property)]
         fn shuffle(&self) -> bool {
             lock_shared(&self.shared).shuffle
+        }
+
+        #[zbus(property)]
+        fn set_shuffle(&self, value: bool) {
+            player_control::spawn_set_shuffle(self.app.clone(), value);
         }
 
         #[zbus(property)]
@@ -538,33 +639,8 @@ mod linux {
             true
         }
     }
-
-    impl MprisPlayer {
-        /// Reenvía la acción a la UI: allí viven cola, modos y crédito de escucha.
-        fn emit_action(
-            &self,
-            action: &'static str,
-            offset_us: Option<i64>,
-            position_us: Option<i64>,
-        ) {
-            let payload = MprisActionPayload {
-                action,
-                offset_us,
-                position_us,
-            };
-            if let Err(err) = self.app.emit(ACTION_EVENT, payload) {
-                tracing::warn!("mpris: no se pudo reenviar la acción {action}: {err}");
-            }
-        }
-    }
-
-    #[derive(Clone, serde::Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct MprisActionPayload {
-        action: &'static str,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        offset_us: Option<i64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        position_us: Option<i64>,
-    }
 }
+
+#[cfg(test)]
+#[path = "mpris_tests.rs"]
+mod tests;

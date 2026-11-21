@@ -51,13 +51,22 @@ pub struct ServiceSyncSettings {
     pub sync_library_history: bool,
     #[serde(default)]
     pub sync_include_appearances: bool,
-    pub incremental_sync: bool,
+    // #197: `incremental_sync` fuera del contrato; la columna (DEFAULT 1)
+    // permanece en BD sin lectores hasta la retirada de esquema.
     pub last_synced: Option<String>,
 }
 
 // ==============================================
 // SPRINT 2: DOWNLOADS + FILE SETTINGS
 // ==============================================
+
+/// Cuenta preferida de descarga por servicio (D09, tabla de D00).
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq)]
+pub struct ServicePreferredAccount {
+    pub service_name: String,
+    pub account_id: i64,
+    pub updated_at: String,
+}
 
 /// Quality preference per streaming service
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq)]
@@ -83,18 +92,9 @@ pub struct FolderSettings {
     pub fallback_action: String,
 }
 
-/// Duplicate detection and handling settings (singleton)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct DuplicateSettings {
-    pub id: i64,
-    pub enable_detection: bool,
-    pub prefer_higher_quality: bool,
-    pub prefer_lossless: bool,
-    pub replace_same_quality_different_source: bool,
-    pub quality_threshold_kbps: i64,
-    pub delete_duplicates_immediately: bool,
-    pub move_to_trash: bool,
-}
+// #197 (SB02): el struct `DuplicateSettings` se retiró junto a sus comandos
+// CRUD; la tabla `duplicate_settings` permanece para el reset y su reapertura
+// está registrada en docs/auditoria/matriz-ajustes.md.
 
 /// Audio processing settings (singleton)
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -278,7 +278,11 @@ pub struct MigrationJob {
     pub source_account_id: Option<i64>,
     pub destination_account_id: Option<i64>,
     pub source_playlist_ids: Option<String>, // JSON array
-    pub options: String,                     // JSON MigrationOptions
+    /// JSON array of the collections the job carries (0113); NULL keeps
+    /// meaning the legacy track-favorites flow.
+    #[serde(default)]
+    pub collections: Option<String>,
+    pub options: String, // JSON MigrationOptions
     pub status: String,
     pub total_items: i64,
     pub completed_items: i64,
@@ -290,7 +294,7 @@ pub struct MigrationJob {
     pub created_at: String,
 }
 
-/// Individual migration item (track)
+/// Individual migration item (one unit of a collection being migrated)
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct MigrationItem {
     pub id: i64,
@@ -301,6 +305,11 @@ pub struct MigrationItem {
     pub source_track_album: Option<String>,
     pub source_playlist_id: Option<String>,
     pub source_playlist_name: Option<String>,
+    /// Collection the item belongs to (0113): 'track' for the legacy
+    /// track-favorites flow, 'album' for favorite albums. All kinds share
+    /// the id/match/status columns, named for the track flow they grew from.
+    #[serde(default)]
+    pub kind: String,
     pub destination_track_id: Option<String>,
     pub match_confidence: Option<f64>,
     pub match_method: Option<String>,
@@ -381,6 +390,11 @@ pub struct MigrationProgress {
     pub eta: String,
     /// Human readable description of the operation being performed.
     pub current_action: String,
+    /// Collection kind of the item being processed (0113): 'track' | 'album'.
+    /// Absent in the events that do not address a specific item (start,
+    /// playlist mirror, close).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_kind: Option<String>,
 }
 
 /// Migration schema audit report

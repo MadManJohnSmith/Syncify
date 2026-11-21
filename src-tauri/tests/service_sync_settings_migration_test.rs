@@ -60,7 +60,6 @@ async fn test_service_sync_settings_updated_at_after_migration() {
         &pool, "spotify", false, // sync_favorites
         true,  // sync_playlists
         true,  // sync_albums
-        false, // incremental_sync
     )
     .await
     .expect("Updating service sync settings must not fail with 'no such column: updated_at'");
@@ -69,7 +68,8 @@ async fn test_service_sync_settings_updated_at_after_migration() {
     assert!(!updated.sync_favorites);
     assert!(updated.sync_playlists);
     assert!(updated.sync_albums);
-    assert!(!updated.incremental_sync);
+    // #197 (SB02): `incremental_sync` ya no viaja en el UPDATE ni en la
+    // lectura; la columna conserva su valor huérfano (DEFAULT 1).
 
     // Verify updated_at has been updated in database
     let current_updated_at: Option<String> = sqlx::query_scalar(
@@ -154,7 +154,7 @@ async fn test_service_sync_settings_regression_without_0066() {
 
     // The exact same operation now succeeds
     let success_result =
-        perform_update_service_sync_settings(&pool, "spotify", false, true, true, false).await;
+        perform_update_service_sync_settings(&pool, "spotify", false, true, true).await;
 
     assert!(
         success_result.is_ok(),
@@ -182,7 +182,7 @@ async fn new_services_sync_albums_and_artists_by_default_without_resetting_users
     assert!(unconfigured.favorite_albums);
     assert!(unconfigured.favorite_artists);
 
-    perform_update_service_sync_settings(&pool, "tidal", false, false, false, false)
+    perform_update_service_sync_settings(&pool, "tidal", false, false, false)
         .await
         .expect("Failed to update existing row");
     let wtf = perform_get_service_import_preferences(&pool, "tidal")

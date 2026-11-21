@@ -490,6 +490,69 @@ pub fn decrypt(encrypted: &str) -> Result<String, String> {
 }
 
 // ═══════════════════════════════════════════════════════
+// ENCRYPT / DECRYPT BINARIOS (perfiles de cuenta, issue #86)
+// ═══════════════════════════════════════════════════════
+
+/// Encrypt raw bytes (el archivo del perfil de webview) with an explicit
+/// 32-byte key (AES-256-GCM). Mismo esquema que las credenciales: nonce
+/// aleatorio de 12 bytes prefijado al ciphertext.
+pub fn encrypt_bytes_with_key(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| format!("Cipher init error: {}", e))?;
+
+    let mut nonce_bytes = [0u8; 12];
+    use aes_gcm::aead::rand_core::RngCore;
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| format!("Encryption error: {}", e))?;
+
+    let mut combined = nonce_bytes.to_vec();
+    combined.extend(ciphertext);
+    Ok(combined)
+}
+
+/// Decrypt raw bytes with an explicit key. Un fallo aquí (etiqueta GCM) es
+/// clave equivocada o fichero manipulado: indistinguibles a propósito.
+pub fn decrypt_bytes_with_key(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| format!("Cipher init error: {}", e))?;
+
+    if encrypted.len() < 12 {
+        return Err("Invalid encrypted data: too short".into());
+    }
+    let (nonce_bytes, ciphertext) = encrypted.split_at(12);
+    let nonce = Nonce::from_slice(nonce_bytes);
+
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| format!("Decryption error: {}", e))
+}
+
+/// La clave activa del OnceLock. Solo para módulos que necesitan ejecutar el
+/// pipeline completo (compresión + cifrado del contenedor del perfil, #86)
+/// con la MISMA clave que las credenciales: no se persiste ni se registra.
+pub fn key() -> Result<&'static [u8; 32], String> {
+    get_key()
+}
+
+/// Huella legible de la clave: primeros 16 bytes de SHA-256 en hex. Se guarda
+/// como `key_id` en `account_profiles` (migración 0111) para diagnosticar una
+/// clave ausente o una base restaurada en otra máquina sin exponer la clave.
+pub fn key_fingerprint_with_key(key: &[u8; 32]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(key);
+    let hex: String = digest[..16].iter().map(|b| format!("{:02x}", b)).collect();
+    hex
+}
+
+/// Huella de la clave activa.
+pub fn key_fingerprint() -> Result<String, String> {
+    let key = get_key()?;
+    Ok(key_fingerprint_with_key(key))
+}
+
+// ═══════════════════════════════════════════════════════
 // LEGACY MIGRATION
 // ═══════════════════════════════════════════════════════
 
@@ -650,16 +713,17 @@ pub async fn migrate_legacy_credentials(db: &sqlx::SqlitePool) -> Result<(u32, V
         || (migrated_count == 0 && failed_ids.len() == rows.len());
 
     if should_mark_complete {
-        let _ = sqlx::query(
-            "INSERT OR REPLACE INTO settings (key, value, updated_at) \
-             VALUES ('credential_migration_v1_complete', 'true', CURRENT_TIMESTAMP)",
+        // Non-fatal: migration will re-run next boot but won't corrupt data;
+        // write_or_log records the failure if the flag cannot be written.
+        let _ = crate::db::write_or_log(
+            "credential_migration_v1_complete",
+            sqlx::query(
+                "INSERT OR REPLACE INTO settings (key, value, updated_at) \
+                 VALUES ('credential_migration_v1_complete', 'true', CURRENT_TIMESTAMP)",
+            )
+            .execute(db),
         )
-        .execute(db)
-        .await
-        .map_err(|e| {
-            tracing::warn!("Failed to record migration completion flag: {}", e);
-            // Non-fatal: migration will re-run next boot but won't corrupt data
-        });
+        .await;
     }
 
     Ok((migrated_count, failed_ids))

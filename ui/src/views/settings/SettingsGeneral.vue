@@ -34,13 +34,8 @@
 
     <section class="space-y-4">
        <h3 class="text-lg font-semibold text-gray-900 dark:text-white pb-2 border-b border-gray-200 dark:border-border-dark">Storage & Database</h3>
-       <PathSelector 
-         label="Library database location" 
-         v-model="generalSettings.settings.db_location" 
-         placeholder="Application database path..."
-         subtitle="Managed automatically by Syncify engine in OS application data"
-         disabled
-       />
+       <!-- #197 (SB02): la KV `db_location` se oculta — el motor gestiona la
+            ubicación de la BD él mismo y la KV no tenía lector (AJ-01). -->
        <PathSelector 
          label="Download directory" 
          v-model="generalSettings.settings.download_dir" 

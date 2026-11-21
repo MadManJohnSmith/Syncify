@@ -97,6 +97,8 @@ describe('TASK-118: IPC Event Name Symmetry between Frontend and Rust Backend', 
             'import-failed',
             'syncify:progress',
             'syncify:download_progress',
+            // D07 (spec #111 / issue #119): ciclo y contadores del job.
+            'syncify:download_job_progress',
             'syncify:notification',
             'syncify:log_event',
         ]

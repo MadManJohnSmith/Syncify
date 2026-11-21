@@ -50,6 +50,8 @@ against the code.
 
 - `features/auth-flow.md`: OAuth, PKCE and browser session-capture flows,
   multi-account reconciliation.
+- `features/authentication.md`: the debug-only Deezer login diagnostic probe
+  (cookie jar, no values) from AUTH-WV-01.
 - `features/download-pipeline.md`: orchestrator architecture, the queue and
   the native per-provider delivery pipelines.
 - `features/track-browser.md`: the track-list machinery — the virtual-window
@@ -60,7 +62,10 @@ against the code.
   AcoustID, and the background worker.
 - `features/playlist-system.md`: playlist synchronisation and persistence.
 - `features/settings-system.md`: hierarchical configuration and its SQLite
-  persistence.
+  persistence, single-source defaults and backend-only reset.
+- `features/backup.md`: manifest v2 — export/import carrying settings and
+  account metadata without secrets, per-account reauthentication on restore
+  and fail-safe rejection of future versions.
 - `features/PLAYER_PHASE1_MPRIS.md`: the built-in player — MediaSession
   integration, the native engine (`crates/syncify-player`) and the native MPRIS
   service (`src-tauri/src/services/mpris.rs`). An end-to-end D-Bus check in a

@@ -5,10 +5,14 @@
  */
 
 import { invokeCommand } from './tauri';
-import { asArray, asNumber, asRecord } from './normalize';
+
+export const debugDeezerCookieProbe = (): Promise<string> =>
+    invokeCommand('debug_deezer_cookie_probe');
+import { asArray, asNumber, asRecord, maskEmail } from './normalize';
 import type {
     Service,
     Account,
+    AccountLifecycleState,
     ServiceStatus,
     SessionStatus,
     AuthResult,
@@ -47,10 +51,18 @@ export async function getServices(): Promise<Service[]> {
 
 /**
  * Get service statuses (legacy)
+ *
+ * ADR-0007 decision 7: `account_email` is masked here, at the IPC boundary, so
+ * no view or export can render the full address. Masking is in place to keep
+ * the array identity callers rely on.
  */
 export async function getServiceStatuses(): Promise<ServiceStatus[]> {
     const raw = await invokeCommand<unknown>('get_service_statuses');
-    return asArray<ServiceStatus>(raw);
+    const statuses = asArray<ServiceStatus>(raw);
+    for (const status of statuses) {
+        if (status) status.account_email = maskEmail(status.account_email);
+    }
+    return statuses;
 }
 
 // ==============================================
@@ -59,10 +71,18 @@ export async function getServiceStatuses(): Promise<ServiceStatus[]> {
 
 /**
  * Get all connected accounts
+ *
+ * ADR-0007 decision 7: every `email` is masked here, at the IPC boundary, so
+ * the full address never reaches UI state, cards or exported reports. Identity
+ * resolution downstream works on the masked form.
  */
 export async function getAccounts(): Promise<Account[]> {
     const raw = await invokeCommand<unknown>('get_accounts');
-    return asArray<Account>(raw);
+    const accounts = asArray<Account>(raw);
+    for (const account of accounts) {
+        if (account) account.email = maskEmail(account.email);
+    }
+    return accounts;
 }
 
 /**
@@ -82,6 +102,76 @@ export async function addAccount(params: {
  */
 export async function removeAccount(id: number): Promise<void> {
     return invokeCommand<void>('remove_account', { accountId: id });
+}
+
+/** Result of a lifecycle transition (`set_account_state`). */
+export interface AccountLifecycleChange {
+    account_id: number;
+    service_id: number;
+    service: string;
+    old_state: string;
+    new_state: AccountLifecycleState;
+    is_active: boolean;
+    changed: boolean;
+}
+
+/**
+ * Set the lifecycle state of an account (issue #85, ADR-0007 decision 3).
+ * Disabling or archiving stops sync and downloads of that account; enabling
+ * restores them. Deleting is a separate command.
+ */
+export async function setAccountState(
+    id: number,
+    newState: AccountLifecycleState,
+): Promise<AccountLifecycleChange> {
+    return invokeCommand<AccountLifecycleChange>('set_account_state', {
+        accountId: id,
+        newState,
+    });
+}
+
+/** Result of `delete_account` (issue #85). */
+export interface AccountDeletionSummary {
+    account_id: number;
+    service: string;
+    delete_audio: boolean;
+    audio_files_deleted: number;
+}
+
+/**
+ * Delete an account and the rows it owns. Canonical tracks, track sources and
+ * downloaded files are preserved; audio files are only deleted when the
+ * explicit `deleteAudio` checkbox is set.
+ */
+export async function deleteAccount(id: number, deleteAudio: boolean): Promise<AccountDeletionSummary> {
+    return invokeCommand<AccountDeletionSummary>('delete_account', {
+        accountId: id,
+        deleteAudio,
+    });
+}
+
+/** Result of `logout_account` (issue #91, ADR-0007 decision 9). */
+export interface AccountLogoutSummary {
+    account_id: number;
+    service_id: number;
+    service: string;
+    /** Lifecycle state kept intact: logging out is not disabling or archiving. */
+    state: AccountLifecycleState;
+    is_active: boolean;
+    /** Sister account that inherited the active slot, when there was one. */
+    new_active_account_id: number | null;
+    remaining_accounts: number;
+    /** Profiles (row and encrypted archive) removed for this account. */
+    profiles_deleted: number;
+}
+
+/**
+ * Log out one account: delete its stored credential and encrypted webview
+ * profile, keep the account row and its library, and leave the account
+ * "logged out" so sync and downloads stop until it is re-authenticated.
+ */
+export async function logoutAccount(id: number): Promise<AccountLogoutSummary> {
+    return invokeCommand<AccountLogoutSummary>('logout_account', { accountId: id });
 }
 
 /** Summary returned by `reset_account_sync_data`. */
@@ -215,6 +305,35 @@ export async function spotifyAuthCallback(code: string): Promise<string> {
  */
 export async function spotifyAuthWebview(): Promise<AuthResult> {
     return invokeCommand<AuthResult>('spotify_auth_webview');
+}
+
+// ==============================================
+// IN-APP LOGIN PER ACCOUNT (issue #84)
+// ==============================================
+
+/** Shape returned by `start_account_login` once the webview window is up. */
+export interface AccountLoginStart {
+    service: string;
+    /** Identifies the attempt's temporary webview profile and the window. */
+    profile_key: string;
+}
+
+/**
+ * Start the in-app login for a service: opens the webview window with a
+ * `profile_key` per attempt and captures ONLY the provider artifact (cookie or
+ * storage key). The result arrives through the `account-login-*` events; the
+ * saved account itself is announced via `auth-state-updated`.
+ */
+export async function startAccountLogin(service: string): Promise<AccountLoginStart> {
+    return invokeCommand<AccountLoginStart>('start_account_login', { service });
+}
+
+/**
+ * Cancel an in-app login attempt: closes the window, deletes the temporary
+ * profile and emits `account-login-cancelled`. No half-created account.
+ */
+export async function cancelAccountLogin(profileKey: string): Promise<{ cancelled: boolean; profile_key: string }> {
+    return invokeCommand('cancel_account_login', { profileKey });
 }
 
 // ==============================================
@@ -476,6 +595,9 @@ export const accountsApi = {
     getAccounts,
     addAccount,
     removeAccount,
+    setAccountState,
+    logoutAccount,
+    deleteAccount,
     resetAccountSyncData,
     refreshAccountIdentities,
     setAccountDisplayName,
@@ -493,6 +615,9 @@ export const accountsApi = {
     startSpotifyAuth,
     spotifyAuthCallback,
     spotifyAuthWebview,
+    // In-app login per account (issue #84)
+    startAccountLogin,
+    cancelAccountLogin,
     getSpotifyApiConfig,
     saveSpotifyApiConfig,
     // Import

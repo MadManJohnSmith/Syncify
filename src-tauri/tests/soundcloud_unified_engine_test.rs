@@ -384,6 +384,8 @@ async fn test_same_title_and_duration_do_not_collapse_into_one_track() {
         account_id,
         soundcloud_service_id,
         &client,
+        // SB03 (#198): fábrica = sin apariciones.
+        false,
         |_res, _processed, _page_finished| {},
     )
     .await
@@ -527,6 +529,8 @@ async fn test_second_run_is_idempotent() {
             account_id,
             soundcloud_service_id,
             &client,
+            // SB03 (#198): fábrica = sin apariciones.
+            false,
             |_res, _processed, _page_finished| {},
         )
         .await
@@ -624,6 +628,8 @@ async fn test_playlists_reach_the_catalog_through_the_engine() {
         account_id,
         soundcloud_service_id,
         &client,
+        // SB03 (#198): fábrica = sin apariciones.
+        false,
         |res, playlist_title, processed, page_finished| {
             if page_finished {
                 finished_pages.push((playlist_title.to_string(), processed));
@@ -727,6 +733,8 @@ async fn test_playlists_reach_the_catalog_through_the_engine() {
         account_id,
         soundcloud_service_id,
         &client,
+        // SB03 (#198): fábrica = sin apariciones.
+        false,
         |_res, _title, _processed, _page_finished| {},
     )
     .await

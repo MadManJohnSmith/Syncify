@@ -10,6 +10,7 @@ import {
     getMigrationDetails,
     getMigrationItemsByStatus,
     getMigrationDestinations,
+    getMigrationCapabilities,
     previewMigration,
     startMigration,
     cancelMigration,
@@ -31,6 +32,7 @@ import type {
     MigrationOptions,
     MigrationPreviewResult,
     MigrationProgress,
+    MigrationDestinationCapability,
     DestinationTrackMatch
 } from '../api/types';
 
@@ -63,7 +65,8 @@ export function useMigration() {
         percent: 0,
         speed: 0,
         eta: '',
-        current_action: ''
+        current_action: '',
+        current_kind: undefined
     });
 
     // Manual matching
@@ -72,6 +75,10 @@ export function useMigration() {
 
     // Destination services the backend engine supports (data-driven list)
     const supportedDestinations = ref<string[]>([]);
+
+    // Capability matrix destination x collection (M00): what the engine
+    // declares per destination; the wizard offers only what is declared.
+    const capabilities = ref<MigrationDestinationCapability[]>([]);
 
     // Event listener cleanup
     let progressUnlisten: UnlistenFn | null = null;
@@ -143,6 +150,18 @@ export function useMigration() {
         }
     }
 
+    /** Load the capability matrix the wizard gates its offering on (M00). */
+    async function loadCapabilities(): Promise<void> {
+        try {
+            capabilities.value = await getMigrationCapabilities();
+        } catch (e) {
+            console.error('Failed to load migration capabilities:', e);
+            // An undeclared engine offers nothing: the wizard shows every
+            // collection as not available until the matrix answers.
+            capabilities.value = [];
+        }
+    }
+
     async function loadJobDetails(jobId: string): Promise<void> {
         try {
             selectedJob.value = await getMigrationDetails(jobId);
@@ -202,6 +221,7 @@ export function useMigration() {
         progress.total_items = 0;
         progress.current_track = '';
         progress.current_action = '';
+        progress.current_kind = undefined;
         progress.completed_count = 0;
         progress.failed_count = 0;
         progress.skipped_count = 0;
@@ -217,7 +237,8 @@ export function useMigration() {
         playlistIds?: string[],
         options: MigrationOptions = defaultOptions,
         sourceAccountId?: number | null,
-        destinationAccountId?: number | null
+        destinationAccountId?: number | null,
+        collections?: string[]
     ): Promise<string | null> {
         isStartingMigration.value = true;
         resetProgress();
@@ -228,7 +249,8 @@ export function useMigration() {
                 playlistIds,
                 options,
                 sourceAccountId,
-                destinationAccountId
+                destinationAccountId,
+                collections
             );
             currentJobId.value = jobId;
             // start_migration resolves only when the job is over: from here on
@@ -386,6 +408,7 @@ export function useMigration() {
             progress.speed = p.speed;
             progress.eta = p.eta;
             progress.current_action = p.current_action;
+            progress.current_kind = p.current_kind;
 
             // Refresh history when the job reaches a terminal state
             if (p.status === 'completed' || p.status === 'cancelled') {
@@ -464,6 +487,7 @@ export function useMigration() {
         progress,
         searchResults,
         supportedDestinations,
+        capabilities,
         defaultOptions,
 
         // Actions
@@ -471,6 +495,7 @@ export function useMigration() {
         loadHistory,
         loadTemplates,
         loadSupportedDestinations,
+        loadCapabilities,
         loadJobDetails,
         loadJobItemsByStatus,
         preview,

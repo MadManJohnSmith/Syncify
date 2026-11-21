@@ -1243,6 +1243,8 @@ async fn evaluate_track_preflight_inner(
                 &crate::download::DownloadIntent {
                     canonical_track_id: track_id,
                     requested_service: eff_req_service.clone(),
+                    destination_service: eff_req_service.clone(),
+                    source_service: None,
                     requested_quality: requested_quality.map(|q| q.to_string()),
                     strict_quality,
                     allow_fallback,
@@ -2653,24 +2655,20 @@ pub fn pause_worker(state: State<'_, AppState>) {
     tracing::info!("Download worker paused");
 }
 
-/// Perform set maximum concurrent downloads
+/// Perform set maximum concurrent downloads. SB01 (#199): sync_settings es la
+/// única superficie persistida (error propagado; antes había 3 escrituras
+/// silenciosas repartidas en advanced_settings y la KV); el worker recibe el
+/// valor en vivo como estado de ejecución.
 pub async fn perform_set_max_concurrent_downloads(
     state: &AppState,
     max: usize,
 ) -> Result<usize, String> {
     state.worker_state.set_max_concurrent(max);
-    let _ = sqlx::query("UPDATE sync_settings SET max_concurrent_downloads = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1")
+    sqlx::query("UPDATE sync_settings SET max_concurrent_downloads = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1")
         .bind(max as i32)
         .execute(&state.db)
-        .await;
-    let _ = sqlx::query("UPDATE advanced_settings SET max_concurrent_downloads = ?, updated_at = datetime('now') WHERE id = 1")
-        .bind(max as i32)
-        .execute(&state.db)
-        .await;
-    let _ = sqlx::query("INSERT INTO settings (key, value) VALUES ('dl_concurrent_downloads', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(max.to_string())
-        .execute(&state.db)
-        .await;
+        .await
+        .map_err(|e| format!("Failed to persist max concurrent downloads: {}", e))?;
     tracing::info!("Max concurrent downloads set to {} and persisted", max);
     Ok(max)
 }
@@ -2761,16 +2759,22 @@ pub async fn perform_force_redownload_tracks(
         };
 
         // 1. Remove from downloads table to allow fresh download
-        let _ = sqlx::query("DELETE FROM downloads WHERE track_id = ?")
-            .bind(tid)
-            .execute(&state.db)
-            .await;
+        let _ = crate::db::write_or_log(
+            "perform_force_redownload_tracks",
+            sqlx::query("DELETE FROM downloads WHERE track_id = ?")
+                .bind(tid)
+                .execute(&state.db),
+        )
+        .await;
 
         // 2. Remove existing queue items for this track
-        let _ = sqlx::query("DELETE FROM download_queue WHERE track_id = ?")
-            .bind(tid)
-            .execute(&state.db)
-            .await;
+        let _ = crate::db::write_or_log(
+            "perform_force_redownload_tracks",
+            sqlx::query("DELETE FROM download_queue WHERE track_id = ?")
+                .bind(tid)
+                .execute(&state.db),
+        )
+        .await;
 
         let add_result = perform_add_to_queue(
             &state.db,

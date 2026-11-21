@@ -523,6 +523,7 @@
                       <div class="flex-1">
                         <h3 class="text-lg font-semibold text-gray-900 dark:text-white">{{ content.label }}</h3>
                         <p class="text-sm text-text-secondary">{{ content.description }}</p>
+                        <p v-if="content.disabled" class="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400" data-testid="content-unavailable">Not available on any migration destination</p>
                       </div>
                     </div>
                     <!-- Checkbox -->
@@ -560,6 +561,19 @@
                       {{ service.icon }}
                     </div>
                     <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">{{ service.name }}</h3>
+                    <!-- Real capability per destination (M00): declared collections, the rest shown as not available -->
+                    <div class="flex flex-wrap items-center justify-center gap-1 mb-2" :data-testid="`capability-chips-${service.id}`">
+                      <span
+                        v-for="cell in capabilitiesFor(service.id)"
+                        :key="cell.collection"
+                        :class="[
+                          'text-[10px] px-2 py-0.5 rounded-full border',
+                          cell.supported ? 'text-primary border-primary/30 bg-primary/5 font-medium' : 'text-text-secondary/70 border-gray-200 dark:border-border-dark line-through'
+                        ]"
+                      >
+                        {{ CONTENT_LABELS[cell.collection] ?? cell.collection }}
+                      </span>
+                    </div>
                     <div class="flex items-center justify-center gap-1.5">
                       <span v-if="service.id === sourceService" class="text-xs text-amber-500 font-medium">Source</span>
                       <template v-else>
@@ -582,6 +596,9 @@
                     <option v-for="a in accountsForService(dest)" :key="a.id" :value="a.id">{{ formatAccountLabel(a) }} {{ a.is_active ? '(active)' : '' }}</option>
                   </select>
                 </label>
+                <p v-if="capabilityConflicts.length > 0" class="mt-4 text-sm font-medium text-amber-600 dark:text-amber-400" data-testid="capability-conflict">
+                  {{ capabilityConflictText() }} — deselect the content type or the destination; the engine only starts collections its capability matrix declares.
+                </p>
                 <div v-if="destinationChoices.length === 0" class="rounded-xl border border-gray-200 dark:border-border-dark bg-gray-50 dark:bg-surface-highlight/30 p-8 text-center">
                   <span class="material-symbols-outlined text-4xl text-gray-400 mb-2">cloud_off</span>
                   <p class="text-sm text-text-secondary">The migration engine does not support any of your connected services as a destination yet.</p>
@@ -759,7 +776,7 @@
                     Destination: {{ getServiceName(dest) }} · account {{ destinationAccounts[dest] ?? 'default' }}
                     · {{ previewedPairMatches(dest) ? `${previewSummary.total ?? 0} items previewed` : 'not previewed' }}
                   </p>
-                  <p class="mt-2">Content selected: {{ selectedContent.join(', ') }}. The existing engine does not filter every content category independently; the preview is for its actual source selection.</p>
+                  <p class="mt-2">Content selected: {{ selectedContent.join(', ') }}. Tracks and albums are read and matched independently; playlists are mirrored from the transferred tracks. The preview counts tracks only.</p>
                   <p v-if="destinationServices.length !== 1" class="mt-2 font-medium text-amber-700 dark:text-amber-300" data-testid="batch-blocked">Batch writes are disabled: each destination account needs a verified preview and explicit confirmation.</p>
                   <label v-else class="mt-3 flex items-start gap-2 cursor-pointer">
                     <input v-model="transferConfirmed" type="checkbox" data-testid="confirm-transfer" class="mt-1" :disabled="!previewedPairMatches(destinationServices[0])">
@@ -1029,7 +1046,10 @@
                 <div v-if="showFailedTracks" class="mt-2 border border-gray-200 dark:border-border-dark rounded-lg overflow-hidden">
                   <div v-for="track in failedTracks" :key="track.id" class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50 last:border-0 flex items-center justify-between">
                     <div class="min-w-0">
-                      <p class="text-sm font-medium text-gray-900 dark:text-white">{{ track.source_track_title }}</p>
+                      <p class="text-sm font-medium text-gray-900 dark:text-white">
+                        {{ track.source_track_title }}
+                        <span v-if="track.kind === 'album'" class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-500 align-middle" data-testid="item-kind-badge">album</span>
+                      </p>
                       <p class="text-xs text-text-secondary">{{ track.source_track_artist }}</p>
                       <p class="text-xs text-error mt-1">{{ track.error_message || 'Transfer failed' }}</p>
                     </div>
@@ -1049,7 +1069,10 @@
                 <div v-if="showSkippedTracks" class="mt-2 border border-gray-200 dark:border-border-dark rounded-lg overflow-hidden">
                   <div v-for="track in skippedTracks" :key="track.id" class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50 last:border-0 flex items-center justify-between">
                     <div class="min-w-0">
-                      <p class="text-sm font-medium text-gray-900 dark:text-white">{{ track.source_track_title }}</p>
+                      <p class="text-sm font-medium text-gray-900 dark:text-white">
+                        {{ track.source_track_title }}
+                        <span v-if="track.kind === 'album'" class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-500 align-middle" data-testid="item-kind-badge">album</span>
+                      </p>
                       <p class="text-xs text-text-secondary">{{ track.source_track_artist }}</p>
                       <p class="text-xs text-amber-500 mt-1">{{ track.error_message || 'No match found on the destination service' }}</p>
                     </div>
@@ -1216,13 +1239,14 @@ import { formatAccountLabel } from '../composables/useAccountsStatus'
 const migration = useMigration()
 const toast = useToast()
 
-// Load history, templates, service auth statuses and the engine's supported
-// destinations on mount; setup event listener
+// Load history, templates, service auth statuses, the engine's supported
+// destinations and its capability matrix on mount; setup event listener
 onMounted(async () => {
   await Promise.all([
     migration.loadHistory(),
     migration.loadTemplates(),
     migration.loadSupportedDestinations(),
+    migration.loadCapabilities(),
     loadServiceStatuses(),
     loadAccounts(),
   ])
@@ -1365,6 +1389,7 @@ const realProgress = computed(() => {
     failed: p.failed_count,
     skipped: p.skipped_count,
     currentAction: p.current_action || p.current_track || 'Processing...',
+    currentKind: p.current_kind || '',
     eta: p.eta || 'calculating...',
     speed: p.speed > 0 ? p.speed.toFixed(1) : '—'
   }
@@ -1637,15 +1662,110 @@ const destinationServices = ref<string[]>([])
 const sourceAccount = ref<number | null>(null)
 const destinationAccounts = ref<Record<string, number | null>>({})
 
-// Content types for migration (M-05)
-const contentTypes = [
-  { id: 'favorites', label: 'Favorites & Tracks', icon: 'favorite', description: 'Saved tracks and favorites', disabled: false },
-  { id: 'playlists', label: 'Playlists', icon: 'queue_music', description: 'Playlists and playlist tracks', disabled: false },
-  { id: 'albums', label: 'Saved Albums', icon: 'album', description: 'Tracks from saved albums in your library', disabled: false },
-  { id: 'artists', label: 'Followed Artists', icon: 'person', description: 'Tracks from followed artists in your library', disabled: false },
-]
+// Content types for migration (M-05). What is offered is decided by the
+// backend capability matrix (M00): a collection card is only enabled when a
+// supported destination declares it; the rest render as not available.
+const MIGRATION_COLLECTION_BY_CONTENT: Record<string, string> = {
+  favorites: 'tracks',
+  playlists: 'playlists',
+  albums: 'albums',
+  artists: 'artists',
+}
+
+const CONTENT_LABELS: Record<string, string> = {
+  tracks: 'Tracks',
+  albums: 'Albums',
+  artists: 'Artists',
+  playlists: 'Playlists',
+}
+
+/** Matrix row per destination: the collections it declares, in wire order. */
+const capabilityByService = computed(() => {
+  const map = new Map<string, { collection: string; supported: boolean }[]>()
+  for (const cap of migration.capabilities.value) {
+    map.set(cap.service, cap.collections.map(cell => ({ collection: cell.collection, supported: cell.supported })))
+  }
+  return map
+})
+
+/** The universe of collections the migration flow tracks, in wire order. */
+const MIGRATION_ALL_COLLECTIONS = ['tracks', 'albums', 'artists', 'playlists']
+
+/** Every collection cell of one destination; unknown destinations declare nothing. */
+function capabilitiesFor(serviceId: string): { collection: string; supported: boolean }[] {
+  return capabilityByService.value.get(serviceId.toLowerCase()) ?? MIGRATION_ALL_COLLECTIONS.map(collection => ({ collection, supported: false }))
+}
+
+function destinationSupports(serviceId: string, collection: string): boolean {
+  return capabilityByService.value
+    .get(serviceId.toLowerCase())
+    ?.some(cell => cell.collection === collection && cell.supported) ?? false
+}
+
+const contentTypes = computed(() => [
+  { id: 'favorites', label: 'Favorites & Tracks', icon: 'favorite', description: 'Saved tracks and favorites', disabled: !collectionDeclaredAnywhere('tracks') },
+  { id: 'playlists', label: 'Playlists', icon: 'queue_music', description: 'Playlists and playlist tracks', disabled: !collectionDeclaredAnywhere('playlists') },
+  { id: 'albums', label: 'Favorite Albums', icon: 'album', description: 'Albums favorited on your source account', disabled: !collectionDeclaredAnywhere('albums') },
+  { id: 'artists', label: 'Followed Artists', icon: 'person', description: 'Tracks from followed artists in your library', disabled: !collectionDeclaredAnywhere('artists') },
+])
+
+/** True when any destination in the matrix declares the collection. */
+function collectionDeclaredAnywhere(collection: string): boolean {
+  for (const cells of capabilityByService.value.values()) {
+    if (cells.some(cell => cell.collection === collection && cell.supported)) return true
+  }
+  return false
+}
 
 const selectedContent = ref<string[]>(['favorites'])
+
+/** Wire collections (M01) the selected content maps to, in selection order.
+ *
+ * The playlist mirror has no read of its own — the engine builds destination
+ * playlists from the track items the job transferred — so a selection that
+ * carries 'playlists' without 'tracks' would start an empty job (the server
+ * refuses it, and before that refusal it closed as an empty "completed").
+ * Playlists never travel alone: the track favorites read is added here. */
+const selectedCollections = computed(() => {
+  const collections = selectedContent.value
+    .map(contentId => MIGRATION_COLLECTION_BY_CONTENT[contentId])
+    .filter((collection): collection is string => Boolean(collection))
+  if (collections.includes('playlists') && !collections.includes('tracks')) {
+    collections.unshift('tracks')
+  }
+  return collections
+})
+
+/** Selected content the chosen destinations do not declare (M00 gating). */
+const capabilityConflicts = computed(() => {
+  const conflicts: { contentId: string; destinations: string[] }[] = []
+  for (const contentId of selectedContent.value) {
+    const collection = MIGRATION_COLLECTION_BY_CONTENT[contentId]
+    if (!collection) continue
+    const destinations = destinationServices.value.filter(dest => !destinationSupports(dest, collection))
+    if (destinations.length > 0) conflicts.push({ contentId, destinations })
+  }
+  return conflicts
+})
+
+function capabilityConflictText(): string {
+  return capabilityConflicts.value
+    .map(conflict => {
+      const label = contentTypes.value.find(content => content.id === conflict.contentId)?.label ?? conflict.contentId
+      return `${label} cannot be transferred to ${conflict.destinations.map(getServiceName).join(', ')}`
+    })
+    .join('; ')
+}
+
+// A selection the matrix does not declare anywhere cannot be started, even if
+// it arrived through a template or a stale preselection (M00).
+watch(migration.capabilities, (caps) => {
+  selectedContent.value = selectedContent.value.filter(contentId => {
+    const collection = MIGRATION_COLLECTION_BY_CONTENT[contentId]
+    return collection !== undefined && caps.some(cap =>
+      cap.collections.some(cell => cell.collection === collection && cell.supported))
+  })
+})
 
 // Navigation
 const canProceed = computed(() => {
@@ -1659,7 +1779,7 @@ const canProceed = computed(() => {
   switch (currentStep.value) {
     case 0: return sourceService.value !== '' && accountSelectionValid(sourceService.value, sourceAccount.value)
     case 1: return selectedContent.value.length > 0
-    case 2: return destinationServices.value.length > 0 && destinationServices.value.every(id => accountSelectionValid(id, destinationAccounts.value[id] ?? null)) && !destinationServices.value.some(id => unsafeSameServicePair(id, sourceService.value, sourceAccount.value, destinationAccounts.value[id] ?? null))
+    case 2: return destinationServices.value.length > 0 && destinationServices.value.every(id => accountSelectionValid(id, destinationAccounts.value[id] ?? null)) && !destinationServices.value.some(id => unsafeSameServicePair(id, sourceService.value, sourceAccount.value, destinationAccounts.value[id] ?? null)) && capabilityConflicts.value.length === 0
     default: return true
   }
 })
@@ -1708,7 +1828,7 @@ function prevStep() {
 }
 
 function toggleContentType(id: string) {
-  const contentType = contentTypes.find(c => c.id === id)
+  const contentType = contentTypes.value.find(c => c.id === id)
   if (!contentType || contentType.disabled) return
   const idx = selectedContent.value.indexOf(id)
   if (idx >= 0) {
@@ -1948,6 +2068,10 @@ const readyTrackCount = computed(() => {
 })
 
 async function startTransfer(): Promise<void> {
+  if (capabilityConflicts.value.length > 0) {
+    transferError.value = `No transfer started. ${capabilityConflictText()} — the engine only starts collections its capability matrix declares.`
+    return
+  }
   if (!sourceService.value || !accountSelectionValid(sourceService.value, sourceAccount.value) || destinationServices.value.length !== 1 ||
       destinationServices.value.some(id => !accountSelectionValid(id, destinationAccounts.value[id] ?? null) || unsafeSameServicePair(id, sourceService.value, sourceAccount.value, destinationAccounts.value[id] ?? null)) ||
       !transferConfirmed.value || !previewedPairMatches(destinationServices.value[0])) {
@@ -1971,7 +2095,7 @@ async function startTransfer(): Promise<void> {
   const failedDestinations: string[] = []
   for (const dest of destinationServices.value) {
     if (migration.progress.status === 'cancelled') break
-    const jobId = await migration.start(sourceService.value, dest, undefined, options, sourceAccount.value, destinationAccounts.value[dest] ?? null)
+    const jobId = await migration.start(sourceService.value, dest, undefined, options, sourceAccount.value, destinationAccounts.value[dest] ?? null, selectedCollections.value)
     if (jobId) {
       completedJobIds.value.push(jobId)
     } else {
@@ -2030,7 +2154,7 @@ async function startServiceMigration(): Promise<void> {
     create_playlists: false,
   }
 
-  const jobId = await migration.start(svcSource.value, svcDestination.value, undefined, options, svcSourceAccount.value, svcDestinationAccount.value)
+  const jobId = await migration.start(svcSource.value, svcDestination.value, undefined, options, svcSourceAccount.value, svcDestinationAccount.value, ['tracks'])
 
   if (migration.progress.status === 'cancelled') {
     // The user cancelled while the job ran; do not show a completed screen.

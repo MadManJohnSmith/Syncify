@@ -169,6 +169,7 @@ fn test_orchestrator_reconciliation_and_post_download_gate() {
         quality_decision: None,
         channels: Some(2),
         bitrate: None,
+        account_id: None,
     };
 
     let req_hires = DownloadRequest {
@@ -220,6 +221,7 @@ fn test_orchestrator_reconciliation_and_post_download_gate() {
         quality_decision: None,
         channels: Some(2),
         bitrate: None,
+        account_id: None,
     };
 
     DownloadOrchestrator::reconcile_physical_audio_quality(&mut res_24, &req_hires);
@@ -314,7 +316,10 @@ async fn test_sqlite_db_reconciliation_and_python_script_execution() {
     assert_eq!(q102_pre, "hires");
 
     // Execute scripts/reconcile_hires_quality.py on this DB
-    let py_status = Command::new("python3")
+    // En Windows el interprete del runner es `python` (no existe el alias
+    // python3 de los shells POSIX).
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let py_status = Command::new(python)
         .arg("../scripts/reconcile_hires_quality.py")
         .arg("--db-path")
         .arg(&db_path)

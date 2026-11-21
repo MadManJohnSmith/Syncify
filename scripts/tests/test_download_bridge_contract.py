@@ -227,7 +227,9 @@ class TestDownloadBridgeContract(unittest.TestCase):
 
         # When passed an explicit file path with extension
         resolved_explicit = resolve_output_path("/tmp/syncify_test_dir/my_track.flac", "tidal", "123", DownloadQuality.LOSSLESS_CD)
-        self.assertEqual(resolved_explicit, "/tmp/syncify_test_dir/my_track.flac")
+        # Path equality, not string equality: the separators are native to the
+        # platform that resolved the path (ntpath keeps the contract intact).
+        self.assertEqual(Path(resolved_explicit), Path("/tmp/syncify_test_dir/my_track.flac"))
 
     def test_async_execute_download_success(self):
         """Verify successful download returns standardized JSON payload."""

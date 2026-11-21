@@ -304,6 +304,7 @@ async fn test_start_migration_applies_manual_match_without_fabricating_a_transfe
         options(),
         None,
         None,
+        None,
     )
     .await
     .expect("start_migration must succeed");
@@ -482,7 +483,8 @@ async fn test_start_migration_stays_cancelled_instead_of_reporting_completion() 
             None,
             options(),
             None,
-            None
+            None,
+            None,
         ),
         cancel_when_running,
     );
@@ -647,6 +649,7 @@ async fn migration_rejects_identical_pair_and_accepts_distinct_inactive_account(
         options(),
         None,
         Some(a),
+        None,
     )
     .await;
     assert!(identical.unwrap_err().contains("different accounts"));
@@ -660,6 +663,7 @@ async fn migration_rejects_identical_pair_and_accepts_distinct_inactive_account(
             options(),
             source,
             destination,
+            None,
         )
         .await;
         assert!(result
@@ -680,6 +684,7 @@ async fn migration_rejects_identical_pair_and_accepts_distinct_inactive_account(
         options(),
         Some(a),
         Some(b),
+        None,
     )
     .await;
     assert!(foreign.unwrap_err().contains("does not belong"));
@@ -692,6 +697,7 @@ async fn migration_rejects_identical_pair_and_accepts_distinct_inactive_account(
         options(),
         Some(a),
         Some(b),
+        None,
     )
     .await
     .unwrap();

@@ -16,6 +16,8 @@ mod import_cache;
 mod logs_history;
 mod models;
 mod services;
+mod settings_defaults;
+mod sync;
 mod sync_scheduler;
 mod system_conditions;
 mod tray;
@@ -721,11 +723,14 @@ fn main() {
                         // por un arranque donde el keyring no estaba disponible,
                         // la marca era transitoria y la cuenta vuelve a estar viva.
                         Ok(_) => {
-                            let _ = sqlx::query(
-                                "UPDATE accounts SET credentials_invalid = 0, invalid_reason = NULL WHERE id = ? AND credentials_invalid = 1",
+                            let _ = crate::db::write_or_log(
+                                "startup_restore_account_credentials",
+                                sqlx::query(
+                                    "UPDATE accounts SET credentials_invalid = 0, invalid_reason = NULL WHERE id = ? AND credentials_invalid = 1",
+                                )
+                                .bind(account_id)
+                                .execute(&db_for_migration),
                             )
-                            .bind(account_id)
-                            .execute(&db_for_migration)
                             .await;
                             restored.push(service_name.clone());
                         }
@@ -743,11 +748,13 @@ fn main() {
                             // reconstruye, solo exigiría un login que el usuario
                             // no puede evitar. Los rechazos de proveedor (Tidal,
                             // worker) sí lo sellan.
-                            let _ =
+                            let _ = crate::db::write_or_log(
+                                "startup_purge_account_credentials",
                                 sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
                                     .bind(account_id)
-                                    .execute(&db_for_migration)
-                                    .await;
+                                    .execute(&db_for_migration),
+                            )
+                            .await;
                             purged += 1;
                             purged_names.push(service_name.clone());
                         }
@@ -788,16 +795,48 @@ fn main() {
                             "display_name": "Qobuz User",
                         });
                         if let Ok(encrypted) = crate::crypto::encrypt(&creds.to_string()) {
-                            let _ = sqlx::query(
-                                r#"UPDATE accounts
-                                   SET credentials_json = ?, credentials_invalid = 0, invalid_reason = NULL, last_auth_error = NULL
-                                   WHERE service_id = (SELECT id FROM services WHERE name = 'qobuz')
-                                     AND (credentials_invalid = 1 OR credentials_json IS NULL OR credentials_json NOT LIKE '%user_auth_token%')"#
+                            let _ = crate::db::write_or_log(
+                                "startup_seed_qobuz_env_token",
+                                sqlx::query(
+                                    r#"UPDATE accounts
+                                       SET credentials_json = ?, credentials_invalid = 0, invalid_reason = NULL, last_auth_error = NULL
+                                       WHERE service_id = (SELECT id FROM services WHERE name = 'qobuz')
+                                         AND (credentials_invalid = 1 OR credentials_json IS NULL OR credentials_json NOT LIKE '%user_auth_token%')"#
+                                )
+                                .bind(&encrypted)
+                                .execute(&db_for_migration),
                             )
-                            .bind(&encrypted)
-                            .execute(&db_for_migration)
                             .await;
                         }
+                    }
+                }
+            });
+
+            // ═══════════════════════════════════════════════════════
+            // ACCOUNT PROFILE HYGIENE (issue #86)
+            // Arranque sin ventana de login abierta: todo lo que quede bajo
+            // login-profiles/ es huérfano de un cierre abrupto (texto plano)
+            // y se borra; los archivos cifrados sin fila se eliminan y los que
+            // no descifran con la clave activa marcan su cuenta «sin sesión»
+            // sin bloquear la app.
+            // ═══════════════════════════════════════════════════════
+            let db_for_profiles = db_pool_clone.clone();
+            let profiles_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match crate::commands::account_profiles::profile_bases(&profiles_handle) {
+                    Ok((temp_base, archives_base)) => {
+                        if let Err(e) = crate::commands::account_profiles::startup_profile_hygiene(
+                            &db_for_profiles,
+                            &temp_base,
+                            &archives_base,
+                        )
+                        .await
+                        {
+                            tracing::warn!("Account profile hygiene failed: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Account profile hygiene skipped: {}", e);
                     }
                 }
             });
@@ -957,12 +996,26 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // Library
             commands::get_library,
+            #[cfg(debug_assertions)]
+            commands::debug_deezer_cookie_probe,
             commands::sync_local_library_cmd,
+            commands::import_mb_dump,
+            commands::get_mb_dump_state,
             commands::get_library_stats,
             commands::get_dashboard_stats,
             commands::get_health_checks,
             commands::get_duplicate_stats,
-            commands::get_duplicate_tracks,
+            commands::query_library,
+            // L07 (#104): pestaña de álbumes (una fila por álbum vivo).
+            commands::query_library_albums,
+            // L08 (#105): pestaña de artistas y detalle paginado de pistas.
+            commands::query_library_artists,
+            commands::query_library_artist_tracks,
+            // L05 (#102): vista previa y runner de acciones por lotes.
+            commands::preview_library_action,
+            commands::run_library_action,
+            commands::get_library_track_detail,
+            commands::delete_track_audio,
             commands::reset_database,
             commands::search_tracks,
             commands::search_library,
@@ -990,6 +1043,11 @@ fn main() {
             commands::get_favorites_albums,
             commands::get_favorites_artists,
             commands::sync_favorites,
+            // SyncRun: contrato de sincronización con estado (issue #65, ADR-0006)
+            commands::start_sync_run,
+            commands::cancel_sync_run,
+            commands::get_sync_run,
+            commands::list_sync_runs,
             commands::toggle_album_favorite,
             commands::toggle_artist_favorite,
             commands::push_favorite_to_service,
@@ -997,6 +1055,9 @@ fn main() {
             commands::estimate_download_job,
             commands::get_download_jobs,
             commands::get_download_job,
+            commands::cancel_download_job,
+            commands::retry_download_job_failed,
+            commands::clear_download_jobs,
             commands::run_integrity_audit,
             commands::repair_integrity_issues,
             commands::reconcile_downloads_from_storage,
@@ -1073,6 +1134,9 @@ fn main() {
             commands::refresh_spotify_session,
             commands::validate_all_sessions,
             commands::spotify_auth_webview,
+            // Login dentro de la app por cuenta (issue #84)
+            commands::start_account_login,
+            commands::cancel_account_login,
             // Lyrics
             commands::resolve_track_lyrics,
             commands::get_lyrics,
@@ -1114,9 +1178,18 @@ fn main() {
             commands::player_seek,
             commands::player_set_volume,
             commands::player_set_rate,
-            commands::player_mpris_update,
-            // Fase 1 del player: estadísticas de reproducción local
-            commands::record_local_play,
+            // #131 (P00): cola de reproducción persistente en SQLite
+            commands::playback_queue_get,
+            commands::playback_queue_enqueue,
+            commands::playback_queue_remove,
+            commands::playback_queue_reorder,
+            commands::playback_queue_set_current,
+            commands::playback_queue_clear,
+            commands::playback_history_clear,
+            commands::playback_state_set_position,
+            commands::playback_state_set_modes,
+            commands::playback_state_set_volume,
+            commands::playback_state_reset,
             // Downloads
             // Metadata Enrichment
             commands::enrich_metadata,
@@ -1179,6 +1252,9 @@ fn main() {
             commands::get_accounts,
             commands::add_account,
             commands::remove_account,
+            commands::set_account_state,
+            commands::logout_account,
+            commands::delete_account,
             commands::reset_account_sync_data,
             commands::refresh_account_identities,
             commands::set_account_display_name,
@@ -1198,14 +1274,18 @@ fn main() {
             commands::update_service_sync_settings,
             commands::get_service_import_preferences,
             commands::update_service_import_preferences,
+            // D09 (#121): cuenta preferida por servicio (tabla de D00).
+            commands::get_service_preferred_accounts,
+            commands::set_service_preferred_account,
             // Sprint 2: Downloads + File Settings
             commands::get_quality_preferences,
             commands::update_quality_preference,
             commands::get_folder_settings,
             commands::update_folder_settings,
             commands::preview_folder_path,
-            commands::get_duplicate_settings,
-            commands::update_duplicate_settings,
+            // #197 (SB02): get_duplicate_settings/update_duplicate_settings
+            // retirados; la tabla sigue para el reset y la matriz lleva el
+            // plan de reapertura de la deduplicacion configurable.
             commands::get_audio_processing_settings,
             commands::get_available_qualities_for_service,
             commands::update_audio_processing_settings,
@@ -1228,7 +1308,7 @@ fn main() {
             commands::reconcile_library_physical_state,
             commands::get_service_health,
             commands::run_batch_health_check,
-            commands::create_library_snapshot,
+            commands::get_dashboard_snapshot,
             commands::get_library_snapshots,
             // Sprint 5: Advanced Settings & Polish
             commands::get_advanced_settings,
@@ -1244,6 +1324,7 @@ fn main() {
             commands::get_migration_items_by_status,
             commands::preview_migration,
             commands::get_migration_destinations,
+            commands::get_migration_capabilities,
             commands::start_migration,
             commands::cancel_migration,
             commands::retry_failed_items,

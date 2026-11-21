@@ -23,7 +23,7 @@ const SCHEMA_VERSION: i64 = 1;
 #[allow(dead_code)] // Cubierto por `tests/mb_dump_import_test.rs`.
 const TABLES: [&str; 4] = ["recording", "artist", "artist_credit_name", "isrc"];
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ImportCounts {
     pub recording: u64,
     pub artist: u64,
@@ -31,18 +31,18 @@ pub struct ImportCounts {
     pub isrc: u64,
 }
 
-// Capa de ingesta: las lee `tests/mb_dump_import_test.rs` y el emisor de eventos,
-// todavía no la invoca el flujo de web/UI.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
+// Capa de ingesta: las lee `tests/mb_dump_import_test.rs` y las emite el comando
+// `import_mb_dump` por el evento `mb-dump-progress` (conectado el 2026-11-13).
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ImportProgress {
     pub table: &'static str,
     pub rows: u64,
     pub expected: u64,
 }
 
-#[allow(dead_code)] // Leído por `tests/mb_dump_import_test.rs`; la UI consumirá `import_state` después.
-#[derive(Debug, Clone, sqlx::FromRow)]
+// Leído por `tests/mb_dump_import_test.rs` y devuelto por el comando
+// `get_mb_dump_state` (conectado el 2026-11-13).
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct ImportState {
     pub dump_path: String,
     pub dump_timestamp: String,
@@ -57,16 +57,15 @@ pub struct ImportState {
 }
 
 /// Read the last import attempt; `None` means this catalog has never been imported.
-#[allow(dead_code)] // Cubierto por `tests/mb_dump_import_test.rs`.
+// Cubierto por `tests/mb_dump_import_test.rs` e invocado por el comando `get_mb_dump_state`.
 pub async fn import_state(db: &SqlitePool) -> Result<Option<ImportState>, String> {
     sqlx::query_as::<_, ImportState>("SELECT dump_path,dump_timestamp,schema_version,recording_rows,isrc_rows,artist_rows,artist_credit_name_rows,status,error,imported_at FROM mb_dump_state WHERE id=1")
         .fetch_optional(db).await.map_err(|e| e.to_string())
 }
 
 /// Import selected dump tables into the caller's app-data SQLite pool.
-// Punto de entrada público: cubierto por `tests/mb_dump_import_test.rs`; el flujo
-// de UI/importación aún no lo conecta (solo ingestión).
-#[allow(dead_code)]
+// Punto de entrada público: cubierto por `tests/mb_dump_import_test.rs` e invocado
+// por el comando `import_mb_dump` (`commands/mb_dump.rs`, conectado el 2026-11-13).
 /// Requires GNU tar and a legacy, verified column layout. Emits committed chunk counts.
 pub async fn start_import(
     dump_path: impl AsRef<Path>,

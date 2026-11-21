@@ -354,7 +354,6 @@ fn test_import_preferences_supports_force_retry_unavailable() {
         purchases: false,
         library_history: false,
         include_appearances: false,
-        incremental_sync: true,
         force_retry_unavailable: true,
     };
 

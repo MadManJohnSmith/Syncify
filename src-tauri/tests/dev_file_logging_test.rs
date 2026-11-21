@@ -149,7 +149,16 @@ fn test_rotating_file_writer_rotation_and_retention() {
 fn test_file_failure_resilience_and_non_blocking() {
     // Providing an impossible path (e.g. invalid filename or read-only directory)
     // should not panic or block
-    let invalid_dir = PathBuf::from("/proc/syncify_impossible_dir/non_existent");
+    //
+    // En Windows un path bajo /proc no es imposible: cae en la unidad actual
+    // y el runner corre como admin, asi que el directorio se crearia y el
+    // escritor se activaria. El nombre lleva caracteres ilegales en NTFS
+    // (< > : ? * |): el escritor no puede activarse en ninguna plataforma.
+    let invalid_dir = if cfg!(windows) {
+        PathBuf::from(r"C:\syncify_impossible<>:?*|dir\non_existent")
+    } else {
+        PathBuf::from("/proc/syncify_impossible_dir/non_existent")
+    };
     let writer = RotatingFileWriter::new(invalid_dir, "syncify-dev.log".to_string());
     assert!(!writer.is_active());
 

@@ -292,7 +292,6 @@ async fn test_etapas_activadas_por_preferencias_and_completion() {
         purchases: false,
         library_history: false,
         include_appearances: false,
-        incremental_sync: true,
         ..Default::default()
     };
 

@@ -124,6 +124,13 @@ impl ProviderDelivery {
             ),
             None => (None, None, result.bit_depth, result.sample_rate),
         };
+        let mut result = result;
+        // La cuenta que entrega viaja también dentro del `DownloadResult`: los
+        // caminos del orquestador que solo conservan `.result` (fallbacks
+        // internos) no pierden la atribución de la entrega (D05).
+        if result.account_id.is_none() {
+            result.account_id = account_id;
+        }
         Self {
             file_path: result.file_path.clone(),
             format,

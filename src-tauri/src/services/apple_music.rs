@@ -616,12 +616,13 @@ impl AppleMusicClient {
                 let track_id = self.get_or_create_track(db, attrs, album_id).await?;
 
                 // Link artist to track
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("import_library", sqlx::query(
                     "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                 )
                 .bind(track_id)
                 .bind(artist_id)
                 .execute(db)
+                )
                 .await;
 
                 // Add to library entry with normalized added_at (TASK-108: never NULL or 1970)
@@ -648,6 +649,25 @@ impl AppleMusicClient {
                 .await
                 .map_err(|e| format!("DB error: {}", e))?;
 
+                // L00 (#97): pertenencia de la colección favorito, con el
+                // ítem del proveedor y el added_at crudo de Apple Music.
+                let _ = crate::db::write_or_log(
+                    "import_library",
+                    crate::services::library_membership::record_membership(
+                        db,
+                        &crate::services::library_membership::MembershipWrite {
+                            account_id,
+                            track_id,
+                            collection:
+                                crate::services::library_membership::MembershipCollection::Favorite,
+                            collection_id: None,
+                            provider_item: Some(track.id.clone()),
+                            added_at: attrs.date_added.clone(),
+                        },
+                    ),
+                )
+                .await;
+
                 if result.rows_affected() > 0 {
                     imported += 1;
                 } else {
@@ -655,7 +675,7 @@ impl AppleMusicClient {
                 }
 
                 // Add track source (Apple Music is typically 256kbps AAC)
-                let _ = sqlx::query(
+                let _ = crate::db::write_or_log("import_library", sqlx::query(
                     r#"
                     INSERT OR REPLACE INTO track_sources
                     (track_id, service_id, service_track_id, format, bitrate, quality_score, available)
@@ -666,6 +686,7 @@ impl AppleMusicClient {
                 .bind(service_id)
                 .bind(&track.id)
                 .execute(db)
+                )
                 .await;
             }
 
@@ -739,12 +760,13 @@ impl AppleMusicClient {
                     let track_id = self
                         .get_or_create_track(db, track_attrs, Some(album_id))
                         .await?;
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("import_albums", sqlx::query(
                         "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                     )
                     .bind(track_id)
                     .bind(artist_id)
                     .execute(db)
+                    )
                     .await;
 
                     let normalized_date = crate::services::import_pagination::normalize_added_at(
@@ -773,13 +795,55 @@ impl AppleMusicClient {
                     .await
                     .map_err(|e| format!("DB error: {}", e))?;
 
+                    // L00 (#97): pertenencia de la colección álbum (los
+                    // álbumes de biblioteca de Apple Music son favoritos)
+                    // con la fila local del álbum, y la de favorito espejo
+                    // de library_entries (is_liked=1); ambas con el
+                    // added_at crudo del proveedor.
+                    let _ = crate::db::write_or_log(
+                        "import_albums",
+                        crate::services::library_membership::record_membership(
+                            db,
+                            &crate::services::library_membership::MembershipWrite {
+                                account_id,
+                                track_id,
+                                collection: crate::services::library_membership::MembershipCollection::Album,
+                                collection_id: Some(album_id),
+                                provider_item: Some(track.id.clone()),
+                                added_at: track_attrs
+                                    .date_added
+                                    .clone()
+                                    .or_else(|| attrs.date_added.clone()),
+                            },
+                        ),
+                    )
+                    .await;
+                    let _ = crate::db::write_or_log(
+                        "import_albums",
+                        crate::services::library_membership::record_membership(
+                            db,
+                            &crate::services::library_membership::MembershipWrite {
+                                account_id,
+                                track_id,
+                                collection: crate::services::library_membership::MembershipCollection::Favorite,
+                                collection_id: None,
+                                provider_item: Some(track.id.clone()),
+                                added_at: track_attrs
+                                    .date_added
+                                    .clone()
+                                    .or_else(|| attrs.date_added.clone()),
+                            },
+                        ),
+                    )
+                    .await;
+
                     if result.rows_affected() > 0 {
                         imported += 1;
                     } else {
                         skipped += 1;
                     }
 
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("import_albums", sqlx::query(
                         r#"
                         INSERT OR REPLACE INTO track_sources
                         (track_id, service_id, service_track_id, format, bitrate, quality_score, available)
@@ -790,6 +854,7 @@ impl AppleMusicClient {
                     .bind(service_id)
                     .bind(&track.id)
                     .execute(db)
+                    )
                     .await;
                 }
             }
@@ -860,6 +925,26 @@ impl AppleMusicClient {
                     }
                 };
 
+                // PL01 (#154): un tombstone del usuario bloquea la reimportación
+                // (deletion wins, igual que upsert_playlist_and_source); sin el
+                // guard, el ON CONFLICT actualizaría en silencio la fila oculta.
+                let tombstone: Option<i64> = sqlx::query_scalar(
+                    "SELECT id FROM playlists WHERE account_id = ? AND service_playlist_id = ? AND deleted_at IS NOT NULL LIMIT 1",
+                )
+                .bind(account_id)
+                .bind(&playlist.id)
+                .fetch_optional(db)
+                .await
+                .map_err(|e| format!("Failed to check playlist tombstone: {}", e))?;
+                if tombstone.is_some() {
+                    tracing::debug!(
+                        "AppleMusic: playlist {} tombstoneada; el sync la salta",
+                        playlist.id
+                    );
+                    skipped += 1;
+                    continue;
+                }
+
                 // Upsert playlist
                 let playlist_db_id: i64 = sqlx::query_scalar(
                     r#"
@@ -916,22 +1001,46 @@ impl AppleMusicClient {
                     };
 
                     let track_id = self.get_or_create_track(db, track_attrs, album_id).await?;
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("import_playlists", sqlx::query(
                         "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
                     )
                     .bind(track_id)
                     .bind(artist_id)
                     .execute(db)
+                    )
                     .await;
 
                     // Link to playlist_tracks
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("import_playlists", sqlx::query(
                         "INSERT OR REPLACE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
                     )
                     .bind(playlist_db_id)
                     .bind(track_id)
                     .bind(idx as i32)
                     .execute(db)
+                    )
+                    .await;
+
+                    // L00 (#97): pertenencia de la colección playlist con su
+                    // id local, el ítem del proveedor y el added_at crudo de
+                    // Apple Music.
+                    let _ = crate::db::write_or_log(
+                        "import_playlists",
+                        crate::services::library_membership::record_membership(
+                            db,
+                            &crate::services::library_membership::MembershipWrite {
+                                account_id,
+                                track_id,
+                                collection: crate::services::library_membership::MembershipCollection::Playlist,
+                                collection_id: Some(playlist_db_id),
+                                provider_item: Some(track.id.clone()),
+                                added_at: track_attrs
+                                    .date_added
+                                    .clone()
+                                    .or_else(|| attrs.date_added.clone()),
+                            },
+                        ),
+                    )
                     .await;
 
                     let normalized_date = crate::services::import_pagination::normalize_added_at(
@@ -960,13 +1069,35 @@ impl AppleMusicClient {
                     .await
                     .map_err(|e| format!("DB error: {}", e))?;
 
+                    // L00 (#97): pertenencia de favorito espejo de la
+                    // library_entries (is_liked=1) que este importador
+                    // escribe para cada pista de playlist.
+                    let _ = crate::db::write_or_log(
+                        "import_playlists",
+                        crate::services::library_membership::record_membership(
+                            db,
+                            &crate::services::library_membership::MembershipWrite {
+                                account_id,
+                                track_id,
+                                collection: crate::services::library_membership::MembershipCollection::Favorite,
+                                collection_id: None,
+                                provider_item: Some(track.id.clone()),
+                                added_at: track_attrs
+                                    .date_added
+                                    .clone()
+                                    .or_else(|| attrs.date_added.clone()),
+                            },
+                        ),
+                    )
+                    .await;
+
                     if result.rows_affected() > 0 {
                         imported += 1;
                     } else {
                         skipped += 1;
                     }
 
-                    let _ = sqlx::query(
+                    let _ = crate::db::write_or_log("import_playlists", sqlx::query(
                         r#"
                         INSERT OR REPLACE INTO track_sources
                         (track_id, service_id, service_track_id, format, bitrate, quality_score, available)
@@ -977,6 +1108,7 @@ impl AppleMusicClient {
                     .bind(service_id)
                     .bind(&track.id)
                     .execute(db)
+                    )
                     .await;
                 }
             }
@@ -1323,12 +1455,13 @@ impl AppleMusicClient {
                 .map_err(|e| format!("Album insert failed: {}", e))?;
 
         // Link album to artist
-        let _ = sqlx::query(
+        let _ = crate::db::write_or_log("get_or_create_album", sqlx::query(
             "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 1)"
         )
         .bind(album_id)
         .bind(primary_artist_id)
         .execute(db)
+        )
         .await;
 
         Ok(album_id)
@@ -1369,18 +1502,21 @@ impl AppleMusicClient {
             }
         };
 
-        let _ = sqlx::query(
-            "UPDATE albums SET
+        let _ = crate::db::write_or_log(
+            "get_or_create_album_from_attrs",
+            sqlx::query(
+                "UPDATE albums SET
                 release_date = COALESCE(?, release_date),
                 total_tracks = COALESCE(?, total_tracks),
                 upc = COALESCE(?, upc)
              WHERE id = ?",
+            )
+            .bind(attrs.release_date.as_deref())
+            .bind(attrs.track_count)
+            .bind(upc)
+            .bind(album_id)
+            .execute(db),
         )
-        .bind(attrs.release_date.as_deref())
-        .bind(attrs.track_count)
-        .bind(upc)
-        .bind(album_id)
-        .execute(db)
         .await;
 
         Ok(album_id)
@@ -1401,12 +1537,15 @@ impl AppleMusicClient {
             {
                 // Update album_id if not set
                 if let Some(album_id) = album_id {
-                    let _ = sqlx::query(
-                        "UPDATE tracks SET album_id = ? WHERE id = ? AND album_id IS NULL",
+                    let _ = crate::db::write_or_log(
+                        "get_or_create_track",
+                        sqlx::query(
+                            "UPDATE tracks SET album_id = ? WHERE id = ? AND album_id IS NULL",
+                        )
+                        .bind(album_id)
+                        .bind(row.0)
+                        .execute(db),
                     )
-                    .bind(album_id)
-                    .bind(row.0)
-                    .execute(db)
                     .await;
                 }
                 return Ok(row.0);

@@ -1,3 +1,43 @@
+## Biblioteca
+
+**Pertenencia**:
+La relación entre una **cuenta**, un **Track** y una **colección de origen** que la
+biblioteca registra como una fila de `library_memberships` (migración 0112), con el
+ítem del proveedor que la produjo y el `added_at` crudo. Una pista puede tener varias
+pertenencias; la cuenta de una pista sale SOLO de sus pertenencias — no se infiere ni
+se rellena con la cuenta activa.
+_Evitar_: llamar «LibraryItem» a la pertenencia de `library_items` (0067); inferir la
+cuenta por el servicio de una fuente.
+
+**Colección de origen**:
+La colección del proveedor que dio la pertenencia: favorito, álbum, playlist o
+artista, con el id LOCAL de la colección cuando tiene fila (playlists/albums/artists).
+El favorito no tiene fila propia y no se expande por release: la misma grabación
+produce una pertenencia por cuenta y colección, nunca una por release.
+_Evitar_: usar el id de proveedor como identidad de la colección cuando existe fila
+local; crear una pertenencia por edición.
+
+**Pertenencia viva**:
+Pertenencia que sostiene la visibilidad: una pista aparece en la biblioteca solo si
+tiene al menos una (`library_entries`, `playlist_tracks` o `library_memberships`). Una
+fila de `tracks` sin ninguna pertenencia viva no aparece.
+_Evitar_: mostrar el catálogo residual como biblioteca; usar `is_active` de la cuenta
+para decidir visibilidad.
+
+**Fecha de añadido**:
+`tracks.library_added_at`, materialización del máximo `added_at` no nulo y distinto de
+`1970-01-01` sobre las pertenencias vivas de la pista, con `tracks.created_at` como
+respaldo. La mantienen el sync y el importador en cada escritura de pertenencia
+(`services/library_membership.rs`).
+_Evitar_: recalcular el máximo en runtime en la vista; normalizar el `added_at` de la
+pertenencia (se guarda crudo).
+
+**library_items**:
+Espejo del flujo de migración mbdump: una fila por Track con la mejor fuente (0067,
+triggers 0086/0087). NO es la pertenencia por cuenta y ningún código la lee como tal.
+_Evitar_: mezclar su semántica («mejor fuente») con la de la pertenencia; añadirle
+`account_id` para reconvertirla.
+
 ## Puentes Python
 
 **Puente**:
@@ -150,3 +190,46 @@ fuera de las filas y las acciones masivas los consumen. Las filas no llevan esta
 de selección propio.
 _Evitar_: 'seleccionado' como flag dentro de la fila; contadores paralelos al array
 de ids.
+
+## Publicación
+
+**Puerta de publicación**:
+Las tres reglas que deciden si un tag puede existir: formato vX.Y.Z, CI verde para
+el SHA exacto a publicar, y tag no movible (nunca se mueve ni borra uno existente,
+salvo que apunte exactamente al mismo SHA). Es un módulo único que los workflows de
+build invocan; nadie la reimplementa.
+_Evitar_: «gating» a secas; «check de release», que suena opcional; reimplementarla
+en un workflow.
+
+## Empaquetado
+
+**Proveedor de binarios**:
+El módulo único que descarga, verifica por SHA-256 y coloca los binarios externos
+(ffmpeg, ffprobe, fpcalc) y el runtime Python empaquetado. Es la única fuente de
+pines: CI y build local consumen la misma tabla.
+_Evitar_: «dependency manager» (nombre de implementación); «instalador de
+dependencias»; una segunda tabla de pines.
+
+## Playlists
+
+**Playlist local**:
+Playlist sin cuenta: es del usuario, no de un proveedor (borrar la cuenta no puede
+borrarla). Su identidad estable es el `local_uuid`, nunca el nombre ni el
+`service_playlist_id` heredado (`local_<nombre>`, que sí puede repetirse).
+_Evitar_: «playlist de la cuenta 1» (modelo retirado por PL00); identificar una
+local por su nombre.
+
+**local_uuid**:
+Identificador textual UUID v4 de una playlist local, generado al crearla y asignado
+por la migración 0107 a las locales existentes. Es la clave de identidad que la UI,
+el export y el push citan; sobrevive a renombrados y a borrados de cuenta.
+_Evitar_: usar `service_playlist_id` como identidad de una local.
+
+**Tombstone de playlist**:
+Marca de borrado (`playlists.deleted_at`) que oculta una playlist de todas las
+lecturas sin borrar su fila: es lo que acabará impidiendo que el siguiente sync
+la recree. PL00 solo añade la columna y filtra las lecturas por
+`deleted_at IS NULL`; el borrado con tombstone se activa en fases posteriores
+de la spec #152.
+_Evitar_: «borrado lógico» a secas; filtrar por «existe fila» en lugar de por
+`deleted_at IS NULL`.

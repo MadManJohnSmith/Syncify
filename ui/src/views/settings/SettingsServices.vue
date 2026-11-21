@@ -60,6 +60,31 @@
               <button class="text-text-secondary hover:text-error" @click="handleDisconnect(service.id, acct.id)">Disconnect</button>
               <button class="text-error" @click="deleteAccount(acct.id)">Remove account</button>
             </div>
+            <!-- D09 (#121): preferencia blanda de cuenta por servicio. El job
+                 puede sobrescribirla sin tocar esta fila. -->
+            <div
+              v-if="supportsDownload(service.name) && preferredAccountOptions(service.name).length > 0"
+              class="flex items-center gap-2 pt-1 text-xs"
+            >
+              <label
+                :for="`preferred-account-${service.name}`"
+                class="text-text-secondary shrink-0"
+              >Preferred download account</label>
+              <select
+                :id="`preferred-account-${service.name}`"
+                :data-testid="`preferred-account-${service.name}`"
+                :value="preferredAccountValue(service.name)"
+                class="min-w-0 grow px-2 py-1 rounded border border-gray-200 dark:border-border-dark bg-white dark:bg-surface-dark text-text-secondary"
+                @change="handlePreferredAccountChange(service.name, $event)"
+              >
+                <option value="">Automatic (evidence and entitlement)</option>
+                <option
+                  v-for="acct in preferredAccountOptions(service.name)"
+                  :key="acct.id"
+                  :value="String(acct.id)"
+                >{{ preferredAccountLabel(acct) }}</option>
+              </select>
+            </div>
             <!-- Add account button directly for this service (C-09 / Q-01) -->
             <div class="pt-1 flex items-center gap-2">
               <button
@@ -109,27 +134,67 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useSyncSettings } from '@/composables/useSyncSettings'
 import { useAccountsStatus, isValidEmail } from '@/composables/useAccountsStatus'
+import { TauriEvents } from '@/api/tauri'
 import {
   getServices,
   getAccounts,
   getServiceStatuses,
-  startAuthAndSave,
+  startAccountLogin,
   logoutService,
   removeAccount,
   toggleAccountActive,
   setActiveAccount,
-  spotifyAuthWebview,
   getSpotifyApiConfig,
 } from '@/api/accounts'
 import type { Service, Account, ServiceStatus } from '@/api/types'
+import {
+  getServicePreferredAccounts,
+  setServicePreferredAccount,
+} from '@/api/settings'
 import ServiceConnectionModal from '@/components/ServiceConnectionModal.vue'
 import ServiceCard from '@/components/settings/ServiceCard.vue'
 import DraggableItem from '@/components/settings/DraggableItem.vue'
 
 const syncSettings = useSyncSettings()
+
+// ── Login en app por cuenta (issue #84) ────────────────────────────────────
+// El webview reporta el desenlace del intento por eventos; la cuenta guardada
+// llega por `auth-state-updated`. Los listeners viven mientras la vista viva.
+type LoginOutcome = 'completed' | 'failed' | 'cancelled'
+let loginOutcomeUnlisteners: UnlistenFn[] = []
+
+function unlistenLoginOutcome() {
+  loginOutcomeUnlisteners.forEach(u => u())
+  loginOutcomeUnlisteners = []
+}
+
+function awaitLoginOutcome(profileKey: string): Promise<LoginOutcome> {
+  return new Promise(resolve => {
+    let settled = false
+    const settle = (outcome: LoginOutcome) => async (event: { payload?: { profile_key?: string } }) => {
+      const payload = event?.payload
+      // Un intento vivo a la vez por diseño (backed): el profile_key filtra
+      // cuando el payload lo trae.
+      if (settled || (payload?.profile_key && payload.profile_key !== profileKey)) return
+      settled = true
+      unlistenLoginOutcome()
+      resolve(outcome)
+    }
+    listen<{ profile_key?: string }>(TauriEvents.ACCOUNT_LOGIN_COMPLETED, settle('completed'))
+      .then(u => loginOutcomeUnlisteners.push(u))
+    listen<{ profile_key?: string }>(TauriEvents.ACCOUNT_LOGIN_FAILED, settle('failed'))
+      .then(u => loginOutcomeUnlisteners.push(u))
+    listen<{ profile_key?: string }>(TauriEvents.ACCOUNT_LOGIN_CANCELLED, settle('cancelled'))
+      .then(u => loginOutcomeUnlisteners.push(u))
+  })
+}
+
+onBeforeUnmount(unlistenLoginOutcome)
+
 
 const showServiceModal = ref(false)
 const services = ref<Service[]>([])
@@ -137,6 +202,8 @@ const accounts = ref<Account[]>([])
 const serviceStatuses = ref<ServiceStatus[]>([])
 const loadingAccounts = ref(true)
 const serviceDownloadEnabled = ref<Record<string, boolean>>({})
+// D09 (#121): service_name (minúsculas) -> account_id preferida.
+const preferredAccounts = ref<Record<string, number>>({})
 
 const serviceConfigs: Record<string, { displayName: string; icon: string; color: string; isIconText?: boolean }> = {
   spotify: { displayName: 'Spotify', icon: 'library_music', color: '#1ed760' },
@@ -166,6 +233,53 @@ function getAccountsForService(serviceName: string): Account[] {
   const service = services.value.find((s: Service) => s.name.toLowerCase() === norm);
   if (!service || !Array.isArray(accounts.value)) return [];
   return accounts.value.filter(a => a.service_id === service.id);
+}
+
+function supportsDownload(serviceName: string): boolean {
+  const norm = resolveServiceName(serviceName)
+  const service = services.value.find(s => s.name.toLowerCase() === norm)
+  return service ? service.supports_download === 1 : false
+}
+
+/**
+ * Accounts the user can actually choose as preferred. Disabled/archived
+ * accounts cannot serve downloads (worker + resolver filter `state =
+ * 'enabled'`), so they are not offered; if a previously preferred account was
+ * disabled later, it stays visible for honest context but cannot be selected
+ * anew.
+ */
+function preferredAccountOptions(serviceName: string): Account[] {
+  const all = getAccountsForService(serviceName)
+  const enabled = all.filter(acct => (acct.state ?? 'enabled') === 'enabled')
+  const currentId = preferredAccounts.value[resolveServiceName(serviceName)]
+  const current = all.find(acct => acct.id === currentId)
+  return current && !enabled.includes(current) ? [...enabled, current] : enabled
+}
+
+function preferredAccountValue(serviceName: string): string {
+  const id = preferredAccounts.value[resolveServiceName(serviceName)]
+  return id === undefined ? '' : String(id)
+}
+
+function preferredAccountLabel(account: Account): string {
+  const state = account.state ?? 'enabled'
+  const label = formatAccountLabel(account)
+  return state === 'enabled' ? label : `${label} (${state})`
+}
+
+async function handlePreferredAccountChange(serviceName: string, event: Event) {
+  const raw = (event.target as HTMLSelectElement).value
+  const accountId = raw ? Number(raw) : null
+  const key = resolveServiceName(serviceName)
+  try {
+    const saved = await setServicePreferredAccount(key, accountId)
+    if (saved) preferredAccounts.value[saved.service_name.toLowerCase()] = saved.account_id
+    else delete preferredAccounts.value[key]
+  } catch (err) {
+    console.error(`Failed to save preferred account for ${key}:`, err)
+    // Restore the select to the last persisted value.
+    ;(event.target as HTMLSelectElement).value = preferredAccountValue(key)
+  }
 }
 
 function getCurrentAccount(serviceName: string): Account | undefined {
@@ -276,14 +390,21 @@ function isServiceAutoImportEnabled(serviceName: string): boolean {
 async function loadServicesAndAccounts() {
   loadingAccounts.value = true;
   try {
-    const [servicesData, accountsData, statusesData] = await Promise.all([
+    const [servicesData, accountsData, statusesData, preferredData] = await Promise.all([
       getServices().catch(() => []),
       getAccounts().catch(() => []),
       getServiceStatuses().catch(() => []),
+      getServicePreferredAccounts().catch(() => []),
     ]);
     services.value = Array.isArray(servicesData) ? servicesData : [];
     accounts.value = Array.isArray(accountsData) ? accountsData : [];
     serviceStatuses.value = Array.isArray(statusesData) ? statusesData : [];
+    preferredAccounts.value = Object.fromEntries(
+      (Array.isArray(preferredData) ? preferredData : []).map(pref => [
+        pref.service_name.toLowerCase(),
+        pref.account_id,
+      ])
+    );
     serviceDownloadEnabled.value = {};
   } catch (err) {
     console.error('Failed to load accounts:', err)
@@ -307,10 +428,12 @@ async function handleConnect(serviceIdOrName?: string | number) {
         // ignore
       }
     }
-    const result = name === 'spotify'
-      ? await spotifyAuthWebview().catch(() => startAuthAndSave(name))
-      : await startAuthAndSave(name)
-    if (result.success) {
+    // Login dentro de la app (issue #84): la ventana de webview con perfil por
+    // intento es la única superficie; el puente ya no abre navegadores en este
+    // camino y el desenlace llega por los eventos `account-login-*`.
+    const started = await startAccountLogin(name)
+    const outcome = await awaitLoginOutcome(started.profile_key)
+    if (outcome === 'completed') {
       await loadServicesAndAccounts()
       // SP-02: Autoimport enabled by default when connecting
       const pref = syncSettings.servicePreferences.value.find(
@@ -377,8 +500,11 @@ async function handleReauth(serviceIdOrName?: string | number) {
   const name = resolveServiceName(serviceIdOrName)
   if (!name) return
   try {
-    const result = await startAuthAndSave(name)
-    if (result.success) {
+    // Reautenticar usa el mismo webview por intento (issue #84): el artefacto
+    // reemplaza las credenciales sin tocar la cuenta ni su biblioteca.
+    const started = await startAccountLogin(name)
+    const outcome = await awaitLoginOutcome(started.profile_key)
+    if (outcome === 'completed') {
       await loadServicesAndAccounts()
     } else {
       showServiceModal.value = true

@@ -270,14 +270,9 @@
                 </label>
               </div>
 
-              <!-- Auto-download toggle -->
-              <label class="flex items-center gap-3 p-4 bg-green-500/10 border border-green-500/20 rounded-xl cursor-pointer">
-                <input type="checkbox" v-model="autoDownload" class="w-5 h-5 rounded border-gray-600 text-green-500 focus:ring-green-500">
-                <div class="flex-1">
-                  <p class="text-white font-medium">Auto-download my favorites</p>
-                  <p class="text-sm text-gray-500">Start downloading immediately after import</p>
-                </div>
-              </label>
+              <!-- #197 (SB02): «Auto-download my favorites» retirado del
+                   onboarding — el disparador no existe (PLAN A-04) y la KV
+                   dl_auto_download_favorites no tenía lector. -->
             </template>
 
             <template v-else>
@@ -537,7 +532,6 @@ const importOptions = ref([
   { id: 'albums', name: 'Saved Albums', icon: 'album', selected: true },
   { id: 'artists', name: 'Followed Artists', icon: 'person', selected: true },
 ])
-const autoDownload = ref(false)
 
 // No-service branch: local folder scan / URL import
 const localFolderPath = ref('')
@@ -777,8 +771,10 @@ async function importFromUrlInput() {
  *  - auto-updates toggle (KV `auto_updates`, same key as Settings > General)
  *  - quality preset (per-service quality preferences, same as Settings > Quality)
  *  - import options (per-service import preferences, upserted)
- *  - auto-download favorites (dl_auto_download_favorites KV)
  * Returns the list of failures so the user is told exactly what did not save.
+ *
+ * #197 (SB02): la KV de auto-descarga de favoritos ya no se escribe aquí —
+ * el disparador no existe (PLAN A-04) y el ajuste se retiró de la superficie.
  */
 async function persistOnboardingChoices(): Promise<string[]> {
   const failures: string[] = []
@@ -817,7 +813,7 @@ async function persistOnboardingChoices(): Promise<string[]> {
     }
   }
 
-  // 3. Import options + auto-download — only when the toggle was shown (a service is connected)
+  // 3. Import options — only when a service is connected
   if (hasConnectedService.value) {
     const selected = new Map(importOptions.value.map(o => [o.id, o.selected]))
     for (const service of services.value.filter(s => s.connected)) {
@@ -839,17 +835,10 @@ async function persistOnboardingChoices(): Promise<string[]> {
           purchases: current?.purchases ?? false,
           library_history: current?.library_history ?? false,
           include_appearances: current?.include_appearances ?? false,
-          incremental_sync: current?.incremental_sync ?? true,
         })
       } catch (err) {
         failures.push(`import options for ${service.name} (${err instanceof Error ? err.message : String(err)})`)
       }
-    }
-
-    try {
-      await saveSetting('dl_auto_download_favorites', autoDownload.value ? 'true' : 'false')
-    } catch (err) {
-      failures.push(`auto-download (${err instanceof Error ? err.message : String(err)})`)
     }
   }
 
@@ -1064,7 +1053,6 @@ defineExpose({
   availableSpaceLabel,
   importOptions,
   selectedQuality,
-  autoDownload,
   localFolderPath,
   importUrl,
   scanStatus,

@@ -23,6 +23,8 @@ vi.mock('../../api/player', () => ({
     onPlayerTick: vi.fn(),
     onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
+    onPlayerAdvanced: vi.fn(),
+    onPlayerModesChanged: vi.fn(() => Promise.resolve()),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
 }));
@@ -47,6 +49,7 @@ function configureEngineMocks(): void {
     engine.playerSetRate.mockReset().mockResolvedValue(undefined);
     engine.onPlayerTick.mockReset().mockResolvedValue(() => {});
     engine.onPlayerStreamState.mockReset().mockResolvedValue(() => {});
+    engine.onPlayerAdvanced.mockReset().mockResolvedValue(() => {});
     engine.onPlayerEnded.mockReset().mockResolvedValue(() => {});
 }
 

@@ -1,0 +1,309 @@
+{
+  "favorites": [
+    {
+      "tracks": {
+        "items": [
+          {
+            "id": 4001,
+            "title": "Qobuz Track 1",
+            "duration": 201,
+            "isrc": "QBISRC000001",
+            "track_number": 1,
+            "media_number": 1,
+            "maximum_bit_depth": 24,
+            "maximum_sampling_rate": 96.0,
+            "performer": {
+              "id": 501,
+              "name": "Qobuz Artist 1"
+            },
+            "album": {
+              "id": "q-alb-1",
+              "title": "Qobuz Album 1",
+              "released_at": 1700000001,
+              "image": {
+                "small": "https://example.invalid/q-alb-1-s.jpg",
+                "large": "https://example.invalid/q-alb-1-l.jpg"
+              },
+              "label": {
+                "id": 1,
+                "name": "Fixture Label"
+              },
+              "upc": "000000000001",
+              "artist": {
+                "id": 501,
+                "name": "Qobuz Artist 1"
+              },
+              "tracks": {
+                "total": 11
+              },
+              "genre": {
+                "name": "Rock"
+              }
+            }
+          },
+          {
+            "id": 4002,
+            "title": "Qobuz Track 2",
+            "duration": 202,
+            "isrc": "QBISRC000002",
+            "track_number": 2,
+            "media_number": 1,
+            "maximum_bit_depth": 24,
+            "maximum_sampling_rate": 96.0,
+            "performer": {
+              "id": 502,
+              "name": "Qobuz Artist 2"
+            },
+            "album": {
+              "id": "q-alb-2",
+              "title": "Qobuz Album 2",
+              "released_at": 1700000002,
+              "image": {
+                "small": "https://example.invalid/q-alb-2-s.jpg",
+                "large": "https://example.invalid/q-alb-2-l.jpg"
+              },
+              "label": {
+                "id": 1,
+                "name": "Fixture Label"
+              },
+              "upc": "000000000002",
+              "artist": {
+                "id": 502,
+                "name": "Qobuz Artist 2"
+              },
+              "tracks": {
+                "total": 12
+              },
+              "genre": {
+                "name": "Rock"
+              }
+            }
+          }
+        ],
+        "total": 3
+      }
+    },
+    {
+      "tracks": {
+        "items": [
+          {
+            "id": 4003,
+            "title": "Qobuz Track 3",
+            "duration": 203,
+            "isrc": "QBISRC000003",
+            "track_number": 3,
+            "media_number": 1,
+            "maximum_bit_depth": 24,
+            "maximum_sampling_rate": 96.0,
+            "performer": {
+              "id": 503,
+              "name": "Qobuz Artist 3"
+            },
+            "album": {
+              "id": "q-alb-3",
+              "title": "Qobuz Album 3",
+              "released_at": 1700000003,
+              "image": {
+                "small": "https://example.invalid/q-alb-3-s.jpg",
+                "large": "https://example.invalid/q-alb-3-l.jpg"
+              },
+              "label": {
+                "id": 1,
+                "name": "Fixture Label"
+              },
+              "upc": "000000000003",
+              "artist": {
+                "id": 503,
+                "name": "Qobuz Artist 3"
+              },
+              "tracks": {
+                "total": 13
+              },
+              "genre": {
+                "name": "Rock"
+              }
+            }
+          }
+        ],
+        "total": 3
+      }
+    }
+  ],
+  "albums": [
+    {
+      "albums": {
+        "items": [
+          {
+            "id": "q-alb-1",
+            "title": "Qobuz Album 1",
+            "released_at": 1700000001,
+            "image": {
+              "small": "https://example.invalid/q-alb-1-s.jpg",
+              "large": "https://example.invalid/q-alb-1-l.jpg"
+            },
+            "label": {
+              "id": 1,
+              "name": "Fixture Label"
+            },
+            "upc": "000000000001",
+            "artist": {
+              "id": 501,
+              "name": "Qobuz Artist 1"
+            },
+            "tracks": {
+              "total": 11
+            },
+            "genre": {
+              "name": "Rock"
+            }
+          },
+          {
+            "id": "q-alb-2",
+            "title": "Qobuz Album 2",
+            "released_at": 1700000002,
+            "image": {
+              "small": "https://example.invalid/q-alb-2-s.jpg",
+              "large": "https://example.invalid/q-alb-2-l.jpg"
+            },
+            "label": {
+              "id": 1,
+              "name": "Fixture Label"
+            },
+            "upc": "000000000002",
+            "artist": {
+              "id": 502,
+              "name": "Qobuz Artist 2"
+            },
+            "tracks": {
+              "total": 12
+            },
+            "genre": {
+              "name": "Rock"
+            }
+          }
+        ],
+        "total": 3
+      }
+    },
+    {
+      "albums": {
+        "items": [
+          {
+            "id": "q-alb-3",
+            "title": "Qobuz Album 3",
+            "released_at": 1700000003,
+            "image": {
+              "small": "https://example.invalid/q-alb-3-s.jpg",
+              "large": "https://example.invalid/q-alb-3-l.jpg"
+            },
+            "label": {
+              "id": 1,
+              "name": "Fixture Label"
+            },
+            "upc": "000000000003",
+            "artist": {
+              "id": 503,
+              "name": "Qobuz Artist 3"
+            },
+            "tracks": {
+              "total": 13
+            },
+            "genre": {
+              "name": "Rock"
+            }
+          }
+        ],
+        "total": 3
+      }
+    }
+  ],
+  "artists": [
+    {
+      "artists": {
+        "items": [
+          {
+            "id": 501,
+            "name": "Qobuz Artist 1"
+          },
+          {
+            "id": 502,
+            "name": "Qobuz Artist 2"
+          }
+        ],
+        "total": 3
+      }
+    },
+    {
+      "artists": {
+        "items": [
+          {
+            "id": 503,
+            "name": "Qobuz Artist 3"
+          }
+        ],
+        "total": 3
+      }
+    }
+  ],
+  "playlists": [
+    {
+      "playlists": {
+        "items": [
+          {
+            "id": 7001,
+            "name": "Qobuz Playlist 1",
+            "description": null,
+            "is_public": true,
+            "is_collaborative": false,
+            "owner": {
+              "id": 1,
+              "name": "Fixture User"
+            },
+            "tracks_count": 1,
+            "images300": [
+              "https://example.invalid/q-pl-1.jpg"
+            ]
+          },
+          {
+            "id": 7002,
+            "name": "Qobuz Playlist 2",
+            "description": null,
+            "is_public": true,
+            "is_collaborative": false,
+            "owner": {
+              "id": 1,
+              "name": "Fixture User"
+            },
+            "tracks_count": 2,
+            "images300": [
+              "https://example.invalid/q-pl-2.jpg"
+            ]
+          }
+        ],
+        "total": 3
+      }
+    },
+    {
+      "playlists": {
+        "items": [
+          {
+            "id": 7003,
+            "name": "Qobuz Playlist 3",
+            "description": null,
+            "is_public": true,
+            "is_collaborative": false,
+            "owner": {
+              "id": 1,
+              "name": "Fixture User"
+            },
+            "tracks_count": 3,
+            "images300": [
+              "https://example.invalid/q-pl-3.jpg"
+            ]
+          }
+        ],
+        "total": 3
+      }
+    }
+  ]
+}

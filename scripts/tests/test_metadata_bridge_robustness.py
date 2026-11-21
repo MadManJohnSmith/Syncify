@@ -161,7 +161,11 @@ class TestMetadataBridgeRobustness(unittest.TestCase):
 
         self.assertTrue(deserialized["success"])
         self.assertEqual(deserialized["data"]["musicbrainz_artist_id"], "mbid-1")
-        self.assertEqual(deserialized["data"]["path_object"], "/tmp/song.flac")
+        # default=str renders Path as its native string; compare as paths so
+        # the separator style does not decide the assertion.
+        self.assertEqual(
+            Path(deserialized["data"]["path_object"]), Path("/tmp/song.flac")
+        )
 
     def test_enrich_track_pipeline_mocked(self):
         """Verify end-to-end enrich_track call completes and formats response without crash."""

@@ -1592,7 +1592,7 @@ impl EnrichmentEngine {
                 }
             }
 
-            let flac_meta = crate::services::tag_writer::FlacMetadata {
+            let mut flac_meta = crate::services::tag_writer::FlacMetadata {
                 title: if !clean_title.is_empty() {
                     clean_title
                 } else {
@@ -1688,8 +1688,15 @@ impl EnrichmentEngine {
                 ..Default::default()
             };
 
-            crate::services::tag_writer::apply_flac_tags(flac_path, &flac_meta)
-                .map_err(|e| format!("Failed to apply FLAC tags: {}", e))?;
+            // SB03 (#198): el re-etiquetado por enriquecimiento respeta la
+            // misma política write_* / preserve_custom_tags.
+            let tag_prefs = crate::services::tag_writer::load_tag_policy(db).await;
+            crate::services::tag_writer::apply_tag_policy(&mut flac_meta, &tag_prefs);
+            let tag_opts = crate::services::tag_writer::tag_write_options(&tag_prefs);
+            crate::services::tag_writer::apply_flac_tags_with_options(
+                flac_path, &flac_meta, &tag_opts,
+            )
+            .map_err(|e| format!("Failed to apply FLAC tags: {}", e))?;
 
             crate::services::tag_writer::verify_flac_tags(flac_path, &flac_meta)
                 .map_err(|e| format!("FLAC re-read verification failed: {}", e))?;
@@ -1993,12 +2000,14 @@ impl EnrichmentEngine {
                 if !current_is_valid {
                     if let Some(mb_art) = meta.musicbrainz_artist_id.value() {
                         if FieldValidator::is_valid_musicbrainz_artist_id(mb_art, Some(&art_name)) {
-                            let _ =
+                            let _ = crate::db::write_or_log(
+                                "apply_to_database",
                                 sqlx::query("UPDATE artists SET musicbrainz_id = ? WHERE id = ?")
                                     .bind(mb_art)
                                     .bind(aid)
-                                    .execute(&mut *tx)
-                                    .await;
+                                    .execute(&mut *tx),
+                            )
+                            .await;
                         }
                     }
                 }
@@ -2742,6 +2751,18 @@ impl EnrichmentEngine {
                 .execute(&mut *tx)).await;
             }
 
+            // SB03 (#198): include_appearances — el artista del track que no
+            // es el primario del álbum también se registra (aparición).
+            // Idempotente; en el caso divergente ya quedó registrado a 0.
+            if input.include_appearances && artist_id != album_artist_id {
+                let _ = crate::db::write_or_log("enrich_and_persist_sync_track", sqlx::query(
+                    "INSERT OR IGNORE INTO album_artists (album_id, artist_id, is_primary) VALUES (?, ?, 0)"
+                )
+                .bind(aid)
+                .bind(artist_id)
+                .execute(&mut *tx)).await;
+            }
+
             // S198: favorite-album marking + provider album id (guarded, idempotent).
             // Only ever widens data: is_favorite flips 0→1 with a COALESCE'd
             // timestamp; the provider id is written once and never stolen from
@@ -3170,12 +3191,14 @@ impl EnrichmentEngine {
             }
 
             if input.service_name == "qobuz" {
-                let _ =
+                let _ = crate::db::write_or_log(
+                    "enrich_and_persist_sync_track",
                     sqlx::query("UPDATE tracks SET qobuz_id = COALESCE(qobuz_id, ?) WHERE id = ?")
                         .bind(&input.service_track_id)
                         .bind(tid)
-                        .execute(&mut *tx)
-                        .await;
+                        .execute(&mut *tx),
+                )
+                .await;
             } else if input.service_name == "spotify" {
                 let _ = crate::db::write_or_log(
                     "enrich_and_persist_sync_track",
@@ -3654,6 +3677,56 @@ impl EnrichmentEngine {
         .await
         .map_err(|e| format!("library entry persistence failed: {e}"))?;
 
+        // 9b. Library memberships (L00, issue #97): la pertenencia por cuenta
+        // y colección, con el ítem del proveedor y el added_at CRUDO (puede
+        // ser NULL/1970: el materializado los descarta). El favorito de la
+        // misma grabación produce UNA pertenencia por cuenta, no una por
+        // release (el índice único de 0112 deduplica); el favorito de álbum
+        // (S198) atribuye la colección álbum cuando la pista resolvió a una
+        // fila local. Las pertenencias de playlist las escriben los brazos
+        // con su colección concreta.
+        if input.is_favorite || input.is_purchased {
+            let collection = if input.is_favorite {
+                crate::services::library_membership::MembershipCollection::Favorite
+            } else {
+                crate::services::library_membership::MembershipCollection::Purchase
+            };
+            crate::services::library_membership::insert_membership(
+                &mut *tx,
+                &crate::services::library_membership::MembershipWrite {
+                    account_id: input.account_id,
+                    track_id,
+                    collection,
+                    collection_id: None,
+                    provider_item: Some(input.service_track_id.clone()),
+                    added_at: input.origin_meta.added_at.clone(),
+                },
+            )
+            .await
+            .map_err(|e| format!("library membership persistence failed: {e}"))?;
+        }
+        if input.album_is_favorite {
+            if let Some(album_id) = album_id_opt {
+                crate::services::library_membership::insert_membership(
+                    &mut *tx,
+                    &crate::services::library_membership::MembershipWrite {
+                        account_id: input.account_id,
+                        track_id,
+                        collection:
+                            crate::services::library_membership::MembershipCollection::Album,
+                        collection_id: Some(album_id),
+                        provider_item: Some(input.service_track_id.clone()),
+                        added_at: input.origin_meta.added_at.clone(),
+                    },
+                )
+                .await
+                .map_err(|e| format!("album membership persistence failed: {e}"))?;
+            }
+        }
+        crate::services::library_membership::refresh_track_library_added_at(&mut *tx, track_id)
+            .await
+            .map_err(|e| format!("library_added_at refresh failed: {e}"))?;
+
         let is_already_present =
             !is_new_global_track && !is_new_source_for_service && !is_new_library_entry_for_account;
         let is_new_import =
@@ -3765,6 +3838,11 @@ pub struct SyncTrackInput {
     // Los cubren los tests de sincronía de álbum (`tests/tidal_sync_persistence_test.rs`).
     #[allow(dead_code)]
     pub album_provider_track_id: Option<String>,
+    /// SB03 (#198): `sync_include_appearances`. Cuando es `true`, el artista
+    /// del track que no es el artista primario del álbum también se registra
+    /// en `album_artists` (is_primary = 0) — una aparición. Fábrica `false`:
+    /// solo el primario, comportamiento histórico.
+    pub include_appearances: bool,
 }
 
 /// Result returned from sync-time pre-enrichment

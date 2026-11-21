@@ -125,7 +125,10 @@ async fn test_backup_export_schema_and_checksum_integrity() {
 
     let raw = std::fs::read_to_string(export_path).unwrap();
     let manifest: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(manifest["version"], "1.0.0");
+    // Manifest v2 (ADR-0020): el export lleva ajustes y metadatos de cuenta.
+    assert_eq!(manifest["version"], "2.0.0");
+    assert!(manifest["settings"].is_object());
+    assert!(manifest["accounts"].is_array());
     assert_eq!(manifest["tracks"].as_array().unwrap().len(), 1);
     assert_eq!(manifest["tracks"][0]["title"], "Heroes");
 

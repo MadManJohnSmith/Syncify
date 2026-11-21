@@ -7,7 +7,8 @@ use super::*;
 
 /// Validate only paths present in the returned page. The cache lives for one request,
 /// so a later page refresh observes files removed or restored since the previous call.
-async fn verify_page_files(tracks: &mut [LibraryTrack]) -> Result<(), String> {
+/// `pub(crate)`: la comparte `query_library` (commands/library_query.rs, L01).
+pub(crate) async fn verify_page_files(tracks: &mut [LibraryTrack]) -> Result<(), String> {
     use futures::stream::{self, StreamExt};
     use std::collections::HashMap;
     use std::io::ErrorKind;
@@ -117,7 +118,7 @@ pub struct TrackMetadata {
     pub sources: Option<Vec<TrackSourceAvailability>>,
 }
 
-async fn fetch_track_metadata(
+pub(crate) async fn fetch_track_metadata(
     db: &sqlx::SqlitePool,
     track_id: i64,
 ) -> Result<TrackMetadata, String> {
@@ -513,147 +514,130 @@ async fn get_library_inner(
     })
 }
 
-/// Get duplicate tracks (by Title + Primary Artist) - paginated
+/// L01 (issue #98): consulta de biblioteca v2 — una fila por `tracks.id`,
+/// filtros AND/OR, contadores y orden EN SERVIDOR (la vista deja de filtrar,
+/// ordenar y sustituir por búsqueda en el renderer). Wrapper fino: el cuerpo
+/// vive en `commands/library_query.rs` (módulo propio extraído de este
+/// fichero; la serie L02-L12 extiende allí).
 #[tauri::command]
-pub async fn get_duplicate_tracks(
+pub async fn query_library(
     state: State<'_, AppState>,
-    offset: Option<i64>,
-    limit: Option<i64>,
-) -> Result<LibraryPage, String> {
-    let offset = offset.unwrap_or(0);
-    let limit = limit.unwrap_or(100).min(500);
+    query: library_query::LibraryQuery,
+) -> Result<library_query::LibraryQueryResult, String> {
+    library_query::query_library(&state.db, query).await
+}
+
+/// L04 (issue #101): panel lateral de detalle de pista — UNA llamada IPC con
+/// el Track canónico, sus TrackSource por servicio, sus LibraryItem por
+/// cuenta y colección, la descarga y las facetas de cuarentena/duplicados
+/// (contrato: `None` hasta #72/#73). Una pista inexistente es error tipado
+/// (`kind: "track_not_found"`), no una fila vacía. Wrapper fino: el cuerpo
+/// vive en `commands/library_query.rs` (la serie L0x extiende allí).
+#[tauri::command]
+pub async fn get_library_track_detail(
+    state: State<'_, AppState>,
+    track_id: i64,
+) -> Result<library_query::TrackDetail, library_query::TrackDetailError> {
+    library_query::get_track_detail(&state.db, track_id).await
+}
+
+/// Resumen del borrado de audio de una pista (L04, issue #101), seguro para IPC.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteTrackAudioResult {
+    /// Entradas de cola eliminadas (no debe seguir descargándose nada).
+    pub queue_entries_deleted: u64,
+    /// Si existía una fila `downloads` para esta pista.
+    pub download_deleted: bool,
+    /// Si el fichero de audio se eliminó realmente del disco.
+    pub audio_file_deleted: bool,
+}
+
+/// DB + disco del borrado de audio: el Download, sus entradas de cola y el
+/// fichero en disco. Nunca el Track, sus TrackSource ni su pertenencia
+/// (story 22 del spec #96: la evidencia de que la pista existe se conserva).
+/// Separado del comando para la suite de pruebas
+/// (`tests/library_track_detail_test.rs`), como la costura de `query_library`.
+pub async fn delete_track_audio_inner(
+    db: &sqlx::SqlitePool,
+    track_id: i64,
+) -> Result<DeleteTrackAudioResult, String> {
+    // Se lee ANTES de borrar la fila porque es la única referencia al fichero.
+    let audio_paths: Vec<(String,)> = sqlx::query_as(
+        "SELECT file_path FROM downloads WHERE track_id = ? AND file_path IS NOT NULL",
+    )
+    .bind(track_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Failed to read download for track {}: {}", track_id, e))?;
+
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to begin audio deletion: {}", e))?;
+
+    let queue_result = sqlx::query("DELETE FROM download_queue WHERE track_id = ?")
+        .bind(track_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to delete queue entries: {}", e))?;
+
+    let download_result = sqlx::query("DELETE FROM downloads WHERE track_id = ?")
+        .bind(track_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to delete download: {}", e))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit audio deletion: {}", e))?;
+
+    // El fichero se borra tras confirmar la transacción (mismo orden que
+    // perform_delete_account): un fallo de disco no deja una fila borrada
+    // apuntando a un fichero que sí existe. Un fallo aquí no revierte el
+    // borrado lógico; se registra y se reporta.
+    let mut audio_file_deleted = false;
+    for (path,) in &audio_paths {
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => audio_file_deleted = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tracing::warn!("Audio file already gone for track {}: {}", track_id, path);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "Could not delete audio file for track {}: {}",
+                    track_id,
+                    error
+                );
+            }
+        }
+    }
 
     tracing::info!(
-        "get_duplicate_tracks called with offset={}, limit={}",
-        offset,
-        limit
+        "delete_track_audio: track_id={} queue={} download={} file={}",
+        track_id,
+        queue_result.rows_affected(),
+        download_result.rows_affected(),
+        audio_file_deleted
     );
 
-    // Get total count first
-    let total: (i64,) = sqlx::query_as(
-        r#"
-        SELECT COUNT(*) FROM tracks t
-        WHERE EXISTS (
-            SELECT 1 FROM tracks t2
-            JOIN track_artists ta2 ON t2.id = ta2.track_id
-            AND ta2.role = 'primary'
-            JOIN track_artists ta ON t.id = ta.track_id
-            AND ta.role = 'primary'
-            WHERE t2.title = t.title
-            AND ta2.artist_id = ta.artist_id
-            AND t2.id != t.id
-        )
-        "#,
-    )
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| format!("Count error: {}", e))?;
-
-    let mut tracks = sqlx::query_as::<_, LibraryTrack>(
-        r#"
-        SELECT
-            t.id,
-            t.title,
-            (SELECT a2.name FROM track_artists ta2
-             JOIN artists a2 ON a2.id = ta2.artist_id
-             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
-             LIMIT 1) as artist_name,
-            (SELECT a2.id FROM track_artists ta2
-             JOIN artists a2 ON a2.id = ta2.artist_id
-             WHERE ta2.track_id = t.id AND ta2.role = 'primary'
-             LIMIT 1) as artist_id,
-            al.title as album_name,
-            al.id as album_id,
-            t.duration_ms,
-            t.isrc,
-            GROUP_CONCAT(DISTINCT s.name) as services,
-            (SELECT GROUP_CONCAT(DISTINCT s_imp.name)
-             FROM library_entries le
-             JOIN accounts acc ON acc.id = le.account_id
-             JOIN services s_imp ON s_imp.id = acc.service_id
-             WHERE le.track_id = t.id) as imported_from,
-            COALESCE(d.effective_service, (SELECT s_dl.name FROM services s_dl WHERE s_dl.id = d.source_service_id)) as downloaded_from,
-            (SELECT GROUP_CONCAT(DISTINCT s_avail.name)
-             FROM track_sources ts_avail
-             JOIN services s_avail ON s_avail.id = ts_avail.service_id
-             WHERE ts_avail.track_id = t.id AND ts_avail.availability_status = 'available') as available_services,
-            (SELECT GROUP_CONCAT(s_all.name || ':' || COALESCE(ts_all.availability_status, 'unknown_unchecked'), ', ')
-             FROM track_sources ts_all
-             JOIN services s_all ON s_all.id = ts_all.service_id
-             WHERE ts_all.track_id = t.id) as availability_summary,
-            COALESCE(d.file_format, ts.format) as quality,
-            CASE
-                WHEN d.file_path IS NOT NULL THEN 'downloaded'
-                WHEN dq.status = 'queued' OR dq.status = 'downloading' THEN 'queued'
-                ELSE 'not_downloaded'
-            END as download_status,
-            (
-                CASE WHEN t.title IS NOT NULL AND t.title != '' THEN 10 ELSE 0 END +
-                CASE WHEN EXISTS(SELECT 1 FROM track_artists WHERE track_id = t.id) THEN 10 ELSE 0 END +
-                CASE WHEN al.title IS NOT NULL AND al.title != '' THEN 10 ELSE 0 END +
-                CASE WHEN t.isrc IS NOT NULL AND t.isrc != '' THEN 20 ELSE 0 END +
-                CASE WHEN t.musicbrainz_id IS NOT NULL AND t.musicbrainz_id NOT IN ('NOT_FOUND', 'MISMATCH') THEN 20 ELSE 0 END +
-                CASE WHEN al.cover_art_url IS NOT NULL AND al.cover_art_url != '' THEN 10 ELSE 0 END +
-                CASE WHEN t.release_year IS NOT NULL AND t.release_year > 0 THEN 10 ELSE 0 END +
-                CASE WHEN t.genre IS NOT NULL AND t.genre != '' THEN 10 ELSE 0 END
-            ) as metadata_score,
-            CASE
-                WHEN l.sync_level IN ('syllable', 'word') THEN 'synced'
-                WHEN l.sync_level = 'line' THEN 'timed'
-                WHEN l.content IS NOT NULL THEN 'plain'
-                ELSE 'none'
-            END as lyrics_type,
-            al.cover_art_url as cover_art_url,
-            ts_spot.service_track_id as spotify_track_id,
-            t.track_number,
-            t.disc_number,
-            t.genre,
-            t.bpm,
-            t.musical_key,
-            t.release_year,
-            t.explicit,
-            t.is_favorite,
-            t.favorite_at,
-            d.file_path
-        FROM tracks t
-        LEFT JOIN albums al ON al.id = t.album_id
-        LEFT JOIN track_sources ts ON ts.track_id = t.id
-        LEFT JOIN services s ON s.id = ts.service_id
-        LEFT JOIN track_sources ts_spot ON ts_spot.track_id = t.id AND ts_spot.service_id = (SELECT id FROM services WHERE name = 'spotify')
-        LEFT JOIN downloads d ON d.track_id = t.id
-        LEFT JOIN download_queue dq ON dq.track_id = t.id AND dq.status IN ('queued', 'downloading')
-        LEFT JOIN lyrics l ON l.track_id = t.id
-        WHERE EXISTS (
-            SELECT 1 FROM tracks t2
-            JOIN track_artists ta2 ON t2.id = ta2.track_id
-            AND ta2.role = 'primary'
-            JOIN track_artists ta ON t.id = ta.track_id
-            AND ta.role = 'primary'
-            WHERE t2.title = t.title
-            AND ta2.artist_id = ta.artist_id
-            AND t2.id != t.id
-        )
-        GROUP BY t.id
-        ORDER BY t.title ASC, t.id ASC
-        LIMIT ? OFFSET ?
-        "#
-    )
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| format!("Database error: {}", e))?;
-
-    verify_page_files(&mut tracks).await?;
-    let has_more = offset + (tracks.len() as i64) < total.0;
-
-    Ok(LibraryPage {
-        tracks,
-        total: total.0,
-        offset,
-        limit,
-        has_more,
+    Ok(DeleteTrackAudioResult {
+        queue_entries_deleted: queue_result.rows_affected(),
+        download_deleted: download_result.rows_affected() > 0,
+        audio_file_deleted,
     })
+}
+
+/// Borra SOLO el audio de una pista (L04, issue #101), tras confirmación en
+/// la vista. Idempotente: una pista sin descarga devuelve el resumen con
+/// todo `false`.
+#[tauri::command]
+pub async fn delete_track_audio(
+    state: State<'_, AppState>,
+    track_id: i64,
+) -> Result<DeleteTrackAudioResult, String> {
+    tracing::info!("delete_track_audio called: track_id={}", track_id);
+    delete_track_audio_inner(&state.db, track_id).await
 }
 
 /// Get library statistics
@@ -773,9 +757,16 @@ pub struct LibraryArtistDetail {
     pub bio: Option<String>,
     pub image_url: Option<String>,
     pub album_count: i64,
-    pub track_count: i64,
     pub albums: Vec<ArtistAlbum>,
-    pub top_tracks: Vec<ArtistTrack>,
+    /// Primera página de [`query_library_artist_tracks_inner`] (L08, #105):
+    /// `top_tracks` ya NO es una consulta distinta; el resto de páginas del
+    /// detalle usa `query_library_artist_tracks`.
+    pub top_tracks: Vec<crate::commands::library_artists::ArtistTrackRow>,
+    /// Pistas vivas DISTINTAS del artista: el ÚNICO contador de pistas del
+    /// detalle. El viejo `track_count` (filas de `track_artists`, con roles
+    /// duplicados y pistas sin pertenencia viva) se retiró en #336 para que el
+    /// payload no publique dos cifras que divergen.
+    pub tracks_total: i64,
     #[serde(default)]
     pub appearances: Vec<ArtistAppearanceTrack>,
 }
@@ -800,14 +791,6 @@ pub struct ArtistAlbum {
     pub track_count: i64,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, sqlx::FromRow, Clone, Debug)]
-pub struct ArtistTrack {
-    pub id: i64,
-    pub title: String,
-    pub album: Option<String>,
-    pub duration_ms: Option<i64>,
-}
-
 /// Retrieve artist details, albums, and top tracks
 #[tauri::command]
 pub async fn get_artist(
@@ -823,16 +806,17 @@ pub async fn fetch_artist(
 ) -> Result<LibraryArtistDetail, String> {
     tracing::info!("fetch_artist called for {}", artist_id);
 
-    // Fetch base artist details
-    let artist: (i64, String, Option<String>, i64, i64) = sqlx::query_as(
+    // Fetch base artist details. `album_count` cuenta filas de relación
+    // (metadatos de álbum, no pistas): el contador de pistas del payload es
+    // `tracks_total`, que viene de la MISMA consulta paginada del detalle.
+    let artist: (i64, String, Option<String>, i64) = sqlx::query_as(
         r#"
         SELECT
             a.id,
             a.name,
             -- bio doesn't exist in the schema yet; image_url does (migration 0076)
             a.image_url as image_url,
-            (SELECT COUNT(*) FROM album_artists WHERE artist_id = a.id) as album_count,
-            (SELECT COUNT(*) FROM track_artists WHERE artist_id = a.id) as track_count
+            (SELECT COUNT(*) FROM album_artists WHERE artist_id = a.id) as album_count
         FROM artists a
         WHERE a.id = ?
         "#,
@@ -863,26 +847,16 @@ pub async fn fetch_artist(
     .await
     .map_err(|e| format!("Database error fetching albums: {}", e))?;
 
-    // Fetch top tracks
-    let top_tracks: Vec<ArtistTrack> = sqlx::query_as(
-        r#"
-        SELECT
-            t.id,
-            t.title,
-            al.title as album,
-            t.duration_ms
-        FROM tracks t
-        JOIN track_artists ta ON ta.track_id = t.id
-        LEFT JOIN albums al ON al.id = t.album_id
-        WHERE ta.artist_id = ?
-        ORDER BY (SELECT COUNT(*) FROM library_entries WHERE track_id = t.id) DESC, t.title ASC
-        LIMIT 5
-        "#,
+    // Primera página de la MISMA consulta que pagina el detalle (L08, #105):
+    // todas las pistas vivas del artista, no una consulta de «top 5» aparte.
+    let first_page = crate::commands::library_artists::query_library_artist_tracks_inner(
+        db,
+        crate::commands::library_artists::ArtistTracksQuery::first_page(
+            artist_id,
+            crate::commands::library_artists::TOP_TRACKS_LIMIT,
+        ),
     )
-    .bind(artist_id)
-    .fetch_all(db)
-    .await
-    .map_err(|e| format!("Database error fetching top tracks: {}", e))?;
+    .await?;
 
     let appearances = fetch_artist_appearances(db, artist_id)
         .await
@@ -894,9 +868,9 @@ pub async fn fetch_artist(
         bio: None,
         image_url: artist.2,
         album_count: artist.3,
-        track_count: artist.4,
         albums,
-        top_tracks,
+        top_tracks: first_page.tracks,
+        tracks_total: first_page.total,
         appearances,
     })
 }
@@ -1842,6 +1816,7 @@ pub async fn get_playlists(state: State<'_, AppState>) -> Result<Vec<Playlist>, 
         FROM playlists p
         LEFT JOIN accounts a ON a.id = p.account_id
         LEFT JOIN services s ON s.id = a.service_id
+        WHERE p.deleted_at IS NULL
         ORDER BY p.name ASC
         "#,
     )
@@ -1896,6 +1871,13 @@ pub async fn add_to_playlist(
 }
 
 /// Create a new playlist
+///
+/// PL00 (#153): una playlist local no es de ninguna cuenta (borrar la cuenta
+/// no puede llevársela) y su identidad estable es `local_uuid`, no el nombre.
+/// PL01 (#154): el nombre no es único (la cuenta NULL lo exime del índice
+/// UNIQUE sobre (account_id, service_playlist_id)) y crear con un nombre
+/// repetido nunca comparte `local_uuid`.
+/// El parámetro `account_id` se conserva por compatibilidad IPC y se ignora.
 #[tauri::command]
 pub async fn create_playlist(
     state: State<'_, AppState>,
@@ -1903,19 +1885,29 @@ pub async fn create_playlist(
     name: String,
     description: Option<String>,
 ) -> Result<i64, String> {
-    let account_id = account_id.unwrap_or(1);
-    tracing::info!("create_playlist: {} for account {}", name, account_id);
+    let _ = account_id;
+    create_playlist_core(&state.db, name, description).await
+}
+
+/// Núcleo testeable de `create_playlist`: alta local con UUID y sin cuenta.
+pub async fn create_playlist_core(
+    db: &sqlx::SqlitePool,
+    name: String,
+    description: Option<String>,
+) -> Result<i64, String> {
+    let local_uuid = uuid::Uuid::new_v4().to_string();
+    tracing::info!("create_playlist: local '{}' ({})", name, local_uuid);
 
     let playlist_id: i64 = sqlx::query_scalar(
-        r#"INSERT INTO playlists (account_id, service_playlist_id, name, description, track_count)
-           VALUES (?, 'local_' || ?, ?, ?, 0)
+        r#"INSERT INTO playlists (account_id, service_playlist_id, local_uuid, name, description, track_count)
+           VALUES (NULL, 'local_' || ?, ?, ?, ?, 0)
            RETURNING id"#,
     )
-    .bind(account_id)
     .bind(&name)
+    .bind(&local_uuid)
     .bind(&name)
     .bind(&description)
-    .fetch_one(&state.db)
+    .fetch_one(db)
     .await
     .map_err(|e| format!("Failed to create playlist: {}", e))?;
 
@@ -6734,13 +6726,41 @@ pub async fn sync_local_library_inner(
     // file in this run uses the same persisted preferences.
     let scoring_weights = load_local_scoring_weights(db).await?;
     let (service_id, account_id) = ensure_local_service_registered(db).await?;
-    let scanned = scan_local_audio_files_with_weights(path, recursive, &scoring_weights)?;
+    let mut scanned = scan_local_audio_files_with_weights(path, recursive, &scoring_weights)?;
     let total_scanned = scanned.len();
 
     let mut imported = 0usize;
     let mut duplicates_matched = 0usize;
     let mut duplicates_skipped = 0usize;
     let mut errors = Vec::new();
+
+    // SB03 (#198): política de reimportado leída una vez por corrida.
+    // - overwrite_on_reimport: refresca metadatos del track al reimportar.
+    // - multi_value_separator: delimitador que además de los legacy (';' y
+    //   '/') separa los géneros multivalor del fichero; con la fábrica (';')
+    //   el primario resultante es el mismo que produce hoy el trigger de
+    //   TASK-142 (migración 0074), que la inserción seguirá re-aplicando.
+    let (overwrite_on_reimport, multi_value_separator) =
+        match sqlx::query_as::<_, (bool, String)>(
+            "SELECT overwrite_on_reimport, multi_value_separator FROM metadata_preferences WHERE id = 1",
+        )
+        .fetch_optional(db)
+        .await
+        {
+            Ok(Some(row)) => row,
+            _ => (false, ";".to_string()),
+        };
+    for t in scanned.iter_mut() {
+        if let Some(ref g) = t.genre {
+            let primary = g
+                .split(multi_value_separator.as_str())
+                .flat_map(|part| part.split([';', '/']))
+                .map(|s| s.trim())
+                .find(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            t.genre = primary;
+        }
+    }
 
     for track in scanned {
         // Step 1: Check if file already exists in downloads
@@ -6777,6 +6797,32 @@ pub async fn sync_local_library_inner(
                         tid, e
                     ));
                     continue;
+                }
+
+                // SB03 (#198): overwrite_on_reimport gobierna si el
+                // reimportado refresca los metadatos del track en la BD desde
+                // las etiquetas del fichero. Fábrica (off): solo se verifica
+                // y enlaza, como hasta ahora. Los campos de identidad (ISRC,
+                // ids de servicio) nunca se tocan aquí.
+                if overwrite_on_reimport {
+                    let refresh = sqlx::query(
+                        "UPDATE tracks SET title = ?, genre = ?, release_year = ?, track_number = ?, duration_ms = ? WHERE id = ?",
+                    )
+                    .bind(&track.title)
+                    .bind(&track.genre)
+                    .bind(track.release_year)
+                    .bind(track.track_number)
+                    .bind(track.duration_ms)
+                    .bind(tid)
+                    .execute(db)
+                    .await;
+                    if let Err(e) = refresh {
+                        errors.push(format!(
+                            "Error overwriting track metadata for track #{}: {}",
+                            tid, e
+                        ));
+                        continue;
+                    }
                 }
 
                 let link_ts = sqlx::query(
@@ -6942,6 +6988,28 @@ pub async fn sync_local_library_inner(
             if let Err(e) = link_le {
                 errors.push(format!(
                     "Error linking library entry for track #{}: {}",
+                    tid, e
+                ));
+                continue;
+            }
+
+            // L00 (#97): pertenencia de biblioteca del importador local,
+            // sin colección de proveedor, que mantiene el materializado.
+            if let Err(e) = crate::services::library_membership::record_membership(
+                db,
+                &crate::services::library_membership::MembershipWrite {
+                    account_id,
+                    track_id: tid,
+                    collection: crate::services::library_membership::MembershipCollection::Library,
+                    collection_id: None,
+                    provider_item: None,
+                    added_at: Some(chrono::Utc::now().to_rfc3339()),
+                },
+            )
+            .await
+            {
+                errors.push(format!(
+                    "Error linking library membership for track #{}: {}",
                     tid, e
                 ));
                 continue;
@@ -7123,6 +7191,28 @@ pub async fn sync_local_library_inner(
             if let Err(e) = link_le {
                 errors.push(format!(
                     "Error linking library entry for track #{}: {}",
+                    new_track_id, e
+                ));
+                continue;
+            }
+
+            // L00 (#97): pertenencia de biblioteca del importador local,
+            // sin colección de proveedor, que mantiene el materializado.
+            if let Err(e) = crate::services::library_membership::record_membership(
+                db,
+                &crate::services::library_membership::MembershipWrite {
+                    account_id,
+                    track_id: new_track_id,
+                    collection: crate::services::library_membership::MembershipCollection::Library,
+                    collection_id: None,
+                    provider_item: None,
+                    added_at: Some(chrono::Utc::now().to_rfc3339()),
+                },
+            )
+            .await
+            {
+                errors.push(format!(
+                    "Error linking library membership for track #{}: {}",
                     new_track_id, e
                 ));
                 continue;
@@ -7341,6 +7431,40 @@ mod local_library_tests {
                 effective_service TEXT,
                 effective_service_track_id TEXT
             );
+            -- L00 (#97): el importador local escribe la pertenencia de
+            -- biblioteca y mantiene el materializado; el espejo mínimo del
+            -- esquema real (migración 0112) que la costura toca: la
+            -- pertenencia, las playlists (el refresco lee playlist_tracks)
+            -- y la columna materializada.
+            CREATE TABLE playlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE,
+                service_playlist_id TEXT,
+                name TEXT NOT NULL,
+                description TEXT,
+                track_count INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE playlist_tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+                track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL DEFAULT 0,
+                added_at TEXT,
+                UNIQUE(playlist_id, position)
+            );
+            CREATE TABLE library_memberships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+                collection_type TEXT NOT NULL CHECK (collection_type IN
+                    ('favorite', 'album', 'playlist', 'artist', 'purchase', 'library')),
+                collection_id INTEGER,
+                provider_item TEXT,
+                added_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            ALTER TABLE tracks ADD COLUMN library_added_at TEXT;
             INSERT INTO services (name, supports_download, max_quality) VALUES ('spotify', 0, 'lossy');
             INSERT INTO services (name, supports_download, max_quality) VALUES ('tidal', 1, 'hires');
             "#,
@@ -7819,7 +7943,13 @@ mod local_library_tests {
 
     /// Unreadable audio files must abort the scan; the previous behaviour of
     /// storing `String::new()` as the hash silently bypassed hash deduplication.
+    ///
+    /// Producir un fichero ilegible es un truco de permisos POSIX (chmod 000);
+    /// el equivalente en Windows exige deny ACLs (icacls) y queda como
+    /// seguimiento. La ruta de error es platform-neutral y este test la cubre
+    /// en la pata Linux, que corre en cada PR.
     #[test]
+    #[cfg(unix)]
     fn test_scan_local_audio_files_reports_unreadable_file() {
         let temp_dir = TempDir::new().unwrap();
         let flac = temp_dir.path().join("unreadable.flac");

@@ -69,7 +69,6 @@
           <SettingsQuality v-if="activeCategory === 'quality'" />
           <SettingsMetadata v-if="activeCategory === 'metadata'" />
           <SettingsLyrics v-if="activeCategory === 'lyrics'" />
-          <SettingsDuplicates v-if="activeCategory === 'duplicates'" />
           <SettingsProcessing v-if="activeCategory === 'processing'" />
           <SettingsDownloads v-if="activeCategory === 'folders'" />
           <SettingsSync v-if="activeCategory === 'sync'" />
@@ -82,9 +81,12 @@
 </template>
 
 <script setup lang="ts">
+// FE-PERF-01: nombre explícito — el `include` de <KeepAlive> (App.vue /
+// keepAliveViews.ts) filtra por `name`, y debe coincidir exactamente.
+defineOptions({ name: 'SettingsView' })
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { settingsApi, setGlobalMaxQuality } from '@/api/settings'
+import { settingsApi } from '@/api/settings'
 // R13: unified confirm (previously the native plugin-dialog, outside the window).
 import { confirm } from '@/composables/useToast'
 import { useToast } from '@/composables/useToast'
@@ -102,7 +104,6 @@ import SettingsGeneral from './settings/SettingsGeneral.vue'
 import SettingsAppearance from './settings/SettingsAppearance.vue'
 import SettingsServices from './settings/SettingsServices.vue'
 import SettingsLyrics from './settings/SettingsLyrics.vue'
-import SettingsDuplicates from './settings/SettingsDuplicates.vue'
 import SettingsProcessing from './settings/SettingsProcessing.vue'
 import SettingsBackup from './settings/SettingsBackup.vue'
 import SettingsAdvanced from './settings/SettingsAdvanced.vue'
@@ -165,10 +166,10 @@ async function handleResetToDefaults() {
   if (confirmed !== true) return
   isLoading.value = true
   try {
-    // The confirmation promises *every* category, and the backend `all` branch
-    // only wipes six of them, so the rest are restored explicitly below.
+    // SB00 (#196): el backend resetea TODAS las superficies y la KV de
+    // ajustes en una transacción (`settings_defaults::reset_all_settings`);
+    // la UI ya no compensa en cliente.
     await generalSettings.resetToDefaults()
-    await resetCategoryDefaults()
     await Promise.all([
       generalSettings.loadSettings(),
       downloadSettings.loadSettings(),
@@ -187,118 +188,6 @@ async function handleResetToDefaults() {
   }
 }
 
-// Defaults mirror the schema seeds so a reset lands on the same state a fresh
-// install has; each source is named because the backend `all` branch leaves
-// these tables untouched.
-const QUALITY_DEFAULTS: Record<string, { max_quality: string; preferred_format: string; fallback_quality: string; fallback_format: string }> = {
-  spotify: { max_quality: 'high', preferred_format: 'ogg', fallback_quality: 'medium', fallback_format: 'ogg' },
-  qobuz: { max_quality: 'hires', preferred_format: 'flac', fallback_quality: 'lossless', fallback_format: 'flac' },
-  tidal: { max_quality: 'master', preferred_format: 'flac', fallback_quality: 'hifi', fallback_format: 'flac' },
-  deezer: { max_quality: 'lossless', preferred_format: 'flac', fallback_quality: 'high', fallback_format: 'mp3' },
-  soundcloud: { max_quality: 'high', preferred_format: 'mp3', fallback_quality: 'medium', fallback_format: 'mp3' },
-}
-// src-tauri/migrations/0009_quality_format_settings.sql column defaults, used
-// for services seeded by a later migration (e.g. apple_music).
-const QUALITY_COLUMN_DEFAULTS = { max_quality: 'lossless', preferred_format: 'flac', fallback_quality: 'high', fallback_format: 'mp3' }
-
-// src-tauri/migrations/0007_service_preferences.sql
-const SERVICE_PRIORITY_DEFAULTS = ['spotify', 'qobuz', 'tidal', 'deezer', 'soundcloud']
-
-// src-tauri/migrations/0013_lyrics_provider_settings.sql
-const LYRICS_PROVIDER_DEFAULTS = ['apple_music', 'lrclib', 'netease', 'genius']
-
-// src-tauri/migrations/0021_metadata_preferences.sql + 0022 + 0023
-const METADATA_DEFAULTS = {
-  id: 1,
-  enable_musicbrainz: true,
-  enable_lastfm: false,
-  enable_acoustid: false,
-  overwrite_on_reimport: false,
-  preserve_custom_tags: true,
-  multi_value_separator: ';',
-  write_releasetype: true,
-  write_label: true,
-  write_work_composer: false,
-  write_musicbrainz_ids: true,
-  write_download_source: false,
-  write_download_date: false,
-  write_only_available_on: false,
-  write_not_available_streaming: false,
-  write_quality_score: false,
-  write_lyrics_tags: false,
-  weight_album: 1,
-  weight_isrc: 1,
-  weight_mb_id: 1,
-  weight_cover: 1,
-  weight_year: 1,
-  weight_genre: 1,
-}
-
-async function resetCategoryDefaults() {
-  const failures: string[] = []
-
-  const quality = await settingsApi.getQualityPreferences().catch(() => [])
-  for (const pref of quality) {
-    const defaults = QUALITY_DEFAULTS[pref.service_name] ?? QUALITY_COLUMN_DEFAULTS
-    await settingsApi
-      .updateQualityPreference(
-        pref.service_name,
-        defaults.max_quality,
-        defaults.preferred_format,
-        defaults.fallback_quality,
-        defaults.fallback_format
-      )
-      .catch(() => failures.push(`quality:${pref.service_name}`))
-  }
-
-  await settingsApi
-    .updateMetadataPreferences(METADATA_DEFAULTS)
-    .catch(() => failures.push('metadata'))
-
-  await setGlobalMaxQuality('any')
-    .catch(() => failures.push('global-ceiling'))
-
-  // Priorities only reorder the rows that already exist; sending the seed list
-  // alone would silently drop a service the user connected.
-  const preferences = await settingsApi.getServicePreferences().catch(() => [])
-  const known = preferences.map(p => p.service_name)
-  const seedOrder = SERVICE_PRIORITY_DEFAULTS.filter(name => known.includes(name))
-  const remaining = known.filter(name => !seedOrder.includes(name))
-  await syncSettings
-    .reorderPriorities([...seedOrder, ...remaining])
-    .catch(() => failures.push('service-priority'))
-  for (const pref of preferences) {
-    if (pref.auto_import_enabled) {
-      await settingsApi
-        .updateServicePreference(pref.service_name, false)
-        .catch(() => failures.push(`auto-import:${pref.service_name}`))
-    }
-  }
-
-  const providers = await settingsApi.getLyricsProviders().catch(() => [])
-  const providerSeed = LYRICS_PROVIDER_DEFAULTS.filter(id => providers.some(p => p.provider_id === id))
-  const providerRest = providers.map(p => p.provider_id).filter(id => !providerSeed.includes(id))
-  if (providers.length > 0) {
-    const seededOrder = [...providerSeed, ...providerRest]
-    await settingsApi
-      .reorderLyricsProviders(seededOrder)
-      .catch(() => failures.push('lyrics-priority'))
-    for (const [index, provider] of providers.entries()) {
-      if (!provider.enabled || provider.priority !== index + 1) {
-        await settingsApi
-          .updateLyricsProvider(provider.provider_id, true, index + 1)
-          .catch(() => failures.push(`lyrics:${provider.provider_id}`))
-      }
-    }
-  }
-
-  if (failures.length > 0) {
-    // The backend tables are already wiped at this point, so report instead of
-    // pretending the reset was complete.
-    throw new Error(`Could not reset: ${failures.join(', ')}`)
-  }
-}
-
 const settingsCategories = [
   { id: 'general', name: 'General', icon: 'tune', desc: 'Application behavior and storage paths' },
   { id: 'appearance', name: 'Appearance', icon: 'palette', desc: 'Color themes and interface tint' },
@@ -306,7 +195,8 @@ const settingsCategories = [
   { id: 'quality', name: 'Audio Quality', icon: 'high_quality', desc: 'Format preferences and limits' },
   { id: 'metadata', name: 'Metadata & Tags', icon: 'tag', desc: 'Tagging sources and rules' },
   { id: 'lyrics', name: 'Lyrics', icon: 'lyrics', desc: 'Lyrics providers and storage' },
-  { id: 'duplicates', name: 'Duplicates', icon: 'content_copy', desc: 'Detection and upgrade policy' },
+  // #197 (SB02): la pestaña «Duplicates» se oculta — sus ajustes carecían de
+  // lector; reapertura en docs/auditoria/matriz-ajustes.md.
   { id: 'processing', name: 'Audio Processing', icon: 'graphic_eq', desc: 'Normalization and transcoding' },
   { id: 'folders', name: 'Folder Structure', icon: 'folder_open', desc: 'Naming templates and organization' },
   { id: 'sync', name: 'Sync & Scheduling', icon: 'sync', desc: 'Auto-sync and intervals' },

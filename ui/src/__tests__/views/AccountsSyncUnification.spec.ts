@@ -122,7 +122,6 @@ describe('S126A Accounts & Sync Unification Suite', () => {
         sync_favorites: true,
         sync_playlists: false,
         sync_albums: true,
-        incremental_sync: false,
         last_synced: null,
       },
       {
@@ -131,7 +130,6 @@ describe('S126A Accounts & Sync Unification Suite', () => {
         sync_favorites: true,
         sync_playlists: true,
         sync_albums: true,
-        incremental_sync: true,
         last_synced: null,
       }
     ]
@@ -152,7 +150,6 @@ describe('S126A Accounts & Sync Unification Suite', () => {
         purchases: false,
         library_history: false,
         include_appearances: false,
-        incremental_sync: false,
       },
       qobuz: {
         service_name: 'qobuz',
@@ -163,7 +160,6 @@ describe('S126A Accounts & Sync Unification Suite', () => {
         purchases: true,
         library_history: true,
         include_appearances: true,
-        incremental_sync: false,
       }
     }
 
@@ -184,7 +180,6 @@ describe('S126A Accounts & Sync Unification Suite', () => {
           purchases: false,
           library_history: false,
           include_appearances: false,
-          incremental_sync: false,
         }
       }
       if (command === 'update_service_import_preferences') {

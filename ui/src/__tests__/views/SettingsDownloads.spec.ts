@@ -50,12 +50,9 @@ const mockQualityPreferences = [
 const mockKvSettings = {
   dl_concurrent_downloads: '3',
   dl_retry_failed: '3',
-  dl_retry_count: '3',
-  dl_retry_delay: '5000',
   dl_download_path: '/Users/tardis/Music/Syncify',
   dl_create_artist_folder: 'true',
   dl_create_album_folder: 'true',
-  dl_auto_download_favorites: 'false',
 }
 
 describe('SettingsDownloads.vue', () => {
@@ -71,7 +68,6 @@ describe('SettingsDownloads.vue', () => {
       if (command === 'save_setting') return null
       if (command === 'set_max_concurrent_downloads') return null
       if (command === 'get_default_download_path') return '/Users/tardis/Music/Syncify'
-      if (command === 'get_duplicate_settings') return null
       if (command === 'get_audio_processing_settings') return null
       return null
     })
@@ -144,6 +140,53 @@ describe('SettingsDownloads.vue', () => {
     expect(switchBtn.attributes('aria-checked')).toBe('false')
   })
 
+  it('offers only the fallback actions the worker applies', async () => {
+    const wrapper = mount(SettingsDownloads)
+    await flushPromises()
+
+    const select = wrapper.find('[data-testid="fallback-action-select"]')
+    expect(select.exists()).toBe(true)
+    expect(select.findAll('option').map(option => option.attributes('value'))).toEqual([
+      'try_next',
+      'skip',
+    ])
+    // `prompt` was never implemented by the worker: the UI must not promise it.
+    expect(wrapper.text()).not.toContain('Prompt user')
+  })
+
+  it('folds a legacy prompt fallback into try_next', async () => {
+    mockInvoke((command) => {
+      if (command === 'get_folder_settings') return { ...mockFolderSettings, fallback_action: 'prompt' }
+      if (command === 'update_folder_settings') return mockFolderSettings
+      if (command === 'get_quality_preferences') return mockQualityPreferences
+      if (command === 'get_kv_settings') return mockKvSettings
+      if (command === 'get_audio_processing_settings') return null
+      return null
+    })
+
+    const wrapper = mount(SettingsDownloads)
+    await flushPromises()
+
+    const select = wrapper.find('[data-testid="fallback-action-select"]')
+    expect((select.element as HTMLSelectElement).value).toBe('try_next')
+  })
+
+  it('does not offer a preferred format or a quality tier the worker folds away', async () => {
+    const wrapper = mount(SettingsDownloads)
+    await flushPromises()
+
+    // `preferred_format` has no reader in the worker; `normal` is folded to
+    // high by service_max_quality_rank, so it is not a separate tier.
+    expect(wrapper.text()).not.toContain('Preferred Format')
+    const quality = wrapper.find('[data-testid="quality-preset-select"]')
+    expect(quality.findAll('option').map(option => option.attributes('value'))).toEqual([
+      'inherit',
+      'hires',
+      'lossless',
+      'high',
+    ])
+  })
+
   it('allows changing download concurrency between 1 and 10 threads', async () => {
     const wrapper = mount(SettingsDownloads)
     await flushPromises()
@@ -164,6 +207,16 @@ describe('SettingsDownloads.vue', () => {
     await flushPromises()
 
     expect(wrapper.find('select[data-testid="global-max-quality-select"]').exists()).toBe(false)
+  })
+
+  it('#261: the retired dl_retry_count/dl_retry_delay settings are not rendered', async () => {
+    const wrapper = mount(SettingsDownloads)
+    await flushPromises()
+
+    // Retired in #261: the worker ignores these keys (fixed backoff from #260),
+    // so no retry count/delay control may come back in this view.
+    expect(wrapper.html()).not.toMatch(/retry[-_ ]?(count|delay)/i)
+    expect(wrapper.findAll('input[id*="retry"], select[id*="retry"], [data-testid*="retry"]').length).toBe(0)
   })
 
   it('does not write service presets merely by editing the target selects', async () => {

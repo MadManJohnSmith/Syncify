@@ -17,20 +17,44 @@ App de escritorio (Tauri 2) para sincronizar y descargar música. Cinco superfic
 
 ## Comandos deterministas
 
-Desde la raíz. El target de Rust va **fuera del repo** para no llenar el disco:
+Desde la raíz. El target de Rust va **fuera del repo** y es **uno por
+checkout**: `/tmp` es un tmpfs de 12 GB en esta máquina y un target compartido
+entre worktrees inventa errores de tipos de otro árbol
+(`docs/agents/wiki/entorno.md`).
 
 ```bash
-CARGO_TARGET_DIR=/tmp/syncify-target cargo check --workspace --all-targets --locked
-CARGO_TARGET_DIR=/tmp/syncify-target cargo clippy --workspace --all-targets --locked -- -D warnings
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/syncify-target-$(basename "$PWD")}"
+cargo check --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
-CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --no-fail-fast   # 318 objetivos de test: recuento real
-CARGO_TARGET_DIR=/tmp/syncify-target cargo test --locked --test batch_50_audit_test -- --test-threads=1
-npm --prefix ui run build && npm --prefix ui run test:run                  # 131 ficheros / 1139 tests
-python3 -m unittest discover -s scripts/tests                             # 324 tests (2 skipped)
+cargo test --locked --no-fail-fast   # 356 objetivos de test: recuento real
+cargo test --locked --test batch_50_audit_test -- --test-threads=1
+npm --prefix ui run build && npm --prefix ui run test:run                  # 155 ficheros de test UI
+.venv/bin/python -m unittest discover -s scripts/tests                    # 480 tests (2 skipped)
+
 ```
 
 Todo corre sin red salvo los 13 tests `#[ignore]`, que necesitan servicios reales.
 No los des-ignores en CI ni añadas `--skip`.
+
+### Puerta previa al push
+
+`tools/prepush-check.sh` adelanta a la máquina local el veredicto de CI:
+fmt + clippy con las mismas banderas de arriba (~2 min en caliente);
+`--with-tests` añade la suite completa. Si el diff contra el upstream solo
+toca docs, salta cargo y corre las tres puertas de docs; `--force` anula el
+salto. Las exportaciones específicas de la máquina (p. ej. `PKG_CONFIG_PATH`
+para OpenSSL) van en el entorno o en el hook, no en el script. La receta del
+hook local opcional está en la cabecera del script: no versiones el hook, que
+no es reproducible entre clones.
+`tools/doctor.sh` comprueba antes los prerrequisitos locales (webkit, OpenSSL,
+cargo, `.venv`, `node_modules`), avisa si el target cae en tmpfs o lo comparte
+otro worktree, y dice qué puertas quedarán solo para CI.
+
+`tools/lane-setup.sh <worktree>` enlaza `ui/node_modules`, `.venv` y
+`node_modules` desde el checkout principal y construye `ui/dist` si falta;
+`tools/lane-prune.sh` (dry-run por defecto) lista los worktrees ya fusionados
+en `origin/dev` y `--apply` los elimina junto con su target.
 
 ### Verificación manual
 
@@ -52,6 +76,8 @@ El repo se vigila a sí mismo; si una falla, el fallo es el mensaje:
 | `ui/src/__tests__/api/tauri_events_symmetry.spec.ts` | Simetría de eventos emitidos y escuchados |
 | `scripts/tests/test_docs_consistency.py` | Que las docs no citen ficheros o ramas inexistentes |
 | `scripts/tests/test_readme_claims.py` | Cifras del README contra el árbol real |
+| `scripts/tests/test_agents_claims.py` | Cifras del AGENTS.md contra el árbol real (objetivos cargo, ficheros de test UI, tests Python, `#[ignore]`) |
+| `scripts/tests/test_dead_code_allow_ratchet.py` | `#![allow(dead_code)]` de módulos de producción contra el suelo 0 (adopción de `account_refresh` aterrizada en #342) |
 | `scripts/tests/test_tracked_artifact_hygiene.py` | Artefactos generados que no deben estar versionados |
 
 Arregla la causa: no añadas excepciones a esas listas, no pongas
@@ -68,10 +94,11 @@ que pase.
   sustituyó a `resolve_playback_source` y al protocolo `syncify-media://`, que se
   borraron (C-19 en `docs/Deuda_Tecnica_y_UX.md`). `commands/playback.rs` conserva
   solo la escucha local (`record_local_play`).
-- **Escrituras silenciosas:** hay ~113 `let _ = sqlx::query(...)` en producción (el
-  registro D-06 de `docs/Deuda_Tecnica_y_UX.md` lleva el ratchet y no debe subir): una
-  escritura puede fallar y la transacción confirmar sin rastro. Si tocas una, propaga
-  el error o registra con `tracing::warn!`.
+- **Escrituras silenciosas:** hay ~19 `let _ = sqlx::query(...)` en producción (18 ya
+  propagan con `map_err(..)?` y 1 está dentro de un bloque comentado de `main.rs`, sin
+  efecto en ejecución; el registro D-06 de `docs/Deuda_Tecnica_y_UX.md` lleva el
+  ratchet y no debe subir): una escritura puede fallar y la transacción confirmar sin
+  rastro. Si tocas una, propaga el error o registra con `tracing::warn!`.
 - **Entorno:** `.venv`, `node_modules` y los lockfiles son el entorno; no los
   regeneres sin motivo. `src-tauri/gen/` no está en el árbol: no lo recrees.
 
@@ -124,3 +151,10 @@ Cinco roles canónicos con la etiqueta igual a su nombre (`needs-triage`,
 
 **single-context**: un `GLOSSARY.md` en la raíz y las decisiones en
 `docs/adr/*.md`. Ver `docs/agents/domain.md`.
+
+### Wiki del agente
+
+Memoria operativa entre sesiones del jefe de gabinete en `docs/agents/wiki/`
+(entrada por `docs/agents/wiki/index.md`). Claims fechados con cita de
+fuente, nunca estado actual; el estado canónico sigue en el tracker y en
+`docs/auditoria/matriz-ajustes.md`.

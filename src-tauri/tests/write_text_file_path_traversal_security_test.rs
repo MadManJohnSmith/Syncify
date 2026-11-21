@@ -11,7 +11,7 @@
 
 mod common;
 
-use common::{resolve_sandbox_test_base, resolve_secondary_sandbox_dir};
+use common::{render_ipc_string, resolve_sandbox_test_base, resolve_secondary_sandbox_dir};
 use std::fs;
 use std::path::PathBuf;
 use syncify_tauri_lib::commands::{
@@ -51,31 +51,22 @@ async fn test_path_traversal_sequences_rejected() {
 
     // Traversal using .. components toward sensitive targets (/etc/, ~/.bashrc, ~/.ssh/)
     let traversal_cases = [
-        download_dir
-            .join("../.bashrc")
-            .to_string_lossy()
-            .to_string(),
-        download_dir
-            .join("../../etc/passwd.txt")
-            .to_string_lossy()
-            .to_string(),
-        download_dir
-            .join("../.ssh/authorized_keys")
-            .to_string_lossy()
-            .to_string(),
-        download_dir
-            .join("sub/../../.profile")
-            .to_string_lossy()
-            .to_string(),
-        doc_dir
-            .join("../../../etc/shadow.log")
-            .to_string_lossy()
-            .to_string(),
-        doc_dir.join("../.bashrc").to_string_lossy().to_string(),
-        doc_dir
-            .join("../.ssh/id_rsa.txt")
-            .to_string_lossy()
-            .to_string(),
+        // STRING crudo (superficie real de IPC), sin prefijo verbatim: sobre
+        // `\\?\` el parseo de components() no clasifica los `..` como
+        // ParentDir y el pre-check de traversal del validador no los ve.
+        format!("{}/../.bashrc", render_ipc_string(&download_dir)),
+        format!("{}/../../etc/passwd.txt", render_ipc_string(&download_dir)),
+        format!(
+            "{}/../.ssh/authorized_keys",
+            render_ipc_string(&download_dir)
+        ),
+        format!("{}/sub/../../.profile", render_ipc_string(&download_dir)),
+        // STRING crudo (superficie real de IPC), sin prefijo verbatim: sobre
+        // `\\?\` el parseo de components() no clasifica los `..` como
+        // ParentDir y el pre-check de traversal del validador no los ve.
+        format!("{}/../../../etc/shadow.log", render_ipc_string(&doc_dir)),
+        format!("{}/../.bashrc", render_ipc_string(&doc_dir)),
+        format!("{}/../.ssh/id_rsa.txt", render_ipc_string(&doc_dir)),
         "/etc/passwd".to_string(),
         "/etc/cron.d/malicious.txt".to_string(),
         "/var/log/audit.log".to_string(),
@@ -298,6 +289,12 @@ async fn test_nested_subdirectory_creation_in_allowed_directory() {
     let _ = fs::remove_dir_all(&test_dir);
 }
 
+// El escape por symlink de la prueba es un mecanismo POSIX (std::os::unix);
+// en Windows crear el enlace exige privilegio y no hay equivalente portable,
+// asi que la defensa se ejercita en la pata unix (la comprobacion de
+// symlink_metadata del validador es cross-platform y cubre los symlinks
+// NTFS en produccion).
+#[cfg(unix)]
 #[tokio::test]
 async fn test_symlink_overwriting_prevented() {
     let temp_sandbox = tempfile::tempdir().expect("Must create temp sandbox dir");

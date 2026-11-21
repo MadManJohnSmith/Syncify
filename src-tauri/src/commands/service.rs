@@ -124,7 +124,15 @@ pub(crate) async fn resolve_effective_account_id(
 /// Upsert or reuse playlist by (account_id, service_playlist_id) strictly when remote ID is provided,
 /// or by (account_id, LOWER(TRIM(name))) only when service_playlist_id is null/empty (manual local playlists).
 /// Registers/updates its entry in `playlist_sources` (TASK-78: decoupling collisions).
-/// Returns the resolved `playlist_id`.
+///
+/// PL01 (#154): una playlist con tombstone (`deleted_at`) ya fue borrada por
+/// el usuario y no existe para el sync: la identidad remota reencontrada NO
+/// la resucita — se devuelve `Ok(None)` y el llamador la salta (ni metadatos,
+/// ni `playlist_sources`, ni pistas). Este es el criterio «una importada
+/// borrada no vuelve en el siguiente sync».
+///
+/// Returns the resolved `playlist_id`, or `None` when the matched playlist is
+/// tombstoned and the import must skip it.
 pub async fn upsert_playlist_and_source(
     db: &sqlx::SqlitePool,
     account_id: i64,
@@ -136,11 +144,14 @@ pub async fn upsert_playlist_and_source(
     is_collaborative: i32,
     image_url: Option<&str>,
     track_count: i32,
-) -> Result<i64, sqlx::Error> {
+) -> Result<Option<i64>, sqlx::Error> {
     let trimmed_sp_id = service_playlist_id.trim();
 
     // Invert priority: Remote identity (account_id, service_playlist_id) strictly takes precedence.
     // Matching by name is only evaluated if service_playlist_id is empty (manual local playlists).
+    // PL01: el lookup NO filtra deleted_at — encontrar el tombstone es lo que
+    // permite saber que esta identidad remota fue borrada y no recrearla
+    // (la fila tombstoneada sigue ocupando el índice UNIQUE).
     let existing_playlist_id: Option<i64> = if !trimmed_sp_id.is_empty() {
         // 1. Strictly look up by (account_id, service_playlist_id) in playlist_sources first
         let by_source: Option<(i64,)> = sqlx::query_as(
@@ -178,10 +189,34 @@ pub async fn upsert_playlist_and_source(
         by_name.map(|(id,)| id)
     };
 
+    // PL01 (#154): deletion wins. Un tombstone bloquea al sync: sin UPDATE de
+    // metadatos, sin registro de fuente y sin pistas nuevas.
+    if let Some(pid) = existing_playlist_id {
+        let deleted_at: Option<String> =
+            sqlx::query_scalar("SELECT deleted_at FROM playlists WHERE id = ?")
+                .bind(pid)
+                .fetch_optional(db)
+                .await?
+                .flatten();
+
+        if deleted_at.is_some() {
+            tracing::debug!(
+                "upsert_playlist_and_source: playlist {} (account {}, '{}') tombstoneada; el sync la salta",
+                pid,
+                account_id,
+                name
+            );
+            return Ok(None);
+        }
+    }
+
     let playlist_id = match existing_playlist_id {
         Some(id) => {
             // Reuse existing playlist, updating metadata/track_count
-            sqlx::query(
+            // PL01: el guard `deleted_at IS NULL` cierra la carrera con un
+            // borrado concurrente: si tombstoneó entre el lookup y aquí, no se
+            // actualiza nada y el sync la salta.
+            let res = sqlx::query(
                 r#"
                 UPDATE playlists SET
                     name = ?,
@@ -194,7 +229,7 @@ pub async fn upsert_playlist_and_source(
                     service_playlist_id = COALESCE(service_playlist_id, ?),
                     last_synced = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND deleted_at IS NULL
                 "#,
             )
             .bind(name)
@@ -212,6 +247,16 @@ pub async fn upsert_playlist_and_source(
             .bind(id)
             .execute(db)
             .await?;
+
+            if res.rows_affected() == 0 {
+                tracing::debug!(
+                    "upsert_playlist_and_source: playlist {} (account {}, '{}') tombstoneada; el sync la salta",
+                    id,
+                    account_id,
+                    name
+                );
+                return Ok(None);
+            }
 
             id
         }
@@ -267,7 +312,7 @@ pub async fn upsert_playlist_and_source(
         .await?;
     }
 
-    Ok(playlist_id)
+    Ok(Some(playlist_id))
 }
 
 /// S186: Resolve a usable Qobuz user_auth_token for the sync/enrichment/playlists paths.
@@ -437,92 +482,87 @@ pub(crate) fn emit_import_complete(
 
 /// Get or refresh Spotify access token
 /// Returns valid access token, refreshing if needed and saving to DB.
+///
+/// A03-ter (#342): el cuerpo ad-hoc (PKCE con buffer de 300 s, wire format
+/// idéntico) se sustituye por la puerta única de `account_refresh`
+/// (ADR-0007 decisión 14). Lo que cambia respecto al cuerpo anterior: un
+/// refresco rechazado o imposible AHORA marca la cuenta para reautenticar
+/// (puerta anti-bucle) y un fallo transitorio la deja válida (decisión 12).
 pub(crate) async fn get_or_refresh_spotify_token(
     db: &sqlx::SqlitePool,
     account_id: i64,
     creds: &serde_json::Value,
 ) -> Result<String, String> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    get_or_refresh_spotify_token_with_transport(
+        db,
+        account_id,
+        creds,
+        &account_refresh::ProductionRefreshTransport::default(),
+    )
+    .await
+}
 
-    let expires_at = creds["expires_at"].as_i64().unwrap_or(0);
-    let buffer_seconds = 300; // 5 minutes
-
-    if now >= (expires_at - buffer_seconds) {
-        tracing::info!("Spotify access token expired or expiring soon, refreshing via PKCE...");
-
-        let refresh_token = creds["refresh_token"]
-            .as_str()
-            .ok_or("Missing refresh token - please reconnect to Spotify")?;
-
-        // S196: credentials resolved from DB settings first, env fallback (dev).
-        let config: SpotifyConfig = crate::commands::resolve_spotify_config(db)
-            .await
-            .map_err(|e| format!("Spotify config error: {}", e))?;
-        let client_id = config.client_id;
-        let http_client = reqwest::Client::new();
-
-        let params = [
-            ("client_id", client_id.as_str()),
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-        ];
-
-        let token_resp = http_client
-            .post("https://accounts.spotify.com/api/token")
-            .form(&params)
-            .send()
-            .await
-            .map_err(|e| format!("Refresh request failed: {}", e))?;
-
-        if !token_resp.status().is_success() {
-            let error = token_resp.text().await.unwrap_or_default();
-            tracing::error!("Token refresh failed: {}", error);
-            return Err(format!("Token refresh failed: {}", error));
-        }
-
-        let token_data: serde_json::Value = token_resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse refresh response: {}", e))?;
-
-        let new_access_token = token_data["access_token"]
-            .as_str()
-            .ok_or("Missing access_token in refresh response")?
-            .to_string();
-
-        let new_refresh_token = token_data["refresh_token"]
-            .as_str()
-            .unwrap_or(refresh_token)
-            .to_string();
-
-        let expires_in = token_data["expires_in"].as_i64().unwrap_or(3600);
-        let new_expires_at = now + expires_in;
-
-        let updated_creds = serde_json::json!({
-            "token_type": "Bearer",
-            "access_token": new_access_token,
-            "refresh_token": new_refresh_token,
-            "expires_at": new_expires_at
-        });
-
-        let encrypted = crate::crypto::encrypt(&updated_creds.to_string())?;
-        sqlx::query("UPDATE accounts SET credentials_json = ? WHERE id = ?")
-            .bind(&encrypted)
+/// Seam de pruebas de la puerta: misma política con transporte inyectable
+/// (reloj real; los tests usan vencimientos relativos a `now_epoch_secs`).
+pub(crate) async fn get_or_refresh_spotify_token_with_transport(
+    db: &sqlx::SqlitePool,
+    account_id: i64,
+    creds: &serde_json::Value,
+    transport: &dyn account_refresh::CredentialRefreshTransport,
+) -> Result<String, String> {
+    match account_refresh::refresh_account_credential(
+        db,
+        "spotify",
+        account_id,
+        transport,
+        account_refresh::now_epoch_secs(),
+    )
+    .await?
+    {
+        account_refresh::RefreshOutcome::Refreshed => {
+            // La puerta persistió el artefacto en la MISMA fila: recargarlo y
+            // extraer el token nuevo. Un fallo aquí es el mismo tipo de error
+            // que tenía el cuerpo ad-hoc tras un refresh exitoso.
+            let encrypted: Option<String> = sqlx::query_scalar(
+                "SELECT credentials_json FROM accounts WHERE id = ? \
+                 AND credentials_json IS NOT NULL AND TRIM(credentials_json) != ''",
+            )
             .bind(account_id)
-            .execute(db)
+            .fetch_optional(db)
             .await
-            .map_err(|e| format!("Failed to save refreshed token: {}", e))?;
-
-        tracing::info!("Spotify PKCE token refreshed and saved to database");
-        Ok(new_access_token)
-    } else {
-        creds["access_token"]
+            .map_err(|e| format!("Failed to load refreshed Spotify credentials: {}", e))?;
+            let encrypted =
+                encrypted.ok_or("Refreshed Spotify credentials missing from database")?;
+            let plain = crate::crypto::decrypt(&encrypted)
+                .map_err(|e| format!("Failed to decrypt refreshed Spotify credentials: {}", e))?;
+            let fresh: serde_json::Value = serde_json::from_str(&plain)
+                .map_err(|e| format!("Refreshed Spotify credentials are not valid JSON: {}", e))?;
+            fresh["access_token"]
+                .as_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "Missing access token in refreshed credentials".to_string())
+        }
+        // Rama passthrough del cuerpo ad-hoc: credencial aún fresca (o sin
+        // vencimiento publicado — Spotify siempre lo publica en estados
+        // alcanzables) se devuelve tal cual.
+        account_refresh::RefreshOutcome::NotNeeded => creds["access_token"]
             .as_str()
             .map(|s| s.to_string())
-            .ok_or_else(|| "Missing access token".to_string())
+            .ok_or_else(|| "Missing access token".to_string()),
+        // Fallo transitorio (red/5xx): la cuenta queda válida pero este
+        // llamador necesita un token usable AHORA — mismo fail-early que el
+        // cuerpo ad-hoc, sin la marca de decisión 12.
+        account_refresh::RefreshOutcome::RetryLater => Err(
+            "Token refresh failed transiently; the account stays valid, retry later".to_string(),
+        ),
+        // Puerta anti-bucle: ya marcada (NeedsReauth) o marcada AHORA por el
+        // rechazo del refresco (MarkedForReauth). Las cuatro llamadas de
+        // producción filtran cuentas marcadas antes de llegar aquí; el error
+        // es el RequiresAuth que el cuerpo ad-hoc emitía al fallar.
+        account_refresh::RefreshOutcome::MarkedForReauth | account_refresh::RefreshOutcome::NeedsReauth => Err(
+            "Token refresh failed: provider rejected the credential refresh; reauthentication required"
+                .to_string(),
+        ),
     }
 }
 
@@ -972,7 +1012,14 @@ pub async fn import_spotify_playlists(
             .await;
 
             let playlist_db_id = match playlist_id_res {
-                Ok(id) => (id,),
+                Ok(Some(id)) => (id,),
+                Ok(None) => {
+                    tracing::debug!(
+                        "Spotify playlist '{}' tombstoneada; el sync la salta",
+                        playlist.name
+                    );
+                    continue;
+                }
                 Err(e) => {
                     tracing::warn!("Failed to insert/update playlist {}: {}", playlist.name, e);
                     continue;
@@ -1213,7 +1260,7 @@ pub async fn enrich_qobuz_album_metadata(
 /// Persist a provider pagination snapshot without conflating account occurrences with
 /// globally deduplicated library rows. A failed write fails the sync rather than
 /// silently presenting a stale 'complete' snapshot.
-async fn record_account_import_count(
+pub(crate) async fn record_account_import_count(
     db: &sqlx::SqlitePool,
     account_id: i64,
     collection: &str,
@@ -1366,17 +1413,11 @@ pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings,
             .await
             .ok()
             .flatten();
-    let auto_dl: Option<(String,)> =
-        sqlx::query_as("SELECT value FROM settings WHERE key = 'auto_download_favorites'")
-            .fetch_optional(&state.db)
-            .await
-            .ok()
-            .flatten();
-
+    // #197: `auto_download_favorites` fuera de la superficie; el disparador de
+    // auto-descarga de favoritos no existe (PLAN A-04).
     Ok(AppSettings {
         download_path: effective.library_root,
         preferred_quality: quality.map(|r| r.0).unwrap_or_else(|| "lossless".into()),
-        auto_download_favorites: auto_dl.map(|r| r.0 == "true").unwrap_or(true),
     })
 }
 
@@ -1390,17 +1431,13 @@ pub async fn service_save_settings(
 
     if !settings.download_path.trim().is_empty() {
         let trimmed = settings.download_path.trim();
+        // SB01 (#199): folder_settings.base_folder es la única superficie de
+        // la ruta; sin espejo en la KV.
         let _ = crate::db::write_or_log("service_save_settings", sqlx::query(
             "UPDATE folder_settings SET base_folder = ?, updated_at = datetime('now') WHERE id = 1",
         )
         .bind(trimmed)
         .execute(&state.db)).await;
-        for key in &["download_path", "dl_download_path", "download_dir"] {
-            let _ = crate::db::write_or_log("service_save_settings", sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
-                .bind(key)
-                .bind(trimmed)
-                .execute(&state.db)).await;
-        }
     }
 
     sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('preferred_quality', ?)")
@@ -1408,18 +1445,6 @@ pub async fn service_save_settings(
         .execute(&state.db)
         .await
         .map_err(|e| e.to_string())?;
-
-    sqlx::query(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES ('auto_download_favorites', ?)",
-    )
-    .bind(if settings.auto_download_favorites {
-        "true"
-    } else {
-        "false"
-    })
-    .execute(&state.db)
-    .await
-    .map_err(|e| e.to_string())?;
 
     Ok("Settings saved".into())
 }
@@ -1863,6 +1888,7 @@ pub async fn sync_soundcloud_likes_with_engine<F>(
     account_id: i64,
     soundcloud_service_id: i64,
     client: &crate::services::SoundCloudClient,
+    include_appearances: bool,
     mut on_track: F,
 ) -> Result<SoundCloudLikesSyncTotals, String>
 where
@@ -1909,6 +1935,7 @@ where
                 service_name: "soundcloud".to_string(),
                 service_id: soundcloud_service_id,
                 account_id,
+                include_appearances,
                 is_favorite: true,
                 format: Some("MP3".to_string()),
                 // SoundCloud solo reparte audio con pérdida (la migración 0064 fija
@@ -1998,6 +2025,7 @@ pub async fn sync_soundcloud_playlists_with_engine<F>(
     account_id: i64,
     soundcloud_service_id: i64,
     client: &crate::services::SoundCloudClient,
+    include_appearances: bool,
     mut on_track: F,
 ) -> Result<SoundCloudPlaylistsSyncTotals, String>
 where
@@ -2039,7 +2067,14 @@ where
             )
             .await
             {
-                Ok(id) => id,
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    tracing::debug!(
+                        "SoundCloud playlist '{}' tombstoneada; el sync la salta",
+                        playlist_title
+                    );
+                    continue;
+                }
                 Err(e) => {
                     totals.errors.push(format!(
                         "SoundCloud playlist '{}' upsert failed: {}",
@@ -2096,6 +2131,7 @@ where
                         service_name: "soundcloud".to_string(),
                         service_id: soundcloud_service_id,
                         account_id,
+                        include_appearances,
                         // Pertenencia a playlist: no es un like de la cuenta.
                         is_favorite: false,
                         format: Some("MP3".to_string()),
@@ -2127,6 +2163,26 @@ where
                             .bind(res.track_id)
                             .bind((processed_in_playlist + 1) as i32)
                             .execute(db)).await;
+                            // L00 (#97): pertenencia de la colección
+                            // playlist con su id local y el ítem del
+                            // proveedor (SoundCloud no trae added_at por
+                            // ítem de playlist).
+                            let _ = crate::db::write_or_log(
+                                "sync_soundcloud_playlists_with_engine",
+                                crate::services::library_membership::record_membership(
+                                    db,
+                                    &crate::services::library_membership::MembershipWrite {
+                                        account_id,
+                                        track_id: res.track_id,
+                                        collection:
+                                            crate::services::library_membership::MembershipCollection::Playlist,
+                                        collection_id: Some(playlist_db_id),
+                                        provider_item: Some(track.id.to_string()),
+                                        added_at: None,
+                                    },
+                                ),
+                            )
+                            .await;
                             if res.is_new_import {
                                 totals.imported += 1;
                             } else {
@@ -2211,6 +2267,15 @@ async fn run_soundcloud_likes_import(
         account_id,
         soundcloud_service_id,
         &client,
+        // SB03 (#198): el envoltorio legacy no recibe ImportPreferences; lee
+        // la preferencia persistida del servicio (fábrica 0: histórico).
+        sqlx::query_scalar::<_, bool>(
+            "SELECT sync_include_appearances FROM service_sync_settings WHERE service_name = 'soundcloud'",
+        )
+        .fetch_optional(db)
+        .await
+        .unwrap_or(Some(false))
+        .unwrap_or(false),
         |_res, processed, _page_finished| on_progress(processed),
     )
     .await?;
@@ -3025,6 +3090,64 @@ async fn tidal_force_refresh_after_401(db: &sqlx::SqlitePool, account_id: i64) -
     creds_opt.map(|c| c.access_token)
 }
 
+/// A03-ter (#342): el 401/403 reactivo del sync pasa por la puerta única de
+/// `account_refresh` (ADR-0007 decisión 14). En producción el transporte no
+/// tiene refresco programático para estos servicios: el intento termina en
+/// `NotRefreshable` y la cuenta se marca — el mismo estado final que el
+/// `mark_account_credentials_invalid` directo que había, ahora con la puerta
+/// anti-bucle compartida (una cuenta ya marcada no se re-marca ni se
+/// re-emite) y con la distinción de decisión 12 (un fallo transitorio del
+/// refresco no marca). Mejor esfuerzo: un fallo de la puerta no cambia el
+/// resultado del brazo.
+pub(crate) async fn sync_reactive_credential_rejection(
+    db: &sqlx::SqlitePool,
+    service: &str,
+    account_id: i64,
+    status: u16,
+    reason: &str,
+) {
+    sync_reactive_credential_rejection_with_transport(
+        db,
+        service,
+        account_id,
+        status,
+        reason,
+        &account_refresh::ProductionRefreshTransport::default(),
+    )
+    .await
+}
+
+/// Seam de pruebas: la misma puerta con transporte inyectable.
+pub(crate) async fn sync_reactive_credential_rejection_with_transport(
+    db: &sqlx::SqlitePool,
+    service: &str,
+    account_id: i64,
+    status: u16,
+    reason: &str,
+    transport: &dyn account_refresh::CredentialRefreshTransport,
+) {
+    match account_refresh::handle_credential_rejection(
+        db, service, account_id, status, transport, reason,
+    )
+    .await
+    {
+        Ok(outcome) => tracing::debug!(
+            service,
+            account_id,
+            status,
+            ?outcome,
+            "reactive credential rejection handled by the shared gate"
+        ),
+        Err(e) => tracing::warn!(
+            service,
+            account_id,
+            status,
+            error = %e,
+            "reactive credential rejection could not be recorded"
+        ),
+    }
+}
+
 pub(crate) async fn enrich_persist_with_locked_retry(
     engine: &crate::services::enrichment::EnrichmentEngine,
     db: &sqlx::SqlitePool,
@@ -3080,7 +3203,7 @@ fn is_soundcloud_auth_error(err: &str) -> bool {
 /// from the client's structured error prefix, never from an arbitrary
 /// substring: provider item IDs can contain "401", and matching those used to
 /// mark healthy accounts as needing re-authentication.
-fn is_qobuz_auth_error(error: &str) -> bool {
+pub(crate) fn is_qobuz_auth_error(error: &str) -> bool {
     if error == "Authentication required" || error.contains("User authentication is required") {
         return true;
     }
@@ -3090,7 +3213,7 @@ fn is_qobuz_auth_error(error: &str) -> bool {
     qobuz_error_status(error) == Some("401")
 }
 
-fn qobuz_error_status(error: &str) -> Option<&str> {
+pub(crate) fn qobuz_error_status(error: &str) -> Option<&str> {
     let rest = error.strip_prefix("Qobuz API error (")?;
     rest.split([' ', ')']).next()
 }
@@ -3306,45 +3429,52 @@ fn soundcloud_credentials(creds: &serde_json::Value) -> Result<(String, i64), St
 
 /// Acumuladores que un brazo de sincronización puede tocar, en un sitio.
 ///
-/// El orquestador siembra los que ya traen valor (los que aparecen en los
-/// eventos de progreso) y vuelca el resultado al terminar el brazo, de modo que
-/// el `match` de servicios sea una llamada y un volcado, no 240 líneas.
+/// Contrato (D-08a): es EL contador único de los cinco brazos del motor
+/// (qobuz, tidal, spotify, deezer, soundcloud) y del brazo embebido
+/// `apple_music`. El orquestador crea una única instancia
+/// (`SyncOutcome::default()`) y cada brazo la recibe por `&mut` y la muta
+/// in situ; no hay snapshot por brazo ni volcado campo a campo, y ningún
+/// brazo mantiene contadores locales en paralelo: todo lo que un brazo
+/// cuenta pasa por aquí. El resto de la función (eventos de progreso,
+/// journal, timings y `ServiceSyncResult`) lee de esta instancia. Solo un
+/// brazo corre por sincronización (el `match` elige por servicio), así que
+/// sus campos le pertenecen en exclusiva mientras tanto.
 #[derive(Default)]
-struct SyncOutcome {
-    tracks_processed: u64,
-    tracks_expanded: u64,
-    tracks_new_global: u64,
-    sources_new_for_service: u64,
-    library_entries_new_for_account: u64,
-    tracks_already_present: u64,
-    tracks_changed_unique: u64,
-    imported_tracks_total: u64,
-    skipped_tracks_total: u64,
-    purchases_total: u64,
-    favorite_tracks_total: u64,
-    favorites_seen: u64,
-    metadata_enriched: u64,
-    metadata_partial: u64,
-    playlists_seen: u64,
-    playlists_total: u64,
-    api_fetch_ms: u64,
-    enrichment_ms: u64,
-    albums_seen: u64,
-    availability_checked: u64,
-    albums_unavailable: u64,
-    tracks_unavailable: u64,
-    tracks_expansion_deferred: u64,
-    tracks_expansion_failed: u64,
-    entity_expansion_ms: u64,
-    persistence_ms: u64,
-    favorite_albums_total: u64,
-    favorite_artists_total: u64,
-    reported_favorites: Option<i64>,
-    reported_albums: Option<i64>,
-    reported_playlists: Option<i64>,
-    album_expansion_metrics: crate::commands::types::AlbumSyncExpansionMetrics,
-    errors: Vec<String>,
-    warnings: Vec<String>,
+pub(crate) struct SyncOutcome {
+    pub(crate) tracks_processed: u64,
+    pub(crate) tracks_expanded: u64,
+    pub(crate) tracks_new_global: u64,
+    pub(crate) sources_new_for_service: u64,
+    pub(crate) library_entries_new_for_account: u64,
+    pub(crate) tracks_already_present: u64,
+    pub(crate) tracks_changed_unique: u64,
+    pub(crate) imported_tracks_total: u64,
+    pub(crate) skipped_tracks_total: u64,
+    pub(crate) purchases_total: u64,
+    pub(crate) favorite_tracks_total: u64,
+    pub(crate) favorites_seen: u64,
+    pub(crate) metadata_enriched: u64,
+    pub(crate) metadata_partial: u64,
+    pub(crate) playlists_seen: u64,
+    pub(crate) playlists_total: u64,
+    pub(crate) api_fetch_ms: u64,
+    pub(crate) enrichment_ms: u64,
+    pub(crate) albums_seen: u64,
+    pub(crate) availability_checked: u64,
+    pub(crate) albums_unavailable: u64,
+    pub(crate) tracks_unavailable: u64,
+    pub(crate) tracks_expansion_deferred: u64,
+    pub(crate) tracks_expansion_failed: u64,
+    pub(crate) entity_expansion_ms: u64,
+    pub(crate) persistence_ms: u64,
+    pub(crate) favorite_albums_total: u64,
+    pub(crate) favorite_artists_total: u64,
+    pub(crate) reported_favorites: Option<i64>,
+    pub(crate) reported_albums: Option<i64>,
+    pub(crate) reported_playlists: Option<i64>,
+    pub(crate) album_expansion_metrics: crate::commands::types::AlbumSyncExpansionMetrics,
+    pub(crate) errors: Vec<String>,
+    pub(crate) warnings: Vec<String>,
 }
 
 impl SyncOutcome {
@@ -3416,6 +3546,7 @@ async fn sync_soundcloud_arm<E: SyncProgressEmitter>(
             account_id,
             soundcloud_service_id,
             &client,
+            prefs.include_appearances,
             |res, processed, page_finished| {
                 arm.tracks_processed += 1;
                 if res.is_new_global_track {
@@ -3513,6 +3644,7 @@ async fn sync_soundcloud_arm<E: SyncProgressEmitter>(
             account_id,
             soundcloud_service_id,
             &client,
+            prefs.include_appearances,
             |res, playlist_title, processed, page_finished| {
                 arm.tracks_processed += 1;
                 arm.tracks_expanded += 1;
@@ -3749,6 +3881,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                     service_name: "deezer".to_string(),
                     service_id: deezer_service_id,
                     account_id,
+                    include_appearances: prefs.include_appearances,
                     is_favorite: true,
                     format: Some("FLAC".to_string()),
                     bit_depth: Some(16),
@@ -3872,6 +4005,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                         service_name: "deezer".to_string(),
                         service_id: deezer_service_id,
                         account_id,
+                        include_appearances: prefs.include_appearances,
                         is_favorite: false,
                         // S198 engine extension works for deezer too:
                         // the ALBUM is a favorite even though no
@@ -3968,11 +4102,23 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
             if artists.is_empty() {
                 break;
             }
-            for (_artist_provider_id, artist_name) in &artists {
+            for (artist_provider_id, artist_name) in &artists {
                 if let Ok(artist_db_id) = client.get_or_create_artist(db, artist_name).await {
                     let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
                         .bind(artist_db_id)
                         .execute(db)).await;
+                    // L00 (#97): pertenencia de la colección artista para
+                    // las pistas ya conocidas del artista (todos los roles).
+                    let _ = crate::db::write_or_log(
+                        "perform_sync_service_with_emitter_inner",
+                        crate::services::library_membership::record_artist_memberships(
+                            db,
+                            account_id,
+                            artist_db_id,
+                            Some(artist_provider_id.as_str()),
+                        ),
+                    )
+                    .await;
                     arm.favorite_artists_total += 1;
                 }
             }
@@ -4034,7 +4180,14 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                 )
                 .await
                 {
-                    Ok(id) => Some((id,)),
+                    Ok(Some(id)) => Some((id,)),
+                    Ok(None) => {
+                        tracing::debug!(
+                            "Deezer playlist '{}' tombstoneada; el sync la salta",
+                            pl.title
+                        );
+                        None
+                    }
                     Err(e) => {
                         arm.errors.push(format!(
                             "Deezer playlist '{}' upsert failed: {}",
@@ -4121,6 +4274,26 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                                 .execute(db)).await;
                                 arm.persistence_ms += t_pl_track.elapsed().as_millis() as u64;
                                 arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                                // L00 (#97): pertenencia de la colección
+                                // playlist con su id local y el ítem del
+                                // proveedor (la API pública de Deezer no
+                                // trae added_at).
+                                let _ = crate::db::write_or_log(
+                                    "perform_sync_service_with_emitter_inner",
+                                    crate::services::library_membership::record_membership(
+                                        db,
+                                        &crate::services::library_membership::MembershipWrite {
+                                            account_id,
+                                            track_id: res.track_id,
+                                            collection:
+                                                crate::services::library_membership::MembershipCollection::Playlist,
+                                            collection_id: Some(p_id),
+                                            provider_item: Some(track.id.clone()),
+                                            added_at: None,
+                                        },
+                                    ),
+                                )
+                                .await;
                                 arm.tracks_processed += 1;
                                 if res.is_new_global_track {
                                     arm.tracks_new_global += 1;
@@ -4284,6 +4457,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                             service_name: "spotify".to_string(),
                             service_id: spotify_service_id,
                             account_id,
+                            include_appearances: prefs.include_appearances,
                             is_favorite: true,
                             is_purchased: false,
                             format: Some("OGG".to_string()),
@@ -4458,6 +4632,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                     service_name: "spotify".to_string(),
                                     service_id: spotify_service_id,
                                     account_id,
+                                    include_appearances: prefs.include_appearances,
                                     is_favorite: false,
                                     is_purchased: false,
                                     format: Some("OGG".to_string()),
@@ -4588,7 +4763,14 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                         )
                         .await
                         {
-                            Ok(id) => Some((id,)),
+                            Ok(Some(id)) => Some((id,)),
+                            Ok(None) => {
+                                tracing::debug!(
+                                    "Spotify playlist '{}' tombstoneada; el sync la salta",
+                                    pl.name
+                                );
+                                None
+                            }
                             Err(e) => {
                                 tracing::warn!(
                                     "Failed to upsert Spotify playlist '{}': {}",
@@ -4688,6 +4870,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                             service_name: "spotify".to_string(),
                                             service_id: spotify_service_id,
                                             account_id,
+                                            include_appearances: prefs.include_appearances,
                                             is_favorite: false,
                                             is_purchased: false,
                                             format: Some("OGG".to_string()),
@@ -4726,6 +4909,26 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                             .execute(db)).await;
                                             arm.persistence_ms +=
                                                 t_pl_track.elapsed().as_millis() as u64;
+                                            // L00 (#97): pertenencia de la
+                                            // colección playlist con su id
+                                            // local, el ítem del proveedor y
+                                            // el added_at crudo de Spotify.
+                                            let _ = crate::db::write_or_log(
+                                                "perform_sync_service_with_emitter_inner",
+                                                crate::services::library_membership::record_membership(
+                                                    db,
+                                                    &crate::services::library_membership::MembershipWrite {
+                                                        account_id,
+                                                        track_id: res.track_id,
+                                                        collection:
+                                                            crate::services::library_membership::MembershipCollection::Playlist,
+                                                        collection_id: Some(p_id),
+                                                        provider_item: Some(track.id.clone()),
+                                                        added_at: item.added_at.clone(),
+                                                    },
+                                                ),
+                                            )
+                                            .await;
                                             arm.tracks_processed += 1;
 
                                             if res.is_new_global_track {
@@ -4891,6 +5094,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                         service_name: "spotify".to_string(),
                                         service_id: spotify_service_id,
                                         account_id,
+                                        include_appearances: prefs.include_appearances,
                                         is_favorite: false,
                                         is_purchased: false,
                                         format: Some("OGG_VORBIS".to_string()),
@@ -4972,6 +5176,18 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                 .bind(&art.id)
                                 .bind(aid)
                                 .execute(db)).await;
+                            // L00 (#97): pertenencia de la colección artista
+                            // para las pistas ya conocidas del artista.
+                            let _ = crate::db::write_or_log(
+                                "perform_sync_service_with_emitter_inner",
+                                crate::services::library_membership::record_artist_memberships(
+                                    db,
+                                    account_id,
+                                    aid,
+                                    Some(&art.id),
+                                ),
+                            )
+                            .await;
                         }
                         arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
                     }
@@ -5161,6 +5377,7 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                             service_name: "tidal".to_string(),
                             service_id: tidal_service_id,
                             account_id,
+                            include_appearances: prefs.include_appearances,
                             is_favorite: true,
                             is_purchased: false,
                             // FIX 2026-08-25 (matriz de metadatos): calidad
@@ -5493,6 +5710,7 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                                                 service_name: "tidal".to_string(),
                                                 service_id: tidal_service_id,
                                                 account_id,
+                                                include_appearances: prefs.include_appearances,
                                                 is_favorite: false,
                                                 is_purchased: false,
                                                 format: Some("FLAC".to_string()),
@@ -5737,7 +5955,14 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                         )
                         .await
                         {
-                            Ok(id) => Some((id,)),
+                            Ok(Some(id)) => Some((id,)),
+                            Ok(None) => {
+                                tracing::debug!(
+                                    "Tidal playlist '{}' tombstoneada; el sync la salta",
+                                    pl.title
+                                );
+                                None
+                            }
                             Err(e) => {
                                 tracing::warn!(
                                     "Failed to upsert Tidal playlist '{}': {}",
@@ -5815,6 +6040,7 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                                                 service_name: "tidal".to_string(),
                                                 service_id: tidal_service_id,
                                                 account_id,
+                                                include_appearances: prefs.include_appearances,
                                                 is_favorite: false,
                                                 is_purchased: false,
                                                 format: Some("FLAC".to_string()),
@@ -5860,6 +6086,27 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                                                     .execute(db)).await;
                                                     arm.persistence_ms +=
                                                         t_pl_track.elapsed().as_millis() as u64;
+                                                    // L00 (#97): pertenencia de
+                                                    // la colección playlist con
+                                                    // su id local y el ítem del
+                                                    // proveedor (Tidal no trae
+                                                    // added_at por ítem).
+                                                    let _ = crate::db::write_or_log(
+                                                        "perform_sync_service_with_emitter_inner",
+                                                        crate::services::library_membership::record_membership(
+                                                            db,
+                                                            &crate::services::library_membership::MembershipWrite {
+                                                                account_id,
+                                                                track_id: res.track_id,
+                                                                collection:
+                                                                    crate::services::library_membership::MembershipCollection::Playlist,
+                                                                collection_id: Some(p_id),
+                                                                provider_item: Some(track.id.to_string()),
+                                                                added_at: None,
+                                                            },
+                                                        ),
+                                                    )
+                                                    .await;
 
                                                     if res.is_new_global_track {
                                                         arm.tracks_new_global += 1;
@@ -6042,6 +6289,18 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                                 .bind(&tidal_id_str)
                                 .bind(aid)
                                 .execute(db)).await;
+                            // L00 (#97): pertenencia de la colección artista
+                            // para las pistas ya conocidas del artista.
+                            let _ = crate::db::write_or_log(
+                                "perform_sync_service_with_emitter_inner",
+                                crate::services::library_membership::record_artist_memberships(
+                                    db,
+                                    account_id,
+                                    aid,
+                                    Some(&tidal_id_str),
+                                ),
+                            )
+                            .await;
                         }
                         arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
                     }
@@ -6106,6 +6365,279 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
     Ok(())
 }
 
+/// Resultado de la fase de favoritos del brazo Qobuz (issue #65).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum QobuzFavoritesOutcome {
+    /// Recorrido completo, con o sin huecos ya registrados en `arm.errors`.
+    Completed,
+    /// Cancelación atendida en el límite de página: lo importado se conserva.
+    Cancelled,
+    /// 401/403: la credencial quedó marcada inválida y la cuenta falla sola
+    /// (decisión 20 del ADR-0006). El mensaje viaja para el estado de la fila.
+    AuthFailed(String),
+}
+
+/// Fase de favoritos del brazo Qobuz, extraída del orquestador (issue #65).
+///
+/// El recorrido pasa por la interfaz `LibrarySource` (seam 2 del contrato
+/// ADR-0006): la paginación la declara el adaptador y aquí solo se decide el
+/// recorrido. El brazo del orquestador la llama con `cancel: None` —
+/// comportamiento idéntico al anterior, vigilado por la caracterización de
+/// PR #298 (`qobuz_sync_arm_simulated_provider_test`)— y el job de `SyncRun`
+/// la llama con la bandera de cancelación, que se atiende en el límite de
+/// página: la página en curso se completa y la siguiente no se pide.
+pub(crate) async fn sync_qobuz_favorites_phase<S, E>(
+    db: &sqlx::SqlitePool,
+    service_normalized: &str,
+    account_id: i64,
+    qobuz_service_id: i64,
+    source: &S,
+    prefs: &ImportPreferences,
+    emitter: Option<&E>,
+    enrichment_engine: &crate::services::enrichment::EnrichmentEngine,
+    arm: &mut SyncOutcome,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<QobuzFavoritesOutcome, String>
+where
+    S: crate::sync::LibrarySource,
+    E: SyncProgressEmitter,
+{
+    let emit = |event: SyncProgressEvent| {
+        if let Some(e) = emitter {
+            e.emit_sync_progress(&event);
+        }
+    };
+
+    emit(SyncProgressEvent::running(
+        service_normalized,
+        Some(account_id),
+        "fetching_favorite_tracks",
+        0,
+        None,
+        "Importing favorite tracks...",
+        arm.imported_tracks_total,
+        arm.favorite_tracks_total,
+    ));
+
+    let mut offset = 0i64;
+    let limit = source.favorites_page_size();
+    loop {
+        // Cancelación en el límite de página: la página anterior quedó
+        // completa y la siguiente no se pide (regla derivada del ADR-0006).
+        if let Some(flag) = cancel {
+            if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                return Ok(QobuzFavoritesOutcome::Cancelled);
+            }
+        }
+        let t_api = std::time::Instant::now();
+        match crate::sync::source::retry_source_page(|| source.fetch_favorites_page(offset)).await {
+            Ok(page) => {
+                arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+                let page_total = page.reported_total.map(|t| t as u64);
+                arm.reported_favorites = page.reported_total;
+                record_account_import_count(
+                    db,
+                    account_id,
+                    "favorites",
+                    page.reported_total,
+                    arm.favorite_tracks_total as i64,
+                    "partial",
+                )
+                .await?;
+                if page.items.is_empty() {
+                    break;
+                }
+                for item in &page.items {
+                    let track: crate::services::qobuz::QobuzTrack =
+                        match serde_json::from_value(item.clone()) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                arm.errors
+                                    .push(format!("Qobuz favorites item decode error: {}", e));
+                                continue;
+                            }
+                        };
+                    let artist_name = track
+                        .performer
+                        .as_ref()
+                        .and_then(|a| a.name.clone())
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    let album_title = track.album.as_ref().and_then(|a| a.title.clone());
+                    let album_cover = track.album.as_ref().and_then(|a| {
+                        a.image
+                            .as_ref()
+                            .and_then(|img| img.large.clone().or_else(|| img.small.clone()))
+                    });
+                    let (release_date_val, release_year_val) =
+                        match track.album.as_ref().and_then(|a| a.released_at) {
+                            Some(ts) => {
+                                let date_str = chrono::DateTime::from_timestamp(ts, 0)
+                                    .map(|dt| dt.format("%Y-%m-%d").to_string());
+                                let year_str = chrono::DateTime::from_timestamp(ts, 0)
+                                    .map(|dt| dt.format("%Y").to_string());
+                                (date_str, year_str)
+                            }
+                            None => (None, None),
+                        };
+                    let quality_score = crate::services::qobuz::compute_track_quality_score(&track);
+
+                    let sync_input =
+                        crate::services::enrichment::SyncTrackInput {
+                            origin_meta: crate::services::enrichment::OriginTrackMetadata {
+                                title: track.title.clone(),
+                                artist: Some(artist_name),
+                                album: album_title,
+                                album_artist: track.album.as_ref().and_then(|a| {
+                                    a.artist.as_ref().and_then(|art| art.name.clone())
+                                }),
+                                composer: track.composer.as_ref().and_then(|c| c.name.clone()),
+                                performers: track.performers.clone().or_else(|| {
+                                    track.performer.as_ref().and_then(|p| p.name.clone())
+                                }),
+                                track_number: track.track_number.map(|tn| tn as u32),
+                                track_total: track
+                                    .album
+                                    .as_ref()
+                                    .and_then(|a| a.tracks.as_ref())
+                                    .map(|c| c.total as u32),
+                                disc_number: track.media_number.map(|dn| dn as u32),
+                                isrc: track.isrc.clone(),
+                                barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
+                                label: track
+                                    .album
+                                    .as_ref()
+                                    .and_then(|a| a.label.as_ref().and_then(|l| l.name.clone())),
+                                release_date: release_date_val,
+                                release_year: release_year_val,
+                                release_country: None,
+                                genre: track.album.as_ref().and_then(|a| a.genre_name()),
+                                explicit: None,
+                                source_name: "qobuz".to_string(),
+                                ..Default::default()
+                            },
+                            service_track_id: track.id.to_string(),
+                            service_name: "qobuz".to_string(),
+                            service_id: qobuz_service_id,
+                            account_id,
+                            include_appearances: prefs.include_appearances,
+                            is_favorite: true,
+                            is_purchased: false,
+                            format: Some("FLAC".to_string()),
+                            bit_depth: track.maximum_bit_depth,
+                            sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
+                            quality_score: Some(quality_score),
+                            audio_quality: Some(
+                                classify_audio_tier(
+                                    track.maximum_bit_depth,
+                                    track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
+                                    None,
+                                    Some("FLAC"),
+                                )
+                                .as_str()
+                                .to_string(),
+                            ),
+                            cover_art_url: album_cover,
+                            duration_ms: Some(track.duration * 1000),
+                            query_musicbrainz: false,
+                            album_is_favorite: false,
+                            album_provider_track_id: None,
+                        };
+
+                    let t_enrich = std::time::Instant::now();
+                    match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input).await
+                    {
+                        Ok(res) => {
+                            arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
+                            arm.tracks_processed += 1;
+                            if res.is_new_global_track {
+                                arm.tracks_new_global += 1;
+                            }
+                            if res.is_new_source_for_service {
+                                arm.sources_new_for_service += 1;
+                            }
+                            if res.is_new_library_entry_for_account {
+                                arm.library_entries_new_for_account += 1;
+                            }
+                            if res.is_already_present {
+                                arm.tracks_already_present += 1;
+                            }
+                            if res.is_new_import {
+                                arm.tracks_changed_unique += 1;
+                                arm.imported_tracks_total += 1;
+                            } else {
+                                arm.skipped_tracks_total += 1;
+                            }
+                            arm.favorite_tracks_total += 1;
+                            arm.availability_checked += 1;
+                            arm.record_metadata(res.completeness);
+                        }
+                        Err(e) => {
+                            arm.errors
+                                .push(format!("Qobuz track error for {}: {}", track.id, e));
+                        }
+                    }
+
+                    emit(SyncProgressEvent::running(
+                        service_normalized,
+                        Some(account_id),
+                        "importing_favorite_tracks",
+                        arm.favorite_tracks_total,
+                        page_total,
+                        format!(
+                            "Importing favorite tracks ({}/{})",
+                            arm.favorite_tracks_total,
+                            page_total.unwrap_or(0)
+                        ),
+                        arm.imported_tracks_total,
+                        arm.favorite_tracks_total,
+                    ));
+                }
+                offset += limit;
+                if page.items.len() < limit as usize {
+                    break;
+                }
+            }
+            Err(e) => {
+                record_account_import_count(
+                    db,
+                    account_id,
+                    "favorites",
+                    arm.reported_favorites,
+                    arm.favorite_tracks_total as i64,
+                    "error",
+                )
+                .await?;
+                if e.kind == crate::sync::SourceErrorKind::AuthExpired {
+                    tracing::warn!("[perform_sync_service/qobuz] 401 on favorites — marking credentials invalid");
+                    // A03-ter (#342): puerta única reactivo (decisión 14).
+                    sync_reactive_credential_rejection(
+                        db,
+                        "qobuz",
+                        account_id,
+                        401,
+                        "HTTP 401: User authentication required",
+                    )
+                    .await;
+                    let err_msg = format!(
+                        "RequiresAuth: Qobuz session rejected (401) while fetching favorites: {}",
+                        e
+                    );
+                    emit(SyncProgressEvent::requires_auth(
+                        service_normalized,
+                        Some(account_id),
+                        &err_msg,
+                    ));
+                    return Ok(QobuzFavoritesOutcome::AuthFailed(err_msg));
+                }
+                arm.errors.push(format!("Qobuz favorites error: {}", e));
+                break;
+            }
+        }
+    }
+
+    Ok(QobuzFavoritesOutcome::Completed)
+}
+
 /// Brazo Qobuz del sync: el más grande y el que más expansiones de entidad abre
 /// (álbumes, artistas, compras y playlists) sobre el motor compartido.
 #[allow(clippy::too_many_arguments)]
@@ -6160,213 +6692,33 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
         }
     };
 
-    // Phase 1: Favorite Tracks
+    // Phase 1: Favorite Tracks — ahora por la interfaz LibrarySource
+    // (seam 2 del contrato ADR-0006). El comportamiento sin cancelación es
+    // idéntico al del recorrido anterior, vigilado por la caracterización de
+    // PR #298 (`qobuz_sync_arm_simulated_provider_test`).
     if prefs.favorite_tracks {
-        emit(SyncProgressEvent::running(
-            &service_normalized,
-            Some(account_id),
-            "fetching_favorite_tracks",
-            0,
+        let favorites_source = crate::sync::QobuzLibrarySource::new(&client);
+        match sync_qobuz_favorites_phase(
+            db,
+            service_normalized,
+            account_id,
+            qobuz_service_id,
+            &favorites_source,
+            prefs,
+            emitter,
+            enrichment_engine,
+            arm,
             None,
-            "Importing favorite tracks...",
-            arm.imported_tracks_total,
-            arm.favorite_tracks_total,
-        ));
-
-        let mut offset = 0;
-        let limit = 50;
-        loop {
-            let t_api = std::time::Instant::now();
-            match qobuz_sync_with_retry(|| client.get_favorites(offset, limit)).await {
-                Ok(page) => {
-                    arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
-                    let page_total = page.tracks.total as u64;
-                    arm.reported_favorites = Some(page_total as i64);
-                    record_account_import_count(
-                        db,
-                        account_id,
-                        "favorites",
-                        Some(page_total as i64),
-                        arm.favorite_tracks_total as i64,
-                        "partial",
-                    )
-                    .await?;
-                    if page.tracks.items.is_empty() {
-                        break;
-                    }
-                    for track in &page.tracks.items {
-                        let artist_name = track
-                            .performer
-                            .as_ref()
-                            .and_then(|a| a.name.clone())
-                            .unwrap_or_else(|| "Unknown".to_string());
-                        let album_title = track.album.as_ref().and_then(|a| a.title.clone());
-                        let album_cover = track.album.as_ref().and_then(|a| {
-                            a.image
-                                .as_ref()
-                                .and_then(|img| img.large.clone().or_else(|| img.small.clone()))
-                        });
-                        let (release_date_val, release_year_val) =
-                            match track.album.as_ref().and_then(|a| a.released_at) {
-                                Some(ts) => {
-                                    let date_str = chrono::DateTime::from_timestamp(ts, 0)
-                                        .map(|dt| dt.format("%Y-%m-%d").to_string());
-                                    let year_str = chrono::DateTime::from_timestamp(ts, 0)
-                                        .map(|dt| dt.format("%Y").to_string());
-                                    (date_str, year_str)
-                                }
-                                None => (None, None),
-                            };
-                        let quality_score = client.compute_quality_score(track);
-
-                        let sync_input = crate::services::enrichment::SyncTrackInput {
-                            origin_meta: crate::services::enrichment::OriginTrackMetadata {
-                                title: track.title.clone(),
-                                artist: Some(artist_name),
-                                album: album_title,
-                                album_artist: track.album.as_ref().and_then(|a| {
-                                    a.artist.as_ref().and_then(|art| art.name.clone())
-                                }),
-                                composer: track.composer.as_ref().and_then(|c| c.name.clone()),
-                                performers: track.performers.clone().or_else(|| {
-                                    track.performer.as_ref().and_then(|p| p.name.clone())
-                                }),
-                                track_number: track.track_number.map(|tn| tn as u32),
-                                track_total: track
-                                    .album
-                                    .as_ref()
-                                    .and_then(|a| a.tracks.as_ref())
-                                    .map(|c| c.total as u32),
-                                disc_number: track.media_number.map(|dn| dn as u32),
-                                isrc: track.isrc.clone(),
-                                barcode: track.album.as_ref().and_then(|a| a.upc.clone()),
-                                label: track
-                                    .album
-                                    .as_ref()
-                                    .and_then(|a| a.label.as_ref().and_then(|l| l.name.clone())),
-                                release_date: release_date_val,
-                                release_year: release_year_val,
-                                release_country: None,
-                                genre: track.album.as_ref().and_then(|a| a.genre_name()),
-                                explicit: None,
-                                source_name: "qobuz".to_string(),
-                                ..Default::default()
-                            },
-                            service_track_id: track.id.to_string(),
-                            service_name: "qobuz".to_string(),
-                            service_id: qobuz_service_id,
-                            account_id,
-                            is_favorite: true,
-                            is_purchased: false,
-                            format: Some("FLAC".to_string()),
-                            bit_depth: track.maximum_bit_depth,
-                            sample_rate: track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
-                            quality_score: Some(quality_score),
-                            audio_quality: Some(
-                                classify_audio_tier(
-                                    track.maximum_bit_depth,
-                                    track.maximum_sampling_rate.map(|r| (r * 1000.0) as i32),
-                                    None,
-                                    Some("FLAC"),
-                                )
-                                .as_str()
-                                .to_string(),
-                            ),
-                            cover_art_url: album_cover,
-                            duration_ms: Some(track.duration * 1000),
-                            query_musicbrainz: false,
-                            album_is_favorite: false,
-                            album_provider_track_id: None,
-                        };
-
-                        let t_enrich = std::time::Instant::now();
-                        match enrich_persist_with_locked_retry(&enrichment_engine, db, sync_input)
-                            .await
-                        {
-                            Ok(res) => {
-                                arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
-                                arm.tracks_processed += 1;
-                                if res.is_new_global_track {
-                                    arm.tracks_new_global += 1;
-                                }
-                                if res.is_new_source_for_service {
-                                    arm.sources_new_for_service += 1;
-                                }
-                                if res.is_new_library_entry_for_account {
-                                    arm.library_entries_new_for_account += 1;
-                                }
-                                if res.is_already_present {
-                                    arm.tracks_already_present += 1;
-                                }
-                                if res.is_new_import {
-                                    arm.tracks_changed_unique += 1;
-                                    arm.imported_tracks_total += 1;
-                                } else {
-                                    arm.skipped_tracks_total += 1;
-                                }
-                                arm.favorite_tracks_total += 1;
-                                arm.availability_checked += 1;
-                                arm.record_metadata(res.completeness);
-                            }
-                            Err(e) => {
-                                arm.errors
-                                    .push(format!("Qobuz track error for {}: {}", track.id, e));
-                            }
-                        }
-
-                        emit(SyncProgressEvent::running(
-                            &service_normalized,
-                            Some(account_id),
-                            "importing_favorite_tracks",
-                            arm.favorite_tracks_total,
-                            Some(page_total),
-                            format!(
-                                "Importing favorite tracks ({}/{})",
-                                arm.favorite_tracks_total, page_total
-                            ),
-                            arm.imported_tracks_total,
-                            arm.favorite_tracks_total,
-                        ));
-                    }
-                    offset += limit;
-                    if page.tracks.items.len() < limit as usize {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    record_account_import_count(
-                        db,
-                        account_id,
-                        "favorites",
-                        arm.reported_favorites,
-                        arm.favorite_tracks_total as i64,
-                        "error",
-                    )
-                    .await?;
-                    if is_qobuz_auth_error(&e) {
-                        tracing::warn!("[perform_sync_service/qobuz] 401 on favorites — marking credentials invalid");
-                        let _ = mark_account_credentials_invalid(
-                            db,
-                            "qobuz",
-                            "HTTP 401: User authentication required",
-                            Some(account_id),
-                        )
-                        .await;
-                        let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorites: {}", e);
-                        emit(SyncProgressEvent::requires_auth(
-                            &service_normalized,
-                            Some(account_id),
-                            &err_msg,
-                        ));
-                        return Err(err_msg);
-                    }
-                    arm.errors.push(format!("Qobuz favorites error: {}", e));
-                    break;
-                }
-            }
+        )
+        .await?
+        {
+            QobuzFavoritesOutcome::Completed => {}
+            // Sin bandera de cancelación esta fase no puede devolver
+            // Cancelled; por simetría de tipos se trata como cierre normal.
+            QobuzFavoritesOutcome::Cancelled => {}
+            QobuzFavoritesOutcome::AuthFailed(err_msg) => return Err(err_msg),
         }
     }
-
     // Phase 2: Favorite Albums
     if prefs.favorite_albums {
         emit(SyncProgressEvent::running(
@@ -6537,6 +6889,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                     service_name: "qobuz".to_string(),
                                     service_id: qobuz_service_id,
                                     account_id,
+                                    include_appearances: prefs.include_appearances,
                                     is_favorite: false,
                                     is_purchased: false,
                                     format: Some("FLAC".to_string()),
@@ -6620,11 +6973,13 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                 Err(e) => {
                     if is_qobuz_auth_error(&e) {
                         tracing::warn!("[perform_sync_service/qobuz] 401 on favorite albums — marking credentials invalid");
-                        let _ = mark_account_credentials_invalid(
+                        // A03-ter (#342): puerta única reactivo (decisión 14).
+                        sync_reactive_credential_rejection(
                             db,
                             "qobuz",
+                            account_id,
+                            401,
                             "HTTP 401: User authentication required",
-                            Some(account_id),
                         )
                         .await;
                         let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorite albums: {}", e);
@@ -6808,6 +7163,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                     service_name: "qobuz".to_string(),
                                     service_id: qobuz_service_id,
                                     account_id,
+                                    include_appearances: prefs.include_appearances,
                                     is_favorite: false,
                                     is_purchased: true,
                                     format: Some("FLAC".to_string()),
@@ -6883,11 +7239,13 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                 Err(e) => {
                     if is_qobuz_auth_error(&e) {
                         tracing::warn!("[perform_sync_service/qobuz] 401 on purchases — marking credentials invalid");
-                        let _ = mark_account_credentials_invalid(
+                        // A03-ter (#342): puerta única reactivo (decisión 14).
+                        sync_reactive_credential_rejection(
                             db,
                             "qobuz",
+                            account_id,
+                            401,
                             "HTTP 401: User authentication required",
-                            Some(account_id),
                         )
                         .await;
                         let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching purchases: {}", e);
@@ -6964,7 +7322,14 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                         )
                         .await
                         {
-                            Ok(id) => Some((id,)),
+                            Ok(Some(id)) => Some((id,)),
+                            Ok(None) => {
+                                tracing::debug!(
+                                    "Qobuz playlist '{}' tombstoneada; el sync la salta",
+                                    pl.name
+                                );
+                                None
+                            }
                             Err(e) => {
                                 tracing::warn!(
                                     "Failed to upsert Qobuz playlist '{}': {}",
@@ -7114,6 +7479,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                         service_name: "qobuz".to_string(),
                                         service_id: qobuz_service_id,
                                         account_id,
+                                        include_appearances: prefs.include_appearances,
                                         is_favorite: false,
                                         is_purchased: false,
                                         format: Some("FLAC".to_string()),
@@ -7160,6 +7526,26 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                         .execute(db)).await;
                                         arm.persistence_ms +=
                                             t_pl_track.elapsed().as_millis() as u64;
+                                        // L00 (#97): pertenencia de la
+                                        // colección playlist con su id local
+                                        // y el ítem del proveedor (Qobuz no
+                                        // trae added_at por ítem).
+                                        let _ = crate::db::write_or_log(
+                                            "perform_sync_service_with_emitter_inner",
+                                            crate::services::library_membership::record_membership(
+                                                db,
+                                                &crate::services::library_membership::MembershipWrite {
+                                                    account_id,
+                                                    track_id: res.track_id,
+                                                    collection:
+                                                        crate::services::library_membership::MembershipCollection::Playlist,
+                                                    collection_id: Some(p_id),
+                                                    provider_item: Some(track.id.to_string()),
+                                                    added_at: None,
+                                                },
+                                            ),
+                                        )
+                                        .await;
 
                                         if res.is_new_global_track {
                                             arm.tracks_new_global += 1;
@@ -7216,11 +7602,13 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                 Err(e) => {
                     if is_qobuz_auth_error(&e) {
                         tracing::warn!("[perform_sync_service/qobuz] 401 on playlists — marking credentials invalid");
-                        let _ = mark_account_credentials_invalid(
+                        // A03-ter (#342): puerta única reactivo (decisión 14).
+                        sync_reactive_credential_rejection(
                             db,
                             "qobuz",
+                            account_id,
+                            401,
                             "HTTP 401: User authentication required",
-                            Some(account_id),
                         )
                         .await;
                         let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching playlists: {}", e);
@@ -7282,6 +7670,19 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                 let _ = crate::db::write_or_log("perform_sync_service_with_emitter_inner", sqlx::query("UPDATE artists SET is_favorite = 1, favorite_at = COALESCE(favorite_at, CURRENT_TIMESTAMP) WHERE id = ?")
                                     .bind(aid)
                                     .execute(db)).await;
+                                // L00 (#97): pertenencia de la colección
+                                // artista para las pistas ya conocidas del
+                                // artista, con el ítem del proveedor.
+                                let _ = crate::db::write_or_log(
+                                    "perform_sync_service_with_emitter_inner",
+                                    crate::services::library_membership::record_artist_memberships(
+                                        db,
+                                        account_id,
+                                        aid,
+                                        art.id.as_ref().map(|id| id.to_string()).as_deref(),
+                                    ),
+                                )
+                                .await;
                             }
                             arm.persistence_ms += t_pers.elapsed().as_millis() as u64;
                         }
@@ -7294,11 +7695,13 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                 Err(e) => {
                     if is_qobuz_auth_error(&e) {
                         tracing::warn!("[perform_sync_service/qobuz] 401 on favorite artists — marking credentials invalid");
-                        let _ = mark_account_credentials_invalid(
+                        // A03-ter (#342): puerta única reactivo (decisión 14).
+                        sync_reactive_credential_rejection(
                             db,
                             "qobuz",
+                            account_id,
+                            401,
                             "HTTP 401: User authentication required",
-                            Some(account_id),
                         )
                         .await;
                         let err_msg = format!("RequiresAuth: Qobuz session rejected (401) while fetching favorite artists: {}", e);
@@ -7357,6 +7760,16 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
     // paralelo. Ver `resolve_effective_account_id` para el TOCTOU documentado.
     let effective_account =
         resolve_effective_account_id(db, &service_normalized, account_id_opt).await?;
+
+    // #85 ciclo de vida (ADR-0007 decisión 3): una cuenta desactivada o
+    // archivada no sincroniza. Gate explícito sobre la cuenta pedida (el camino
+    // legacy ya la excluye vía `is_active = 0` que aplica
+    // perform_set_account_state) para que el sync por cuenta concreta falle con
+    // un motivo legible y no con un "not connected" ambiguo.
+    if account_id_opt.is_some() {
+        crate::commands::accounts::ensure_account_can_sync(db, effective_account).await?;
+    }
+
     let _sync_writer_guard =
         crate::db::SyncWriterLock::acquire(db, &service_normalized, effective_account)
             .await
@@ -8377,6 +8790,8 @@ mod service_tests {
                 is_public INTEGER DEFAULT 0,
                 track_count INTEGER DEFAULT 0,
                 last_synced TEXT,
+                local_uuid TEXT,
+                deleted_at TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 owner_name TEXT,
                 owner_id TEXT,
@@ -8425,7 +8840,8 @@ mod service_tests {
             50,
         )
         .await
-        .expect("Initial upsert failed");
+        .expect("Initial upsert failed")
+        .expect("Initial upsert returned None (tombstoned)");
 
         assert!(pid1 > 0);
 
@@ -8457,7 +8873,8 @@ mod service_tests {
             55,
         )
         .await
-        .expect("Re-import upsert failed");
+        .expect("Re-import upsert failed")
+        .expect("Re-import upsert returned None (tombstoned)");
 
         assert_eq!(
             pid1, pid_reimport,
@@ -8478,7 +8895,8 @@ mod service_tests {
             30,
         )
         .await
-        .expect("Second upsert failed");
+        .expect("Second upsert failed")
+        .expect("Second upsert returned None (tombstoned)");
 
         assert_ne!(pid1, pid2, "Should NOT reuse existing playlist ID when service_playlist_id differs (prevents collision/absorption)");
 
@@ -8832,7 +9250,6 @@ mod sync_arm_contracts {
             purchases: false,
             library_history: false,
             include_appearances: false,
-            incremental_sync: false,
             force_retry_unavailable: false,
         }
     }
@@ -9035,5 +9452,477 @@ mod sync_arm_contracts {
             error,
             "RequiresAuth: SoundCloud user_id missing from stored credentials"
         );
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // A03-ter (#342): caracterización de `get_or_refresh_spotify_token`.
+    // Fija el comportamiento ANTES de sustituir el cuerpo ad-hoc por la
+    // puerta de `account_refresh` (ADR-0007 decisión 14). Sin red: la rama de
+    // red real no es caracterizable offline; el wire format del refresco ya
+    // lo espeja `spotify_refresh_payload` en `account_refresh.rs`.
+    // ═════════════════════════════════════════════════════════════════════
+
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// Clave falsa del binario de pruebas unitarias (mismo patrón que
+    /// `account_profiles.rs` / `download/tidal.rs`): el cifrado global queda
+    /// inicializado una vez por proceso y los tests cifran y descifran con la
+    /// MISMA clave global, sea quien sea quien la fijara.
+    fn characterization_crypto() {
+        let _ = crate::crypto::init_crypto([42u8; 32]);
+    }
+
+    async fn characterization_db() -> sqlx::SqlitePool {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        db
+    }
+
+    async fn insert_spotify_account(db: &sqlx::SqlitePool, creds: &serde_json::Value) -> i64 {
+        insert_service_account(db, "spotify", creds).await
+    }
+
+    async fn insert_service_account(
+        db: &sqlx::SqlitePool,
+        service: &str,
+        creds: &serde_json::Value,
+    ) -> i64 {
+        let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = ?")
+            .bind(service)
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let encrypted = crate::crypto::encrypt(&creds.to_string()).unwrap();
+        sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, display_name, email, is_active, credentials_json) \
+             VALUES (?, 'Caracterización', 'char@test.invalid', 1, ?) RETURNING id",
+        )
+        .bind(service_id)
+        .bind(&encrypted)
+        .fetch_one(db)
+        .await
+        .unwrap()
+    }
+
+    /// Camino dominante: token con vencimiento lejano se devuelve tal cual y
+    /// NO toca la fila (ni re-cifra ni toca marcas).
+    #[tokio::test]
+    async fn spotify_token_fresco_se_devuelve_tal_cual_sin_escribir() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "token-vigente",
+            "refresh_token": "rt",
+            "expires_at": now + 3600,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+        let stored_before: String =
+            sqlx::query_scalar("SELECT credentials_json FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+
+        let token = get_or_refresh_spotify_token(&db, account_id, &creds)
+            .await
+            .expect("token vigente se devuelve sin refresco");
+
+        assert_eq!(token, "token-vigente");
+        let stored_after: String =
+            sqlx::query_scalar("SELECT credentials_json FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(stored_before, stored_after, "la fila no se toca");
+        let invalid: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(invalid, 0);
+    }
+
+    /// Token vencido sin `refresh_token`: el refresco es imposible y, desde la
+    /// adopción de la puerta (A03-ter #342), marca reautenticación — el cuerpo
+    /// ad-hoc caracterizado en el hito 1 fallaba SIN marcar; la decisión 14
+    /// pide lo contrario («un refresco imposible marca reautenticación y no
+    /// entra en bucle»), así que esta aserción cambió a propósito. El
+    /// transporte de producción no llega a la red: sin `refresh_token` el
+    /// intento muere en `NotRefreshable`.
+    #[tokio::test]
+    async fn spotify_token_vencido_sin_refresh_token_marca_reautenticacion() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "token-muerto",
+            "expires_at": now - 100,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+
+        let error = get_or_refresh_spotify_token(&db, account_id, &creds)
+            .await
+            .expect_err("sin refresh_token no hay refresco posible");
+
+        assert!(
+            error.contains("provider rejected the credential refresh"),
+            "llegó: {error}"
+        );
+        let invalid: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            invalid, 1,
+            "decisión 14: un refresco imposible marca reautenticación"
+        );
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // A03-ter (#342): la puerta única en los dos puntos del sync — Spotify
+    // (`get_or_refresh_spotify_token`) y el reactivo del brazo Qobuz
+    // (`sync_reactive_credential_rejection`). Transporte falso contando
+    // llamadas y vencimientos relativos al reloj real: cero red, cero bucle.
+    // ═════════════════════════════════════════════════════════════════════
+
+    struct GateTransport {
+        outcome: Result<serde_json::Value, crate::commands::account_refresh::RefreshError>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl GateTransport {
+        fn ok(payload: serde_json::Value) -> Self {
+            Self {
+                outcome: Ok(payload),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn err(error: crate::commands::account_refresh::RefreshError) -> Self {
+            Self {
+                outcome: Err(error),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl crate::commands::account_refresh::CredentialRefreshTransport for GateTransport {
+        fn refresh<'a>(
+            &'a self,
+            _db: &'a sqlx::SqlitePool,
+            _service: &'a str,
+            _account_id: i64,
+            _creds: &'a serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            serde_json::Value,
+                            crate::commands::account_refresh::RefreshError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.outcome.clone()
+            })
+        }
+    }
+
+    async fn stored_creds_json(db: &sqlx::SqlitePool, account_id: i64) -> serde_json::Value {
+        let encrypted: String =
+            sqlx::query_scalar("SELECT credentials_json FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(db)
+                .await
+                .unwrap();
+        let plain = crate::crypto::decrypt(&encrypted).unwrap();
+        serde_json::from_str(&plain).unwrap()
+    }
+
+    async fn is_marked(db: &sqlx::SqlitePool, account_id: i64) -> bool {
+        let invalid: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_one(db)
+        .await
+        .unwrap();
+        invalid != 0
+    }
+
+    /// Con vencimiento vencido la puerta refresca ANTES de usar la credencial:
+    /// token nuevo devuelto y persistido en la MISMA fila, una sola llamada.
+    #[tokio::test]
+    async fn puerta_spotify_refresca_vencido_antes_de_usar() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "viejo",
+            "refresh_token": "rt",
+            "expires_at": now - 100,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+        let transport = GateTransport::ok(json!({
+            "access_token": "nuevo",
+            "refresh_token": "rt",
+            "expires_at": now + 3600,
+        }));
+
+        let token =
+            get_or_refresh_spotify_token_with_transport(&db, account_id, &creds, &transport)
+                .await
+                .expect("refresco proactivo con vencimiento publicado");
+
+        assert_eq!(token, "nuevo");
+        assert_eq!(transport.call_count(), 1);
+        assert_eq!(
+            stored_creds_json(&db, account_id).await["access_token"],
+            "nuevo"
+        );
+        assert!(!is_marked(&db, account_id).await);
+    }
+
+    /// Credencial fresca: la puerta confía y el transporte ni se entera.
+    #[tokio::test]
+    async fn puerta_spotify_fresco_no_llama_al_transporte() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "vigente",
+            "refresh_token": "rt",
+            "expires_at": now + 3600,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+        let transport = GateTransport::ok(json!({ "access_token": "no-debe-persistirse" }));
+
+        let token =
+            get_or_refresh_spotify_token_with_transport(&db, account_id, &creds, &transport)
+                .await
+                .expect("token vigente se devuelve tal cual");
+
+        assert_eq!(token, "vigente");
+        assert_eq!(transport.call_count(), 0);
+        assert!(!is_marked(&db, account_id).await);
+    }
+
+    /// Rechazo del proveedor: la cuenta se marca AHORA y el siguiente intento
+    /// de la puerta no toca el transporte (anti-bucle, decisión 14).
+    #[tokio::test]
+    async fn puerta_spotify_rechazo_marca_y_no_reintenta() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "viejo",
+            "refresh_token": "rt",
+            "expires_at": now - 100,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+        let transport = GateTransport::err(
+            crate::commands::account_refresh::RefreshError::ProviderRejected(
+                "invalid_grant".to_string(),
+            ),
+        );
+
+        let first =
+            get_or_refresh_spotify_token_with_transport(&db, account_id, &creds, &transport)
+                .await
+                .expect_err("el rechazo del proveedor falla");
+        let second =
+            get_or_refresh_spotify_token_with_transport(&db, account_id, &creds, &transport)
+                .await
+                .expect_err("la puerta bloqueada también falla");
+
+        assert!(
+            first.contains("provider rejected the credential refresh"),
+            "llegó: {first}"
+        );
+        assert!(
+            second.contains("provider rejected the credential refresh"),
+            "llegó: {second}"
+        );
+        assert_eq!(transport.call_count(), 1, "sin bucle de reintentos");
+        assert!(is_marked(&db, account_id).await);
+    }
+
+    /// Fallo transitorio: la cuenta queda VÁLIDA (decisión 12) y el error es
+    /// fail-early, igual que en el cuerpo ad-hoc caracterizado.
+    #[tokio::test]
+    async fn puerta_spotify_transitorio_no_marca() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "viejo",
+            "refresh_token": "rt",
+            "expires_at": now - 100,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+        let transport = GateTransport::err(
+            crate::commands::account_refresh::RefreshError::Transient("red caída".to_string()),
+        );
+
+        let error =
+            get_or_refresh_spotify_token_with_transport(&db, account_id, &creds, &transport)
+                .await
+                .expect_err("sin token nuevo el llamador falla temprano");
+
+        assert!(error.contains("transiently"), "llegó: {error}");
+        assert_eq!(transport.call_count(), 1);
+        assert!(!is_marked(&db, account_id).await);
+    }
+
+    /// Cuenta ya marcada: la puerta anti-bucle no recibe ni un intento.
+    #[tokio::test]
+    async fn puerta_spotify_cuenta_marcada_no_recibe_intentos() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let now = crate::commands::account_refresh::now_epoch_secs();
+        let creds = json!({
+            "access_token": "viejo",
+            "refresh_token": "rt",
+            "expires_at": now - 100,
+        });
+        let account_id = insert_spotify_account(&db, &creds).await;
+        sqlx::query("UPDATE accounts SET credentials_invalid = 1 WHERE id = ?")
+            .bind(account_id)
+            .execute(&db)
+            .await
+            .unwrap();
+        let transport = GateTransport::ok(json!({ "access_token": "no-debe-persistirse" }));
+
+        let error =
+            get_or_refresh_spotify_token_with_transport(&db, account_id, &creds, &transport)
+                .await
+                .expect_err("una cuenta marcada no produce token");
+
+        assert!(
+            error.contains("provider rejected the credential refresh"),
+            "llegó: {error}"
+        );
+        assert_eq!(transport.call_count(), 0, "la cuenta ya estaba marcada");
+    }
+
+    /// Reactivo del sync por la puerta: un 401 sobre una credencial sin
+    /// vencimiento publicado dispara UN intento; su rechazo marca y la
+    /// segunda llamada ya no toca el transporte (anti-bucle compartido).
+    #[tokio::test]
+    async fn puerta_reactiva_marca_y_no_reemite() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let creds = json!({ "user_auth_token": "qobuz-token" });
+        let account_id = insert_service_account(&db, "qobuz", &creds).await;
+        let transport = GateTransport::err(
+            crate::commands::account_refresh::RefreshError::NotRefreshable(
+                "sin refresco programático".to_string(),
+            ),
+        );
+
+        sync_reactive_credential_rejection_with_transport(
+            &db,
+            "qobuz",
+            account_id,
+            401,
+            "HTTP 401: User authentication required",
+            &transport,
+        )
+        .await;
+        sync_reactive_credential_rejection_with_transport(
+            &db,
+            "qobuz",
+            account_id,
+            401,
+            "HTTP 401: User authentication required",
+            &transport,
+        )
+        .await;
+
+        assert_eq!(
+            transport.call_count(),
+            1,
+            "el primer 401 dispara UN intento"
+        );
+        assert!(is_marked(&db, account_id).await, "el rechazo marca");
+    }
+
+    /// La producción llama con el transporte real: para un servicio sin
+    /// refresco programático el intento termina en `NotRefreshable` (sin red)
+    /// y la cuenta se marca — el mismo estado final que el
+    /// `mark_account_credentials_invalid` directo que había.
+    #[tokio::test]
+    async fn puerta_reactiva_produccion_marca_qobuz_sin_red() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let creds = json!({ "user_auth_token": "qobuz-token" });
+        let account_id = insert_service_account(&db, "qobuz", &creds).await;
+
+        sync_reactive_credential_rejection(
+            &db,
+            "qobuz",
+            account_id,
+            401,
+            "HTTP 401: User authentication required",
+        )
+        .await;
+
+        assert!(is_marked(&db, account_id).await);
+        let reason: Option<String> =
+            sqlx::query_scalar("SELECT invalid_reason FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let reason = reason.unwrap_or_default();
+        assert!(
+            reason.contains("no programmatic refresh for service 'qobuz'"),
+            "el motivo documentado de la puerta: {reason}"
+        );
+    }
+
+    /// Un fallo TRANSITORIO del intento reactivo no envenena credenciales
+    /// sanas (decisión 12) — la diferencia clave con la marca directa que
+    /// había antes de la puerta.
+    #[tokio::test]
+    async fn puerta_reactiva_transitorio_no_marca() {
+        characterization_crypto();
+        let db = characterization_db().await;
+        let creds = json!({ "user_auth_token": "qobuz-token" });
+        let account_id = insert_service_account(&db, "qobuz", &creds).await;
+        let transport = GateTransport::err(
+            crate::commands::account_refresh::RefreshError::Transient("red caída".to_string()),
+        );
+
+        sync_reactive_credential_rejection_with_transport(
+            &db,
+            "qobuz",
+            account_id,
+            401,
+            "HTTP 401: User authentication required",
+            &transport,
+        )
+        .await;
+
+        assert_eq!(transport.call_count(), 1);
+        assert!(!is_marked(&db, account_id).await, "decisión 12");
     }
 }

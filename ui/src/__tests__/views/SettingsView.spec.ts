@@ -30,7 +30,6 @@ describe('SettingsView', () => {
             // Download settings composable
             if (command === 'get_quality_preferences') return [];
             if (command === 'get_folder_settings') return null;
-            if (command === 'get_duplicate_settings') return null;
             if (command === 'get_audio_processing_settings') return null;
             // Lyrics settings composable
             if (command === 'get_lyrics_providers') return [];
@@ -64,6 +63,15 @@ describe('SettingsView', () => {
         expect(wrapper.text()).toContain('General');
         expect(wrapper.text()).toContain('Services');
         expect(wrapper.text()).toContain('Advanced');
+    });
+
+    it('#197: does not render the retired Duplicates category', async () => {
+        const wrapper = mount(SettingsView);
+        await flushPromises();
+
+        // Retired in #197 (SB02): the duplicate settings had no consumer and
+        // their whole tab went away with them (reopening row in the matrix).
+        expect(wrapper.text()).not.toContain('Duplicates');
     });
 
     it('renders Save Changes button in sidebar', async () => {
@@ -201,7 +209,6 @@ describe('SettingsView', () => {
             }
             if (command === 'get_quality_preferences') return [];
             if (command === 'get_folder_settings') return null;
-            if (command === 'get_duplicate_settings') return null;
             if (command === 'get_audio_processing_settings') return null;
             if (command === 'get_lyrics_providers') return [];
             if (command === 'get_lyrics_config') return null;

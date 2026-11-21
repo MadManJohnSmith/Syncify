@@ -3,7 +3,8 @@
  * Regression tests: get_download_settings tolerates every legacy payload shape.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getDownloadSettings, deriveStagingRoot, determinePathStatus } from '@/api/settings';
+import { getDownloadSettings, deriveStagingRoot, determinePathStatus, getServicePreferredAccounts, setServicePreferredAccount } from '@/api/settings';
+import { invoke } from '@tauri-apps/api/core';
 import { mockInvoke, resetMocks } from '../setup';
 
 describe('settings_handles_missing_fields_test', () => {
@@ -75,5 +76,35 @@ describe('settings_handles_missing_fields_test', () => {
         expect(deriveStagingRoot('   ')).toBe('');
         expect(deriveStagingRoot('/music/library')).toBe('/music/library/.staging');
         expect(deriveStagingRoot('C:\\Music\\Library\\')).toBe('C:\\Music\\Library\\.staging');
+    });
+
+    it('reads and persists the preferred account per service', async () => {
+        mockInvoke((cmd) => {
+            if (cmd === 'get_service_preferred_accounts') {
+                return [{ service_name: 'qobuz', account_id: 7, updated_at: '2026-11-18 10:00:00' }];
+            }
+            if (cmd === 'set_service_preferred_account') {
+                return { service_name: 'qobuz', account_id: 8, updated_at: '2026-11-18 10:05:00' };
+            }
+            return null;
+        });
+
+        const rows = await getServicePreferredAccounts();
+        expect(rows).toEqual([
+            { service_name: 'qobuz', account_id: 7, updated_at: '2026-11-18 10:00:00' },
+        ]);
+
+        const saved = await setServicePreferredAccount('qobuz', 8);
+        expect(saved?.account_id).toBe(8);
+        expect(invoke).toHaveBeenCalledWith('set_service_preferred_account', {
+            serviceName: 'qobuz',
+            accountId: 8,
+        });
+
+        await setServicePreferredAccount('qobuz', null);
+        expect(invoke).toHaveBeenCalledWith('set_service_preferred_account', {
+            serviceName: 'qobuz',
+            accountId: null,
+        });
     });
 });

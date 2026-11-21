@@ -3,8 +3,9 @@
  * repeat/shuffle, next/previous, fallos de avance y carreras resolver–stop,
  * sobre el motor nativo.
  *
- * El transporte del motor (`api/player`) está mockeado: los ticks y el
- * `ended` llegan por las suscripciones capturadas, como desde el backend.
+ * El transporte del motor (`api/player`) está mockeado: los ticks, el
+ * `ended` y el `player:advanced` del backend (#132) llegan por las
+ * suscripciones capturadas, como desde el ticker real.
  * Cada test reimporta el módulo bajo test (estado del singleton fresco).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -25,6 +26,8 @@ vi.mock('../../api/player', () => ({
     onPlayerTick: vi.fn(),
     onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
+    onPlayerAdvanced: vi.fn(),
+    onPlayerModesChanged: vi.fn(() => Promise.resolve()),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
 }));
@@ -44,6 +47,7 @@ let usePlayer: UsePlayerModule['usePlayer'];
 let seq = 0;
 let tickCb: ((tick: import('../../api/player').PlayerTick) => void) | null = null;
 let endedCb: ((seq: number) => void) | null = null;
+let advancedCb: ((advanced: import('../../api/player').PlayerAdvanced) => void) | null = null;
 
 function mockInvoke(): ReturnType<typeof vi.mocked<TauriModule['invokeCommand']>> {
     return vi.mocked(tauriApi.invokeCommand);
@@ -68,6 +72,10 @@ function configureEngineMocks(): void {
         return Promise.resolve(() => {});
     });
     engine().onPlayerStreamState.mockReset().mockResolvedValue(() => {});
+    engine().onPlayerAdvanced.mockReset().mockImplementation((cb) => {
+        advancedCb = cb;
+        return Promise.resolve(() => {});
+    });
     engine().onPlayerEnded.mockReset().mockImplementation((cb) => {
         endedCb = cb;
         return Promise.resolve(() => {});
@@ -80,6 +88,11 @@ function tick(positionSec: number): void {
 
 function ended(): void {
     endedCb?.(seq);
+}
+
+/** El backend cargó la pista siguiente (#132) y notifica con la generación nueva. */
+function advanced(trackId: number, entryId: string): void {
+    advancedCb?.({ seq: ++seq, trackId, entryId });
 }
 
 function resolveByTrackId(): void {
@@ -95,6 +108,10 @@ function resolveByTrackId(): void {
                 cover_art_url: null,
                 file_path: `/lib/${args?.trackId}.flac`,
             });
+        }
+        if (cmd === 'playback_queue_enqueue') {
+            const ids = (args?.trackIds as number[] | undefined) ?? [];
+            return Promise.resolve(ids.map(id => `be-${id}`));
         }
         return Promise.resolve(null);
     });
@@ -136,27 +153,34 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
         expect(resolveCalls()).toEqual([1]);
     });
 
-    it('repeat-all reconstruye el ciclo con el orden base y sin duplicados entre vueltas', async () => {
+    it('la UI sincroniza el ciclo repeat-all decidido por el backend sin crecer la cola', async () => {
         resolveByTrackId();
         const player = usePlayer();
         player.cycleRepeat(); // off → all
 
         await player.replaceQueueAndPlay([A, B, C]);
-        ended(); await flushPromises(); // A termina → B
-        ended(); await flushPromises(); // B termina → C
-        ended(); await flushPromises(); // C termina → ciclo agotado → reconstruye → A
-        expect(player.current.value?.id).toBe(1);
-        expect(player.upNext.value.map(t => t.id)).toEqual([2, 3]);
+        // Vuelta 1: el backend consume la cola que la UI conoce.
+        ended(); advanced(2, 'be-2'); await flushPromises(); // A termina → B
+        expect(player.current.value?.id).toBe(2);
+        expect(player.upNext.value.map(t => t.id)).toEqual([3]);
+        ended(); advanced(3, 'be-3'); await flushPromises(); // B termina → C
+        expect(player.current.value?.id).toBe(3);
+        expect(player.upNext.value).toHaveLength(0);
 
-        ended(); await flushPromises();
-        ended(); await flushPromises();
-        ended(); await flushPromises(); // segunda vuelta completa
+        // Vuelta 2: el backend reconstruyó el ciclo (entradas que la UI ya
+        // había sacado de pendientes); la sincronización no crece la cola.
+        ended(); advanced(1, 'be-1'); await flushPromises();
         expect(player.current.value?.id).toBe(1);
-        expect(player.upNext.value.map(t => t.id)).toEqual([2, 3]); // sin crecimiento ni duplicados
-        expect(player.queue.value).toHaveLength(2);
+        ended(); advanced(2, 'be-2'); await flushPromises();
+        ended(); advanced(3, 'be-3'); await flushPromises();
+        expect(player.current.value?.id).toBe(3);
+        expect(player.queue.value).toHaveLength(0);
+        // Cada sincronización archiva la pista anterior en el historial local,
+        // igual que el agregado del backend lo hace con set_current.
+        expect(player.history.value.some(e => e.trackId === 2)).toBe(true);
     });
 
-    it('la cola avanza al ended con pendientes incluso en repeat-one', async () => {
+    it('al ended la UI no avanza: el backend decide (la cola manda sobre repeat-one) y sincroniza', async () => {
         resolveByTrackId();
         const player = usePlayer();
         player.cycleRepeat(); // off → all
@@ -166,16 +190,24 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
         await player.playNext(B);
         ended(); await flushPromises();
 
-        // Avanza a B (la cola manda con pendientes); repeat-one solo aplica al agotarse.
-        expect(player.current.value?.id).toBe(2);
+        // La UI no resuelve nada por su cuenta (#132): ni con pendientes ni en
+        // repeat-one.
+        expect(player.current.value?.id).toBe(1);
+        expect(resolveCalls()).toEqual([1]);
 
-        // Cola agotada + repeat-one: reinicia B en la posición 0 y nueva resolución.
-        const before = resolveCalls().length;
-        ended(); await flushPromises();
+        // El backend consume la cola (repeat-one sólo aplica al agotarse) y
+        // notifica; la UI se sincroniza sin nueva resolución local.
+        advanced(2, 'be-2'); await flushPromises();
         expect(player.current.value?.id).toBe(2);
         expect(player.positionSec.value).toBe(0);
-        expect(resolveCalls().length).toBe(before + 1);
-        expect(resolveCalls()).toContain(2);
+        expect(player.upNext.value).toHaveLength(0);
+        expect(resolveCalls()).toEqual([1]);
+
+        // Cola agotada + repeat-one: el reinicio también es del backend.
+        ended(); await flushPromises();
+        advanced(2, 'be-2'); await flushPromises();
+        expect(player.current.value?.id).toBe(2);
+        expect(resolveCalls()).toEqual([1]);
     });
 
     it('next() salta inmediatamente e ignora repeat-one; agotado con repeat-one es no-op', async () => {
@@ -217,7 +249,7 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
 
         await player.play(A);
         await player.playNext(B);
-        ended(); await flushPromises(); // current B, history [A]
+        ended(); advanced(2, 'be-2'); await flushPromises(); // el backend avanza: current B, history [A]
 
         player.previous();
         await flushPromises();
@@ -265,7 +297,7 @@ describe('usePlayer — cola, modos, next/previous y carreras (fase 1)', () => {
 
         await player.play(A);
         await player.playNext(B);
-        ended(); await flushPromises();
+        player.next(); await flushPromises();
 
         expect(player.error.value).toContain('ninguna fuente reproducible');
         expect(player.current.value?.id).toBe(1); // la actual no se toca

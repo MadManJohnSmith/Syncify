@@ -63,7 +63,7 @@ describe('TASK-24: Album & Artist Detail interactive actions', () => {
         bio: 'Legendary rock band',
         image_url: null,
         album_count: 1,
-        track_count: 2,
+        tracks_total: 2,
         albums: [
             { id: 42, title: 'Abbey Road', release_year: 1969, track_count: 2, cover_art_url: null },
         ],

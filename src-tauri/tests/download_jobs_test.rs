@@ -374,3 +374,351 @@ async fn load_30000_candidates_estimate_and_enqueue_within_budget() {
     assert_eq!(job.requested_count, 30_000);
     assert_eq!(job.estimated_count, 30_000);
 }
+
+// ── 8. D07 (#119): payload del evento y ciclo del job ────────────────────────
+//
+// El payload de `syncify:download_job_progress` y el estado del job se
+// recalculan desde la cola; aquí se fija el contrato que consumirá D08.
+
+async fn set_queue_status(pool: &Pool<Sqlite>, track_id: i64, status: &str) {
+    sqlx::query("UPDATE download_queue SET status = ? WHERE track_id = ? AND status NOT IN ('complete', 'cancelled')")
+        .bind(status)
+        .bind(track_id)
+        .execute(pool)
+        .await
+        .expect("queue status fixture");
+}
+
+async fn enqueue_job(pool: &Pool<Sqlite>, req: &DownloadJobRequest) -> (i64, Vec<i64>) {
+    let job_id = jobs::create_job(pool, req).await.expect("create job");
+    let outcome = jobs::run_job(pool, job_id, req).await.expect("run job");
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT track_id FROM download_queue WHERE job_id = ? ORDER BY track_id",
+    )
+    .bind(job_id)
+    .fetch_all(pool)
+    .await
+    .expect("queue rows");
+    assert_eq!(outcome.enqueued, ids.len() as i64);
+    (job_id, ids)
+}
+
+#[tokio::test]
+async fn progress_snapshot_matches_the_event_contract() {
+    let pool = migrated_pool().await;
+    let ids = insert_tracks(&pool, 3).await;
+    let mut req = selection_request(ids.clone());
+    req.label = Some("Contrato D07".into());
+
+    let (job_id, rows) = enqueue_job(&pool, &req).await;
+    assert_eq!(rows.len(), 3);
+
+    // Recién creado: en cola, sin terminales, sin porcentaje.
+    let snap = jobs::progress_snapshot(&pool, job_id)
+        .await
+        .expect("snapshot")
+        .expect("job exists");
+    assert_eq!(snap.job_id, job_id);
+    assert_eq!(snap.label.as_deref(), Some("Contrato D07"));
+    assert_eq!(snap.status, "running");
+    assert_eq!(snap.total, 3);
+    assert_eq!(snap.queued, 3);
+    assert_eq!(snap.downloading, 0);
+    assert_eq!(snap.completed, 0);
+    assert_eq!(snap.failed, 0);
+    assert_eq!(snap.cancelled, 0);
+    assert_eq!(snap.skipped, 0);
+    assert!((snap.percent - 0.0).abs() < f64::EPSILON);
+    assert!(!snap.terminal);
+
+    // Descarga en vuelo: cuenta como downloading, no como terminada.
+    set_queue_status(&pool, rows[0], "downloading").await;
+    let snap = jobs::progress_snapshot(&pool, job_id)
+        .await
+        .expect("snapshot")
+        .expect("job exists");
+    assert_eq!(snap.downloading, 1);
+    assert_eq!(snap.queued, 2);
+    assert!(!snap.terminal);
+
+    // Un completo y un fallido: el porcentaje avanza con los terminales.
+    set_queue_status(&pool, rows[1], "complete").await;
+    set_queue_status(&pool, rows[2], "failed").await;
+    let snap = jobs::progress_snapshot(&pool, job_id)
+        .await
+        .expect("snapshot")
+        .expect("job exists");
+    assert_eq!(snap.completed, 1);
+    assert_eq!(snap.failed, 1);
+    assert!((snap.percent - (2.0 / 3.0 * 100.0)).abs() < 1e-9);
+
+    // Sin nada activo el refresco deriva terminal, y el payload lo declara.
+    set_queue_status(&pool, rows[0], "complete").await;
+    let job = jobs::refresh_job_status(&pool, job_id, None)
+        .await
+        .expect("refresh")
+        .expect("job exists");
+    assert_eq!(job.status, "partial");
+    let snap = jobs::progress_snapshot(&pool, job_id)
+        .await
+        .expect("snapshot")
+        .expect("job exists");
+    assert_eq!(snap.status, "partial");
+    assert!(snap.terminal);
+    assert!((snap.percent - 100.0).abs() < f64::EPSILON);
+}
+
+#[tokio::test]
+async fn refresh_derives_completed_failed_partial_and_cancelled() {
+    // Todo completo → completed.
+    let pool = migrated_pool().await;
+    let ids = insert_tracks(&pool, 2).await;
+    let (job_id, rows) = enqueue_job(&pool, &selection_request(ids.clone())).await;
+    for id in &rows {
+        set_queue_status(&pool, *id, "complete").await;
+    }
+    let job = jobs::refresh_job_status(&pool, job_id, None)
+        .await
+        .expect("expect D07")
+        .expect("expect D07");
+    assert_eq!(job.status, "completed");
+    assert_eq!(job.completed_count, 2);
+    assert_eq!(job.failed_count, 0);
+    assert!(job.completed_at.is_some());
+
+    // Todo fallido → failed.
+    let pool = migrated_pool().await;
+    let ids = insert_tracks(&pool, 2).await;
+    let (job_id, rows) = enqueue_job(&pool, &selection_request(ids.clone())).await;
+    for id in &rows {
+        set_queue_status(&pool, *id, "failed").await;
+    }
+    let job = jobs::refresh_job_status(&pool, job_id, None)
+        .await
+        .expect("expect D07")
+        .expect("expect D07");
+    assert_eq!(job.status, "failed");
+    assert_eq!(job.failed_count, 2);
+
+    // Mezcla → partial.
+    let pool = migrated_pool().await;
+    let ids = insert_tracks(&pool, 2).await;
+    let (job_id, rows) = enqueue_job(&pool, &selection_request(ids.clone())).await;
+    set_queue_status(&pool, rows[0], "complete").await;
+    set_queue_status(&pool, rows[1], "failed").await;
+    let job = jobs::refresh_job_status(&pool, job_id, None)
+        .await
+        .expect("expect D07")
+        .expect("expect D07");
+    assert_eq!(job.status, "partial");
+
+    // Solo canceladas → cancelled.
+    let pool = migrated_pool().await;
+    let ids = insert_tracks(&pool, 2).await;
+    let (job_id, rows) = enqueue_job(&pool, &selection_request(ids.clone())).await;
+    for id in &rows {
+        set_queue_status(&pool, *id, "cancelled").await;
+    }
+    let job = jobs::refresh_job_status(&pool, job_id, None)
+        .await
+        .expect("expect D07")
+        .expect("expect D07");
+    assert_eq!(job.status, "cancelled");
+}
+
+#[tokio::test]
+async fn cancel_job_cancels_only_pending_rows_and_keeps_the_active_one() {
+    let pool = migrated_pool().await;
+    let ids = insert_tracks(&pool, 3).await;
+    let (job_id, rows) = enqueue_job(&pool, &selection_request(ids.clone())).await;
+    set_queue_status(&pool, rows[0], "downloading").await;
+
+    let outcome = jobs::cancel_job(&pool, job_id)
+        .await
+        .expect("expect D07")
+        .expect("expect D07");
+    assert_eq!(outcome.cancelled_rows, 2, "solo las pendientes");
+
+    // La descarga activa no se toca: sigue downloading y el job sigue vivo.
+    let still_downloading: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM download_queue WHERE job_id = ? AND status = 'downloading'",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await
+    .expect("active row");
+    assert_eq!(still_downloading, 1);
+    assert_eq!(outcome.job.status, "running");
+
+    // Terminada la activa: completada + canceladas → partial.
+    set_queue_status(&pool, rows[0], "complete").await;
+    let job = jobs::refresh_job_status(&pool, job_id, None)
+        .await
+        .expect("expect D07")
+        .expect("expect D07");
+    assert_eq!(job.status, "partial");
+    assert_eq!(job.completed_count, 1);
+}
+
+#[tokio::test]
+async fn cancel_before_enqueue_blocks_the_background_enqueue() {
+    let pool = migrated_pool().await;
+    let ids = insert_tracks(&pool, 2).await;
+    let req = selection_request(ids.clone());
+
+    let job_id = jobs::create_job(&pool, &req).await.expect("create job");
+    let outcome = jobs::cancel_job(&pool, job_id)
+        .await
+        .expect("expect D07")
+        .expect("expect D07");
+    assert_eq!(outcome.cancelled_rows, 0);
+    assert_eq!(
+        outcome.job.status, "cancelled",
+        "sin filas, el job acaba ya"
+    );
+
+    // El encolado en curso no inserta nada (guardia en enqueue_candidates).
+    let enqueued = jobs::enqueue_candidates(&pool, job_id, &ids, 50, None, true)
+        .await
+        .expect("enqueue after cancel");
+    assert_eq!(enqueued.enqueued, 0);
+
+    let queued: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM download_queue WHERE job_id = ?")
+        .bind(job_id)
+        .fetch_one(&pool)
+        .await
+        .expect("queue count");
+    assert_eq!(queued, 0);
+
+    // Y el refresco posterior al encolado no resurrecta el job.
+    let job = jobs::refresh_job_status(&pool, job_id, Some(true))
+        .await
+        .expect("expect D07")
+        .expect("expect D07");
+    assert_eq!(job.status, "cancelled");
+}
+
+#[tokio::test]
+async fn retry_job_failed_requeues_rows_and_reopens_the_job() {
+    let pool = migrated_pool().await;
+    let ids = insert_tracks(&pool, 2).await;
+    let (job_id, rows) = enqueue_job(&pool, &selection_request(ids.clone())).await;
+    for id in &rows {
+        set_queue_status(&pool, *id, "failed").await;
+    }
+    sqlx::query("UPDATE download_queue SET retry_count = 3, next_attempt_at = datetime('now', '+30 seconds') WHERE job_id = ?")
+        .bind(job_id)
+        .execute(&pool)
+        .await
+        .expect("retry fixture");
+    jobs::mark_job_failed(&pool, job_id, "boom")
+        .await
+        .expect("mark failed");
+
+    let job = jobs::retry_job_failed(&pool, job_id)
+        .await
+        .expect("expect D07")
+        .expect("expect D07");
+    assert_eq!(job.status, "running", "el job se reabre");
+    assert!(job.error.is_none());
+
+    let cleaned: (i64, i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(retry_count), 0), COUNT(next_attempt_at) \
+         FROM download_queue WHERE job_id = ? AND status = 'queued'",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await
+    .expect("requeued rows");
+    let (queued, retries, scheduled) = cleaned;
+    assert_eq!(queued, 2);
+    assert_eq!(retries, 0, "el reintento manual empieza de cero");
+    assert_eq!(scheduled, 0, "sin espera programada");
+
+    // Sin filas fallidas no toca el job: uno completado sigue completado.
+    let pool2 = migrated_pool().await;
+    let ids2 = insert_tracks(&pool2, 1).await;
+    let (job2, rows2) = enqueue_job(&pool2, &selection_request(ids2.clone())).await;
+    set_queue_status(&pool2, rows2[0], "complete").await;
+    jobs::refresh_job_status(&pool2, job2, None)
+        .await
+        .expect("expect D07");
+    let job = jobs::retry_job_failed(&pool2, job2)
+        .await
+        .expect("expect D07")
+        .expect("expect D07");
+    assert_eq!(job.status, "completed", "sin fallos no se reabre");
+}
+
+#[tokio::test]
+async fn job_account_override_does_not_rewrite_service_preference() {
+    let pool = migrated_pool().await;
+    let qobuz = service_id(&pool, "qobuz").await;
+
+    sqlx::query(
+        "INSERT OR IGNORE INTO accounts (id, service_id, display_name, email, is_active)
+         VALUES (501, ?, 'Default Qobuz', 'default@qobuz.test', 1),
+                (502, ?, 'Override Qobuz', 'override@qobuz.test', 1)",
+    )
+    .bind(qobuz)
+    .bind(qobuz)
+    .execute(&pool)
+    .await
+    .expect("accounts fixture");
+    sqlx::query(
+        "INSERT INTO service_preferred_accounts (service_name, account_id) VALUES ('qobuz', 501)",
+    )
+    .execute(&pool)
+    .await
+    .expect("service preference fixture");
+
+    let ids = insert_tracks(&pool, 1).await;
+    insert_sources(
+        &pool,
+        &[(ids[0], qobuz, Some("FLAC"), Some(16), Some(44100))],
+    )
+    .await;
+
+    let mut req = selection_request(ids);
+    req.destination_service = Some("qobuz".to_string());
+    req.preferred_account_id = Some(502);
+    let job = jobs::create_job(&pool, &req).await.expect("create job");
+    jobs::run_job(&pool, job, &req).await.expect("run job");
+
+    let stored = jobs::get_job(&pool, job).await.expect("job row");
+    assert_eq!(stored.preferred_account_id, Some(502));
+    let service_default: i64 = sqlx::query_scalar(
+        "SELECT account_id FROM service_preferred_accounts WHERE service_name = 'qobuz'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("service preference survives");
+    assert_eq!(
+        service_default, 501,
+        "a job override must not rewrite the global service preference"
+    );
+}
+
+#[tokio::test]
+async fn clear_terminal_jobs_keeps_running_ones() {
+    let pool = migrated_pool().await;
+    let ids = insert_tracks(&pool, 4).await;
+
+    // Selecciones disjuntas: deduplicar la cola no debe interferir.
+    let (terminal_a, _) = enqueue_job(&pool, &selection_request(vec![ids[0], ids[1]])).await;
+    jobs::mark_job_failed(&pool, terminal_a, "boom")
+        .await
+        .expect("expect D07");
+    let (running, _) = enqueue_job(&pool, &selection_request(vec![ids[2], ids[3]])).await;
+
+    let (deleted, pruned) = jobs::clear_terminal_jobs(&pool).await.expect("clear");
+    assert_eq!(deleted, 1);
+    assert_eq!(pruned, vec![terminal_a]);
+
+    let job = jobs::get_job(&pool, running).await.expect("running job");
+    assert_eq!(job.status, "running");
+    assert!(
+        jobs::get_job(&pool, terminal_a).await.is_err(),
+        "el terminal cayó"
+    );
+}

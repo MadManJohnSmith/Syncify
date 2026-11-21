@@ -13,18 +13,17 @@ export interface ServiceSyncSettingsLocal {
     syncFavorites: boolean
     syncPlaylists: boolean
     syncSavedAlbums: boolean  // Maps to sync_albums in backend
-    incrementalOnly: boolean  // Maps to incremental_sync in backend
     lastSynced: string | null
 }
 
 export type ServiceName = 'spotify' | 'qobuz' | 'tidal' | 'deezer' | 'soundcloud' | 'apple_music'
 
-const defaultServiceSettings: ServiceSyncSettingsLocal = {
-    syncFavorites: true,
-    syncPlaylists: true,
-    syncSavedAlbums: true,
-    incrementalOnly: false,
-    lastSynced: null,
+// Esqueleto de carga por servicio: valores neutros que la vista nunca muestra
+// (gatea sobre isLoading) y que loadFromBackend sobrescribe al montar. Los
+// defaults de fábrica viven en `src-tauri/src/settings_defaults.rs` (SB00,
+// #196); la UI ya no sostiene una segunda verdad.
+function emptyServiceSettings(): ServiceSyncSettingsLocal {
+    return { syncFavorites: false, syncPlaylists: false, syncSavedAlbums: false, lastSynced: null }
 }
 
 // Singleton state
@@ -34,7 +33,9 @@ const error = ref<string | null>(null)
 // Service preferences (priority ordering + auto-import)
 const servicePreferences = ref<ServicePreference[]>([])
 
-// Global sync settings
+// Global sync settings: esqueleto de carga con los mismos valores que traerá
+// la semilla (antes divergía: autoSync TRUE / 1 'hours' / startup TRUE contra
+// la semilla FALSE / 60 'minutes' / FALSE).
 const globalSyncSettings = reactive<{
     autoSyncEnabled: boolean
     syncIntervalValue: number
@@ -46,10 +47,10 @@ const globalSyncSettings = reactive<{
     pauseOnMetered: boolean
     pauseOnLowBattery: boolean
 }>({
-    autoSyncEnabled: true,
-    syncIntervalValue: 1,
-    syncIntervalUnit: 'hours',
-    syncOnStartup: true,
+    autoSyncEnabled: false,
+    syncIntervalValue: 60,
+    syncIntervalUnit: 'minutes',
+    syncOnStartup: false,
     backgroundDownload: true,
     maxConcurrentDownloads: 3,
     rateLimitDelayMs: 500,
@@ -59,12 +60,12 @@ const globalSyncSettings = reactive<{
 
 // Per-service sync settings (reactive map)
 const serviceSyncSettings = reactive<Record<ServiceName, ServiceSyncSettingsLocal>>({
-    spotify: { ...defaultServiceSettings },
-    qobuz: { ...defaultServiceSettings },
-    tidal: { ...defaultServiceSettings },
-    deezer: { ...defaultServiceSettings },
-    soundcloud: { ...defaultServiceSettings },
-    apple_music: { ...defaultServiceSettings },
+    spotify: emptyServiceSettings(),
+    qobuz: emptyServiceSettings(),
+    tidal: emptyServiceSettings(),
+    deezer: emptyServiceSettings(),
+    soundcloud: emptyServiceSettings(),
+    apple_music: emptyServiceSettings(),
 })
 
 // Map backend service name to local key
@@ -112,7 +113,6 @@ async function loadFromBackend() {
                         syncFavorites: svc.sync_favorites,
                         syncPlaylists: svc.sync_playlists,
                         syncSavedAlbums: svc.sync_albums,
-                        incrementalOnly: svc.incremental_sync,
                         lastSynced: svc.last_synced,
                     }
                 }
@@ -170,7 +170,6 @@ async function updateServiceSettings(serviceName: ServiceName | string) {
             settings.syncFavorites,
             settings.syncPlaylists,
             settings.syncSavedAlbums,
-            settings.incrementalOnly,
         )
         const eventBus = useEventBus()
         eventBus.emit('sync-settings-updated', { service: key })
@@ -219,10 +218,12 @@ export function useSyncSettings() {
         // Load from backend
         loadSettings: loadFromBackend,
 
-        // Get settings for a specific service
-        getService(name: ServiceName | string): ServiceSyncSettingsLocal {
+        // Get settings for a specific service. Para servicios desconocidos
+        // devuelve undefined en vez de inventar valores (antes caía a una
+        // copia local de «defaults»).
+        getService(name: ServiceName | string): ServiceSyncSettingsLocal | undefined {
             const key = toServiceKey(name)
-            return serviceSyncSettings[key] || defaultServiceSettings
+            return serviceSyncSettings[key]
         },
 
         // Update a single service setting (local + backend)
@@ -236,12 +237,12 @@ export function useSyncSettings() {
 
         // Check if playlists should be synced for a service
         shouldSyncPlaylists(service: ServiceName | string): boolean {
-            return this.getService(service).syncPlaylists
+            return this.getService(service)?.syncPlaylists ?? false
         },
 
         // Check if favorites should be synced for a service
         shouldSyncFavorites(service: ServiceName | string): boolean {
-            return this.getService(service).syncFavorites
+            return this.getService(service)?.syncFavorites ?? false
         },
 
         // Priority management

@@ -22,6 +22,59 @@ static AUTH_IN_PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 /// "Authorization timed out", que sí explica qué pasó.
 pub const AUTH_BRIDGE_TIMEOUT_SECS: u64 = 330;
 
+/// Opens an isolated Deezer login window and returns cookie metadata only.
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub async fn debug_deezer_cookie_probe(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let data_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("debug-deezer-probe");
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let url = tauri::Url::parse("https://www.deezer.com/login").map_err(|e| e.to_string())?;
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "debug-deezer-cookie-probe",
+        tauri::WebviewUrl::External(url.clone()),
+    )
+    .title("Deezer login diagnostic")
+    .data_directory(data_dir)
+    .build()
+    .map_err(|e| format!("Could not open diagnostic window: {e}"))?;
+    loop {
+        if app
+            .get_webview_window("debug-deezer-cookie-probe")
+            .is_none()
+        {
+            return Ok("Probe closed before completion; no cookie report produced.".into());
+        }
+        let cookies = window
+            .cookies_for_url(url.clone())
+            .map_err(|e| format!("Could not read cookie metadata: {e}"))?;
+        if let Some(arl) = cookies.iter().find(|cookie| cookie.name() == "arl") {
+            let mut report = String::from("Deezer cookie metadata (values omitted):\n");
+            for cookie in &cookies {
+                use std::fmt::Write;
+                let _ = writeln!(
+                    report,
+                    "{}; HttpOnly={}; Secure={}; SameSite={:?}",
+                    cookie.name(),
+                    cookie.http_only().unwrap_or(false),
+                    cookie.secure().unwrap_or(false),
+                    cookie.same_site()
+                );
+            }
+            use std::fmt::Write;
+            let _ = writeln!(report, "arl HttpOnly={}", arl.http_only().unwrap_or(false));
+            let _ = window.close();
+            return Ok(report);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
 fn try_begin_spotify_auth(lock: &std::sync::atomic::AtomicBool) -> bool {
     lock.compare_exchange(
         false,
@@ -344,101 +397,26 @@ pub async fn logout_service(
         return bridge_logout(&service).await;
     };
 
-    // Clearing credentials, deactivating this row and handing over the active
-    // slot (if a viable sister exists) happen in ONE transaction. With no
+    // Clearing credentials, deactivating this row, stopping its downloads and
+    // handing over the active slot (if a viable sister exists) happen in ONE
+    // transaction. The work lives in `perform_logout_account` so this legacy
+    // entry point and `logout_account` (issue #91) cannot diverge. With no
     // credentialed successor, the service has zero active accounts after logout.
-    let mut tx = state
-        .db
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .map_err(|e| format!("Failed to begin logout for {}: {}", service, e))?;
+    //
+    // Cerrar sesión borra también el perfil cifrado del webview (issue #86,
+    // ADR-0007 decisión 9): archivo y fila, conservando la cuenta y su
+    // biblioteca. Sin perfil no hay webview que reutilizar y la reautenticación
+    // abre uno nuevo.
+    let summary = crate::commands::accounts::perform_logout_account(&state.db, target_id).await?;
+    let remaining = summary.remaining_accounts;
+    let successor = summary.new_active_account_id;
 
-    let was_active: Option<i64> = sqlx::query_scalar("SELECT is_active FROM accounts WHERE id = ?")
-        .bind(target_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to read account {}: {}", target_id, e))?;
-
-    sqlx::query(
-        r#"
-        UPDATE accounts
-        SET credentials_json = NULL,
-            credentials = NULL,
-            credentials_invalid = 1,
-            invalid_reason = 'logged_out',
-            last_auth_error = 'Session closed by the user',
-            last_auth_error_at = ?,
-            is_active = 0
-        WHERE id = ?
-        "#,
-    )
-    .bind(chrono::Utc::now().to_rfc3339())
-    .bind(target_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("Failed to clear {} account credentials: {}", service, e))?;
-
-    let remaining: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE service_id = ? AND id != ? AND credentials_json IS NOT NULL AND IFNULL(credentials_invalid, 0) = 0")
-            .bind(service_id)
-            .bind(target_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| format!("Failed to count remaining accounts: {}", e))?;
-
-    // A previously logged-out sister remains in the database for its library,
-    // but must NEVER be resurrected as the active account by a later logout.
-    // Choose only a sister with stored, non-invalidated credentials. If none
-    // exists, the service has zero active accounts until a new login/activation.
-    let viable_successor: Option<i64> = if remaining > 0 && was_active.unwrap_or(0) != 0 {
-        sqlx::query_scalar(
-            "SELECT id FROM accounts
-             WHERE service_id = ? AND id != ?
-               AND credentials_json IS NOT NULL
-               AND IFNULL(credentials_invalid, 0) = 0
-             ORDER BY id DESC LIMIT 1",
-        )
-        .bind(service_id)
-        .bind(target_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to pick the next {} account: {}", service, e))?
-    } else {
-        None
-    };
-    let successor: Option<i64> = if let Some(successor) = viable_successor {
-        // Deactivate every other row and then activate the successor, so the
-        // service never keeps two active rows even if it arrived with residues.
-        sqlx::query("UPDATE accounts SET is_active = 0 WHERE service_id = ? AND id != ?")
-            .bind(service_id)
-            .bind(successor)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("Failed to deactivate sibling accounts: {}", e))?;
-
-        sqlx::query("UPDATE accounts SET is_active = 1 WHERE id = ?")
-            .bind(successor)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("Failed to activate account {}: {}", successor, e))?;
-
-        tracing::info!(
-            "[Auth] {} account {} logged out; account {} is now the active one",
-            service,
-            target_id,
-            successor
-        );
-
-        Some(successor)
-    } else {
-        None
-    };
-
-    tx.commit()
-        .await
-        .map_err(|e| format!("Failed to commit logout for {}: {}", service, e))?;
-
-    crate::commands::emit_auth_state_updated_for_account(&service, "logout", Some(target_id), None);
+    crate::commands::emit_auth_state_updated_for_account(
+        &service,
+        "logout",
+        Some(summary.account_id),
+        None,
+    );
 
     if remaining > 0 {
         // At least one other authenticated account can still use the shared
@@ -865,13 +843,31 @@ pub async fn start_auth_and_save(
     let data = auth_result
         .data
         .as_ref()
-        .ok_or("Auth succeeded but returned no data")?;
+        .ok_or("Auth succeeded but returned no data")?
+        .clone();
 
+    save_auth_result(&service, data, &state.db).await
+}
+
+/// Camino existente de guardado de un login (issue #84).
+///
+/// Todo lo que `start_auth_and_save` hacía DESPUÉS de obtener el payload del
+/// proveedor — merge de fallback Qobuz, expiry de Tidal, cifrado, upsert por
+/// identidad, re-encola de descargas y evento — vive aquí y es el destino
+/// único del artefacto capturado en el webview (`commands/account_login.rs`):
+/// el login dentro de la app no duplica ninguna de estas decisiones, solo
+/// produce el mismo payload que el puente. `service` es el nombre canónico
+/// del servicio en la tabla `services`; `data` es el JSON que el puente
+/// habría devuelto en `AuthResult.data`.
+pub async fn save_auth_result(
+    service: &str,
+    data: serde_json::Value,
+    db: &sqlx::SqlitePool,
+) -> Result<AuthResult, String> {
     let mut credentials_payload = data.clone();
 
     if service.eq_ignore_ascii_case("qobuz") {
-        let (cache_token, cache_username, cache_password) =
-            load_qobuz_db_fallback_auth(&state.db).await;
+        let (cache_token, cache_username, cache_password) = load_qobuz_db_fallback_auth(db).await;
         // A single existing row is not proof of identity. Never attach its
         // token or password to a newly authenticated bridge username.
         let bridge_username = data
@@ -995,7 +991,7 @@ pub async fn start_auth_and_save(
     // after login does not force an immediate OAuth refresh that could fail
     // transiently.
     if service.eq_ignore_ascii_case("tidal") {
-        let cached_expiry = load_tidal_db_cached_token_expiry(&state.db).await;
+        let cached_expiry = load_tidal_db_cached_token_expiry(db).await;
         inject_tidal_expiry(&mut credentials_payload, cached_expiry);
     }
 
@@ -1020,14 +1016,14 @@ pub async fn start_auth_and_save(
     // it could not discover a real user id. That is a shared placeholder, NOT
     // an identity: treating it as external_user_id would upsert every Qobuz
     // login into the same row, even when the captured usernames differ.
-    let external_user_id = login_external_user_id(&service, &data, user_id.as_deref());
+    let external_user_id = login_external_user_id(service, &data, user_id.as_deref());
 
     // Provider identity beyond the bridge payload (SoundCloud username, Tidal
     // profile, Deezer user data, Qobuz `user/get`). Best effort: a provider
     // hiccup must never fail a login that already succeeded, and the automatic
     // identity refresh retries later.
     let provider_identity =
-        match crate::commands::accounts::resolve_provider_identity(&service, &credentials_payload)
+        match crate::commands::accounts::resolve_provider_identity(service, &credentials_payload)
             .await
         {
             Ok(identity) => identity,
@@ -1041,8 +1037,8 @@ pub async fn start_auth_and_save(
 
     // Step 3: Look up service ID
     let service_row: Option<(i64,)> = sqlx::query_as("SELECT id FROM services WHERE name = ?")
-        .bind(&service)
-        .fetch_optional(&state.db)
+        .bind(service)
+        .fetch_optional(db)
         .await
         .map_err(|e| format!("Database error: {}", e))?;
 
@@ -1070,7 +1066,7 @@ pub async fn start_auth_and_save(
     });
 
     let account_id = upsert_service_account(
-        &state.db,
+        db,
         service_id,
         &final_display_name,
         email.as_deref(),
@@ -1111,8 +1107,8 @@ pub async fn start_auth_and_save(
           AND (LOWER(service_name) = LOWER(?) OR service_name IS NULL)
         "#,
     )
-    .bind(&service)
-    .execute(&state.db)
+    .bind(service)
+    .execute(db)
     .await
     .map(|r| r.rows_affected())
     .unwrap_or(0);
@@ -1801,11 +1797,71 @@ pub fn process_spotify_callback_request(
     (status, result, response)
 }
 
+/// Ventana del flujo PKCE de Spotify (issue #84).
+///
+/// `data_directory` es el perfil provisional del intento de login dentro de la
+/// app: un directorio por intento, creado antes de abrir la ventana y borrado
+/// al cerrarla. En el camino histórico (`spotify_auth_webview`) es `None` y la
+/// ventana usa el perfil por defecto de la app, sin cambio de comportamiento.
+pub struct SpotifyAuthWindowSpec {
+    pub label: String,
+    pub title: &'static str,
+    pub data_directory: Option<std::path::PathBuf>,
+}
+
 /// Authenticate Spotify using native Tauri WebView2 window and PKCE OAuth2 flow.
 #[tauri::command]
 pub async fn spotify_auth_webview(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
+) -> Result<AuthResult, String> {
+    run_spotify_pkce_login(
+        app,
+        state.db.clone(),
+        SpotifyAuthWindowSpec {
+            label: "spotify-auth".to_string(),
+            title: "Connect Spotify",
+            data_directory: None,
+        },
+    )
+    .await
+}
+
+/// Directorio a auditar y purgar tras cerrar la ventana PKCE: el perfil
+/// provisional del intento cuando existe; el perfil por defecto de la app en
+/// el camino histórico (comportamiento previo intacto).
+fn attempt_profile_dir(
+    app: &tauri::AppHandle,
+    window_spec: &SpotifyAuthWindowSpec,
+) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    window_spec
+        .data_directory
+        .clone()
+        .or_else(|| app.path().app_local_data_dir().ok())
+}
+
+/// Runner del login PKCE de Spotify, reutilizado por el login dentro de la app
+/// (`commands/account_login.rs`) con ventana y perfil por intento.
+pub async fn run_spotify_pkce_login(
+    app: tauri::AppHandle,
+    db: sqlx::SqlitePool,
+    window_spec: SpotifyAuthWindowSpec,
+) -> Result<AuthResult, String> {
+    let result = spotify_pkce_inner(app, db, &window_spec).await;
+    // El perfil provisional de un intento no sobrevive a la ventana: la sesión
+    // se recuerda mediante el artefacto cifrado en la BD (ADR-0007, decisión 5),
+    // nunca mediante cookies en texto plano en disco.
+    if let Some(dir) = &window_spec.data_directory {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    result
+}
+
+async fn spotify_pkce_inner(
+    app: tauri::AppHandle,
+    db: sqlx::SqlitePool,
+    window_spec: &SpotifyAuthWindowSpec,
 ) -> Result<AuthResult, String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use rand::{rngs::OsRng, RngCore};
@@ -1819,15 +1875,15 @@ pub async fn spotify_auth_webview(
     if !try_begin_spotify_auth(&AUTH_IN_PROGRESS) {
         tracing::warn!(
             stage = "ipc_concurrent",
-            window_present = app.get_webview_window("spotify-auth").is_some(),
-            "spotify_auth_webview rejected concurrent invocation"
+            window_present = app.get_webview_window(&window_spec.label).is_some(),
+            "spotify pkce login rejected concurrent invocation"
         );
         return Err("Auth already in progress".to_string());
     }
     let _guard = AuthGuard;
 
     // Close any existing auth window to avoid label collision
-    if let Some(existing) = app.get_webview_window("spotify-auth") {
+    if let Some(existing) = app.get_webview_window(&window_spec.label) {
         if let Err(err) = existing.close() {
             tracing::warn!(stage = "window_close", error_kind = %std::any::type_name_of_val(&err), "Spotify auth window close failed");
             return Err("Failed to close existing Spotify auth window".into());
@@ -1881,13 +1937,19 @@ pub async fn spotify_auth_webview(
     let parsed_url: tauri::Url = auth_url
         .parse()
         .map_err(|e| format!("Failed to build Spotify authorize URL: {}", e))?;
-    let auth_window = tauri::WebviewWindowBuilder::new(
+    let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
-        "spotify-auth",
+        window_spec.label.clone(),
         tauri::WebviewUrl::External(parsed_url),
     )
-    .title("Connect Spotify")
-    .inner_size(500.0, 700.0)
+    .title(window_spec.title)
+    .inner_size(500.0, 700.0);
+    // Perfil provisional del intento: cookies y almacenamiento aislados del
+    // resto de la app y del resto de intentos.
+    if let Some(dir) = &window_spec.data_directory {
+        builder = builder.data_directory(dir.clone());
+    }
+    let auth_window = builder
     .resizable(false)
     .closable(true)
     .build()
@@ -1942,7 +2004,7 @@ pub async fn spotify_auth_webview(
         Ok(Err(e)) => return Err(format!("Socket error: {}", e)),
         Err(_) => {
             let _ = auth_window.close();
-            if let Ok(profile_dir) = app.path().app_local_data_dir() {
+            if let Some(profile_dir) = attempt_profile_dir(&app, window_spec) {
                 let _ = crate::crypto::audit_and_purge_webview_localstorage(&profile_dir);
                 let _ = crate::crypto::ensure_secure_profile_permissions(&profile_dir);
             }
@@ -1954,7 +2016,7 @@ pub async fn spotify_auth_webview(
     let _ = auth_window.close();
 
     // Audit and purge residual OAuth webview localstorage (TASK-112)
-    if let Ok(profile_dir) = app.path().app_local_data_dir() {
+    if let Some(profile_dir) = attempt_profile_dir(&app, window_spec) {
         let _ = crate::crypto::audit_and_purge_webview_localstorage(&profile_dir);
         let _ = crate::crypto::ensure_secure_profile_permissions(&profile_dir);
     }
@@ -2058,7 +2120,7 @@ pub async fn spotify_auth_webview(
     // Save credentials to database
     let service_row: Option<(i64,)> =
         sqlx::query_as("SELECT id FROM services WHERE name = 'spotify'")
-            .fetch_optional(&state.db)
+            .fetch_optional(&db)
             .await
             .map_err(|e| format!("Database error: {}", e))?;
 
@@ -2082,7 +2144,7 @@ pub async fn spotify_auth_webview(
     let final_display_name = display_name;
 
     let account_id = upsert_service_account(
-        &state.db,
+        &db,
         service_id,
         &final_display_name,
         email.as_deref(),
@@ -2112,7 +2174,7 @@ pub async fn spotify_auth_webview(
           AND (LOWER(service_name) = 'spotify' OR service_name IS NULL)
         "#,
     )
-    .execute(&state.db)
+    .execute(&db)
     .await
     .map(|r| r.rows_affected())
     .unwrap_or(0);

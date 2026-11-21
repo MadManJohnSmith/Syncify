@@ -27,6 +27,8 @@ pub mod import_cache;
 pub mod logs_history;
 pub mod models;
 pub mod services;
+pub mod settings_defaults;
+pub mod sync;
 pub mod sync_scheduler;
 pub mod system_conditions;
 pub mod tray;

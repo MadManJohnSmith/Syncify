@@ -67,7 +67,7 @@ function createTestTrack(overrides: Partial<LibraryTrack> = {}): LibraryTrack {
 
 async function mountLibrary(attach = false): Promise<VueWrapper> {
     mockInvoke((cmd) => {
-        if (cmd === 'get_library') {
+        if (cmd === 'query_library') {
             return { tracks: [createTestTrack()], total: 1, offset: 0, limit: 50, has_more: false };
         }
         return null;

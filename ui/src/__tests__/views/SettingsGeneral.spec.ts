@@ -15,7 +15,6 @@ describe('SettingsGeneral.vue & PathSelector Integration', () => {
           close_to_tray: 'true',
           auto_updates: 'true',
           anonymous_stats: 'false',
-          db_location: 'C:\\Users\\User\\AppData\\Roaming\\Syncify\\syncify.db',
           download_dir: 'D:\\Media\\SyncifyMusic',
           dl_download_path: 'D:\\Media\\SyncifyMusic',
           temp_dir: 'D:\\Media\\SyncifyTemp',
@@ -34,9 +33,6 @@ describe('SettingsGeneral.vue & PathSelector Integration', () => {
           fallback_action: 'try_next',
           max_concurrent_downloads: 3,
           retry_failed: true,
-          retry_count: 3,
-          retry_delay_ms: 5000,
-          auto_download_favorites: false,
           organize_by_artist: true,
           organize_by_album: true,
           generate_lyrics_lrc: true,
@@ -108,7 +104,8 @@ describe('SettingsGeneral.vue & PathSelector Integration', () => {
     await new Promise(r => setTimeout(r, 50))
 
     const inputs = wrapper.findAll('input[type="text"]')
-    expect(inputs.length).toBeGreaterThanOrEqual(3) // db_location, download_dir, temp_dir
+    // #197 (SB02): el visor de db_location se retiró; quedan download_dir y temp_dir.
+    expect(inputs.length).toBeGreaterThanOrEqual(2) // download_dir, temp_dir
 
     // Verify download directory input is active and editable
     const downloadInput = inputs.find(i => (i.element as HTMLInputElement).value === 'D:\\Media\\SyncifyMusic')
@@ -146,13 +143,36 @@ describe('SettingsGeneral.vue & PathSelector Integration', () => {
     const wrapper = mount(SettingsGeneral)
     await new Promise(r => setTimeout(r, 50))
 
+    // #197 (SB02): the db_location viewer is gone; Browse remains on the
+    // editable download directory and the derived staging path.
     const browseButtons = wrapper.findAll('button').filter(b => b.text().includes('Browse...'))
-    expect(browseButtons.length).toBeGreaterThanOrEqual(3)
+    expect(browseButtons.length).toBe(2)
 
-    await browseButtons[1].trigger('click')
+    await browseButtons[0].trigger('click')
     expect(open).toHaveBeenCalledWith(expect.objectContaining({
       directory: true,
       multiple: false,
     }))
+  })
+
+  it('#197: the retired db_location viewer is not rendered and is never saved', async () => {
+    const wrapper = mount(SettingsGeneral)
+    await new Promise(r => setTimeout(r, 50))
+
+    // Retired in #197 (SB02): the engine manages the DB location itself and
+    // the db_location KV had no reader (AJ-01 in the matrix).
+    expect(wrapper.text()).not.toContain('Library database location')
+
+    const { invoke } = await import('@tauri-apps/api/core')
+    vi.mocked(invoke).mockClear()
+    const { useGeneralSettings } = await import('@/composables/useGeneralSettings')
+    const general = useGeneralSettings()
+    await general.loadSettings()
+    await general.saveSettings()
+
+    const batch = vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === 'save_settings_batch')
+    expect(batch).toBeDefined()
+    const settings = (batch?.[1] as { settings?: Record<string, string> })?.settings ?? {}
+    expect(settings.db_location).toBeUndefined()
   })
 })

@@ -6,7 +6,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import ServiceCard from '@/components/settings/ServiceCard.vue'
 import SettingsServices from '@/views/settings/SettingsServices.vue'
-import { mockInvoke, resetMocks } from '../setup'
+import { mockInvoke, resetMocks, emitMockEvent } from '../setup'
+import { TauriEvents } from '@/api/tauri'
 import type { Service, Account, ServiceStatus, ServicePreference } from '@/api/types'
 
 describe('ServiceCard.vue - Component Unit Tests', () => {
@@ -311,8 +312,8 @@ describe('SettingsServices.vue - Integration with ServiceCard Events', () => {
         }
       }
       if (command === 'get_service_sync_settings') return []
-      if (command === 'start_auth_and_save') {
-        return { success: true, data: { display_name: 'New User' }, error: null }
+      if (command === 'start_account_login') {
+        return { service: args?.service, profile_key: 'pk-spec-123' }
       }
       if (command === 'logout_service') {
         return { success: true, data: null, error: null }
@@ -333,7 +334,7 @@ describe('SettingsServices.vue - Integration with ServiceCard Events', () => {
     })
   })
 
-  it('handles connect event from ServiceCard and invokes start_auth_and_save', async () => {
+  it('handles connect event from ServiceCard and invokes start_account_login (in-app webview, issue #84)', async () => {
     const wrapper = mount(SettingsServices)
     await flushPromises()
 
@@ -349,9 +350,14 @@ describe('SettingsServices.vue - Integration with ServiceCard Events', () => {
     await qobuzCard.find('[data-testid="service-card-connect"]').trigger('click')
     await flushPromises()
 
-    const authCall = invokedCommands.find(c => c.command === 'start_auth_and_save')
+    const authCall = invokedCommands.find(c => c.command === 'start_account_login')
     expect(authCall).toBeDefined()
     expect(authCall?.args).toEqual({ service: 'qobuz' })
+
+    // El desenlace llega por los eventos account-login-*: el intento completa
+    // y la vista refresca.
+    emitMockEvent(TauriEvents.ACCOUNT_LOGIN_COMPLETED, { profile_key: 'pk-spec-123' })
+    await flushPromises()
   })
 
   it('handles disconnect without deleting account data', async () => {
@@ -376,7 +382,7 @@ describe('SettingsServices.vue - Integration with ServiceCard Events', () => {
     expect(removeCall).toBeUndefined()
   })
 
-  it('handles reauth event from ServiceCard and triggers start_auth_and_save', async () => {
+  it('handles reauth event from ServiceCard and triggers start_account_login (in-app webview, issue #84)', async () => {
     const wrapper = mount(SettingsServices)
     await flushPromises()
 
@@ -387,9 +393,12 @@ describe('SettingsServices.vue - Integration with ServiceCard Events', () => {
     await spotifyCard.find('[data-testid="service-card-reauth"]').trigger('click')
     await flushPromises()
 
-    const reauthCall = invokedCommands.find(c => c.command === 'start_auth_and_save')
+    const reauthCall = invokedCommands.find(c => c.command === 'start_account_login')
     expect(reauthCall).toBeDefined()
     expect(reauthCall?.args).toEqual({ service: 'spotify' })
+
+    emitMockEvent(TauriEvents.ACCOUNT_LOGIN_COMPLETED, { profile_key: 'pk-spec-123' })
+    await flushPromises()
   })
 
   it('handles toggleEnabled event from ServiceCard and invokes toggle_account_active', async () => {

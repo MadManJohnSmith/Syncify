@@ -125,7 +125,6 @@ async fn test_effective_settings_persist_across_restart() {
             rate_limit_delay_ms: 1200,
             max_retries: 4,
             retry_delay_seconds: 10,
-            auto_download_favorites: true,
             generate_lyrics_lrc: true,
             generate_cover_art: true,
             generate_animated_cover: false, // Customized: disabled
@@ -199,7 +198,7 @@ async fn test_effective_settings_persist_across_restart() {
         assert_eq!(effective.rate_limit_delay_ms, 1200);
         assert_eq!(effective.max_retries, 4);
         assert_eq!(effective.retry_delay_seconds, 10);
-        assert_eq!(effective.auto_download_favorites, true);
+        // #197 (SB02): auto_download_favorites fuera del DTO efectivo.
         assert_eq!(effective.generate_animated_cover, false);
         assert_eq!(effective.generate_booklet, false);
         assert_eq!(effective.generate_lyrics_lrc, true);

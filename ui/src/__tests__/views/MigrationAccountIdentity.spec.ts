@@ -94,7 +94,7 @@ describe('MigrationView — account picker identity', () => {
     expect(picker.exists()).toBe(true)
     const optionTexts = picker.findAll('option').map(o => o.text())
 
-    expect(optionTexts[0]).toContain('Ana Spotify (ana@spotify.com)')
+    expect(optionTexts[0]).toContain('Ana Spotify (an•••@spotify.com)')
     expect(optionTexts[0]).toContain('(active)')
     // The opaque session marker is never shown as an identity.
     expect(optionTexts.join(' ')).not.toContain('browser_session')

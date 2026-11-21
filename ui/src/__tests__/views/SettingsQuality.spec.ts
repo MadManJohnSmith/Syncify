@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SettingsQuality from '../../views/settings/SettingsQuality.vue'
+import { useDownloadSettings } from '@/composables/useDownloadSettings'
 import { mockInvoke, resetMocks } from '../setup'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -113,7 +114,59 @@ describe('SettingsQuality.vue (AQ-01, FS-02)', () => {
     expect(wrapper.text()).toContain('Spotify')
 
     const selects = wrapper.findAll('select')
-    // 1 global ceiling select + 2 selects per service (3 services = 7 selects)
-    expect(selects.length).toBeGreaterThanOrEqual(7)
+    // 1 global ceiling select + 1 max-quality select per service (3 services).
+    expect(selects.length).toBe(4)
+  })
+
+  it('only offers the quality tiers the worker applies, folding legacy aliases', async () => {
+    useDownloadSettings().qualityPreferences.value = []
+    mockInvoke((command) => {
+      if (command === 'get_global_max_quality') return 'any'
+      if (command === 'get_quality_preferences') return [
+        {
+          id: 1,
+          service_name: 'tidal',
+          max_quality: 'master',
+          preferred_format: 'flac',
+          fallback_quality: 'high',
+          fallback_format: 'mp3',
+        },
+        {
+          id: 2,
+          service_name: 'soundcloud',
+          max_quality: 'normal',
+          preferred_format: 'mp3',
+          fallback_quality: 'high',
+          fallback_format: 'mp3',
+        },
+      ]
+      if (command === 'get_available_qualities_for_service') return ['inherit', 'high', 'lossless', 'hires']
+      if (command === 'update_quality_preference') return null
+      return null
+    })
+
+    const wrapper = mount(SettingsQuality)
+    await flushPromises()
+
+    const serviceSelects = wrapper.findAll('select').filter(select =>
+      select.find('option[value="inherit"]').exists()
+    )
+    expect(serviceSelects).toHaveLength(2)
+
+    for (const select of serviceSelects) {
+      const values = select.findAll('option').map(option => option.attributes('value'))
+      // Exactly the vocabulary service_max_quality_rank understands, with no
+      // alias ("master"/"normal") offered as if it were a separate tier.
+      expect(new Set(values)).toEqual(new Set(['inherit', 'high', 'lossless', 'hires']))
+    }
+
+    // A stored legacy alias is displayed as the tier the worker actually uses.
+    expect((serviceSelects[0]!.element as HTMLSelectElement).value).toBe('hires')
+    expect((serviceSelects[1]!.element as HTMLSelectElement).value).toBe('high')
+
+    // `preferred_format` is stored but no worker branch reads it, so the UI no
+    // longer offers a "Preferred Format" choice that would be ignored.
+    expect(wrapper.text()).not.toContain('Preferred Format')
+    expect(wrapper.find('option[value="alac"]').exists()).toBe(false)
   })
 })

@@ -4,12 +4,16 @@
 > sigue en español; no hay traducción de este documento todavía. El índice
 > que marca su estado está en `docs/README.en.md`.
 
-**Estado de revisión:** 2026-10-25 — re-revisión contra el árbol (verificación dirigida de símbolos y comportamiento): corregida la cadena de encolado (`queue_downloads` vive en `commands/download.rs` y delega en `commands/queue.rs::add_to_queue`), el bucle del worker ya es event-driven (`slot_available_notify`, sin sondeo de 3 s), el claim es atómico vía `claim_next_item`, `process_download` hoy son `process_download_claimed` + `process_download_internal`, añadido el estado `cancelled`, payload de `syncify:download_progress` completado y citas de línea sustituidas por símbolos. Sigue sin verificar en escritorio real la ejecución de descargas de punta a punta (GUI, red viva): véase README §"Verification and limitations".
+**Estado de revisión:** 2026-11-14 — re-derivación contra el árbol (verificación dirigida de símbolos y comportamiento; D-04b, issue #59). Re-deriva y absorbe la re-revisión del 2026-10-25 (cadena de encolado `queue_downloads` → `commands/queue.rs::add_to_queue`; bucle del worker event-driven con `slot_available_notify`; claim atómico vía `claim_next_item`; `process_download_claimed` + `process_download_internal`; estado `cancelled`; payload de `syncify:download_progress`) y las entradas del 2026-11-06/07 (puerto de proveedores ADR-0023, invalidación de caché de streaming ADR-0024). Ajustado ahora al árbol: `worker.rs` ronda hoy las 3.400 líneas; el arranque del worker ya no es un reset simple — ejecuta en orden `sanitize_stuck_downloads` (TASK-84: descargas `downloading` de más de 1 h a `failed` y staging purgado), `reconcile_downloads_on_startup` (`services/operation_recovery.rs`), `recover_interrupted_jobs` (`download/job.rs`) para el reset restante a `queued`, `repair_unresolved_queue_sources` y la restauración de la concurrencia desde `sync_settings` (SB01: superficie canónica; la KV `dl_concurrent_downloads` queda como lectura tolerante de legado). El barrido periódico cada 60 s aplica la misma sanitización TASK-84. Sigue sin verificar en escritorio real la ejecución de descargas de punta a punta (GUI, red viva): véase README §"Verification and limitations".
 
-**Último cambio:** 2026-11-07 — P6 Fase C (ADR-0024): la descarga completada invalida la caché de streaming de la pista — archivos: `worker.rs`, `services/stream_cache.rs`. Previo: 2026-11-06 — P5: el despacho de proveedores pasa por el puerto `download/provider_gateway.rs` (ADR-0023) — archivos: `download/orchestrator.rs`, `download/provider_gateway.rs`, `download/providers/*`, `download/quality_reconcile.rs`, `worker.rs`. Previo: 2026-10-25 — re-revisión de comportamiento contra el árbol — archivos: `worker.rs`, `commands/download.rs`, `commands/queue.rs`, `main.rs`, `migrations/0004_production.sql`, `migrations/0046_download_queue_resume.sql`, `migrations/0050_download_queue_source_identity.sql`, `migrations/0060_quality_policy_and_decision_tracking.sql`. Previo: 2026-08-25 — eliminación del módulo legacy `downloader.rs` (QBDLX/streamrip) y del bundle `resources/qbdlx-mod/`. Previo a ese: S40 — 2026-03-30.
+**Último cambio:** 2026-11-19 — L14 (issue #109): la biblioteca expone los
+cinco estados de descarga y la calidad efectiva en la consulta de página,
+filtra por estado y calidad, comparte la regla de estados con la cobertura de
+álbum (L07) y reutiliza `add_to_queue` / `force_redownload_tracks` /
+`delete_track_audio`. Previo: 2026-11-19 — D05 (issue #117): gate de verificación de entrega antes de `complete` (`download/verification.rs`), `fallback_action` aplicado por el worker, piso de bitrate por proveedor y `downloads.account_id` — archivos: `worker.rs`, `download/verification.rs`, `download/quality_reconcile.rs`, `download/provider_gateway.rs`, `download/progress.rs`, `download/orchestrator.rs`, `crates/syncify-core-domain/src/quality.rs`. Previo: 2026-11-14 — re-derivación completa contra el árbol (issue #59) — archivos: `worker.rs`, `download/job.rs`, `services/operation_recovery.rs`. Previo: 2026-11-07 — P6 Fase C (ADR-0024): la descarga completada invalida la caché de streaming de la pista — archivos: `worker.rs`, `services/stream_cache.rs`. Previo: 2026-11-06 — P5: el despacho de proveedores pasa por el puerto `download/provider_gateway.rs` (ADR-0023) — archivos: `download/orchestrator.rs`, `download/provider_gateway.rs`, `download/providers/*`, `download/quality_reconcile.rs`, `worker.rs`. Previo: 2026-10-25 — re-revisión de comportamiento contra el árbol. Previo: 2026-08-25 — eliminación del módulo legacy `downloader.rs` (QBDLX/streamrip) y del bundle `resources/qbdlx-mod/`. Previo a ese: S40 — 2026-03-30.
 **Leer antes de modificar:** `worker.rs`, `commands/queue.rs`, `commands/download.rs`, `services/stream_cache.rs`
 **Archivos core:**
-- `src-tauri/src/worker.rs` (3.371 líneas — bucle del worker, claim atómico, eventos de progreso, supervisor auxiliar)
+- `src-tauri/src/worker.rs` (~3.400 líneas — bucle del worker, claim atómico, eventos de progreso, supervisor auxiliar)
 - `src-tauri/src/download/mod.rs` (module index)
 - `src-tauri/src/download/orchestrator.rs` (DownloadOrchestrator)
 - `src-tauri/src/download/provider_gateway.rs` (puerto `DownloadProvider`, registro, `ProviderRequest`/`ProviderDelivery`/`ProviderError`)
@@ -25,6 +29,7 @@
 - `src-tauri/src/download/identity.rs` (reglas de acuerdo de identidad título/duración compartidas por preflight y verificación en descarga)
 - `src-tauri/src/download/resolver.rs` (resolve_download_plan: una única decisión de pista/edición, servicio, cuenta y calidad)
 - `src-tauri/src/download/audio_inspector.rs` (métricas reales del fichero descargado: metaflac/mp4ameta/cabeceras)
+- `src-tauri/src/download/verification.rs` (D05: gate de verificación de entrega — duración, tags, portada — antes de `complete`)
 
 ---
 
@@ -45,9 +50,19 @@
 │  BACKGROUND WORKER (worker.rs — spawn supervisado en    │
 │  el setup de main.rs)                                   │
 │                                                         │
-│  1. On startup: reset status='downloading' → 'queued'   │
+│  1. On startup, en orden:                               │
+│     a. sanitize_stuck_downloads (TASK-84): las filas    │
+│        'downloading' de más de 1 h pasan a 'failed'     │
+│        y se purga su staging                            │
+│     b. reconcile_downloads_on_startup                   │
+│        (services/operation_recovery.rs)                 │
+│     c. recover_interrupted_jobs (download/job.rs):      │
+│        el resto de 'downloading' → 'queued'             │
+│     d. repair_unresolved_queue_sources                  │
+│     e. Concurrencia restaurada de sync_settings (SB01)  │
 │  2. Loop:                                               │
-│     a. Cada 60 s: barrido de descargas atascadas (>1 h) │
+│     a. Cada 60 s: sanitize_stuck_downloads (TASK-84,    │
+│        >1 h → 'failed')                                 │
 │     b. Check stopped flag → break                       │
 │     c. Wait if paused (Notify-based)                    │
 │     d. Si no hay hueco de concurrencia: espera en       │
@@ -113,6 +128,24 @@ Methods: `pause()`, `resume()`, `stop()`, `wait_if_paused()`, `notify_available(
 `active_downloads()`, `increment_active()` / `decrement_active()`,
 `set_max_concurrent()`, `is_paused()` / `is_stopped()`.
 
+### Estado en la biblioteca (L14 — issue #109)
+
+La biblioteca no ejecuta descargas ni decide calidad: lee el estado de la cola
+y del ledger. `commands/library_query.rs` proyecta en la MISMA consulta de
+página los cinco estados del badge —`downloaded` si `downloads.file_path`
+existe; si no, `downloading`, `queued` o `failed` según la fila de
+`download_queue`; `not_downloaded` en el resto— y la calidad efectiva del
+fichero (`FLAC 24/96`). `library_albums.rs` agrega esos mismos estados para la
+cobertura del álbum con la expresión compartida; no hay una regla duplicada
+ni una consulta por pista.
+
+Las acciones reutilizan la única cola: encolar llama a `add_to_queue` (con su
+guardrail de deduplicación) y re-descargar a `force_redownload_tracks` (borra
+el Download y las filas de cola de esa pista y la reencola por
+`perform_add_to_queue`). «Borrar audio» llama a `delete_track_audio` (L04):
+elimina el Download, sus entradas de cola y el fichero, y conserva Track,
+TrackSource, pertenencia y evidencia de edición.
+
 ### Download Sources (pipeline Rust-nativo: `download/orchestrator.rs`)
 
 | Service | Implementación | Método |
@@ -143,6 +176,48 @@ compartidas (título + duración) viven en `download/identity.rs`; el preflight
 que decide qué se puede encolar está en `commands/queue.rs`
 (`evaluate_track_preflight`, `preflight_download_batch`,
 `enqueue_eligible_batch`).
+
+### Verificación de entrega antes de `complete` (D05 — issue #117)
+
+Antes de promocionar una fila a `complete`, el worker corre el gate
+`verify_delivery_before_complete` (`download/verification.rs`, ejercitado por
+`tests/delivery_verification_test.rs`) sobre el fichero ya promovido y
+recortado (TASK-76):
+
+- **Duración física** dentro de la tolerancia fijada de ±2 s frente a la del
+  catálogo (`DURATION_TOLERANCE_SECS`); el silencio recortado por el trimmer
+  amplía la tolerancia en lo recortado. Sin evidencia en alguno de los dos
+  lados (MP3 sin lector de duración, catálogo sin `duration_ms`) no se compara.
+- **Tags releídos** (título, artista, álbum, disco, pista) corroboran el
+  catálogo: un tag ausente o distinto cuando el catálogo lo declara es fallo.
+  FLAC vía metaflac, M4A vía mp4ameta; MP3 se salta hasta que aterrice el
+  escritor ID3 de D16 (falta de lector no es fallo).
+- **Portada válida** (datos presentes con magia JPEG/PNG) solo cuando el
+  usuario pidió incrustarla (`embed_artwork`).
+- **Calidad física manda**: una decisión `RejectedQuality` de la política
+  compartida, o una entrega por debajo de lo pedido bajo política estricta,
+  rechaza la entrega. La política estricta es `fallback_action = 'skip'` de
+  Ajustes **o** el job con `allow_fallback = false`; con fallback permitido la
+  entrega completa declarando la caída (`CompletedWithQualityShortfall` /
+  `CompletedWithQualityFallback`, `quality_fallback_used = 1` y motivo).
+
+Si el gate falla, la fila se marca `failed` con el prefijo
+`DeliveryVerificationFailed:` y **no se escribe el ledger de `downloads`**.
+`mark_complete` conserva además una defensa: una decisión `RejectedQuality`
+nunca se promociona a `complete`.
+
+**Piso de bitrate por proveedor** (matriz en
+`syncify_core_domain::quality::provider_lossy_floor_kbps`, consumida por
+`quality_reconcile` y por los adaptadores D11/D12): SoundCloud 128, Deezer 320
+(128 en cuentas free), Qobuz/Tidal/Amazon 320 por su matriz. El piso global de
+320 dejó de aplicarse en duro; la reconciliación y el orquestador consultan la
+matriz del servicio que entrega. Un MP3 128 se declara como lo que es
+(`lossy`), nunca se etiqueta lossless.
+
+**Atribución de cuenta**: `DownloadResult.account_id` viaja desde
+`ProviderDelivery.account_id` y el ledger escribe `downloads.account_id` con
+la cuenta que entregó (fallback: `resolved_account_id` de la fila), como
+evidencia de enrutado para el panel de jobs.
 
 ### Interacción con la sesión de reproducción (P6 — ADR-0024)
 
@@ -208,7 +283,7 @@ Status values: `"started"`, `"downloading"`, `"complete"`, `"failed"`
 ## Puntos de ruptura conocidos
 
 1. **Worker restart limit**: After 3 panics, worker stops permanently until app restart. No self-healing beyond that.
-2. **Interrupted downloads**: On startup, all `status='downloading'` rows are reset to `'queued'`. This means partial downloads get retried from scratch (no resume).
+2. **Interrupted downloads**: el arranque primero sanciona (TASK-84: `downloading` de más de 1 h → `failed`, staging purgado) y después resetea el resto de `downloading` a `'queued'` (`recover_interrupted_jobs`). Las descargas interrumpidas se reintentan desde cero (la reanudación de parciales de `download_queue` es deuda declarada en ADR-0024).
 3. **ffmpeg en PATH**: `download/lyrics.rs` requiere `ffmpeg` del sistema para conversión de audio; no hay binario empaquetado ni fallback.
 
 ### Resueltos / eliminados (2026-08-25)

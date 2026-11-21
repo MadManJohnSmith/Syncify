@@ -1,0 +1,26 @@
+[package]
+name = "syncify-lyrics-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Syncify Lyrics Engine v2: one module per source, policy and selection"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+flate2 = "1.0"
+futures = "0.3"
+metaflac = "0.2"
+regex = "1.10"
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+syncify-lyrics-domain = { path = "../syncify-lyrics-domain" }
+tokio = { version = "1", features = ["sync", "time"] }
+tracing = "0.1"
+urlencoding = "2"
+
+[dev-dependencies]
+syncify-core-domain = { path = "../syncify-core-domain" }
+# The lyrics domain `fixtures` module is only for tests; same dev-only feature
+# pattern as src-tauri (resolver v2 keeps it out of production builds).
+syncify-lyrics-domain = { path = "../syncify-lyrics-domain", features = ["test-fixtures"] }

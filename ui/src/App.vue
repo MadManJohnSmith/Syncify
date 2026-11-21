@@ -226,6 +226,19 @@
           <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Library</span>
         </router-link>
 
+        <!-- P16 (#147): Favoritos como hub propio, pegado a Library. -->
+        <router-link
+          to="/favorites"
+          data-testid="nav-sidebar-favorites"
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-elevated !text-white"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          :title="sidebarCollapsed ? 'Favorites' : undefined"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0" :class="{ 'fill-1 text-primary': routePath === '/favorites' }">favorite</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Favorites</span>
+        </router-link>
+
         <router-link
           to="/playlists"
           class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
@@ -368,8 +381,24 @@
         style="padding-bottom: calc(var(--status-bar-h, 48px) + 8px)"
       >
         <router-view v-slot="{ Component }">
+          <!-- FE-PERF-01 (#49): KeepAlive ACOTADO, nunca global.
+               El conjunto incluido es la lista fija KEEP_ALIVE_INCLUDE
+               (ui/src/keepAliveViews.ts, con la justificación de cada vista)
+               y `:max` fija el techo duro de instancias retenidas. Los
+               nombres del include son `name`s de componente declarados con
+               defineOptions en cada vista incluida (verificados por test).
+               DECISIÓN de transición: `mode="out-in"` se MANTIENE también en
+               las vistas cacheadas. Coste fijo (~2x150 ms de fade) a cambio
+               de no solapar dos vistas de altura completa en el mismo
+               contenedor flex durante el modo concurrente; el ahorro real lo
+               da el cacheo (sin remontaje ni repetición de llamadas IPC), y
+               la sonda de navegación mide ambos regímenes.
+               El detalle de param por vista (AlbumDetail/ArtistDetail) queda
+               excluido del include en keepAliveViews.ts. -->
           <transition name="fade" mode="out-in">
-            <component :is="Component" />
+            <KeepAlive :include="KEEP_ALIVE_INCLUDE" :max="KEEP_ALIVE_MAX">
+              <component :is="Component" />
+            </KeepAlive>
           </transition>
         </router-view>
       </div>
@@ -412,6 +441,7 @@ import { useNotificationListener, NAVIGATE_EVENT } from './composables/useNotifi
 import { useLogs } from './composables/useLogs'
 import { usePlayer } from './composables/usePlayer'
 import { applyTintFromCover, resetTint } from './composables/useTint'
+import { KEEP_ALIVE_INCLUDE, KEEP_ALIVE_MAX } from './keepAliveViews'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { TauriEvents } from './api/tauri'
 import { accountsApi } from './api/accounts'
@@ -694,11 +724,13 @@ async function initializeApp() {
     splashProgress.value = 75
     splashStatusText.value = 'Loading services and configuration...'
 
+    let startupAccounts: unknown[] | null = null
     try {
-      await Promise.all([
+      const [accountsData] = await Promise.all([
         accountsApi.getAccounts(),
         getDownloadSettings(),
       ])
+      if (Array.isArray(accountsData)) startupAccounts = accountsData
     } catch (err) {
       console.warn('[App] Services/settings load non-fatal note:', err)
     }
@@ -710,14 +742,14 @@ async function initializeApp() {
     // Smooth transition
     showSplash.value = false
 
-    // Check if onboarding needed (no services connected)
-    const hasCompletedOnboarding =
-      localStorage.getItem(ONBOARDING_COMPLETED_KEY) === 'true' ||
-      localStorage.getItem(ONBOARDING_COMPLETE_KEY) === 'true'
-    if (!hasCompletedOnboarding) {
-      setTimeout(() => {
-        showOnboarding.value = true
-      }, 500)
+    // ADR-0007 decisión 15 (#93): cero cuentas ES el estado vacío de la
+    // pantalla de cuentas (seis tarjetas con «conectar»), no un flujo de
+    // bienvenida aparte. El arranque aterriza ahí y el wizard automático
+    // desaparece; `showOnboarding` queda solo para usos manuales. Si el
+    // recuento no se pudo leer, el estado es desconocido y no se navega.
+    if (startupAccounts !== null && startupAccounts.length === 0) {
+      // `router` puede faltar al montar el shell sin router (tests).
+      void router?.push('/accounts')
     }
   } catch (err: any) {
     console.error('[App] Critical initialization failure:', err)

@@ -6,13 +6,14 @@
  * El composable NO conoce los comandos IPC: cada vista declara su fuente
  *
  *   - paginada (LibraryView): recibe `(offset, limit)` y devuelve la página
- *     con `total` y `has_more`; la triple fuente `get_library` /
- *     `get_favorite_tracks` / `get_duplicate_tracks` queda en la vista.
+ *     con `total` y `has_more`; desde L01 (#98) la vista pide `query_library`
+ *     (filtros, orden y contadores en servidor) y ya no sustituye la lista
+ *     por una búsqueda.
  *   - de página fija (MetadataView): una tanda por carga, sin `has_more`.
  *
- * y opcionalmente una fuente FTS (LibraryView) con paginador propio; la
- * normalización de la consulta (un `*` por palabra) vive aquí para que el
- * ritmo de la búsqueda sea caracterizable.
+ * y opcionalmente una fuente FTS con paginador propio (sin consumidor de
+ * vista desde L01; la normalización de la consulta, un `*` por palabra, vive
+ * aquí para que el ritmo de la búsqueda sea caracterizable).
  *
  * El mapeo es inyectado: las filas son tipos de la vista (`mapRow`). La
  * selección es por ids con la semántica exacta que tenía MetadataView:
@@ -277,30 +278,41 @@ export function useTrackBrowser<TItem, TRow>(
     const loadError = ref<string | null>(null);
     const pageAppendCount = ref(0);
 
+    /**
+     * Token de secuencia de la carga (L13, #110): una recarga invalida las
+     * respuestas en vuelo. Sin él, una página de `loadMore` que llega después
+     * de un cambio de filtro se concatenaba a las filas de la consulta nueva.
+     */
+    let loadSeq = 0;
+
     async function load(): Promise<void> {
+        const seq = ++loadSeq;
         isLoading.value = true;
         loadError.value = null;
         currentOffset.value = 0;
         try {
             if (source.kind === 'fixed') {
                 const result = await source.load(pageSize);
+                if (seq !== loadSeq) return;
                 rows.value = result.tracks.map((item, index) => mapRow(item, index));
                 total.value = result.total;
                 hasMore.value = false;
                 currentOffset.value = rows.value.length;
             } else {
                 const page = await source.load(0, pageSize);
+                if (seq !== loadSeq) return;
                 rows.value = page.tracks.map((item, index) => mapRow(item, index));
                 total.value = page.total;
                 hasMore.value = page.has_more;
                 currentOffset.value = page.offset + page.tracks.length;
             }
         } catch (error) {
+            if (seq !== loadSeq) return;
             loadError.value = String(error);
             console.error('useTrackBrowser: failed to load source:', error);
             onLoadError?.(error);
         } finally {
-            isLoading.value = false;
+            if (seq === loadSeq) isLoading.value = false;
         }
     }
 
@@ -308,9 +320,13 @@ export function useTrackBrowser<TItem, TRow>(
         if (source.kind !== 'paged') return;
         if (isLoadingMore.value || !hasMore.value) return;
 
+        const seq = loadSeq;
         isLoadingMore.value = true;
         try {
             const page = await source.load(currentOffset.value, pageSize);
+            // Una recarga empezó mientras la página estaba en vuelo: la
+            // respuesta pertenece a la consulta anterior y se descarta.
+            if (seq !== loadSeq) return;
             const newRows = page.tracks.map((item, index) => mapRow(item, index));
             // Push sobre el MISMO array: la identidad del array es la prueba de
             // "solo hubo un append" de la optimización de prefijo ordenado.
@@ -319,6 +335,7 @@ export function useTrackBrowser<TItem, TRow>(
             hasMore.value = page.has_more;
             currentOffset.value = page.offset + page.tracks.length;
         } catch (error) {
+            if (seq !== loadSeq) return;
             console.error('useTrackBrowser: failed to load more tracks:', error);
         } finally {
             isLoadingMore.value = false;

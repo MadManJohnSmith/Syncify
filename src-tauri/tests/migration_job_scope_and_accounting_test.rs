@@ -214,6 +214,7 @@ async fn test_start_migration_migrates_only_the_selected_playlists() {
         loose_options(),
         None,
         None,
+        None,
     )
     .await
     .expect("start_migration must succeed");
@@ -283,6 +284,7 @@ async fn test_start_migration_with_other_selection_and_favorites_scope() {
         loose_options(),
         None,
         None,
+        None,
     )
     .await
     .expect("start_migration must succeed");
@@ -307,6 +309,7 @@ async fn test_start_migration_with_other_selection_and_favorites_scope() {
         loose_options(),
         None,
         None,
+        None,
     )
     .await
     .expect("start_migration must succeed");
@@ -327,6 +330,7 @@ async fn test_start_migration_with_other_selection_and_favorites_scope() {
         "qobuz".to_string(),
         Some(vec![]),
         loose_options(),
+        None,
         None,
         None,
     )
@@ -352,6 +356,7 @@ async fn test_start_migration_writes_playlist_attribution_and_error_messages() {
         "qobuz".to_string(),
         Some(vec!["pl-scope-a".to_string()]),
         loose_options(),
+        None,
         None,
         None,
     )
@@ -765,6 +770,7 @@ async fn legacy_job_keeps_null_source_and_reconstructs_all_service_playlists() {
         "qobuz".into(),
         Some(vec!["pl-legacy-b".into()]),
         loose_options(),
+        None,
         None,
         None,
     )

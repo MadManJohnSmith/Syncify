@@ -1,0 +1,320 @@
+{
+  "favorites": [
+    {
+      "items": [
+        {
+          "added_at": "2026-11-01T00:00:00Z",
+          "track": {
+            "id": "sp-track-1",
+            "name": "Spotify Track 1",
+            "duration_ms": 180001,
+            "explicit": false,
+            "external_ids": {
+              "isrc": "SPISRC000001",
+              "upc": null,
+              "ean": null
+            },
+            "artists": [
+              {
+                "id": "sp-art-1",
+                "name": "Spotify Artist 1"
+              }
+            ],
+            "album": {
+              "id": "sp-alb-1",
+              "name": "Spotify Album 1"
+            },
+            "popularity": 50,
+            "track_number": 1,
+            "disc_number": 1,
+            "preview_url": null
+          }
+        },
+        {
+          "added_at": "2026-11-02T00:00:00Z",
+          "track": {
+            "id": "sp-track-2",
+            "name": "Spotify Track 2",
+            "duration_ms": 180002,
+            "explicit": false,
+            "external_ids": {
+              "isrc": "SPISRC000002",
+              "upc": null,
+              "ean": null
+            },
+            "artists": [
+              {
+                "id": "sp-art-2",
+                "name": "Spotify Artist 2"
+              }
+            ],
+            "album": {
+              "id": "sp-alb-2",
+              "name": "Spotify Album 2"
+            },
+            "popularity": 50,
+            "track_number": 2,
+            "disc_number": 1,
+            "preview_url": null
+          }
+        }
+      ],
+      "total": 3,
+      "next": null
+    },
+    {
+      "items": [
+        {
+          "added_at": "2026-11-03T00:00:00Z",
+          "track": {
+            "id": "sp-track-3",
+            "name": "Spotify Track 3",
+            "duration_ms": 180003,
+            "explicit": false,
+            "external_ids": {
+              "isrc": "SPISRC000003",
+              "upc": null,
+              "ean": null
+            },
+            "artists": [
+              {
+                "id": "sp-art-3",
+                "name": "Spotify Artist 3"
+              }
+            ],
+            "album": {
+              "id": "sp-alb-3",
+              "name": "Spotify Album 3"
+            },
+            "popularity": 50,
+            "track_number": 3,
+            "disc_number": 1,
+            "preview_url": null
+          }
+        }
+      ],
+      "total": 3,
+      "next": null
+    }
+  ],
+  "albums": [
+    {
+      "items": [
+        {
+          "added_at": "2026-11-01T00:00:00Z",
+          "album": {
+            "id": "sp-alb-1",
+            "name": "Spotify Album 1",
+            "album_type": "album",
+            "release_date": "2024-01-01",
+            "total_tracks": 11,
+            "images": [
+              {
+                "url": "https://example.invalid/sp-alb-1.jpg",
+                "width": 640,
+                "height": 640
+              }
+            ],
+            "label": "Fixture Label",
+            "external_ids": {
+              "upc": "000000000001",
+              "isrc": null,
+              "ean": null
+            },
+            "artists": [
+              {
+                "id": "sp-art-1",
+                "name": "Spotify Artist 1"
+              }
+            ],
+            "tracks": null
+          }
+        },
+        {
+          "added_at": "2026-11-02T00:00:00Z",
+          "album": {
+            "id": "sp-alb-2",
+            "name": "Spotify Album 2",
+            "album_type": "album",
+            "release_date": "2024-02-01",
+            "total_tracks": 12,
+            "images": [
+              {
+                "url": "https://example.invalid/sp-alb-2.jpg",
+                "width": 640,
+                "height": 640
+              }
+            ],
+            "label": "Fixture Label",
+            "external_ids": {
+              "upc": "000000000002",
+              "isrc": null,
+              "ean": null
+            },
+            "artists": [
+              {
+                "id": "sp-art-2",
+                "name": "Spotify Artist 2"
+              }
+            ],
+            "tracks": null
+          }
+        }
+      ],
+      "total": 3,
+      "next": null
+    },
+    {
+      "items": [
+        {
+          "added_at": "2026-11-03T00:00:00Z",
+          "album": {
+            "id": "sp-alb-3",
+            "name": "Spotify Album 3",
+            "album_type": "album",
+            "release_date": "2024-03-01",
+            "total_tracks": 13,
+            "images": [
+              {
+                "url": "https://example.invalid/sp-alb-3.jpg",
+                "width": 640,
+                "height": 640
+              }
+            ],
+            "label": "Fixture Label",
+            "external_ids": {
+              "upc": "000000000003",
+              "isrc": null,
+              "ean": null
+            },
+            "artists": [
+              {
+                "id": "sp-art-3",
+                "name": "Spotify Artist 3"
+              }
+            ],
+            "tracks": null
+          }
+        }
+      ],
+      "total": 3,
+      "next": null
+    }
+  ],
+  "artists": [
+    {
+      "artists": {
+        "items": [
+          {
+            "id": "sp-art-1",
+            "name": "Spotify Artist 1"
+          },
+          {
+            "id": "sp-art-2",
+            "name": "Spotify Artist 2"
+          }
+        ],
+        "total": 3,
+        "cursors": {
+          "after": "cursor-page-1"
+        },
+        "next": "https://example.invalid/next-1"
+      }
+    },
+    {
+      "artists": {
+        "items": [
+          {
+            "id": "sp-art-3",
+            "name": "Spotify Artist 3"
+          }
+        ],
+        "total": 3,
+        "cursors": {
+          "after": null
+        },
+        "next": null
+      }
+    }
+  ],
+  "playlists": [
+    {
+      "items": [
+        {
+          "id": "sp-pl-1",
+          "name": "Spotify Playlist 1",
+          "description": null,
+          "public": true,
+          "collaborative": false,
+          "owner": {
+            "id": "sp-user",
+            "display_name": "Fixture User"
+          },
+          "tracks": {
+            "total": 1
+          },
+          "images": [
+            {
+              "url": "https://example.invalid/sp-pl-1.jpg",
+              "width": 640,
+              "height": 640
+            }
+          ],
+          "snapshot_id": "snap-sp-1"
+        },
+        {
+          "id": "sp-pl-2",
+          "name": "Spotify Playlist 2",
+          "description": null,
+          "public": true,
+          "collaborative": false,
+          "owner": {
+            "id": "sp-user",
+            "display_name": "Fixture User"
+          },
+          "tracks": {
+            "total": 2
+          },
+          "images": [
+            {
+              "url": "https://example.invalid/sp-pl-2.jpg",
+              "width": 640,
+              "height": 640
+            }
+          ],
+          "snapshot_id": "snap-sp-2"
+        }
+      ],
+      "total": 3,
+      "next": null
+    },
+    {
+      "items": [
+        {
+          "id": "sp-pl-3",
+          "name": "Spotify Playlist 3",
+          "description": null,
+          "public": true,
+          "collaborative": false,
+          "owner": {
+            "id": "sp-user",
+            "display_name": "Fixture User"
+          },
+          "tracks": {
+            "total": 3
+          },
+          "images": [
+            {
+              "url": "https://example.invalid/sp-pl-3.jpg",
+              "width": 640,
+              "height": 640
+            }
+          ],
+          "snapshot_id": "snap-sp-3"
+        }
+      ],
+      "total": 3,
+      "next": null
+    }
+  ]
+}

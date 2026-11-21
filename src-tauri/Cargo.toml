@@ -74,6 +74,7 @@ syncify-core-domain = { path = "../crates/syncify-core-domain" }
 syncify-flac-writer = { path = "../crates/syncify-flac-writer" }
 syncify-fmp4-flac = { path = "../crates/syncify-fmp4-flac" }
 syncify-lyrics-domain = { path = "../crates/syncify-lyrics-domain" }
+syncify-lyrics-engine = { path = "../crates/syncify-lyrics-engine" }
 syncify-metadata-domain = { path = "../crates/syncify-metadata-domain" }
 syncify-tidal-downloader = { path = "../crates/syncify-tidal-downloader" }
 # Fase 1 del player: motor de audio nativo (rodio + symphonia)

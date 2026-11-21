@@ -5,8 +5,27 @@
  */
 
 import { invokeCommand } from './tauri';
-import { asArray, asNumber, asString, asBoolean, asRecord, pick, pickArray, pickNumber, optionalNumber } from './normalize';
+import { invalidateLibraryPages } from '@/composables/libraryCacheInvalidation';
+import { asArray, asNumber, asString, asBoolean, asRecord, pick, pickArray, pickNumber, optionalNumber, optionalString } from './normalize';
 import type { LibraryTrack, LibraryPage, LibraryStats, Playlist, SearchResult, AlbumDetail, ArtistDetail, TopArtist, TopGenre, QualityBucket, TrackSourceAvailability, TrackPreflightResult } from './types';
+import type {
+    LibraryQuery,
+    LibraryQueryCounts,
+    LibraryQueryResult,
+    LibraryAlbumQuery,
+    LibraryAlbumRow,
+    LibraryAlbumsResult,
+    LibraryArtistQuery,
+    LibraryArtistRow,
+    LibraryArtistsResult,
+    ArtistTrackRow,
+    ArtistTracksQuery,
+    ArtistTracksResult,
+    LibrarySelection,
+    LibraryBatchAction,
+    LibraryActionPreview,
+    LibraryActionSummary,
+} from './types';
 
 // ==============================================
 // SCAN TYPES
@@ -75,21 +94,239 @@ export async function getFavoriteTracks(offset?: number, limit?: number): Promis
  * Toggle favorite status of a track
  */
 export async function toggleTrackFavorite(trackId: number): Promise<boolean> {
-    return invokeCommand<boolean>('toggle_favorite', { trackId });
+    const state = await invokeCommand<boolean>('toggle_favorite', { trackId });
+    // L13 (#110): el favorito cambia la fila y el contador de la biblioteca.
+    invalidateLibraryPages('favorite');
+    return state;
 }
 
 /**
  * Set favorite status of a track explicitly
  */
 export async function setTrackFavorite(trackId: number, isFavorite: boolean): Promise<boolean> {
-    return invokeCommand<boolean>('set_track_favorite', { trackId, isFavorite });
+    const state = await invokeCommand<boolean>('set_track_favorite', { trackId, isFavorite });
+    invalidateLibraryPages('favorite');
+    return state;
 }
 
 /**
  * Get duplicate tracks (by Title + Primary Artist) (paginated)
  */
-export async function getDuplicateTracks(offset?: number, limit?: number): Promise<LibraryPage> {
-    return normalizeLibraryPage(await invokeCommand<unknown>('get_duplicate_tracks', { offset, limit }), offset, limit);
+/**
+ * Consulta de biblioteca v2 (L01, issue #98): una fila por pista, filtros
+ * AND/OR, contadores y orden EN SERVIDOR, paginación offset/limit. Los
+ * contadores solo vienen en la primera página (`offset == 0`); al paginar
+ * la vista conserva los de la primera.
+ */
+export async function queryLibrary(query: LibraryQuery): Promise<LibraryQueryResult> {
+    const raw = asRecord(await invokeCommand<unknown>('query_library', { query }));
+    const counts = asRecord(raw?.counts);
+    const normalizedCounts: LibraryQueryCounts | null = counts
+        ? {
+              total: asNumber(counts.total),
+              favorites: asNumber(counts.favorites),
+              downloaded: asNumber(counts.downloaded),
+              inPlaylists: asNumber(counts.inPlaylists, asNumber(counts.in_playlists)),
+              albums: asNumber(counts.albums),
+              artists: asNumber(counts.artists),
+              byService: asArray(counts.byService ?? counts.by_service).map((s) => {
+                  const rec = asRecord(s) ?? {};
+                  return {
+                      serviceId: asNumber(rec.serviceId ?? rec.service_id),
+                      serviceName: asString(rec.serviceName ?? rec.service_name, ''),
+                      count: asNumber(rec.count),
+                  };
+              }),
+              byAccount: asArray(counts.byAccount ?? counts.by_account).map((a) => {
+                  const rec = asRecord(a) ?? {};
+                  return {
+                      accountId: asNumber(rec.accountId ?? rec.account_id),
+                      displayName: (rec.displayName ?? rec.display_name) === null || (rec.displayName ?? rec.display_name) === undefined ? null : asString(rec.displayName ?? rec.display_name, ''),
+                      serviceName: asString(rec.serviceName ?? rec.service_name, ''),
+                      count: asNumber(rec.count),
+                  };
+              }),
+          }
+        : null;
+    return {
+        ...normalizeLibraryPage(raw, query.offset, query.limit ?? undefined),
+        counts: normalizedCounts,
+    };
+}
+
+/**
+ * Consulta de la pestaña de álbumes (L07, #104): una fila por álbum con
+ * pistas vivas, cobertura, cuentas y servicios. Comparte texto, filtros y
+ * paginación con `queryLibrary`, pero la agregación y el orden son de álbum.
+ */
+export async function queryLibraryAlbums(query: LibraryAlbumQuery): Promise<LibraryAlbumsResult> {
+    const raw = asRecord(await invokeCommand<unknown>('query_library_albums', { query }));
+    const nullableText = (value: unknown): string | null =>
+        typeof value === 'string' ? value : null;
+    const normalizeAlbum = (album: unknown): LibraryAlbumRow => {
+        const rec = asRecord(album) ?? {};
+        return {
+            albumId: asNumber(rec.albumId ?? rec.album_id),
+            title: asString(rec.title, ''),
+            artistName: nullableText(rec.artistName ?? rec.artist_name),
+            releaseYear: optionalNumber(rec.releaseYear ?? rec.release_year) ?? null,
+            trackCount: asNumber(rec.trackCount ?? rec.track_count),
+            downloadedCount: asNumber(rec.downloadedCount ?? rec.downloaded_count),
+            queuedCount: asNumber(rec.queuedCount ?? rec.queued_count),
+            downloadingCount: asNumber(rec.downloadingCount ?? rec.downloading_count),
+            failedCount: asNumber(rec.failedCount ?? rec.failed_count),
+            notDownloadedCount: asNumber(rec.notDownloadedCount ?? rec.not_downloaded_count),
+            coverage: optionalNumber(rec.coverage) ?? null,
+            accounts: asArray(rec.accounts).map((account) => {
+                const a = asRecord(account) ?? {};
+                return {
+                    accountId: asNumber(a.accountId ?? a.account_id),
+                    displayName: nullableText(a.displayName ?? a.display_name),
+                    serviceName: asString(a.serviceName ?? a.service_name, ''),
+                };
+            }),
+            services: asArray(rec.services).map((service) => {
+                const s = asRecord(service) ?? {};
+                return {
+                    serviceId: asNumber(s.serviceId ?? s.service_id),
+                    serviceName: asString(s.serviceName ?? s.service_name, ''),
+                };
+            }),
+            dateAdded: nullableText(rec.dateAdded ?? rec.date_added),
+            coverArtUrl: nullableText(rec.coverArtUrl ?? rec.cover_art_url),
+        };
+    };
+    return {
+        albums: asArray(raw?.albums).map((album) => normalizeAlbum(album)),
+        total: asNumber(raw?.total),
+        offset: asNumber(raw?.offset, query.offset ?? 0),
+        limit: asNumber(raw?.limit, query.limit ?? 0),
+        hasMore: raw?.hasMore === true || raw?.has_more === true,
+    };
+}
+
+/**
+ * Consulta de la pestaña de artistas (L08, #105): una fila por artista con
+ * pistas vivas, álbumes, colaboraciones, cuentas y servicios. Comparte texto,
+ * filtros y paginación con `queryLibrary`, pero la agregación y el orden son
+ * de artista.
+ */
+export async function queryLibraryArtists(query: LibraryArtistQuery): Promise<LibraryArtistsResult> {
+    const raw = asRecord(await invokeCommand<unknown>('query_library_artists', { query }));
+    const nullableText = (value: unknown): string | null =>
+        typeof value === 'string' ? value : null;
+    const normalizeArtist = (artist: unknown): LibraryArtistRow => {
+        const rec = asRecord(artist) ?? {};
+        return {
+            artistId: asNumber(rec.artistId ?? rec.artist_id),
+            name: asString(rec.name, ''),
+            imageUrl: nullableText(rec.imageUrl ?? rec.image_url),
+            trackCount: asNumber(rec.trackCount ?? rec.track_count),
+            albumCount: asNumber(rec.albumCount ?? rec.album_count),
+            collaborationCount: asNumber(
+                rec.collaborationCount ?? rec.collaboration_count
+            ),
+            accounts: asArray(rec.accounts).map((account) => {
+                const a = asRecord(account) ?? {};
+                return {
+                    accountId: asNumber(a.accountId ?? a.account_id),
+                    displayName: nullableText(a.displayName ?? a.display_name),
+                    serviceName: asString(a.serviceName ?? a.service_name, ''),
+                };
+            }),
+            services: asArray(rec.services).map((service) => {
+                const s = asRecord(service) ?? {};
+                return {
+                    serviceId: asNumber(s.serviceId ?? s.service_id),
+                    serviceName: asString(s.serviceName ?? s.service_name, ''),
+                };
+            }),
+            dateAdded: nullableText(rec.dateAdded ?? rec.date_added),
+        };
+    };
+    return {
+        artists: asArray(raw?.artists).map((artist) => normalizeArtist(artist)),
+        total: asNumber(raw?.total),
+        offset: asNumber(raw?.offset, query.offset ?? 0),
+        limit: asNumber(raw?.limit, query.limit ?? 0),
+        hasMore: raw?.hasMore === true || raw?.has_more === true,
+    };
+}
+
+/**
+ * Normalizador ÚNICO de una pista del detalle de artista (L08, #336). Lo usan
+ * `getArtist` (para `top_tracks`) y `queryLibraryArtistTracks`: el backend
+ * serializa ambos por el MISMO `ArtistTrackRow` camelCase de este release, así
+ * que no se toleran alias snake_case (era defensa muerta del mismo release).
+ */
+export function normalizeArtistTrackRow(raw: unknown): ArtistTrackRow {
+    const rec = asRecord(raw) ?? {};
+    return {
+        id: asNumber(rec.id),
+        title: asString(rec.title, ''),
+        album: optionalString(rec.album),
+        albumId: optionalNumber(rec.albumId) ?? null,
+        durationMs: optionalNumber(rec.durationMs) ?? null,
+        collaborators: asArray(rec.collaborators).map((name) => asString(name, '')),
+        sources: asArray(rec.sources).map((source) => {
+            const s = asRecord(source) ?? {};
+            return {
+                serviceId: asNumber(s.serviceId),
+                serviceName: asString(s.serviceName, ''),
+            };
+        }),
+    };
+}
+
+/**
+ * Página del detalle de un artista (L08, #105): TODAS sus pistas vivas, con
+ * colaboradores y fuentes por servicio. `top_tracks` de `get_artist` es la
+ * primera página de esta misma consulta.
+ */
+export async function queryLibraryArtistTracks(
+    query: ArtistTracksQuery
+): Promise<ArtistTracksResult> {
+    const raw = asRecord(await invokeCommand<unknown>('query_library_artist_tracks', { query }));
+    return {
+        tracks: asArray(raw?.tracks).map((track) => normalizeArtistTrackRow(track)),
+        total: asNumber(raw?.total),
+        offset: asNumber(raw?.offset, query.offset ?? 0),
+        limit: asNumber(raw?.limit, query.limit ?? 0),
+        hasMore: raw?.hasMore === true || raw?.has_more === true,
+    };
+}
+
+/**
+ * Vista previa de una acción por lotes (L05, #102): recuento elegible y
+ * motivos de omisión agregados por acción. No escribe nada.
+ */
+export async function previewLibraryAction(
+    selection: LibrarySelection,
+    action: LibraryBatchAction
+): Promise<LibraryActionPreview> {
+    return invokeCommand<LibraryActionPreview>('preview_library_action', { selection, action });
+}
+
+/**
+ * Ejecuta una acción por lotes. El servidor vuelve a resolver la selección y
+ * recalcula la elegibilidad; `expectedTotal`/`expectedEligible` solo sirven
+ * para que el resumen declare `recalculated` si el sync cambió la biblioteca.
+ */
+export async function runLibraryAction(
+    selection: LibrarySelection,
+    action: LibraryBatchAction,
+    expectedTotal?: number | null,
+    expectedEligible?: number | null
+): Promise<LibraryActionSummary> {
+    const summary = await invokeCommand<LibraryActionSummary>('run_library_action', {
+        selection,
+        action,
+        expectedTotal: expectedTotal ?? null,
+        expectedEligible: expectedEligible ?? null,
+    });
+    // L13 (#110): el lote puede cambiar favoritos, playlists o descargas.
+    invalidateLibraryPages('library-action');
+    return summary;
 }
 
 /**
@@ -108,6 +345,55 @@ export async function getLibraryStats(): Promise<LibraryStats> {
         playlists: pickNumber(raw, ['playlists']),
         services_with_data: pickNumber(raw, ['services_with_data', 'servicesWithData']),
     };
+}
+
+/**
+ * Catálogo local MusicBrainz (mb_dump_*): tipos y wrappers de los comandos
+ * `import_mb_dump` / `get_mb_dump_state` (issues #264 punto 1). Los campos
+ * llegan con las claves snake_case de los structs Rust.
+ */
+export interface MbDumpImportCounts {
+    recording: number;
+    artist: number;
+    artist_credit_name: number;
+    isrc: number;
+}
+
+export interface MbDumpImportState {
+    dump_path: string;
+    dump_timestamp: string;
+    schema_version: number;
+    recording_rows: number;
+    isrc_rows: number;
+    artist_rows: number;
+    artist_credit_name_rows: number;
+    status: 'importing' | 'completed' | 'failed';
+    error: string | null;
+    imported_at: string | null;
+}
+
+export interface MbDumpProgress {
+    table: string;
+    rows: number;
+    expected: number;
+}
+
+/**
+ * Importa un mbdump legacy de MusicBrainz al catálogo local. Larga: resuelve
+ * al terminar; el progreso llega por el evento MB_DUMP_PROGRESS.
+ */
+export async function importMbDump(dumpPath: string): Promise<MbDumpImportCounts> {
+    const counts = await invokeCommand<MbDumpImportCounts>('import_mb_dump', { dumpPath });
+    // L13 (#110): el catálogo importado enriquece las pistas ya listadas.
+    invalidateLibraryPages('import');
+    return counts;
+}
+
+/**
+ * Último intento de importación del catálogo; null si nunca se importó.
+ */
+export async function getMbDumpImportState(): Promise<MbDumpImportState | null> {
+    return invokeCommand<MbDumpImportState | null>('get_mb_dump_state');
 }
 
 /**
@@ -155,7 +441,9 @@ export async function getPlaylistTracks(
  * @returns Success message with count of tracks added
  */
 export async function addToPlaylist(playlistId: number, trackIds: number[]): Promise<string> {
-    return invokeCommand<string>('add_to_playlist', { playlistId, trackIds });
+    const result = await invokeCommand<string>('add_to_playlist', { playlistId, trackIds });
+    invalidateLibraryPages('playlist');
+    return result;
 }
 
 /**
@@ -171,6 +459,7 @@ export async function createPlaylist(
     description?: string
 ): Promise<number> {
     const id = await invokeCommand<unknown>('create_playlist', { accountId, name, description });
+    invalidateLibraryPages('playlist');
     return typeof id === 'number' ? id : 0;
 }
 
@@ -284,7 +573,8 @@ export async function syncLocalLibrary(
  * Remove a single track from the library
  */
 export async function removeTrack(trackId: number): Promise<void> {
-    return invokeCommand<void>('remove_track', { trackId });
+    await invokeCommand<void>('remove_track', { trackId });
+    invalidateLibraryPages('manual');
 }
 
 /**
@@ -300,6 +590,7 @@ export async function stopLibraryWatcher(directory: string): Promise<boolean> {
  */
 export async function bulkRemoveTracks(trackIds: number[]): Promise<number> {
     const removed = await invokeCommand<unknown>('bulk_remove_tracks', { trackIds });
+    invalidateLibraryPages('manual');
     return typeof removed === 'number' ? removed : 0;
 }
 
@@ -308,7 +599,9 @@ export async function bulkRemoveTracks(trackIds: number[]): Promise<number> {
  * @returns The new favorite state (true = favorited)
  */
 export async function toggleFavorite(trackId: number): Promise<boolean> {
-    return invokeCommand<boolean>('toggle_favorite', { trackId });
+    const state = await invokeCommand<boolean>('toggle_favorite', { trackId });
+    invalidateLibraryPages('favorite');
+    return state;
 }
 
 /**
@@ -335,10 +628,20 @@ export async function getAlbum(albumId: number): Promise<AlbumDetail> {
 }
 
 /**
- * Get artist detail with albums and top tracks
+ * Get artist detail with albums and top tracks.
+ *
+ * `top_tracks` pasa por [`normalizeArtistTrackRow`], el mismo normalizador que
+ * usa `queryLibraryArtistTracks` (#336): la vista no normaliza pistas.
  */
 export async function getArtist(artistId: number): Promise<ArtistDetail> {
-    return invokeCommand<ArtistDetail>('get_artist', { artistId: artistId });
+    const raw = await invokeCommand<unknown>('get_artist', { artistId: artistId });
+    const rec = asRecord(raw) ?? {};
+    const detail = rec as unknown as ArtistDetail;
+    return {
+        ...detail,
+        top_tracks: asArray(rec.top_tracks).map((track) => normalizeArtistTrackRow(track)),
+        tracks_total: optionalNumber(rec.tracks_total),
+    };
 }
 
 /**
@@ -415,10 +718,13 @@ export async function getFavoritesTracks(service?: string, offset?: number, limi
 }
 
 /**
- * Get favorite albums with optional service filter
+ * Get favorite albums with optional service filter.
+ * `includeStubs` (P16 #147): los favoritos importados por sync llegan como
+ * stubs hasta que su tracklist se expande; ocultarlos haría mentir la vista,
+ * así que Favoritos los pide y marca los sin pistas.
  */
-export async function getFavoritesAlbums(service?: string, offset?: number, limit?: number): Promise<FavoriteAlbumItem[]> {
-    const raw = await invokeCommand<unknown>('get_favorites_albums', { service, offset, limit });
+export async function getFavoritesAlbums(service?: string, offset?: number, limit?: number, includeStubs?: boolean): Promise<FavoriteAlbumItem[]> {
+    const raw = await invokeCommand<unknown>('get_favorites_albums', { service, offset, limit, includeStubs });
     return asArray<FavoriteAlbumItem>(raw);
 }
 
@@ -1206,24 +1512,11 @@ export async function getTrackMetadata(trackId: number): Promise<TrackMetadataWi
     return normalizeTrackMetadata(raw);
 }
 
-/** Result of `record_local_play` (mirror of the Rust struct `PlayStats`). */
-export interface PlayStats {
-    track_id: number;
-    play_count: number;
-    last_played: string | null;
-    counted: boolean;
-}
-
 /**
- * Player phase 1: credits a completed listen (≥ 30 s of real
- * playback) for a track. Idempotent by `listen_session_id` in the backend:
- * resending the same token after a lost response returns `counted: false`
- * without duplicating the count. Contract: migration 0091 + `record_local_play` in
- * `src-tauri/src/commands/playback.rs`.
+ * The listen crediting (`record_local_play`) is no longer an IPC command
+ * (P01, #132): the backend accumulates the 30 real seconds in its ticker and
+ * credits once per session on its own — the UI never times playback.
  */
-export async function recordLocalPlay(trackId: number, listenSessionId: string): Promise<PlayStats> {
-    return invokeCommand<PlayStats>('record_local_play', { trackId, listenSessionId });
-}
 
 /**
  * Repair tracks missing their artist links (creates Unknown Artist entries
@@ -1351,7 +1644,12 @@ export async function reconcileDownloadsFromStorage(musicDirOverride?: string): 
 // Export as namespace
 export const libraryApi = {
     getLibrary,
-    getDuplicateTracks,
+    queryLibrary,
+    queryLibraryAlbums,
+    queryLibraryArtists,
+    queryLibraryArtistTracks,
+    previewLibraryAction,
+    runLibraryAction,
     getFavoriteTracks,
     getFavoritesTracks,
     getFavoritesAlbums,
@@ -1402,7 +1700,180 @@ export const libraryApi = {
     recalculateAlbumTotalTracks,
     purgeOrphanEmptyAlbums,
     reconcileDownloadsFromStorage,
+    getTrackDetail,
+    deleteTrackAudio,
 };
+
+// ==============================================
+// TRACK DETAIL (L04, issue #101)
+// ==============================================
+// Panel lateral de detalle: UNA llamada IPC con el Track canónico, sus
+// TrackSource por servicio, sus LibraryItem por cuenta y colección y la
+// descarga. Las facetas de cuarentena y duplicados son contrato pendiente
+// (#72/#73): el backend las devuelve null y la vista muestra la sección
+// deshabilitada con su motivo — no se simulan.
+
+export interface TrackDetailSource {
+    serviceId: number;
+    serviceName: string;
+    serviceTrackId: string | null;
+    format: string | null;
+    bitDepth: number | null;
+    sampleRate: number | null;
+    bitrate: number | null;
+    qualityScore: number | null;
+    available: boolean;
+    availabilityStatus: string;
+    availabilityReason: string | null;
+    lastChecked: string | null;
+}
+
+export interface TrackDetailMembership {
+    accountId: number;
+    displayName: string | null;
+    serviceName: string;
+    collection: 'favorite' | 'playlist';
+    collectionId: number | null;
+    collectionName: string | null;
+    addedAt: string | null;
+}
+
+export interface TrackDetailDownload {
+    status: string;
+    effectiveService: string | null;
+    filePath: string | null;
+    fileFormat: string | null;
+    bitDepth: number | null;
+    sampleRate: number | null;
+    downloadedAt: string | null;
+}
+
+export interface TrackDetail {
+    track: LibraryTrack;
+    sources: TrackDetailSource[];
+    memberships: TrackDetailMembership[];
+    download: TrackDetailDownload | null;
+    /** `null` hasta #72/L09 (no hay tabla de cuarentena). */
+    quarantine: null;
+    /** `null` hasta #73/L10 (identidad ISRC∪huella). */
+    duplicateGroup: null;
+}
+
+/** Error tipado del panel: una pista inexistente no es una fila vacía. */
+export type TrackDetailError =
+    | { kind: 'track_not_found'; trackId: number }
+    | { kind: 'database'; message: string };
+
+export interface DeleteTrackAudioResult {
+    queueEntriesDeleted: number;
+    downloadDeleted: boolean;
+    audioFileDeleted: boolean;
+}
+
+/**
+ * El comando devuelve el error tipado como objeto con `kind`; invokeCommand
+ * envuelve lo que no es string/Error en TauriError con el original en
+ * `details`. Normaliza ambos caminos al tipo discriminado.
+ */
+export function normalizeTrackDetailError(error: unknown): TrackDetailError {
+    const raw: unknown = error !== null && typeof error === 'object' && 'kind' in error
+        ? error
+        : (error as { details?: unknown } | null | undefined)?.details;
+    if (raw !== null && typeof raw === 'object' && (raw as Record<string, unknown>).kind === 'track_not_found') {
+        return { kind: 'track_not_found', trackId: asNumber((raw as Record<string, unknown>).trackId) };
+    }
+    const message = error instanceof Error ? error.message : asString(error as string | undefined, 'Unknown error');
+    return { kind: 'database', message };
+}
+
+function normalizeTrackDetailSource(item: unknown): TrackDetailSource {
+    const rec = asRecord(item) ?? {};
+    return {
+        serviceId: asNumber(rec.serviceId ?? rec.service_id),
+        serviceName: asString(rec.serviceName ?? rec.service_name, ''),
+        serviceTrackId: (rec.serviceTrackId ?? rec.service_track_id) === undefined || (rec.serviceTrackId ?? rec.service_track_id) === null ? null : asString(rec.serviceTrackId ?? rec.service_track_id),
+        format: rec.format === undefined || rec.format === null ? null : asString(rec.format),
+        bitDepth: optionalNumber(rec.bitDepth ?? rec.bit_depth) ?? null,
+        sampleRate: optionalNumber(rec.sampleRate ?? rec.sample_rate) ?? null,
+        bitrate: optionalNumber(rec.bitrate) ?? null,
+        qualityScore: optionalNumber(rec.qualityScore ?? rec.quality_score) ?? null,
+        available: rec.available === true,
+        availabilityStatus: asString(rec.availabilityStatus ?? rec.availability_status, 'unknown_unchecked'),
+        availabilityReason: (rec.availabilityReason ?? rec.availability_reason) === undefined || (rec.availabilityReason ?? rec.availability_reason) === null ? null : asString(rec.availabilityReason ?? rec.availability_reason),
+        lastChecked: (rec.lastChecked ?? rec.last_checked) === undefined || (rec.lastChecked ?? rec.last_checked) === null ? null : asString(rec.lastChecked ?? rec.last_checked),
+    };
+}
+
+function normalizeTrackDetailMembership(item: unknown): TrackDetailMembership {
+    const rec = asRecord(item) ?? {};
+    const collection = asString(rec.collection, 'favorite');
+    return {
+        accountId: asNumber(rec.accountId ?? rec.account_id),
+        displayName: (rec.displayName ?? rec.display_name) === undefined || (rec.displayName ?? rec.display_name) === null ? null : asString(rec.displayName ?? rec.display_name),
+        serviceName: asString(rec.serviceName ?? rec.service_name, ''),
+        collection: collection === 'playlist' ? 'playlist' : 'favorite',
+        collectionId: optionalNumber(rec.collectionId ?? rec.collection_id) ?? null,
+        collectionName: (rec.collectionName ?? rec.collection_name) === undefined || (rec.collectionName ?? rec.collection_name) === null ? null : asString(rec.collectionName ?? rec.collection_name),
+        addedAt: (rec.addedAt ?? rec.added_at) === undefined || (rec.addedAt ?? rec.added_at) === null ? null : asString(rec.addedAt ?? rec.added_at),
+    };
+}
+
+function normalizeTrackDetailDownload(rec: unknown): TrackDetailDownload | null {
+    const d = asRecord(rec);
+    if (!d) return null;
+    return {
+        status: asString(d.status, 'not_downloaded'),
+        effectiveService: (d.effectiveService ?? d.effective_service) === undefined || (d.effectiveService ?? d.effective_service) === null ? null : asString(d.effectiveService ?? d.effective_service),
+        filePath: (d.filePath ?? d.file_path) === undefined || (d.filePath ?? d.file_path) === null ? null : asString(d.filePath ?? d.file_path),
+        fileFormat: (d.fileFormat ?? d.file_format) === undefined || (d.fileFormat ?? d.file_format) === null ? null : asString(d.fileFormat ?? d.file_format),
+        bitDepth: optionalNumber(d.bitDepth ?? d.bit_depth) ?? null,
+        sampleRate: optionalNumber(d.sampleRate ?? d.sample_rate) ?? null,
+        downloadedAt: (d.downloadedAt ?? d.downloaded_at) === undefined || (d.downloadedAt ?? d.downloaded_at) === null ? null : asString(d.downloadedAt ?? d.downloaded_at),
+    };
+}
+
+/**
+ * L04 (issue #101): detalle de pista en UNA llamada para el panel lateral.
+ * El rechazo es un `TrackDetailError` tipado (`kind: 'track_not_found'`
+ * para una pista inexistente).
+ */
+export async function getTrackDetail(trackId: number): Promise<TrackDetail> {
+    try {
+        const raw = asRecord(await invokeCommand<unknown>('get_library_track_detail', { trackId }));
+        const page = normalizeLibraryPage({ tracks: raw?.track ? [raw.track] : [], total: raw?.track ? 1 : 0 }, 0, 1);
+        if (!page.tracks[0]) {
+            // El backend nunca responde con la faceta vacía para un id que
+            // existe (es error tipado allí); por blindaje local, una
+            // respuesta sin Track se rechaza igual.
+            throw { kind: 'track_not_found', trackId } satisfies TrackDetailError;
+        }
+        return {
+            track: page.tracks[0],
+            sources: asArray(raw?.sources).map(normalizeTrackDetailSource),
+            memberships: asArray(raw?.memberships).map(normalizeTrackDetailMembership),
+            download: normalizeTrackDetailDownload(raw?.download),
+            quarantine: null,
+            duplicateGroup: null,
+        };
+    } catch (error) {
+        throw normalizeTrackDetailError(error);
+    }
+}
+
+/**
+ * L04 (issue #101): borrar el audio de una pista con confirmación previa en
+ * la vista. Elimina solo el Download, sus entradas de cola y el fichero;
+ * nunca el Track, sus TrackSource ni su pertenencia.
+ */
+export async function deleteTrackAudio(trackId: number): Promise<DeleteTrackAudioResult> {
+    const raw = asRecord(await invokeCommand<unknown>('delete_track_audio', { trackId }));
+    invalidateLibraryPages('download');
+    return {
+        queueEntriesDeleted: asNumber(raw?.queueEntriesDeleted ?? raw?.queue_entries_deleted),
+        downloadDeleted: raw?.downloadDeleted === true || raw?.download_deleted === true,
+        audioFileDeleted: raw?.audioFileDeleted === true || raw?.audio_file_deleted === true,
+    };
+}
 
 
 

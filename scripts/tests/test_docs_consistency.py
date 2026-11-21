@@ -122,7 +122,7 @@ class DocumentationReferenceTests(unittest.TestCase):
     def _documents(self):
         docs = sorted((REPO_ROOT / "docs" / "features").glob("*.md"))
         docs += sorted((REPO_ROOT / "docs" / "adr").glob("*.md"))
-        docs += sorted((REPO_ROOT / "docs" / "agents").glob("*.md"))
+        docs += sorted((REPO_ROOT / "docs" / "agents").rglob("*.md"))
         docs += sorted(p for p in (REPO_ROOT / "docs").glob("*.md"))
         # AGENTS.md es el mapa que un agente lee primero: sus referencias
         # envejecen igual que las de docs/ y deben resolverse igual.

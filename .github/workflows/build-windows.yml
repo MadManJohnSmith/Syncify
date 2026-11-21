@@ -21,79 +21,35 @@ jobs:
   # No se compila ni se publica nada hasta confirmar que este commit tiene
   # CI verde y que el tag no se esta moviendo.
   #
-  # Es un job normal, no un reusable workflow (`uses:`). Invocar un reusable
-  # desde un workflow_dispatch no arranca: el run moria en startup_failure
-  # antes del primer paso. Se comprobó que no era el contenido de la puerta,
-  # sustituyéndola por un reusable minimo de un solo `run: echo ok` y viendo
-  # que el fallo se repetia. La logica vive aqui y tambien, por separado, en
-  # release-gate.yml, que se puede lanzar sola para comprobar la puerta sin
-  # gastar 90 minutos de runner.
+  # Es un paso `run:` normal, no un reusable workflow (`uses:`). Invocar un
+  # reusable desde un workflow_dispatch no arranca: el run moria en
+  # startup_failure antes del primer paso. Se comprobó que no era el
+  # contenido de la puerta, sustituyéndola por un reusable minimo de un solo
+  # `run: echo ok` y viendo que el fallo se repetia. Toda la logica vive en
+  # scripts/ci/release_gate.py, que tambien se puede ejecutar en local con
+  # `gh` autenticado para probar la puerta sin gastar ~90 minutos de runner.
   gate:
     name: Verificar CI verde y tag publicable
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
     steps:
-      - name: Validar el formato del tag
+      - name: Checkout del repositorio
         if: ${{ inputs.create_release }}
-        env:
-          TAG: ${{ inputs.release_tag }}
-        run: |
-          set -euo pipefail
-          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::El tag '$TAG' no tiene la forma vX.Y.Z. No se publica nada."
-            exit 1
-          fi
-          echo "Formato del tag correcto: $TAG"
+        uses: actions/checkout@v4
 
-      - name: Exigir CI verde para el SHA exacto de esta corrida
+      # Las tres reglas de la puerta (formato vX.Y.Z -> CI verde para el SHA
+      # exacto -> tag no movible) y sus diagnosticos viven en el script.
+      - name: Puerta de publicación
         if: ${{ inputs.create_release }}
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.sha }}
-          REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          echo "Verificando CI para el commit $SHA"
-          # Solo corridas completadas: una aun en curso no cuenta como verde.
-          runs=$(gh run list --repo "$REPO" --workflow ci.yml --commit "$SHA" \
-            --status completed --json conclusion --jq '.[].conclusion')
-          if [[ -z "$runs" ]]; then
-            echo "::error::No hay ninguna corrida de CI completada para $SHA."
-            echo "::error::Lanzala bajo demanda antes de publicar."
-            exit 1
-          fi
-          if ! grep -qx "success" <<< "$runs"; then
-            echo "::error::La CI de $SHA no esta en verde. Se obtuvo:"
-            echo "$runs"
-            exit 1
-          fi
-          echo "CI en verde para $SHA"
-
-      - name: Impedir crear o mover un tag ya publicado
-        if: ${{ inputs.create_release }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.release_tag }}
-          SHA: ${{ github.sha }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          remote_sha=$(git ls-remote --tags "https://github.com/$REPO" "refs/tags/$TAG" \
-            | awk '{print $1}' || true)
-          if [[ -z "$remote_sha" ]]; then
-            echo "El tag $TAG no existe todavia. Se creara apuntando a $SHA."
-            exit 0
-          fi
-          # Para tags anotados hay una segunda linea refs/tags/TAG^{}.
-          peeled=$(git ls-remote --tags "https://github.com/$REPO" "refs/tags/$TAG^{}" \
-            | awk '{print $1}' || true)
-          resolved="${peeled:-$remote_sha}"
-          if [[ "$resolved" != "$SHA" ]]; then
-            echo "::error::El tag $TAG ya existe y apunta a $resolved, no a $SHA."
-            echo "::error::No se mueve un tag existente. Publica una version nueva."
-            exit 1
-          fi
-          echo "El tag $TAG ya existe y apunta al mismo commit $SHA."
+          python3 scripts/ci/release_gate.py --tag "$RELEASE_TAG" --sha "$GITHUB_SHA"
 
   build-windows:
     needs: gate
@@ -117,8 +73,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Configurar toolchain Rust estable (MSVC)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Configurar toolchain Rust 1.98.1 (MSVC)
+        uses: dtolnay/rust-toolchain@1.98.1
         with:
           targets: x86_64-pc-windows-msvc
 
@@ -127,98 +83,38 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Descargar FFmpeg y Chromaprint (fpcalc) preempaquetados
+      # FFmpeg (con ffprobe como subproducto del archive) y Chromaprint fpcalc
+      # para el instalador NSIS (bundle.externalBin) y el portable (bin/).
+      # La URL y el SHA-256 de cada herramienta viven en la tabla única del
+      # proveedor (scripts/dependency_manager.py): un repin es un commit alli,
+      # no aqui. Descarga, verificacion y colocacion con triple es lo que hace
+      # el modulo; bin/ queda poblado para el paso del portable.
+      - name: Descargar y colocar binarios externos (ffmpeg, ffprobe, fpcalc)
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Force -Path "bin"
-
-          Write-Host ">>> Descargando FFmpeg (win64)..."
-          # Release fechada de BtbN pineada: "latest" es rolling y su hash cambia
-          # con cada build, lo que rompe la verificación SHA-256 (fallo del 2026-10-03).
-          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-05-12-48/ffmpeg-N-128433-gdb8537d8cc-win64-gpl.zip" -OutFile "ffmpeg.zip"
-          Write-Host ">>> Verificando integridad SHA-256 de FFmpeg..."
-          $ffmpegHash = (Get-FileHash -Path "ffmpeg.zip" -Algorithm SHA256).Hash.ToLower()
-          $knownFfmpegHashes = @(
-            "6e20a5744f9863883484af1cb5dca91e7e01d9af43b58d97fce7344e34393702"
-          )
-          if ($knownFfmpegHashes -notcontains $ffmpegHash) {
-            Remove-Item -Force "ffmpeg.zip"
-            throw "FFmpeg SHA256 verification failed: untrusted digest $ffmpegHash"
-          }
-          Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg-temp"
-          $ffmpegExe = Get-ChildItem -Path "ffmpeg-temp" -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
-          $ffprobeExe = Get-ChildItem -Path "ffmpeg-temp" -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
-          if ($ffmpegExe) { Copy-Item $ffmpegExe.FullName -Destination "bin/ffmpeg.exe" -Force }
-          if ($ffprobeExe) { Copy-Item $ffprobeExe.FullName -Destination "bin/ffprobe.exe" -Force }
-          Remove-Item -Recurse -Force "ffmpeg-temp", "ffmpeg.zip"
-
-          Write-Host ">>> Descargando Chromaprint fpcalc..."
-          Invoke-WebRequest -Uri "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-windows-x86_64.zip" -OutFile "fpcalc.zip"
-          Write-Host ">>> Verificando integridad SHA-256 de fpcalc..."
-          $fpcalcHash = (Get-FileHash -Path "fpcalc.zip" -Algorithm SHA256).Hash.ToLower()
-          $expectedFpcalcHash = "36b478e16aa69f757f376645db0d436073a42c0097b6bb2677109e7835b59bbc"
-          if ($fpcalcHash -ne $expectedFpcalcHash) {
-            Remove-Item -Force "fpcalc.zip"
-            throw "fpcalc SHA256 mismatch! Esperado: $expectedFpcalcHash, Obtenido: $fpcalcHash"
-          }
-          Expand-Archive -Path "fpcalc.zip" -DestinationPath "fpcalc-temp"
-          $fpcalcExe = Get-ChildItem -Path "fpcalc-temp" -Recurse -Filter "fpcalc.exe" | Select-Object -First 1
-          if ($fpcalcExe) { Copy-Item $fpcalcExe.FullName -Destination "bin/fpcalc.exe" -Force }
-          Remove-Item -Recurse -Force "fpcalc-temp", "fpcalc.zip"
-
+          python scripts/dependency_manager.py place-external --triple x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw "place-external fallo con codigo $LASTEXITCODE" }
           Write-Host ">>> Binarios en bin/:"
           Get-ChildItem -Path "bin"
-
-          # Copiar a src-tauri/binaries/ con sufijo de target triple: los exige
-          # bundle.externalBin (tauri.conf.json) para incluirlos en el instalador NSIS.
-          New-Item -ItemType Directory -Force -Path "src-tauri/binaries"
-          Copy-Item "bin/ffmpeg.exe"  "src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe" -Force
-          Copy-Item "bin/ffprobe.exe" "src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe" -Force
-          Copy-Item "bin/fpcalc.exe"  "src-tauri/binaries/fpcalc-x86_64-pc-windows-msvc.exe" -Force
+          Write-Host ">>> Binarios colocados en src-tauri/binaries/:"
           Get-ChildItem -Path "src-tauri/binaries"
 
+      # Runtime Python autónomo para el instalador NSIS y el portable. El
+      # proveedor (scripts/dependency_manager.py) descarga el embed 3.11.9,
+      # verifica el SHA-256 de la tabla de pines, habilita `import site` en el
+      # ._pth, bootstrapa pip con get-pip.py pineado (su hash vive en la
+      # tabla: el repin de emergencia es un commit allí), instala
+      # requirements y corre el smoke canónico de 10 imports (gana aiohttp,
+      # yaml, musicbrainzngs y m3u8 frente a los 6 que se verificaban antes).
+      # Produce python/, el árbol que consume el overlay de Tauri
+      # (../python/**) y los pasos de packaging de abajo.
       - name: Preparar entorno Python embebido autónomo
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Force -Path "python"
-
-          Write-Host ">>> Descargando Python 3.11 embebido para Windows..."
-          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip" -OutFile "python-embed.zip"
-          Write-Host ">>> Verificando integridad SHA-256 de Python embebido..."
-          $pythonHash = (Get-FileHash -Path "python-embed.zip" -Algorithm SHA256).Hash.ToLower()
-          $expectedPythonHash = "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b"
-          if ($pythonHash -ne $expectedPythonHash) {
-            Remove-Item -Force "python-embed.zip"
-            throw "python-embed SHA256 mismatch! Esperado: $expectedPythonHash, Obtenido: $pythonHash"
-          }
-          Expand-Archive -Path "python-embed.zip" -DestinationPath "python" -Force
-          Remove-Item -Force "python-embed.zip"
-
-          # Habilitar site-packages descomentando "import site" en python311._pth
-          $pthFile = Get-ChildItem -Path "python" -Filter "*._pth" | Select-Object -First 1
-          if ($pthFile) {
-            (Get-Content $pthFile.FullName) -replace '#import site', 'import site' | Set-Content $pthFile.FullName
-          }
-
-          Write-Host ">>> Instalando pip en entorno embebido..."
-          Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile "python/get-pip.py"
-          Write-Host ">>> Verificando integridad SHA-256 de get-pip.py..."
-          $pipHash = (Get-FileHash -Path "python/get-pip.py" -Algorithm SHA256).Hash.ToLower()
-          $knownPipHashes = @(
-            "356e0d0de21cdc348c3394084d90939b85e4246c4d14c76aee6ca4f46646ea98"
-          )
-          if ($knownPipHashes -notcontains $pipHash) {
-            Remove-Item -Force "python/get-pip.py"
-            throw "get-pip.py SHA256 verification failed: untrusted digest $pipHash"
-          }
-          & "python/python.exe" "python/get-pip.py" --no-warn-script-location
-          Remove-Item -Force "python/get-pip.py"
-
-          Write-Host ">>> Instalando dependencias de scripts/requirements.txt..."
-          & "python/python.exe" -m pip install -r "scripts/requirements.txt" --no-warn-script-location
-
-          Write-Host ">>> Verificando modulos criticos en Python embebido..."
-          & "python/python.exe" -c "import spotipy, acoustid, dotenv, requests, mutagen, yarl; print('TODOS LOS MODULOS PYTHON ESTAN LISTOS!')"
+          python scripts/dependency_manager.py install-runtime
+          if ($LASTEXITCODE -ne 0) { throw "install-runtime fallo con codigo $LASTEXITCODE" }
+          Write-Host ">>> Runtime Python listo en python/:"
+          Get-ChildItem -Path "python" | Select-Object -First 12
 
       - name: Instalar dependencias de UI
         working-directory: ui
@@ -233,111 +129,33 @@ jobs:
       # persistencia) y cada dos arranques se rotaba la clave de cifrado,
       # dejando TODAS las cuentas marcadas como irrecuperables. Linux no puede
       # cazar ese fallo porque el test es `#[cfg(target_os = "windows")]`.
+      # El manifiesto comctl32 (fichero, no here-string) y el diagnóstico del
+      # loader en el propio fallo viven en el script.
       - name: Guardia del keyring de Windows (store persistente)
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          # El exe de test no lleva el manifiesto que tauri-build embebe en el
-          # binario de la app, así que el loader resuelve comctl32 v5 y muere al
-          # cargar (STATUS_ENTRYPOINT_NOT_FOUND) por imports que solo existen
-          # en v6 (SetWindowSubclass y compañía, vía tao/wry). Se embebe el
-          # manifiesto v6 en el exe de test con mt.exe antes de correrlo.
-          cargo test --locked -p syncify-tauri --lib --no-run
-
-          $exe = Get-ChildItem "target/debug/deps/syncify_tauri_lib-*.exe" |
-                   Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          $mt = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\mt.exe" |
-                  Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $mt) { throw "mt.exe no encontrado en Windows Kits" }
-          Write-Host "mt: $($mt.FullName)"
-          Write-Host "exe: $($exe.FullName)"
-
-          $manifest = Join-Path $env:RUNNER_TEMP "comctl32-v6.manifest"
-          $manifestLines = @(
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">'
-            '  <dependency>'
-            '    <dependentAssembly>'
-            '      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>'
-            '    </dependentAssembly>'
-            '  </dependency>'
-            '</assembly>'
-          )
-          $manifestLines | Set-Content -Encoding UTF8 $manifest
-          & $mt.FullName -manifest $manifest -outputresource:"$($exe.FullName);#1"
-          if ($LASTEXITCODE -ne 0) { throw "mt.exe falló al embeber el manifiesto" }
-
-          cargo test --locked -p syncify-tauri --lib crypto::tests::windows_build_uses_a_persistent_credential_store -- --nocapture
-
-      # Diagnóstico del loader cuando la guardia muere al ARRANCAR el binario de
-      # test (STATUS_ENTRYPOINT_NOT_FOUND): distingue un fallo del runner entero
-      # (una crate mínima también muere) de uno del exe de la app, y lista los
-      # dependientes del exe para ver qué DLL resuelve el loader y desde dónde.
-      - name: Diagnóstico del loader si la guardia falla
-        if: failure()
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Continue"
-          Write-Host ">>> 1. ¿Carga un binario de test mínimo?"
-          cargo test --locked -p syncify-fmp4-flac --lib
-
-          Write-Host ">>> 2. Dependientes del exe de la app"
-          $exe = Get-ChildItem "target/debug/deps/syncify_tauri_lib-*.exe" |
-                   Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          Write-Host "exe: $($exe.FullName)"
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsRoot = & $vswhere -latest -property installationPath
-          $dumpbin = Get-ChildItem -Path (Join-Path $vsRoot "VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe") |
-                     Select-Object -First 1
-          Write-Host "dumpbin: $($dumpbin.FullName)"
-          & $dumpbin.FullName /DEPENDENTS $exe.FullName
-          Write-Host ">>> 3. Imports de comctl32 (v5 no exporta lo que importa tao/wry)"
-          & $dumpbin.FullName /IMPORTS:comctl32.dll $exe.FullName
+        run: pwsh -NoProfile -File scripts/ci/guard_keyring.ps1
 
       - name: Compilar con Tauri v2 (Instalador NSIS y Binarios)
         run: npx --prefix ui tauri build
 
       # Sin esto el instalador sale sin Python: bundle.resources solo declaraba
       # scripts, el NSIS empaqueta lo que encuentra en el arbol y una instalacion
-      # limpia caia al Python del sistema (auditoria 1). Se comprueba DENTRO del
-      # instalador con 7-Zip, que sabe listar archivos NSIS. Si 7-Zip no consigue
-      # listarlo se avisa y se sigue (bloquear la release por una limitacion de
-      # la herramienta seria peor); si lo lista y no encuentra el runtime, el
-      # build falla, que es justo el fallo silencioso que hay que cazar.
+      # limpia caia al Python del sistema (auditoria 1). La guardia mira DENTRO
+      # del instalador; su tolerancia (7-Zip no lista -> warning y exit 0) esta
+      # documentada en el script como decision de release engineering.
       - name: Verificar que el instalador NSIS incluye el Python embebido
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-          $nsisInstaller = Get-ChildItem -Path "target/release/bundle/nsis/*.exe" | Select-Object -First 1
-          if (-not $nsisInstaller) {
-            throw "No se encontro el instalador NSIS en target/release/bundle/nsis/"
-          }
-          if (-not (Test-Path "python/python.exe")) {
-            throw "python/python.exe no existe: el instalador se empaquetaria sin runtime"
-          }
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/ci/guard_installer.ps1
 
-          $listing = Join-Path $env:RUNNER_TEMP "nsis-listing.txt"
-          & 7z l $nsisInstaller.FullName > $listing 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning "7-Zip no pudo listar el instalador (salida $LASTEXITCODE): verificacion omitida"
-            Get-Content $listing -TotalCount 10
-            exit 0
-          }
-          if (-not (Select-String -Path $listing -Pattern '_up_.+python\.exe' -Quiet)) {
-            Write-Host "Primeras entradas del instalador:"
-            Get-Content $listing -TotalCount 20
-            throw "El instalador NSIS no contiene _up_/python/python.exe: bundle.resources no lo empaco"
-          }
-          Write-Host "Runtime Python embebido confirmado en: $($nsisInstaller.Name)"
-
+      # El ensamblado del portable (Syncify.exe + bin/ + scripts/ filtrados por
+      # scripts/ci/exclusions.txt + python/ + LEEME desde plantilla + WebView2 +
+      # zip) vive en scripts/ci/assemble_portable.ps1, con tests de
+      # comportamiento contra fixtures (scripts/tests). Aqui solo queda
+      # organizar el instalador NSIS, que no forma parte del portable.
       - name: Preparar versión Portable y organizar artefactos
-        shell: powershell
+        shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "dist/installer"
-          New-Item -ItemType Directory -Force -Path "dist/portable/Syncify-Portable"
-
-          # 1. Copiar instalador NSIS (.exe)
           $nsisInstaller = Get-ChildItem -Path "target/release/bundle/nsis/*.exe" | Select-Object -First 1
           if ($nsisInstaller) {
             Write-Host "Instalador NSIS encontrado: $($nsisInstaller.FullName)"
@@ -346,85 +164,7 @@ jobs:
             Write-Warning "No se encontro el instalador NSIS en target/release/bundle/nsis/"
           }
 
-          # 2. Copiar ejecutable para la versión Portable
-          if (Test-Path "target/release/Syncify.exe") {
-            Copy-Item "target/release/Syncify.exe" -Destination "dist/portable/Syncify-Portable/Syncify.exe"
-          } elseif (Test-Path "target/release/syncify-tauri.exe") {
-            Copy-Item "target/release/syncify-tauri.exe" -Destination "dist/portable/Syncify-Portable/Syncify.exe"
-          } else {
-            throw "No se encontro el ejecutable en target/release/"
-          }
-
-          # 3. Copiar scripts requeridos por Syncify con filtrado estricto de seguridad (TASK-95 / SEC-011)
-          if (Test-Path "scripts") {
-            $scriptExclusions = @(".*", "*.json", "*.cache", "*.pyc", "__pycache__", "*.log", "*.tmp", "*.db", "*.key", "credentials*", ".env*")
-            Copy-Item -Path "scripts" -Destination "dist/portable/Syncify-Portable/scripts" -Recurse -Exclude $scriptExclusions
-            # Purga preventiva recursiva para asegurar que ningun subdirectorio retenga secretos o caches
-            Get-ChildItem -Path "dist/portable/Syncify-Portable/scripts" -Recurse -Force | Where-Object {
-              $name = $_.Name
-              foreach ($pattern in $scriptExclusions) {
-                if ($name -like $pattern) { return $true }
-              }
-              return $false
-            } | Remove-Item -Recurse -Force
-          }
-
-          # 4. Copiar binarios auxiliares (FFmpeg y fpcalc) al portable
-          if (Test-Path "bin") {
-            Copy-Item -Path "bin" -Destination "dist/portable/Syncify-Portable/bin" -Recurse
-          }
-
-          # 5. Copiar entorno Python autónomo al portable
-          if (Test-Path "python") {
-            Copy-Item -Path "python" -Destination "dist/portable/Syncify-Portable/python" -Recurse
-          }
-
-          # 6. Descargar bootstrapper de WebView2 por si se ejecuta en Windows debloated sin WebView2
-          Write-Host ">>> Descargando instalador WebView2 de soporte..."
-          $webview2Path = "dist/portable/Syncify-Portable/instalar_webview2_si_falla.exe"
-          try {
-            Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile $webview2Path
-            Write-Host ">>> Verificando integridad SHA-256 de instalador WebView2..."
-            $wvHash = (Get-FileHash -Path $webview2Path -Algorithm SHA256).Hash.ToLower()
-            $knownWvHashes = @(
-              "17debf797a6c737959bc588236e897936ffac1af5f7e515e674ab32f9edfe719"
-            )
-            if ($knownWvHashes -notcontains $wvHash) {
-              Remove-Item -Force $webview2Path
-              throw "WebView2 installer SHA256 verification failed: untrusted digest $wvHash"
-            }
-          } catch {
-            Write-Warning "No se pudo descargar o validar el instalador opcional de WebView2: $_"
-            if (Test-Path $webview2Path) { Remove-Item -Force $webview2Path }
-          }
-
-          # 7. Crear archivo LEEME en el portable
-          $readmeLines = @(
-            "======================================================",
-            "                 SYNCIFY PORTABLE (Windows)           ",
-            "======================================================",
-            "",
-            "1. INICIO RAPIDO:",
-            "   Haz doble clic en Syncify.exe para iniciar la aplicacion.",
-            "",
-            "2. WINDOWS MODIFICADO O SIN EDGE / WEBVIEW2:",
-            "   Syncify utiliza WebView2 para la interfaz.",
-            "   Si al abrir Syncify.exe indica que falta WebView2,",
-            "   ejecuta 'instalar_webview2_si_falla.exe' una sola vez.",
-            "",
-            "3. TODO ESTA PRE-CONFIGURADO:",
-            "   - FFmpeg y Chromaprint fpcalc listos en bin/",
-            "   - Python 3.11 y librerias listos en python/",
-            "   - No requiere instalar dependencias adicionales.",
-            "",
-            "Disfruta de Syncify!",
-            "======================================================"
-          )
-          $readmeLines | Set-Content -Path "dist/portable/Syncify-Portable/LEEME.txt" -Encoding utf8
-
-          # 8. Comprimir versión Portable en formato .zip
-          Compress-Archive -Path "dist/portable/Syncify-Portable/*" -DestinationPath "dist/portable/Syncify-Windows-Portable.zip" -Force
-          Write-Host "Version Portable comprimida con exito en dist/portable/Syncify-Windows-Portable.zip"
+          pwsh -NoProfile -File scripts/ci/assemble_portable.ps1
 
       - name: Subir Instalador NSIS como Artefacto
         uses: actions/upload-artifact@v4

@@ -1,7 +1,7 @@
 # Cola técnica pre-beta: orden y solapamiento de etapas dentro de la descarga de una pista
 
-**Estado:** DLX-01…06 y DFL-01 ya prerregistrados en la matriz; sin baseline comparable ni aceptación de implementación. DLX-02 y DLX-06 están condicionados, no aplicados. No acelerar antes de medir cronología, p95, throughput y fallos (`docs/auditoria/matriz-ajustes.md:580-590`). Los diez gates exit 0 aportados en el encargo antecedieron a la ampliación final de la prueba Qobuz comunicada por el carril residual: no cubren el candidato final ni cierran seis gates rojos heredados. GUI/cuentas/Symfonium NOT_EXERCISED.
-**Fecha de origen:** 2026-10-14. **Última revisión:** no registrada en el fichero. **Origen:** petición expresa del propietario sobre cómo se construye una descarga
+**Estado:** DLX-01…06 y DFL-01 prerregistrados en la matriz. DLX-01 implementado en `dev` (56838d1, PR #282): cronología por pista como artefacto de medición opt-in con medición offline reproducible; la cronología de corridas reales queda por recoger (emisión por `SYNCIFY_DLX_TIMELINE_DIR`). DLX-02 y DLX-06 siguen condicionados, no aplicados. No acelerar antes de medir cronología, p95, throughput y fallos (`docs/auditoria/matriz-ajustes.md:580-590`). Los diez gates exit 0 aportados en el encargo antecedieron a la ampliación final de la prueba Qobuz comunicada por el carril residual: no cubren el candidato final ni cierran seis gates rojos heredados. GUI/cuentas/Symfonium NOT_EXERCISED.
+**Fecha de origen:** 2026-10-14. **Última revisión:** 2026-11-13 (DLX-01). **Origen:** petición expresa del propietario sobre cómo se construye una descarga
 individual (orden de metadatos y audio, incrustado de etiquetas, y qué se ejecuta en paralelo o en
 serie), no sobre el volumen del lote ni sobre subir conexiones.
 
@@ -112,6 +112,16 @@ Sin esa medición, cualquier cambio de orden es ciego.
 se explica el tiempo total con las etapas y esperas. Tras introducir solapamiento, el tiempo total
 se compara con la **unión de intervalos**, no con su suma (que contaría dos veces el trabajo
 paralelo). El informe compara dos corridas.
+
+**Estado (2026-11-13):** implementado en `dev` (56838d1, PR #282). Las mediciones por etapa ya
+existían en los pipelines (`DownloadPhaseTracker`); lo añadido es la capa que las convierte en
+cronología comparable: `src-tauri/src/download/timeline.rs` emite el artefacto JSON (opt-in por
+`SYNCIFY_DLX_TIMELINE_DIR` desde un único hook perimetral en `download_track_cancellable`; sin la
+variable, la descarga es idéntica) con unión de intervalos, huecos sin atribuir, fracciones
+audio/complementos/pipeline y whitelist de claves fijada en test. La medición offline reproducible
+está en `src-tauri/tests/dlx01_local_baseline_test.rs`. Dos límites conocidos: el tracker solo
+sostiene una fase abierta (DLX-02 necesitará spans de fases paralelas) y la cronología de fallos no
+se registra todavía (el hook solo graba `Ok`).
 
 ### DLX-02 — Iniciar portada y letras durante la transferencia (solapamiento acotado)
 

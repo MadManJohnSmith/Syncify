@@ -14,12 +14,13 @@ use syncify_core_domain::{FolderFileTemplateConfig, LibraryLayout, TrackLayoutCo
 use syncify_tauri_lib::commands::{
     perform_batch_health_check, perform_clear_download_history, perform_force_redownload_tracks,
     perform_get_download_settings, perform_get_effective_download_paths,
-    perform_get_folder_settings, perform_get_quality_preferences, perform_get_sidecar_settings,
+    perform_get_folder_settings, perform_get_quality_preferences,
+    perform_get_service_preferred_accounts, perform_get_sidecar_settings,
     perform_reset_download_history, perform_save_download_settings, perform_save_setting,
-    perform_set_max_concurrent_downloads, perform_update_fallback_action,
-    perform_update_quality_preference, perform_update_sidecar_settings,
-    resolve_effective_download_paths, validate_directory_path, DownloadSettingsDto,
-    SidecarSettingsDto,
+    perform_set_max_concurrent_downloads, perform_set_service_preferred_account,
+    perform_update_fallback_action, perform_update_quality_preference,
+    perform_update_sidecar_settings, resolve_effective_download_paths, validate_directory_path,
+    DownloadSettingsDto, SidecarSettingsDto,
 };
 use syncify_tauri_lib::enrichment_worker::EnrichmentWorkerState;
 use syncify_tauri_lib::worker::DownloadWorkerState;
@@ -86,7 +87,9 @@ async fn test_download_settings_roundtrip_and_worker_synchronization() {
         .await
         .expect("get_download_settings should succeed");
 
-    assert_eq!(initial_settings.max_concurrent_downloads, 2);
+    // SB01 (#199): el DTO muestra la superficie canónica (sync_settings,
+    // semilla 3), no el estado vivo del worker (2).
+    assert_eq!(initial_settings.max_concurrent_downloads, 3);
 
     // Update settings with custom configuration
     let new_custom_path = format!("{}/CustomMusicLibrary", base_path);
@@ -101,9 +104,6 @@ async fn test_download_settings_roundtrip_and_worker_synchronization() {
         fallback_action: "skip".to_string(),
         max_concurrent_downloads: 5,
         retry_failed: true,
-        retry_count: 4,
-        retry_delay_ms: 3000,
-        auto_download_favorites: true,
         organize_by_artist: true,
         organize_by_album: true,
         generate_lyrics_lrc: true,
@@ -139,9 +139,7 @@ async fn test_download_settings_roundtrip_and_worker_synchronization() {
     assert_eq!(saved_settings.replace_spaces_with, Some("_".to_string()));
     assert_eq!(saved_settings.max_path_length, 240);
     assert_eq!(saved_settings.fallback_action, "skip");
-    assert_eq!(saved_settings.retry_count, 4);
-    assert_eq!(saved_settings.retry_delay_ms, 3000);
-    assert_eq!(saved_settings.auto_download_favorites, true);
+    // #197 (SB02): auto_download_favorites fuera del DTO de descargas.
     assert_eq!(saved_settings.generate_animated_cover, false);
     assert_eq!(saved_settings.generate_booklet, false);
 
@@ -160,12 +158,13 @@ async fn test_download_settings_roundtrip_and_worker_synchronization() {
             .unwrap();
     assert_eq!(db_sync_max, 5);
 
-    let db_kv_concurrent: String =
+    // SB01 (#199): sin copia en la KV; sync_settings es la única superficie.
+    let db_kv_concurrent: Option<String> =
         sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
-            .fetch_one(&pool)
+            .fetch_optional(&pool)
             .await
             .unwrap();
-    assert_eq!(db_kv_concurrent, "5");
+    assert!(db_kv_concurrent.is_none(), "no KV copy of concurrency");
 }
 
 #[tokio::test]
@@ -235,13 +234,14 @@ async fn test_set_max_concurrent_downloads_command_persists() {
             .unwrap();
     assert_eq!(sync_max, 4);
 
-    // Verify settings KV in DB
-    let kv_val: String =
+    // Verify settings KV in DB — SB01: sin copia; sync_settings es la única
+    // superficie del límite concurrente.
+    let kv_val: Option<String> =
         sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
-            .fetch_one(&pool)
+            .fetch_optional(&pool)
             .await
             .unwrap();
-    assert_eq!(kv_val, "4");
+    assert!(kv_val.is_none(), "no KV copy of concurrency");
 }
 
 #[tokio::test]
@@ -462,9 +462,6 @@ async fn test_configured_download_path_respected_in_library_layout() {
         fallback_action: "try_next".to_string(),
         max_concurrent_downloads: 3,
         retry_failed: true,
-        retry_count: 3,
-        retry_delay_ms: 1000,
-        auto_download_favorites: false,
         organize_by_artist: true,
         organize_by_album: true,
         generate_lyrics_lrc: true,
@@ -603,9 +600,6 @@ async fn test_microsd_or_custom_path_staging_derivation_and_space() {
         fallback_action: "skip".to_string(),
         max_concurrent_downloads: 2,
         retry_failed: true,
-        retry_count: 3,
-        retry_delay_ms: 1000,
-        auto_download_favorites: false,
         organize_by_artist: true,
         organize_by_album: true,
         generate_lyrics_lrc: true,
@@ -680,7 +674,7 @@ async fn test_batch_health_check_reports_effective_download_and_staging_paths() 
 }
 
 #[tokio::test]
-async fn test_save_download_settings_synchronizes_all_legacy_keys() {
+async fn test_save_download_settings_leaves_a_single_trace() {
     let (state, pool, temp_dir) = setup_test_app_state(2).await;
     let new_path = temp_dir
         .path()
@@ -699,9 +693,6 @@ async fn test_save_download_settings_synchronizes_all_legacy_keys() {
         fallback_action: "skip".to_string(),
         max_concurrent_downloads: 3,
         retry_failed: true,
-        retry_count: 3,
-        retry_delay_ms: 1000,
-        auto_download_favorites: false,
         organize_by_artist: true,
         organize_by_album: true,
         generate_lyrics_lrc: true,
@@ -719,32 +710,23 @@ async fn test_save_download_settings_synchronizes_all_legacy_keys() {
         .await
         .unwrap();
 
-    // Verify all keys in SQLite directly
+    // SB01 (#199): rastro único — folder_settings es la única superficie de
+    // la ruta; las claves legacy de la KV no reciben copia.
     let base_folder: String =
         sqlx::query_scalar("SELECT base_folder FROM folder_settings WHERE id = 1")
             .fetch_one(&pool)
             .await
             .unwrap();
-    let dl_download_path: String =
-        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_download_path'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    let download_dir: String =
-        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'download_dir'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    let download_path: String =
-        sqlx::query_scalar("SELECT value FROM settings WHERE key = 'download_path'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-
     assert_eq!(base_folder, new_path);
-    assert_eq!(dl_download_path, new_path);
-    assert_eq!(download_dir, new_path);
-    assert_eq!(download_path, new_path);
+
+    for key in ["dl_download_path", "download_dir", "download_path"] {
+        let mirror: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+        assert!(mirror.is_none(), "KV key {key} must not be written anymore");
+    }
 }
 
 #[tokio::test]
@@ -759,7 +741,8 @@ async fn test_concurrency_persistence_and_restart_simulation() {
         assert_eq!(res, target_concurrency);
         assert_eq!(state.worker_state.max_concurrent(), target_concurrency);
 
-        // 2. Verify all DB persistence tables match
+        // 2. Verify DB persistence: sync_settings canónico; ni
+        // advanced_settings ni la KV reciben copia (SB01, #199).
         let sync_val: i32 =
             sqlx::query_scalar("SELECT max_concurrent_downloads FROM sync_settings WHERE id = 1")
                 .fetch_one(&pool)
@@ -771,15 +754,15 @@ async fn test_concurrency_persistence_and_restart_simulation() {
         .fetch_one(&pool)
         .await
         .unwrap();
-        let kv_val: String =
+        let kv_val: Option<String> =
             sqlx::query_scalar("SELECT value FROM settings WHERE key = 'dl_concurrent_downloads'")
-                .fetch_one(&pool)
+                .fetch_optional(&pool)
                 .await
                 .unwrap();
 
         assert_eq!(sync_val as usize, target_concurrency);
-        assert_eq!(adv_val as usize, target_concurrency);
-        assert_eq!(kv_val.parse::<usize>().unwrap(), target_concurrency);
+        assert_eq!(adv_val, 3, "advanced_settings must not receive a copy");
+        assert!(kv_val.is_none(), "no KV copy of concurrency");
 
         // 3. Verify get_download_settings matches
         let settings = perform_get_download_settings(&state).await.unwrap();
@@ -813,6 +796,74 @@ async fn test_concurrency_persistence_and_restart_simulation() {
         let restarted_worker = DownloadWorkerState::new(loaded_after_restart);
         assert_eq!(restarted_worker.max_concurrent(), target_concurrency);
     }
+}
+
+#[tokio::test]
+async fn test_service_preferred_account_roundtrip_and_validation() {
+    let (_state, pool, _temp_dir) = setup_test_app_state(2).await;
+
+    // A second Qobuz account and a Tidal account, to prove service ownership
+    // is validated (the table's FK alone only knows the account exists).
+    sqlx::query("INSERT OR IGNORE INTO accounts (id, service_id, display_name, email, is_active) VALUES (3, 2, 'Qobuz Second', 'qobuz2@test.com', 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT OR IGNORE INTO accounts (id, service_id, display_name, email, is_active) VALUES (4, 3, 'Tidal Test', 'tidal@test.com', 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert!(
+        perform_get_service_preferred_accounts(&pool)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a fresh database has no service preference"
+    );
+
+    let saved = perform_set_service_preferred_account(&pool, "qobuz".to_string(), Some(2))
+        .await
+        .expect("preference is saved")
+        .expect("saved row is returned");
+    assert_eq!(saved.service_name, "qobuz");
+    assert_eq!(saved.account_id, 2);
+
+    // Upsert keeps one row per service.
+    let replaced = perform_set_service_preferred_account(&pool, "Qobuz".to_string(), Some(3))
+        .await
+        .expect("preference is updated")
+        .expect("updated row is returned");
+    assert_eq!(replaced.service_name, "qobuz");
+    assert_eq!(replaced.account_id, 3);
+    let rows = perform_get_service_preferred_accounts(&pool).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].account_id, 3);
+
+    // Clearing removes the row instead of persisting a sentinel.
+    assert!(
+        perform_set_service_preferred_account(&pool, "qobuz".to_string(), None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(perform_get_service_preferred_accounts(&pool)
+        .await
+        .unwrap()
+        .is_empty());
+
+    // An account from another service cannot be preferred for this one.
+    assert!(
+        perform_set_service_preferred_account(&pool, "qobuz".to_string(), Some(4))
+            .await
+            .is_err(),
+        "Tidal account must not become Qobuz's preferred account"
+    );
+    assert!(
+        perform_set_service_preferred_account(&pool, "unknown".to_string(), Some(2))
+            .await
+            .is_err(),
+        "unknown service must be rejected"
+    );
 }
 
 #[tokio::test]

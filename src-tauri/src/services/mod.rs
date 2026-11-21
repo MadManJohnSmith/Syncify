@@ -16,6 +16,7 @@ pub mod http_retry;
 pub mod import_pagination;
 pub mod incremental_enrichment;
 pub mod lastfm;
+pub mod library_membership;
 pub mod logging;
 pub mod manifest_writer;
 pub mod mb_dump_import;
@@ -24,7 +25,12 @@ pub mod mpris;
 pub mod musicbrainz;
 pub mod notification;
 pub mod operation_recovery;
+pub mod playback_advance;
 pub mod playback_session;
+// El unico consumidor es MPRIS, que solo existe en Linux: fuera de Linux sus
+// funciones quedarian sin uso y `-D warnings` rompe el binario.
+#[cfg(target_os = "linux")]
+pub mod player_control;
 pub mod qobuz;
 pub mod rate_limiter;
 pub mod repair_guardrail;

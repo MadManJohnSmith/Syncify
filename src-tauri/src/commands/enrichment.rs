@@ -47,6 +47,18 @@ pub async fn enrich_genre_lastfm(state: State<'_, AppState>) -> Result<String, S
 
     tracing::info!("Starting Last.fm genre enrichment");
 
+    // SB03 (#198): puerta enable_lastfm (patrón enable_musicbrainz de
+    // enrichment_worker.rs).
+    let enable_lastfm: bool =
+        sqlx::query_scalar("SELECT enable_lastfm FROM metadata_preferences WHERE id = 1")
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or(true);
+    if !enable_lastfm {
+        return Ok("Last.fm enrichment disabled in settings (enable_lastfm)".to_string());
+    }
+
     // Get Last.fm client (BD primero, luego env)
     let api_key = resolve_lastfm_api_key(&state.db).await?;
     let client = LastFmClient::new(api_key);
@@ -88,12 +100,15 @@ pub async fn enrich_genre_lastfm(state: State<'_, AppState>) -> Result<String, S
 
                 if genre.is_some() {
                     // Update track with genre
-                    let _ = sqlx::query("UPDATE tracks SET genre = ?, subgenre = ? WHERE id = ?")
-                        .bind(&genre)
-                        .bind(&subgenre)
-                        .bind(track_id)
-                        .execute(&state.db)
-                        .await;
+                    let _ = crate::db::write_or_log(
+                        "enrich_genre_lastfm",
+                        sqlx::query("UPDATE tracks SET genre = ?, subgenre = ? WHERE id = ?")
+                            .bind(&genre)
+                            .bind(&subgenre)
+                            .bind(track_id)
+                            .execute(&state.db),
+                    )
+                    .await;
 
                     enriched += 1;
                 }
@@ -151,11 +166,14 @@ pub async fn enrich_track(state: State<'_, AppState>, track_id: i64) -> Result<S
             if mb.0.is_none() {
                 let mb_client = crate::services::MusicBrainzClient::with_db(state.db.clone());
                 if let Ok(Some(recording)) = mb_client.lookup_by_isrc(isrc).await {
-                    let _ = sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
-                        .bind(&recording.id)
-                        .bind(track_id)
-                        .execute(&state.db)
-                        .await;
+                    let _ = crate::db::write_or_log(
+                        "enrich_track_musicbrainz",
+                        sqlx::query("UPDATE tracks SET musicbrainz_id = ? WHERE id = ?")
+                            .bind(&recording.id)
+                            .bind(track_id)
+                            .execute(&state.db),
+                    )
+                    .await;
                     enrichments.push("MusicBrainz ID");
                 }
             }
@@ -171,22 +189,34 @@ pub async fn enrich_track(state: State<'_, AppState>, track_id: i64) -> Result<S
         .unwrap_or((None,));
 
     if genre.0.is_none() && !artist.is_empty() {
+        // SB03 (#198): puerta enable_lastfm; sin key es no-op como hasta ahora.
+        let enable_lastfm: bool =
+            sqlx::query_scalar("SELECT enable_lastfm FROM metadata_preferences WHERE id = 1")
+                .fetch_optional(&state.db)
+                .await
+                .unwrap_or(Some(true))
+                .unwrap_or(true);
         if let Ok(api_key) = resolve_lastfm_api_key(&state.db).await {
-            let lastfm = crate::services::lastfm::LastFmClient::new(api_key);
-            if let Ok(tags) = lastfm.get_track_tags(&artist, &title).await {
-                let genre = crate::services::lastfm::LastFmClient::extract_genre(&tags);
-                let subgenre = crate::services::lastfm::LastFmClient::extract_subgenre(
-                    &tags,
-                    genre.as_deref(),
-                );
-                if genre.is_some() {
-                    let _ = sqlx::query("UPDATE tracks SET genre = ?, subgenre = ? WHERE id = ?")
-                        .bind(&genre)
-                        .bind(&subgenre)
-                        .bind(track_id)
-                        .execute(&state.db)
+            if enable_lastfm {
+                let lastfm = crate::services::lastfm::LastFmClient::new(api_key);
+                if let Ok(tags) = lastfm.get_track_tags(&artist, &title).await {
+                    let genre = crate::services::lastfm::LastFmClient::extract_genre(&tags);
+                    let subgenre = crate::services::lastfm::LastFmClient::extract_subgenre(
+                        &tags,
+                        genre.as_deref(),
+                    );
+                    if genre.is_some() {
+                        let _ = crate::db::write_or_log(
+                            "enrich_track_lastfm",
+                            sqlx::query("UPDATE tracks SET genre = ?, subgenre = ? WHERE id = ?")
+                                .bind(&genre)
+                                .bind(&subgenre)
+                                .bind(track_id)
+                                .execute(&state.db),
+                        )
                         .await;
-                    enrichments.push("Genre");
+                        enrichments.push("Genre");
+                    }
                 }
             }
         }

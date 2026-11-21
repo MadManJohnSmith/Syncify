@@ -12,7 +12,9 @@
  * AccountsView and SettingsServices cannot diverge on what an account is
  * labelled as. Identity rules: validated email first, validated human
  * display_name second, otherwise "Identity not provided" — never an id,
- * a cookie-like string, or a token.
+ * a cookie-like string, or a token. Emails arrive already masked from the API
+ * layer (`maskEmail` in api/normalize.ts, ADR-0007 decision 7): this module
+ * only ever sees and renders the masked address.
  */
 
 import { ref, computed } from 'vue'
@@ -251,14 +253,21 @@ export function hasMultipleAccounts(accounts: readonly AccountIdentityInput[] | 
 }
 
 /**
- * Sort accounts for the "active-account" UI: the active account first, then
- * invalid ones (they need attention), then the rest. Never reorders by id and
- * never drops a row, so the visible order is stable across refreshes.
+ * Sort accounts the way ADR-0007 decision 16 fixes the order: grouped by
+ * service (the callers already scope per service) and alphabetical by the
+ * editable label within. The order never depends on which account is active
+ * or invalid, so using an account does not reshuffle the list. Equal labels
+ * (twins before renaming) fall back to row id, which makes the order total
+ * and stable across refreshes. Never drops a row and never mutates the input.
  */
 export function orderedAccounts<T extends AccountRow>(accounts: readonly T[] | null | undefined): T[] {
   if (!Array.isArray(accounts)) return []
-  const rank = (a: T) => (a?.is_active ? 0 : (a?.credentials_invalid ? 1 : 2))
-  return [...accounts].sort((a, b) => rank(a) - rank(b))
+  const labelOf = (a: T) => resolveAccountIdentity(a).label
+  return [...accounts].sort((a, b) => {
+    const byLabel = labelOf(a).localeCompare(labelOf(b), undefined, { sensitivity: 'base' })
+    if (byLabel !== 0) return byLabel
+    return (a?.id ?? 0) - (b?.id ?? 0)
+  })
 }
 
 /**

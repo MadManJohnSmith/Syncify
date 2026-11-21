@@ -97,6 +97,42 @@
       </div>
     </div>
 
+    <!-- L03 (#100): armazón de pestañas de la biblioteca (spec #96). El
+         cambio conserva los filtros compatibles (`libraryTabQuery`) y
+         descarta solo los que no aplican; el contenido de álbumes,
+         artistas y duplicados llega con L07/L08/L10. -->
+    <LibraryTabs current="tracks" />
+
+    <!-- L03 (#100): chips de estado de la biblioteca. El chip Descargadas
+         aplica y retira su filtro; su contador viene de los contadores que
+         L01 pide con la primera página. L07 (#104) activa el chip Álbumes:
+         muestra los álbumes distintos con al menos una pista viva y navega a
+         su pestaña. Artistas, cuarentena y duplicados siguen deshabilitados
+         con su motivo (L08, #72, #73): no se simula una dependencia. -->
+    <div class="library-chips px-8 py-2 flex items-center gap-2 flex-wrap shrink-0" data-testid="library-chips">
+      <button
+        v-for="chip in headerChips"
+        :key="chip.id"
+        :disabled="chip.disabled"
+        :title="chip.reason"
+        :aria-pressed="chip.disabled ? undefined : chip.active"
+        :data-testid="`library-chip-${chip.id}`"
+        @click="toggleHeaderChip(chip)"
+        :class="[
+          'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all',
+          chip.disabled
+            ? 'opacity-40 cursor-not-allowed border border-gray-200 dark:border-border-dark text-text-secondary bg-white dark:bg-surface-dark'
+            : chip.active
+            ? 'bg-primary/15 border border-primary/40 text-primary shadow-xs cursor-pointer'
+            : 'bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-text-secondary hover:text-ink hover:border-gray-300 dark:hover:border-gray-600 cursor-pointer'
+        ]"
+      >
+        <span class="material-symbols-outlined text-[15px]" aria-hidden="true">{{ chip.icon }}</span>
+        <span>{{ chip.label }}</span>
+        <strong class="font-bold" data-testid="library-chip-count">{{ chip.count === null ? '—' : chip.count.toLocaleString() }}</strong>
+      </button>
+    </div>
+
     <!-- Collapsible Queue Details Panel (Reconciliation Strip) -->
     <div v-show="showQueueDetails" class="px-8 mb-3 space-y-2 transition-all shrink-0">
       <div class="reconciliation-strip px-4 py-2 rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-xs flex items-center justify-between gap-3 text-xs flex-wrap">
@@ -129,12 +165,16 @@
       <button 
         v-for="filter in filterPills" 
         :key="filter.id"
+        :disabled="filter.disabled"
+        :title="filter.reason"
         @click="toggleFilter(filter.id)"
         :class="[
-          'filter-pill px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-2 whitespace-nowrap transition-all cursor-pointer',
-          activeFilters.includes(filter.id) 
-            ? 'bg-primary/15 border border-primary/40 text-primary font-bold shadow-xs' 
-            : 'bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-text-secondary hover:text-ink hover:border-gray-300 dark:hover:border-gray-600'
+          'filter-pill px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-2 whitespace-nowrap transition-all',
+          filter.disabled
+            ? 'opacity-40 cursor-not-allowed border border-gray-200 dark:border-border-dark text-text-secondary bg-white dark:bg-surface-dark'
+            : activeFilters.includes(filter.id)
+            ? 'bg-primary/15 border border-primary/40 text-primary font-bold shadow-xs cursor-pointer'
+            : 'bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-text-secondary hover:text-ink hover:border-gray-300 dark:hover:border-gray-600 cursor-pointer'
         ]"
       >
         <span v-if="activeFilters.includes(filter.id)" class="w-1.5 h-1.5 rounded-full bg-primary"></span>
@@ -231,6 +271,16 @@
           <span v-else>Starting...</span>
         </button>
 
+        <!-- MB Dump Catalog Button (#264 punto 1): importación local del mbdump -->
+        <button
+          @click="toggleMbDumpPanel"
+          :class="['flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-all border', mbDumpPanelOpen ? 'bg-primary/20 text-primary border-primary/40' : 'bg-primary/10 text-primary hover:bg-primary/20 border-primary/30']"
+          title="Import a local MusicBrainz mbdump catalog"
+        >
+          <span class="material-symbols-outlined text-[16px]">storage</span>
+          <span>MB Catalog</span>
+        </button>
+
         <!-- MF-BULK-15: no complete account/playlist inventory or safe preview API is exposed yet. -->
         <button
           type="button"
@@ -291,29 +341,63 @@
           </div>
         </div>
         
-        <!-- Bulk Actions -->
-        <div v-if="selectedCount > 0" class="flex items-center gap-2">
+        <!-- Bulk Actions (L05, #102): selección de ids o de todo el filtro -->
+        <div v-if="selectedCount > 0" class="flex items-center gap-2 relative">
           <button 
             @click="showBulkMenu = !showBulkMenu"
             class="flex items-center gap-2 px-3 py-2 bg-primary text-on-accent rounded-lg text-xs font-semibold shadow-lg shadow-primary/20 hover:bg-primary-hover transition-colors relative"
           >
             <span class="material-symbols-outlined text-[16px]">checklist</span>
-            <span>{{ selectedCount }} selected</span>
+            <span>{{ selectAllMatching ? `All ${selectedCount} matching` : `${selectedCount} selected` }}</span>
             <span class="material-symbols-outlined text-[14px]">expand_more</span>
           </button>
-          <div v-if="showBulkMenu" class="absolute top-full right-0 mt-1 w-48 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg shadow-xl z-20 py-1">
-            <button @click="downloadSelectedTracks" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
-              <span class="material-symbols-outlined text-[16px]">download</span> Download
-            </button>
-            <button @click="downloadSelectedTracks" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
+          <div v-if="showBulkMenu" class="absolute top-full right-0 mt-1 w-56 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg shadow-xl z-20 py-1">
+            <button @click="openBulkDownload" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
               <span class="material-symbols-outlined text-[16px]">download</span> Add to Downloads
             </button>
-            <hr class="my-1 border-gray-200 dark:border-border-dark">
-            <button @click="handleBulkRemove" class="w-full px-3 py-2 text-left text-xs hover:bg-error/10 transition-colors flex items-center gap-2 text-error">
-              <span class="material-symbols-outlined text-[16px]">delete</span> Remove
+            <button @click="openBulkFavorite(true)" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
+              <span class="material-symbols-outlined text-[16px]">favorite</span> Mark as Favorite
             </button>
+            <button @click="openBulkFavorite(false)" class="w-full px-3 py-2 text-left text-xs hover:bg-gray-50 dark:hover:bg-surface-highlight transition-colors flex items-center gap-2 text-gray-700 dark:text-gray-300">
+              <span class="material-symbols-outlined text-[16px]">heart_minus</span> Remove from Favorites
+            </button>
+            <hr class="my-1 border-gray-200 dark:border-border-dark">
+            <button v-if="!selectAllMatching" @click="handleBulkRemove" class="w-full px-3 py-2 text-left text-xs hover:bg-error/10 transition-colors flex items-center gap-2 text-error">
+              <span class="material-symbols-outlined text-[16px]">delete</span> Remove from library
+            </button>
+            <p v-else class="px-3 py-2 text-[10px] text-text-secondary leading-snug">
+              Destructive actions are per-track only when selecting all matching tracks.
+            </p>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- MB dump catalog import (#264 punto 1): panel mínimo colapsable -->
+    <div v-if="mbDumpPanelOpen" class="px-8 pb-3">
+      <div class="p-4 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl space-y-3">
+        <div class="flex items-center gap-2">
+          <input
+            v-model="mbDumpPath"
+            type="text"
+            placeholder="Path to the MusicBrainz mbdump (tar with recording/isrc/artist/artist_credit_name)"
+            class="flex-1 px-3 py-2 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-lg text-sm text-ink focus:outline-none focus:ring-2 focus:ring-primary transition-all"
+            :disabled="mbDumpImporting"
+          >
+          <button
+            @click="startMbDumpImport"
+            :disabled="mbDumpImporting || !mbDumpPath.trim()"
+            class="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-primary/10 text-primary hover:bg-primary/20 border border-primary/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <span :class="['material-symbols-outlined text-[16px]', mbDumpImporting && 'animate-spin']">{{ mbDumpImporting ? 'progress_activity' : 'upload_file' }}</span>
+            <span>{{ mbDumpImporting ? 'Importing…' : 'Import catalog' }}</span>
+          </button>
+        </div>
+        <p v-if="mbDumpProgressLine" class="text-xs text-text-secondary">{{ mbDumpProgressLine }}</p>
+        <p v-if="mbDumpMessage" :class="['text-xs', mbDumpError ? 'text-error' : 'text-primary']">{{ mbDumpMessage }}</p>
+        <p v-if="!mbDumpMessage && mbDumpState" class="text-xs text-text-secondary">
+          Last import: {{ mbDumpState.status }} · {{ mbDumpState.recording_rows }} recordings · {{ mbDumpState.artist_credit_name_rows }} artist credits · {{ mbDumpState.isrc_rows }} isrcs<template v-if="mbDumpState.error"> · {{ mbDumpState.error }}</template>
+        </p>
       </div>
     </div>
 
@@ -342,34 +426,100 @@
       </button>
     </div>
 
-    <!-- Batch Selection Bar (floating overlay - L-11) -->
+    <!-- Batch Selection Bar (floating overlay - L-11 / L05 #102) -->
     <Transition name="slide-down">
       <div
         v-if="selectedCount > 0"
-        class="batch-bar fixed inset-x-8 max-w-xl mx-auto z-40 flex items-center gap-4 px-6 py-3.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl shadow-2xl"
+        class="batch-bar fixed inset-x-8 max-w-3xl mx-auto z-40 flex items-center gap-3 px-6 py-3.5 bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded-xl shadow-2xl"
         style="bottom: calc(var(--status-bar-h, 48px) + 16px)"
       >
-        <span class="text-accent font-bold text-sm whitespace-nowrap">{{ selectedCount }} track{{ selectedCount !== 1 ? 's' : '' }} selected</span>
-        <div class="flex-1 flex items-center justify-center gap-3 flex-wrap">
+        <div class="flex flex-col gap-0.5 whitespace-nowrap">
+          <span class="text-accent font-bold text-sm">
+            {{ selectAllMatching ? `All ${selectedCount} matching tracks` : `${selectedCount} track${selectedCount !== 1 ? 's' : ''} selected` }}
+          </span>
           <button
-            @click="downloadSelectedTracks"
-            :disabled="isEnqueuingSelection"
-            :aria-busy="isEnqueuingSelection"
+            v-if="selectAllMatching"
+            @click="selectLoadedPageOnly"
+            class="text-[10px] text-text-secondary hover:text-primary text-left transition-colors cursor-pointer"
+          >
+            Select the loaded page instead
+          </button>
+        </div>
+        <div class="flex-1 flex items-center justify-center gap-2 flex-wrap">
+          <button
+            @click="openBulkDownload"
+            :disabled="isBulkRunning"
+            :aria-busy="isBulkRunning"
             class="px-3.5 py-1.5 bg-primary hover:bg-primary-hover text-on-accent rounded-lg text-xs font-semibold shadow-md transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
           >
-            <span class="material-symbols-outlined text-[16px]">{{ isEnqueuingSelection ? 'progress_activity' : 'download' }}</span>
-            {{ isEnqueuingSelection ? 'Enqueuing…' : 'Download' }}
+            <span class="material-symbols-outlined text-[16px]">{{ isBulkRunning ? 'progress_activity' : 'download' }}</span>
+            {{ isBulkRunning ? 'Working…' : 'Download' }}
           </button>
-          <button @click="handleBulkRemove" class="px-3.5 py-1.5 bg-transparent hover:bg-error/20 text-error border border-error/50 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer">
+          <button @click="openBulkFavorite(true)" :disabled="isBulkRunning" class="px-3.5 py-1.5 bg-transparent hover:bg-primary/10 text-primary border border-primary/40 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-60">
+            <span class="material-symbols-outlined text-[16px]">favorite</span>
+            Favorite
+          </button>
+          <select
+            v-model="bulkPlaylistId"
+            :disabled="isBulkRunning"
+            class="max-w-[9rem] px-2 py-1.5 bg-gray-100 dark:bg-surface-highlight border border-gray-300 dark:border-gray-600 rounded-lg text-xs text-ink"
+            aria-label="Playlist for the batch action"
+          >
+            <option :value="null" disabled>Playlist…</option>
+            <option v-for="playlist in playlists" :key="playlist.id" :value="playlist.id">{{ playlist.name }}</option>
+          </select>
+          <button @click="openBulkAddToPlaylist" :disabled="isBulkRunning || bulkPlaylistId === null" class="px-3 py-1.5 bg-transparent hover:bg-primary/10 text-primary border border-primary/40 rounded-lg text-xs font-semibold transition-all cursor-pointer disabled:opacity-50">
+            Add
+          </button>
+          <button v-if="!selectAllMatching" @click="handleBulkRemove" class="px-3.5 py-1.5 bg-transparent hover:bg-error/20 text-error border border-error/50 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer">
             <span class="material-symbols-outlined text-[16px]">delete</span>
             Remove
           </button>
         </div>
-        <button @click="clearSelection" class="text-ink-2 hover:text-ink text-xs transition-colors cursor-pointer whitespace-nowrap">
-          Clear Selection
-        </button>
+        <div class="flex flex-col items-end gap-0.5 whitespace-nowrap">
+          <span v-if="bulkProgress" class="text-[10px] text-text-secondary">
+            {{ bulkProgress.processed }}/{{ bulkProgress.total }} · block {{ bulkProgress.blocksDone }}/{{ bulkProgress.blocksTotal || '?' }}
+          </span>
+          <button @click="clearSelection" class="text-ink-2 hover:text-ink text-xs transition-colors cursor-pointer whitespace-nowrap">
+            Clear Selection
+          </button>
+        </div>
       </div>
     </Transition>
+
+    <!-- Confirmación de acción por lotes: recuento exacto ANTES de ejecutar -->
+    <div
+      v-if="bulkDialog"
+      class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+      data-testid="library-bulk-confirm"
+      @click.self="bulkDialog = null"
+    >
+      <div class="w-full max-w-lg rounded-xl bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark shadow-2xl p-5 space-y-3">
+        <h3 class="text-sm font-bold text-ink">{{ bulkDialog.preview.label }}</h3>
+        <p class="text-sm text-ink">
+          <strong>{{ bulkDialog.preview.eligible }}</strong> of
+          <strong>{{ bulkDialog.preview.total }}</strong> selected tracks are eligible.
+        </p>
+        <ul v-if="bulkDialog.preview.omissions.length" class="text-xs text-text-secondary space-y-1 max-h-40 overflow-y-auto">
+          <li v-for="omission in bulkDialog.preview.omissions" :key="omission.reason">
+            {{ omission.count }} · {{ omission.message }}
+          </li>
+        </ul>
+        <p class="text-[11px] text-text-secondary">
+          The server re-checks the selection when it runs. If sync changed the library, the summary is recalculated.
+        </p>
+        <div class="flex justify-end gap-2 pt-1">
+          <button @click="bulkDialog = null" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold border border-gray-300 dark:border-gray-600 text-ink">Cancel</button>
+          <button
+            @click="confirmBulkAction"
+            :disabled="isBulkRunning"
+            class="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-primary hover:bg-primary-hover text-on-accent disabled:opacity-60"
+          >
+            {{ isBulkRunning ? 'Running…' : `Run on ${bulkDialog.preview.eligible}` }}
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- Context Menu (Viewport Clamped) -->
     <Teleport to="body">
@@ -481,6 +631,11 @@
           <div class="menu-separator h-px bg-line my-1"></div>
           
           <!-- Metadata actions -->
+          <!-- L04 (#101): panel lateral de detalle (solo lectura); la edición vive en /metadata. -->
+          <button @click="openTrackDetail(contextMenu.track!.id)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors" data-testid="context-track-detail">
+            <span class="material-symbols-outlined text-[16px]">side_pane</span>
+            <span class="flex-1 text-left">Track Detail</span>
+          </button>
           <button @click="handleShowMetadata(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span class="material-symbols-outlined text-[16px]">info</span>
             <span class="flex-1 text-left">Show Metadata</span>
@@ -488,6 +643,26 @@
           <button v-if="contextMenu.track?.downloadStatus === 'downloaded'" @click="handleShowInFolder(contextMenu.track!)" class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors">
             <span class="material-symbols-outlined text-[16px]">folder</span>
             <span class="flex-1 text-left">Show in Folder</span>
+          </button>
+          <!-- L14 (#109): re-descarga por la cola existente. -->
+          <button
+            v-if="contextMenu.track?.downloadStatus === 'downloaded'"
+            @click="contextMenu.track && handleReDownload(contextMenu.track)"
+            class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-gray-200 hover:bg-accent-soft transition-colors"
+            data-testid="context-re-download"
+          >
+            <span class="material-symbols-outlined text-[16px]">refresh</span>
+            <span class="flex-1 text-left">Re-download</span>
+          </button>
+          <!-- L14 (#109): borrar audio (no la pista) con confirmación. -->
+          <button
+            v-if="contextMenu.track?.downloadStatus === 'downloaded' || contextMenu.track?.downloadStatus === 'failed'"
+            @click="deleteAudioFromContextMenu"
+            class="menu-item w-full px-4 py-2 flex items-center gap-3 text-xs text-warning hover:bg-warning/10 transition-colors"
+            data-testid="context-delete-audio"
+          >
+            <span class="material-symbols-outlined text-[16px]">audiotrack</span>
+            <span class="flex-1 text-left">Delete audio</span>
           </button>
           
           <div class="menu-separator h-px bg-line my-1"></div>
@@ -602,7 +777,7 @@
       </div>
 
       <!-- EMPTY STATE: No Filter Results -->
-      <div v-else-if="filteredTracks.length === 0 && !isSearching" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
+      <div v-else-if="tracks.length === 0 && !isLoading" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
         <span class="material-symbols-outlined text-[60px] text-gray-400 dark:text-gray-600 mb-6">filter_list_off</span>
         <h3 class="text-xl font-bold text-ink mb-2">No tracks match your filters</h3>
         <p class="text-text-secondary mb-6">Try adjusting your search or filters</p>
@@ -611,20 +786,19 @@
         </button>
       </div>
 
-      <!-- SEARCHING STATE -->
-      <div v-else-if="isSearching && searchQuery" class="library-empty flex-1 flex flex-col items-center justify-center text-center py-16">
-        <span class="material-symbols-outlined text-[60px] text-primary mb-6 animate-spin">progress_activity</span>
-        <h3 class="text-xl font-bold text-ink mb-2">Searching...</h3>
-        <p class="text-text-secondary">Searching your entire library for "{{ searchQuery }}"</p>
-      </div>
-
       <!-- LIST VIEW (Customizable Columns with Drag & Drop) -->
       <template v-else-if="viewMode === 'list' && groupBy === 'none'">
         <!-- Header Row -->
         <div class="track-list flex items-center gap-2 px-3 py-3 border-b border-gray-200 dark:border-border-dark text-[11px] font-bold text-text-secondary uppercase tracking-wider shrink-0 bg-shell/50 rounded-t-xl backdrop-blur-sm sticky top-0 z-10 select-none">
-          <!-- Selection Checkbox -->
+          <!-- Selection Checkbox: «todo el filtro», no solo la página cargada -->
           <div class="w-10 text-center shrink-0">
-            <input type="checkbox" @change="toggleSelectAll" class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
+            <input
+              type="checkbox"
+              :checked="allMatchingSelected"
+              :title="selectAllMatching ? 'Clear the selection' : 'Select all tracks matching the current filter'"
+              @change="toggleSelectAll"
+              class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600"
+            >
           </div>
 
           <!-- Dynamic Draggable Columns: # | Title | Time | Services | Meta | Lyrics | DL | Quality -->
@@ -650,7 +824,7 @@
           </template>
 
           <!-- Actions Header spacer -->
-          <div class="w-20 shrink-0"></div>
+          <div class="w-24 shrink-0"></div>
         </div>
 
         <!-- Scrollable List (Virtual Scroller for 23,000+ Items - PR-02) -->
@@ -675,14 +849,14 @@
                 :class="[
                   'track-row flex items-center gap-2 px-3 py-2 border-b border-gray-100 dark:border-border-dark/50 last:border-0 transition-all group cursor-pointer box-border',
                   track.isPlaying ? 'bg-primary/5 border-l-4 border-l-primary' : 'hover:bg-gray-50 dark:hover:bg-surface-highlight/30',
-                  selection.isSelected(track.id) ? 'bg-accent-soft' : '',
+                  isTrackSelected(track.id) ? 'bg-accent-soft' : '',
                   (virtualStartIndex + index) % 2 === 1 ? 'bg-surface/30' : '',
                   highlightedTrackId === track.id ? 'bg-primary/10 ring-1 ring-inset ring-primary' : ''
                 ]"
               >
                 <!-- Checkbox Cell -->
                 <div class="track-cell w-10 flex justify-center shrink-0">
-                  <input type="checkbox" :checked="selection.isSelected(track.id)" @click.stop="selection.toggle(track.id)" class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
+                  <input type="checkbox" :checked="isTrackSelected(track.id)" @click.stop="toggleTrackSelection(track.id)" class="rounded text-primary focus:ring-primary bg-gray-100 dark:bg-surface-highlight border-gray-300 dark:border-gray-600">
                 </div>
 
                 <!-- Dynamic Cells based on Columns Order -->
@@ -741,8 +915,14 @@
                 <span :class="['material-symbols-outlined text-[16px]', getLyricsTypeIcon(track.lyricsType).class]" :title="getLyricsTypeIcon(track.lyricsType).title">{{ getLyricsTypeIcon(track.lyricsType).icon }}</span>
               </div>
 
-              <!-- DL (Effective Provider or Status) -->
-              <div v-else-if="col.id === 'dl'" :class="['track-cell w-14 text-center shrink-0 flex items-center justify-center', col.hideBreakpoint || '']">
+              <!-- DL (Effective Provider or one of the five download states, L14 #109) -->
+              <div
+                v-else-if="col.id === 'dl'"
+                :class="['track-cell w-14 text-center shrink-0 flex items-center justify-center', col.hideBreakpoint || '']"
+                data-testid="track-download-badge"
+                :data-download-status="track.downloadStatus"
+                :title="downloadStatusLabel(track.downloadStatus)"
+              >
                 <template v-if="track.downloadStatus === 'downloaded'">
                   <span 
                     v-if="track.downloadedFrom" 
@@ -759,27 +939,33 @@
                     check_circle
                   </span>
                 </template>
-                <template v-else-if="track.downloadStatus === 'downloading' || track.downloadStatus === 'queued'">
-                  <span class="material-symbols-outlined text-[18px] text-primary animate-spin" title="Downloading...">progress_activity</span>
+                <template v-else-if="track.downloadStatus === 'downloading'">
+                  <span class="material-symbols-outlined text-[18px] text-primary animate-spin" :title="downloadStatusLabel('downloading')">progress_activity</span>
+                </template>
+                <template v-else-if="track.downloadStatus === 'queued'">
+                  <span class="material-symbols-outlined text-[18px] text-amber-500" :title="downloadStatusLabel('queued')">schedule</span>
                 </template>
                 <template v-else-if="track.downloadStatus === 'failed'">
-                  <span class="material-symbols-outlined text-[18px] text-error" title="Download failed">error</span>
+                  <span class="material-symbols-outlined text-[18px] text-error" :title="downloadStatusLabel('failed')">error</span>
                 </template>
                 <template v-else-if="track.downloadStatus === 'stale'">
                   <span class="material-symbols-outlined text-[18px] text-warning" title="File stale or missing">warning</span>
                 </template>
                 <template v-else>
-                  <span class="text-xs text-gray-400 font-mono" title="Not downloaded">—</span>
+                  <span class="text-xs text-gray-400 font-mono" :title="downloadStatusLabel('not_downloaded')">—</span>
                 </template>
               </div>
 
-              <!-- Quality (ONLY IF DOWNLOADED / LOCAL FILE EXISTS) -->
+              <!-- Quality: effective file quality when downloaded (L14 #109) -->
               <div v-else-if="col.id === 'quality'" :class="['track-cell w-20 text-center shrink-0 flex items-center justify-center', col.hideBreakpoint || '']">
                 <span 
-                  v-if="track.downloadStatus === 'downloaded' && track.quality && track.quality !== '—'" 
-                  :class="['text-[11px] font-medium tracking-wide px-2 py-0.5 rounded-full border', getQualityStyle(track.quality)]"
+                  v-if="track.downloadStatus === 'downloaded' && effectiveQuality(track) !== '—'"
+                  :class="['text-[11px] font-medium tracking-wide px-2 py-0.5 rounded-full border', getQualityStyle(effectiveQuality(track))]"
+                  data-testid="track-quality-badge"
+                  :data-quality="effectiveQuality(track)"
+                  :title="`Effective quality: ${effectiveQuality(track)}`"
                 >
-                  {{ track.quality }}
+                  {{ effectiveQuality(track) }}
                 </span>
                 <span v-else class="text-xs text-gray-400 font-mono" title="Not downloaded">—</span>
               </div>
@@ -788,7 +974,8 @@
             <!-- Actions Cell -->
             <!-- S194: fixed row actions (always visible, dimmed when idle) —
                  the hover-only floating buttons rendered unreliably. -->
-            <div class="track-cell track-actions w-20 shrink-0 flex justify-end items-center gap-1">
+            <div class="track-cell track-actions w-24 shrink-0 flex justify-end items-center gap-1">
+              <button @click.stop="openTrackDetail(track.id)" class="p-1 text-gray-400 opacity-60 hover:text-primary hover:opacity-100 transition-all" title="Track detail" :data-testid="`track-detail-open-${track.id}`"><span class="material-symbols-outlined text-[18px]">side_pane</span></button>
               <button
                 @click.stop="handleToggleFavorite(track)"
                 :class="[
@@ -815,7 +1002,7 @@
               </div>
 
               <!-- End of List Indicator -->
-              <div v-else-if="!hasMore && tracks.length > 0 && virtualEndIndex >= filteredTracks.length" class="py-4 text-center text-sm text-text-secondary">
+              <div v-else-if="!hasMore && tracks.length > 0 && virtualEndIndex >= tracks.length" class="py-4 text-center text-sm text-text-secondary">
                 Showing all {{ totalTracks.toLocaleString() }} tracks
               </div>
             </div>
@@ -823,66 +1010,84 @@
         </div>
       </template>
 
-      <!-- GRID VIEW -->
+      <!-- GRID VIEW (L13, #110): virtualizado por filas de baldosas. Solo se
+           renderiza la ventana visible con overscan; el alto de fila se deriva
+           del ancho de baldosa para no depender del layout del navegador. -->
       <template v-else-if="viewMode === 'grid' && groupBy === 'none'">
-        <div class="library-grid flex-1 overflow-y-auto custom-scrollbar" @scroll="handleScroll">
-          <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 2xl:grid-cols-6 gap-5 p-1">
-            <div 
-              v-for="album in groupedByAlbum" 
-              :key="album.id"
-              @click="handleAlbumClick(album.albumId || album.id)"
-              :class="[
-                'grid-tile group bg-white dark:bg-surface-dark rounded-xl overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 cursor-pointer hover:-translate-y-1',
-                album.isSelected ? 'ring-3 ring-primary' : ''
-              ]"
-            >
-              <!-- Image Area -->
-              <div class="tile-image relative aspect-square overflow-hidden bg-gray-200 dark:bg-gray-800">
-                <img v-if="album.coverUrl" :src="album.coverUrl" :alt="album.title" class="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" loading="lazy" />
-                <div v-else :class="['absolute inset-0 w-full h-full', album.artGradient]"></div>
-                
-                <!-- Grid Placeholder Icon -->
-                <div v-if="!album.coverUrl && !album.artGradient.includes('bg-')" class="absolute inset-0 flex items-center justify-center opacity-30">
-                  <span class="material-symbols-outlined text-[48px]">album</span>
-                </div>
-                
-                <!-- Top-left: Download status -->
-                <div class="absolute top-2 left-2 z-10">
-                  <span v-if="album.downloadStatus === 'downloaded'" class="w-6 h-6 rounded-full bg-success/90 text-white flex items-center justify-center shadow-lg">
-                    <span class="material-symbols-outlined text-[14px]">check</span>
-                  </span>
-                  <span v-else class="w-6 h-6 rounded-full bg-black/50 text-white flex items-center justify-center">
-                    <span class="material-symbols-outlined text-[14px]">cloud</span>
-                  </span>
-                </div>
-                
-                <!-- Top-right: Quality badge -->
-                <div class="absolute top-2 right-2">
-                  <span :class="['px-1.5 py-0.5 rounded text-[9px] font-bold shadow-lg', getQualityBadgeStyle(album.quality)]">
-                    {{ album.quality }}
-                  </span>
-                </div>
-                
-                <!-- Hover Overlay -->
-                <div class="tile-overlay absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-all duration-300 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100">
-                  <button @click.stop="handleAlbumPlay(album)" class="w-14 h-14 rounded-full bg-primary text-on-accent flex items-center justify-center shadow-xl transform scale-75 group-hover:scale-100 transition-transform duration-300" title="Play album">
-                    <span class="material-symbols-outlined text-[28px]">play_arrow</span>
-                  </button>
-                  <span class="absolute bottom-3 text-white text-xs font-medium">{{ album.trackCount }} track{{ album.trackCount !== 1 ? 's' : '' }}</span>
-                </div>
-              </div>
-              
-              <!-- Info Area -->
-              <div class="tile-info p-3 space-y-1">
-                <h4 class="text-sm font-semibold text-ink line-clamp-2 leading-tight">{{ album.title }}</h4>
-                <p class="text-xs text-text-secondary truncate">{{ album.artist }}</p>
-                <div class="flex items-center justify-between pt-1">
-                  <div class="flex items-center gap-1">
-                    <span v-for="service in album.services.slice(0, 3)" :key="service" :class="['w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold', getServiceStyle(service)]">
-                      {{ getServiceIcon(service) }}
-                    </span>
+        <div
+          ref="gridContainerRef"
+          class="library-grid flex-1 min-h-0 overflow-y-auto custom-scrollbar border-x border-b border-gray-200 dark:border-border-dark rounded-b-xl bg-white dark:bg-surface-dark relative"
+          style="contain: strict;"
+          data-testid="library-grid"
+          @scroll="handleGridScroll"
+        >
+          <div :style="{ height: totalGridHeight + 'px', position: 'relative', width: '100%' }">
+            <div :style="{ transform: `translateY(${gridOffsetY}px)`, position: 'absolute', top: 0, left: 0, right: 0 }">
+              <div
+                v-for="(gridRow, gridRowIndex) in visibleGridRows"
+                :key="gridRowIndex"
+                class="grid-row flex gap-5 px-1"
+                :style="{ height: (gridTileSize + GRID_INFO_PX) + 'px', marginBottom: GRID_GAP_PX + 'px' }"
+              >
+                <div
+                  v-for="album in gridRow"
+                  :key="album.key"
+                  @click="handleAlbumClick(album.albumId || album.id)"
+                  :class="[
+                    'grid-tile group bg-white dark:bg-surface-dark rounded-xl overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 cursor-pointer hover:-translate-y-1 shrink-0',
+                    album.isSelected ? 'ring-3 ring-primary' : ''
+                  ]"
+                  :style="{ width: gridTileSize + 'px', height: (gridTileSize + GRID_INFO_PX) + 'px' }"
+                >
+                  <!-- Image Area -->
+                  <div class="tile-image relative overflow-hidden bg-gray-200 dark:bg-gray-800" :style="{ height: gridTileSize + 'px' }">
+                    <img v-if="album.coverUrl" :src="album.coverUrl" :alt="album.title" class="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" loading="lazy" />
+                    <div v-else :class="['absolute inset-0 w-full h-full', album.artGradient]"></div>
+
+                    <!-- Grid Placeholder Icon -->
+                    <div v-if="!album.coverUrl && !album.artGradient.includes('bg-')" class="absolute inset-0 flex items-center justify-center opacity-30">
+                      <span class="material-symbols-outlined text-[48px]">album</span>
+                    </div>
+
+                    <!-- Top-left: Download status -->
+                    <div class="absolute top-2 left-2 z-10">
+                      <span v-if="album.downloadStatus === 'downloaded'" class="w-6 h-6 rounded-full bg-success/90 text-white flex items-center justify-center shadow-lg">
+                        <span class="material-symbols-outlined text-[14px]">check</span>
+                      </span>
+                      <span v-else class="w-6 h-6 rounded-full bg-black/50 text-white flex items-center justify-center">
+                        <span class="material-symbols-outlined text-[14px]">cloud</span>
+                      </span>
+                    </div>
+
+                    <!-- Top-right: Quality badge -->
+                    <div class="absolute top-2 right-2">
+                      <span :class="['px-1.5 py-0.5 rounded text-[9px] font-bold shadow-lg', getQualityBadgeStyle(album.quality)]">
+                        {{ album.quality }}
+                      </span>
+                    </div>
+
+                    <!-- Hover Overlay -->
+                    <div class="tile-overlay absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-all duration-300 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100">
+                      <button @click.stop="handleAlbumPlay(album)" class="w-14 h-14 rounded-full bg-primary text-on-accent flex items-center justify-center shadow-xl transform scale-75 group-hover:scale-100 transition-transform duration-300" title="Play album">
+                        <span class="material-symbols-outlined text-[28px]">play_arrow</span>
+                      </button>
+                      <span class="absolute bottom-3 text-white text-xs font-medium">{{ album.trackCount }} track{{ album.trackCount !== 1 ? 's' : '' }}</span>
+                    </div>
                   </div>
-                  <span :class="['w-2.5 h-2.5 rounded-full', album.metadataScore >= 90 ? 'bg-success' : album.metadataScore >= 70 ? 'bg-warning' : 'bg-error']"></span>
+
+                  <!-- Info Area: altura fija para que la ventana virtual sea exacta -->
+                  <div class="tile-info p-3 space-y-1 overflow-hidden" :style="{ height: GRID_INFO_PX + 'px' }">
+                    <h4 class="text-sm font-semibold text-ink line-clamp-2 leading-tight">{{ album.title }}</h4>
+                    <p class="text-xs text-text-secondary truncate">{{ album.artist }}</p>
+                    <div class="flex items-center justify-between pt-1">
+                      <div class="flex items-center gap-1">
+                        <span v-for="service in album.services.slice(0, 3)" :key="service" :class="['w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold', getServiceStyle(service)]">
+                          {{ getServiceIcon(service) }}
+                        </span>
+                      </div>
+                      <span :class="['w-2.5 h-2.5 rounded-full', album.metadataScore >= 90 ? 'bg-success' : album.metadataScore >= 70 ? 'bg-warning' : 'bg-error']"></span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -890,207 +1095,108 @@
         </div>
       </template>
 
-      <!-- GROUPED VIEW: By Artist -->
-      <template v-else-if="groupBy === 'artist'">
-        <div class="flex-1 overflow-y-auto custom-scrollbar space-y-6" @scroll="handleScroll">
-          <div v-for="artistGroup in groupedByArtist" :key="artistGroup.artist" class="group-section">
-            <!-- Group Header -->
-            <div 
-              @click="toggleGroupExpand(artistGroup.artist)"
-              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-surface border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors rounded-t-lg"
-            >
-              <div class="w-12 h-12 rounded-full bg-gradient-to-br from-primary to-purple-500 flex items-center justify-center text-white font-bold text-lg shrink-0">
-                {{ artistGroup.artist.charAt(0) }}
-              </div>
-              <div class="flex-1 min-w-0">
-                <h3 class="text-lg font-bold text-ink truncate">{{ artistGroup.artist }}</h3>
-                <p class="text-xs text-text-secondary">{{ artistGroup.tracks.length }} tracks</p>
-              </div>
-              <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(artistGroup.artist) ? 'rotate-180' : '']">expand_more</span>
-            </div>
-            
-            <!-- Group Tracks -->
-            <div v-if="expandedGroups.includes(artistGroup.artist)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
-              <div
-                v-for="(track, idx) in artistGroup.tracks"
-                :key="trackRowKey(track)"
-                :data-track-id="track.id"
-                :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
-                class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
-                @click="handleTrackClick(track)"
-                @contextmenu.prevent="openContextMenu($event, track)"
-              >
-                <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
-                <TrackCover
-                  :src="track.coverUrl"
-                  :item-id="track.id"
-                  :alt="track.album || track.title"
-                  size-class="w-10 h-10"
-                  rounded="rounded"
-                />
-                <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-ink truncate">{{ track.title }}</p>
-                  <p class="text-xs text-text-secondary truncate">{{ track.album }}</p>
-                </div>
-                <span v-if="track.downloadStatus === 'downloaded'" class="text-success"><span class="material-symbols-outlined text-[16px]">check_circle</span></span>
-                <span class="text-xs text-text-secondary font-mono">{{ track.duration }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </template>
+      <!-- GROUPED VIEWS (L13, #110): una sola rama para artista/álbum/género/
+           calidad. Las filas se aplanan en cabeceras y pistas con altura fija
+           por tipo y se virtualizan con el kernel variable: solo se pinta la
+           ventana visible. El orden de los grupos es el del servidor (sin
+           comparadores en JavaScript). -->
+      <template v-else-if="groupBy !== 'none'">
+        <div
+          ref="groupContainerRef"
+          class="flex-1 min-h-0 overflow-y-auto custom-scrollbar border-x border-b border-gray-200 dark:border-border-dark rounded-b-xl bg-white dark:bg-surface-dark relative"
+          style="contain: strict;"
+          data-testid="library-groups"
+          @scroll="handleGroupScroll"
+        >
+          <div :style="{ height: totalGroupHeight + 'px', position: 'relative', width: '100%' }">
+            <div :style="{ transform: `translateY(${groupOffsetY}px)`, position: 'absolute', top: 0, left: 0, right: 0 }">
+              <div v-for="row in visibleGroupRows" :key="row.id" :style="{ height: row.height + 'px' }" class="box-border">
+                <!-- Group header -->
+                <div
+                  v-if="row.rowType === 'header' && row.header"
+                  @click="toggleGroupExpand(row.groupKey)"
+                  class="group-header h-full flex items-center gap-4 px-4 border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors"
+                >
+                  <template v-if="row.groupKind === 'artist'">
+                    <div class="w-12 h-12 rounded-full bg-gradient-to-br from-primary to-purple-500 flex items-center justify-center text-white font-bold text-lg shrink-0">
+                      {{ row.header.label.charAt(0) }}
+                    </div>
+                  </template>
+                  <template v-else-if="row.groupKind === 'album' && row.header.album">
+                    <div :class="['w-12 h-12 rounded-lg shrink-0 overflow-hidden', !row.header.album.coverUrl && row.header.album.artGradient]">
+                      <img v-if="row.header.album.coverUrl" :src="row.header.album.coverUrl" :alt="row.header.label" class="w-full h-full object-cover" loading="lazy" />
+                    </div>
+                  </template>
+                  <template v-else-if="row.groupKind === 'genre'">
+                    <div class="w-12 h-12 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold shrink-0">
+                      <span class="material-symbols-outlined text-[22px]">category</span>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div :class="['w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-[10px] shrink-0', getQualityStyle(row.header.label)]">
+                      {{ row.header.label }}
+                    </div>
+                  </template>
 
-      <!-- GROUPED VIEW: By Album -->
-      <template v-else-if="groupBy === 'album'">
-        <div class="flex-1 overflow-y-auto custom-scrollbar space-y-6" @scroll="handleScroll">
-          <div v-for="albumGroup in groupedByAlbum" :key="albumGroup.id" class="group-section">
-            <!-- Group Header -->
-            <div 
-              @click="toggleGroupExpand(albumGroup.title)"
-              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-surface border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors rounded-t-lg"
-            >
-              <div :class="['w-12 h-12 rounded-lg shrink-0 overflow-hidden', !albumGroup.coverUrl && albumGroup.artGradient]">
-                <img v-if="albumGroup.coverUrl" :src="albumGroup.coverUrl" :alt="albumGroup.title" class="w-full h-full object-cover" loading="lazy" />
-              </div>
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2">
-                  <h3 class="text-base font-bold text-ink truncate">{{ albumGroup.title }}</h3>
-                  <button 
-                    v-if="albumGroup.albumId"
-                    @click.stop="handleAlbumClick(albumGroup.albumId)"
-                    class="px-2 py-0.5 rounded bg-primary/20 hover:bg-primary/30 text-primary text-xs font-medium flex items-center gap-1 transition-colors"
-                    title="View Album Details"
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2">
+                      <h3 class="text-base font-bold text-ink truncate">{{ row.header.label }}</h3>
+                      <button
+                        v-if="row.groupKind === 'album' && row.header.album?.albumId"
+                        @click.stop="handleAlbumClick(row.header.album?.albumId)"
+                        class="px-2 py-0.5 rounded bg-primary/20 hover:bg-primary/30 text-primary text-xs font-medium flex items-center gap-1 transition-colors"
+                        title="View Album Details"
+                      >
+                        <span>View Album</span>
+                        <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
+                      </button>
+                    </div>
+                    <p class="text-xs text-text-secondary truncate">
+                      <template v-if="row.groupKind === 'album' && row.header.album">
+                        {{ row.header.album.artist }} · {{ row.header.album.trackCount }} track{{ row.header.album.trackCount !== 1 ? 's' : '' }}
+                      </template>
+                      <template v-else>{{ row.header.tracks.length }} track{{ row.header.tracks.length !== 1 ? 's' : '' }}</template>
+                    </p>
+                  </div>
+                  <span v-if="row.groupKind === 'album' && row.header.album" :class="['px-2 py-1 rounded text-xs font-bold', getQualityBadgeStyle(row.header.album.quality)]">{{ row.header.album.quality }}</span>
+                  <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(row.groupKey) ? 'rotate-180' : '']">expand_more</span>
+                </div>
+
+                <!-- Track row inside an expanded group -->
+                <div
+                  v-else-if="row.track"
+                  :data-track-id="row.track.id"
+                  :class="['group-track h-full flex items-center gap-3 px-4 border-b border-gray-100 dark:border-border-dark/50 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group', highlightedTrackId === row.track.id ? 'bg-primary/10' : '']"
+                  @click="handleTrackClick(row.track)"
+                  @contextmenu.prevent="openContextMenu($event, row.track)"
+                >
+                  <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ (row.trackIndex ?? 0) + 1 }}</span>
+                  <TrackCover
+                    v-if="row.groupKind !== 'album'"
+                    :src="row.track.coverUrl"
+                    :item-id="row.track.id"
+                    :alt="row.track.album || row.track.title"
+                    size-class="w-10 h-10"
+                    rounded="rounded"
+                  />
+                  <div class="flex-1 min-w-0">
+                    <p class="text-sm font-medium text-ink truncate">{{ row.track.title }}</p>
+                    <p class="text-xs text-text-secondary truncate">{{ row.track.artist }} · {{ row.track.album }}</p>
+                  </div>
+                  <span
+                    class="shrink-0"
+                    data-testid="track-download-badge"
+                    :data-download-status="row.track.downloadStatus"
+                    :title="downloadStatusLabel(row.track.downloadStatus)"
                   >
-                    <span>View Album</span>
-                    <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
-                  </button>
+                    <span v-if="row.track.downloadStatus === 'downloaded'" class="material-symbols-outlined text-[16px] text-success">check_circle</span>
+                    <span v-else-if="row.track.downloadStatus === 'downloading'" class="material-symbols-outlined text-[16px] text-primary animate-spin">progress_activity</span>
+                    <span v-else-if="row.track.downloadStatus === 'queued'" class="material-symbols-outlined text-[16px] text-amber-500">schedule</span>
+                    <span v-else-if="row.track.downloadStatus === 'failed'" class="material-symbols-outlined text-[16px] text-error">error</span>
+                    <span v-else class="text-xs text-gray-400 font-mono">—</span>
+                  </span>
+                  <span class="text-xs text-text-secondary font-mono">{{ row.track.duration }}</span>
                 </div>
-                <p class="text-sm text-text-secondary">{{ albumGroup.artist }} · {{ albumGroup.trackCount }} track{{ albumGroup.trackCount !== 1 ? 's' : '' }}</p>
-              </div>
-              <span :class="['px-2 py-1 rounded text-xs font-bold', getQualityBadgeStyle(albumGroup.quality)]">{{ albumGroup.quality }}</span>
-              <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(albumGroup.title) ? 'rotate-180' : '']">expand_more</span>
-            </div>
-            
-            <!-- Group Tracks -->
-            <div v-if="expandedGroups.includes(albumGroup.title)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
-              <div
-                v-for="(track, idx) in albumGroup.tracks"
-                :key="trackRowKey(track)"
-                :data-track-id="track.id"
-                :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
-                class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
-                @click="handleTrackClick(track)"
-                @contextmenu.prevent="openContextMenu($event, track)"
-              >
-                <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
-                <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-ink truncate">{{ track.title }}</p>
-                </div>
-                <div class="flex items-center gap-1">
-                  <span v-if="track.downloadStatus === 'downloaded'" class="text-success"><span class="material-symbols-outlined text-[16px]">check_circle</span></span>
-                </div>
-                <span class="text-xs text-text-secondary font-mono">{{ track.duration }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </template>
-
-      <!-- GROUPED VIEW: By Genre (Real Metadata Grouping) -->
-      <template v-else-if="groupBy === 'genre'">
-        <div class="flex-1 overflow-y-auto custom-scrollbar space-y-6" @scroll="handleScroll">
-          <div v-for="genreGroup in groupedByGenre" :key="genreGroup.genre" class="group-section">
-            <!-- Group Header -->
-            <div 
-              @click="toggleGroupExpand(genreGroup.genre)"
-              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-surface border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors rounded-t-lg"
-            >
-              <div class="w-12 h-12 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold shrink-0">
-                <span class="material-symbols-outlined text-[22px]">category</span>
-              </div>
-              <div class="flex-1 min-w-0">
-                <h3 class="text-lg font-bold text-ink truncate">{{ genreGroup.genre }}</h3>
-                <p class="text-xs text-text-secondary">{{ genreGroup.tracks.length }} track{{ genreGroup.tracks.length !== 1 ? 's' : '' }}</p>
-              </div>
-              <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(genreGroup.genre) ? 'rotate-180' : '']">expand_more</span>
-            </div>
-            
-            <!-- Group Tracks -->
-            <div v-if="expandedGroups.includes(genreGroup.genre)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
-              <div
-                v-for="(track, idx) in genreGroup.tracks"
-                :key="trackRowKey(track)"
-                :data-track-id="track.id"
-                :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
-                class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
-                @click="handleTrackClick(track)"
-                @contextmenu.prevent="openContextMenu($event, track)"
-              >
-                <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
-                <TrackCover
-                  :src="track.coverUrl"
-                  :item-id="track.id"
-                  :alt="track.album || track.title"
-                  size-class="w-10 h-10"
-                  rounded="rounded"
-                />
-                <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-ink truncate">{{ track.title }}</p>
-                  <p class="text-xs text-text-secondary truncate">{{ track.artist }} · {{ track.album }}</p>
-                </div>
-                <div class="flex items-center gap-1">
-                  <span v-if="track.downloadStatus === 'downloaded'" class="text-success"><span class="material-symbols-outlined text-[16px]">check_circle</span></span>
-                </div>
-                <span class="text-xs text-text-secondary font-mono">{{ track.duration }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </template>
-
-      <!-- GROUPED VIEW: By Quality -->
-      <template v-else-if="groupBy === 'quality'">
-        <div class="flex-1 overflow-y-auto custom-scrollbar space-y-6" @scroll="handleScroll">
-          <div v-for="qualityGroup in groupedByQuality" :key="qualityGroup.quality" class="group-section">
-            <!-- Group Header -->
-            <div 
-              @click="toggleGroupExpand(qualityGroup.quality)"
-              class="group-header sticky top-0 z-10 flex items-center gap-4 px-4 py-3 bg-surface border-b border-gray-700 dark:border-border-dark cursor-pointer hover:bg-elevated transition-colors rounded-t-lg"
-            >
-              <div :class="['w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-[10px] shrink-0', getQualityStyle(qualityGroup.quality)]">
-                {{ qualityGroup.quality }}
-              </div>
-              <div class="flex-1 min-w-0">
-                <h3 class="text-lg font-bold text-ink truncate">{{ qualityGroup.quality }}</h3>
-                <p class="text-xs text-text-secondary">{{ qualityGroup.tracks.length }} tracks</p>
-              </div>
-              <span :class="['material-symbols-outlined text-gray-400 transition-transform', expandedGroups.includes(qualityGroup.quality) ? 'rotate-180' : '']">expand_more</span>
-            </div>
-            
-            <!-- Group Tracks -->
-            <div v-if="expandedGroups.includes(qualityGroup.quality)" class="group-tracks bg-white dark:bg-surface-dark border-x border-b border-gray-200 dark:border-border-dark rounded-b-lg overflow-hidden">
-              <div
-                v-for="(track, idx) in qualityGroup.tracks"
-                :key="trackRowKey(track)"
-                :data-track-id="track.id"
-                :class="highlightedTrackId === track.id ? 'bg-primary/10' : ''"
-                class="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-border-dark/50 last:border-0 hover:bg-gray-50 dark:hover:bg-surface-highlight/30 cursor-pointer group"
-                @click="handleTrackClick(track)"
-                @contextmenu.prevent="openContextMenu($event, track)"
-              >
-                <span class="w-6 text-center text-xs text-gray-400 group-hover:text-primary font-medium">{{ idx + 1 }}</span>
-                <TrackCover
-                  :src="track.coverUrl"
-                  :item-id="track.id"
-                  :alt="track.album || track.title"
-                  size-class="w-10 h-10"
-                  rounded="rounded"
-                />
-                <div class="flex-1 min-w-0">
-                  <p class="text-sm font-medium text-ink truncate">{{ track.title }}</p>
-                  <p class="text-xs text-text-secondary truncate">{{ track.artist }} · {{ track.album }}</p>
-                </div>
-                <span class="text-xs text-text-secondary font-mono">{{ track.duration }}</span>
               </div>
             </div>
           </div>
@@ -1110,19 +1216,158 @@
       </div>
 
       <!-- Download Favorites Modal -->
-      <DownloadFavoritesModal 
-        v-model="showDownloadFavoritesModal" 
-        @enqueued="handleFavoritesEnqueued" 
+      <DownloadFavoritesModal
+        v-model="showDownloadFavoritesModal"
+        @enqueued="handleFavoritesEnqueued"
       />
+
+      <!-- L04 (#101): panel lateral de detalle de pista. Solo lectura de
+           metadatos; una sola consulta al abrirse (get_library_track_detail).
+           Escape, el fondo o un cambio de ruta lo cierran. Las secciones de
+           cuarentena y duplicados van deshabilitadas con su motivo mientras
+           #72/#73 no existan: no se simulan. La edición de metadatos vive en
+           /metadata («Abrir ficha»). -->
+      <div v-if="detailTrackId !== null" role="dialog" aria-label="Track detail" class="fixed inset-0 z-50 bg-black/40" data-testid="track-detail-backdrop" @click.self="closeTrackDetail">
+        <aside class="absolute right-0 top-0 h-full w-[400px] max-w-full bg-white dark:bg-surface-dark border-l border-gray-200 dark:border-border-dark shadow-xl overflow-y-auto custom-scrollbar text-ink" data-testid="track-detail-panel">
+          <div class="sticky top-0 z-10 bg-white dark:bg-surface-dark border-b border-gray-200 dark:border-border-dark px-4 py-3 flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <h2 class="font-semibold text-sm truncate" data-testid="track-detail-title">{{ detailData?.track.display_title || detailData?.track.title || 'Track detail' }}</h2>
+              <p class="text-xs text-text-secondary truncate">{{ detailData?.track.artist_name || 'Unknown Artist' }} · {{ detailData?.track.album_name || 'Unknown Album' }}</p>
+            </div>
+            <button type="button" class="p-1 text-text-secondary hover:text-ink transition-colors" data-testid="track-detail-close" aria-label="Close track detail" @click="closeTrackDetail">
+              <span class="material-symbols-outlined text-[18px]">close</span>
+            </button>
+          </div>
+
+          <div v-if="detailLoading" class="px-4 py-8 flex items-center justify-center gap-2 text-text-secondary" data-testid="track-detail-loading">
+            <span class="material-symbols-outlined text-[20px] animate-spin">progress_activity</span>
+            <span class="text-sm">Loading detail…</span>
+          </div>
+
+          <!-- Pista inexistente: error tipado del backend, no una fila vacía. -->
+          <div v-else-if="detailError" class="px-4 py-6 space-y-1" data-testid="track-detail-error">
+            <p class="text-sm font-medium text-error">{{ detailError.kind === 'track_not_found' ? 'Track not found' : 'Could not load track detail' }}</p>
+            <p class="text-xs text-text-secondary">{{ detailError.kind === 'track_not_found' ? `No track with id ${detailError.trackId}.` : detailError.message }}</p>
+          </div>
+
+          <template v-else-if="detailData">
+            <!-- Fuentes por servicio: formato, profundidad, frecuencia, bitrate y disponibilidad -->
+            <section class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50" data-testid="track-detail-sources">
+              <h3 class="text-[11px] font-bold uppercase tracking-wider text-text-secondary mb-2">Sources</h3>
+              <p v-if="detailData.sources.length === 0" class="text-xs text-gray-400 italic">No service sources recorded.</p>
+              <ul v-else class="space-y-1.5">
+                <li v-for="source in detailData.sources" :key="source.serviceId" class="flex items-center justify-between gap-2 text-xs">
+                  <span class="flex items-center gap-1.5 min-w-0">
+                    <span :class="['w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold border shrink-0', getServiceStyle(source.serviceName)]">{{ getServiceIcon(source.serviceName) }}</span>
+                    <span class="font-medium truncate">{{ source.serviceName }}</span>
+                  </span>
+                  <span class="text-text-secondary text-right" :title="source.availabilityReason ?? undefined">
+                    {{ [source.format, source.bitDepth && source.sampleRate ? `${source.bitDepth}/${source.sampleRate}` : null, source.bitrate ? `${source.bitrate}kbps` : null].filter(Boolean).join(' · ') || '—' }}
+                    <span :class="source.available ? 'text-success' : 'text-warning'">{{ source.available ? 'available' : source.availabilityStatus }}</span>
+                  </span>
+                </li>
+              </ul>
+            </section>
+
+            <!-- Cuentas y pertenencias por colección -->
+            <section class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50" data-testid="track-detail-memberships">
+              <h3 class="text-[11px] font-bold uppercase tracking-wider text-text-secondary mb-2">Accounts &amp; collections</h3>
+              <p v-if="detailData.memberships.length === 0" class="text-xs text-gray-400 italic">No library memberships recorded.</p>
+              <ul v-else class="space-y-1.5">
+                <li v-for="(membership, idx) in detailData.memberships" :key="`${membership.accountId}-${membership.collection}-${membership.collectionId ?? 'fav'}-${idx}`" class="flex items-center justify-between gap-2 text-xs">
+                  <span class="truncate">{{ membership.displayName || `Account ${membership.accountId}` }} <span class="text-text-secondary">({{ membership.serviceName }})</span></span>
+                  <span class="text-text-secondary text-right shrink-0">{{ membership.collection === 'playlist' ? `playlist: ${membership.collectionName ?? ''}` : 'favorite' }}</span>
+                </li>
+              </ul>
+            </section>
+
+            <!-- Descarga: estado, servicio efectivo, calidad y ruta -->
+            <section class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50" data-testid="track-detail-download">
+              <h3 class="text-[11px] font-bold uppercase tracking-wider text-text-secondary mb-2">Download</h3>
+              <p v-if="!detailData.download" class="text-xs text-gray-400 italic">Not downloaded.</p>
+              <dl v-else class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                <dt class="text-text-secondary">Status</dt>
+                <dd data-testid="track-detail-download-status">{{ detailData.download.status }}</dd>
+                <template v-if="detailData.download.effectiveService">
+                  <dt class="text-text-secondary">Service</dt>
+                  <dd>{{ detailData.download.effectiveService }}</dd>
+                </template>
+                <template v-if="detailDownloadQuality(detailData.download)">
+                  <dt class="text-text-secondary">Quality</dt>
+                  <dd data-testid="track-detail-download-quality">{{ detailDownloadQuality(detailData.download) }}</dd>
+                </template>
+                <template v-if="detailData.download.filePath">
+                  <dt class="text-text-secondary">Path</dt>
+                  <dd class="break-all font-mono text-[10px]" data-testid="track-detail-download-path">{{ detailData.download.filePath }}</dd>
+                </template>
+              </dl>
+            </section>
+
+            <!-- Facetas deshabilitadas con su motivo (#72/#73): no se simulan -->
+            <section class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50 opacity-60" data-testid="track-detail-quarantine-disabled">
+              <h3 class="text-[11px] font-bold uppercase tracking-wider text-text-secondary mb-1">Quarantine</h3>
+              <p class="text-xs text-gray-400 italic">Unavailable: sync quarantine (reason and last seen) arrives with #72/L09.</p>
+            </section>
+            <section class="px-4 py-3 border-b border-gray-100 dark:border-border-dark/50 opacity-60" data-testid="track-detail-duplicates-disabled">
+              <h3 class="text-[11px] font-bold uppercase tracking-wider text-text-secondary mb-1">Duplicates</h3>
+              <p class="text-xs text-gray-400 italic">Unavailable: ISRC + fingerprint identity arrives with #73/L10.</p>
+            </section>
+
+            <!-- Acciones que no editan la ficha -->
+            <section class="px-4 py-3 space-y-2" data-testid="track-detail-actions">
+              <div class="grid grid-cols-2 gap-2">
+                <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-play" @click="panelTrack && handleTrackPlay(panelTrack)">
+                  <span class="material-symbols-outlined text-[16px]">play_arrow</span> Play
+                </button>
+                <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-download" @click="panelTrack && handlePanelDownload(panelTrack, panelHasDownload)">
+                  <span class="material-symbols-outlined text-[16px]">download</span> {{ panelHasDownload ? 'Re-download' : 'Download' }}
+                </button>
+                <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-favorite" @click="panelFavorite">
+                  <span :class="['material-symbols-outlined text-[16px]', panelTrack?.isFavorite ? 'material-symbols-filled text-red-500' : '']">{{ panelTrack?.isFavorite ? 'favorite' : 'favorite_border' }}</span> {{ panelTrack?.isFavorite ? 'Unfavorite' : 'Favorite' }}
+                </button>
+                <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-open-metadata" @click="panelTrack && handleShowMetadata(panelTrack)">
+                  <span class="material-symbols-outlined text-[16px]">open_in_new</span> Abrir ficha
+                </button>
+              </div>
+              <div class="flex items-center gap-2">
+                <select v-model="detailPlaylistChoice" class="flex-1 min-w-0 text-xs rounded-lg border border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-surface-highlight px-2 py-1.5 text-ink" data-testid="track-detail-playlist-select">
+                  <option :value="null" disabled>Add to playlist…</option>
+                  <option v-for="playlist in playlists" :key="playlist.id" :value="playlist.id">{{ playlist.name }}</option>
+                </select>
+                <button type="button" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors" data-testid="track-detail-playlist-add" :disabled="detailPlaylistChoice === null" @click="panelAddToPlaylist">Add</button>
+              </div>
+              <button type="button" class="w-full px-3 py-1.5 rounded-lg text-xs font-medium bg-error/10 text-error hover:bg-error/20 transition-colors flex items-center justify-center gap-1" data-testid="track-detail-delete-audio" @click="panelDeleteAudio">
+                <span class="material-symbols-outlined text-[16px]">delete</span> Delete audio
+              </button>
+            </section>
+          </template>
+        </aside>
+      </div>
 
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+// FE-PERF-01: nombre explícito — el `include` de <KeepAlive> (App.vue /
+// keepAliveViews.ts) filtra por `name`, y debe coincidir exactamente.
+defineOptions({ name: 'LibraryView' })
+import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRouter, useRoute, type LocationQueryValue } from 'vue-router'
-import { libraryApi, searchTracks, enqueueTracks, reconcileQueue }  from '@/api/library'
+import { libraryApi, queryLibrary, reconcileQueue, importMbDump, getMbDumpImportState, type TrackDetail, type TrackDetailError, type MbDumpImportState, type MbDumpProgress }  from '@/api/library'
+import type {
+  LibraryQuery,
+  LibraryQueryCounts,
+  LibraryQueryResult,
+  LibrarySortKey,
+  DownloadStatusFilter,
+  QualityBucketFilter,
+  LibrarySelection,
+  LibraryBatchAction,
+  LibraryActionPreview,
+  LibraryActionProgress,
+  LibraryActionSummary,
+} from '@/api/types'
 import { addToQueue, addBatchToQueue, enqueueEligibleBatch, queueApi } from '@/api/queue'
 import { playlistsApi } from '@/api/playlists'
 import { metadataApi } from '@/api/metadata'
@@ -1134,7 +1379,19 @@ import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { usePlayer } from '@/composables/usePlayer'
 import { useVirtualWindow } from '@/composables/useVirtualWindow'
 import { useTrackBrowser } from '@/composables/useTrackBrowser'
+import { pageQueryKey, usePagedQueryCache } from '@/composables/usePagedQueryCache'
+import { invalidateLibraryPages, onLibraryPagesInvalidated } from '@/composables/libraryCacheInvalidation'
+import { useLibraryCacheInvalidation } from '@/composables/useLibraryCacheInvalidation'
 import { useEnrichmentProgress } from '@/composables/useEnrichmentProgress'
+import {
+  buildLibraryUrlQuery,
+  parseLibraryUrlQuery,
+  libraryTabQuery,
+  LIBRARY_URL_KEYS,
+  QUALITY_BUCKET_LABELS,
+  type LibraryUrlState,
+} from '@/composables/libraryUrlState'
+import LibraryTabs from '@/components/LibraryTabs.vue'
 import DownloadFavoritesModal from '@/components/DownloadFavoritesModal.vue'
 import TrackCover from '@/components/TrackCover.vue'
 import { getArtGradient } from '@/utils/artGradient'
@@ -1275,15 +1532,26 @@ const contextMenu = ref<{
 })
 
 // Filter pills (Consolidated single source of filters)
-const filterPills = [
+// L01 (#98): los pills se traducen a dimensiones de LibraryQuery. Las piezas
+// sin semántica en el contrato quedan expuestas DESHABILITADAS con su motivo,
+// no eliminadas ni inventadas: «Multi-Source» no es dimensión del contrato
+// (la cabecera con badges de servicio llega con L03) y «Duplicates» espera la
+// identidad ISRC/huella de L10 (#73).
+const filterPills: Array<{ id: string; label: string; disabled?: boolean; reason?: string }> = [
   { id: 'all', label: 'All Items' },
+  // L14 (#109): los cinco estados del badge, cada uno filtrable. «Not
+  // Downloaded» es la ausencia de descarga y de cola, no un cajón que mezcle
+  // los otros cuatro estados.
   { id: 'downloaded', label: 'Downloaded' },
+  { id: 'queued', label: 'Queued' },
+  { id: 'downloading', label: 'Downloading' },
+  { id: 'failed', label: 'Failed' },
   { id: 'notDownloaded', label: 'Not Downloaded' },
   { id: 'favorites', label: 'Favorites' },
   { id: 'flac', label: 'Hi-Res (FLAC)' },
   { id: 'mp3', label: 'Lossy (MP3)' },
-  { id: 'multiSource', label: 'Multi-Source' },
-  { id: 'duplicates', label: 'Duplicates' },
+  { id: 'multiSource', label: 'Multi-Source', disabled: true, reason: 'Not available: the server query (L01) has no multi-source dimension; service badges arrive with L03' },
+  { id: 'duplicates', label: 'Duplicates', disabled: true, reason: 'Not available: duplicates arrive with L10 (#73) over ISRC/fingerprint identity' },
 ]
 
 const activeFilters = ref(['all'])
@@ -1466,6 +1734,8 @@ interface Track {
   availabilitySummary: string | null
   quality: string
   qualityBucket?: string | null
+  /** L14 (#109): calidad efectiva del fichero descargado (p. ej. "FLAC 24/96"). */
+  downloadQuality: string | null
   downloadStatus: 'downloaded' | 'queued' | 'downloading' | 'failed' | 'stale' | 'not_downloaded'
   metadataScore: number
   bpm: number | null
@@ -1520,6 +1790,7 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
     availabilitySummary: item.availability_summary || null,
     quality: item.quality || '—',
     qualityBucket: item.quality_bucket ?? null,
+    downloadQuality: item.download_quality ?? null,
     downloadStatus: (item.download_status ?? 'not_downloaded') as Track['downloadStatus'],
     metadataScore: item.metadata_score ?? 0,
     bpm: item.bpm,
@@ -1537,11 +1808,10 @@ function mapToTrack(item: LibraryTrack, index: number): Track {
   };
 }
 
-// Route 2 (2026-10-18): the favorites list can show the same canonical track
-// once per favorited release; the row key must include the release identity or
-// Vue reuses DOM nodes across different releases.
+// L01: una fila por tracks.id — la expansión por release de favoritos
+// desapareció de la vista con get_favorite_tracks; el id basta de clave.
 function trackRowKey(track: Track): string {
-  return `${track.id}:${track.editionItemId ?? track.album}`
+  return String(track.id)
 }
 
 // ==============================================
@@ -1554,38 +1824,390 @@ function trackRowKey(track: Track): string {
 const PAGE_SIZE = 100;
 const SEARCH_PAGE_SIZE = 100;
 
-/** Triple fuente según filtros: duplicados > favoritos > biblioteca general. */
-async function fetchLibraryPage(offset: number, limit: number) {
-  return activeFilters.value.includes('duplicates')
-    ? await libraryApi.getDuplicateTracks(offset, limit)
-    : activeFilters.value.includes('favorites')
-    ? await libraryApi.getFavoriteTracks(offset, limit)
-    : await libraryApi.getLibrary(offset, limit);
+// L01 (#98): fuente ÚNICA. query_library resuelve en servidor filtros, orden,
+// búsqueda y contadores; el renderer deja de filtrar, ordenar o sustituir la
+// lista por una búsqueda.
+
+// L02 (#99): el token de secuencia de la consulta vive en `useTrackBrowser`
+// (load/loadMore) desde L13 (#110). La caché de páginas deduplica peticiones
+// simultáneas de la misma clave: dos cargas seguidas de la misma consulta
+// comparten una sola consulta al servidor.
+
+/** Caché de páginas por clave de consulta (L13, #110). Sin TTL: los eventos
+ * invalidan (sync, importación, favorito, playlist, descarga, metadatos,
+ * cuarentena). Una página ya leída no vuelve a pedirse. */
+const libraryPages = usePagedQueryCache<LibraryQuery, LibraryQueryResult>({
+  keyOf: pageQueryKey,
+  fetchPage: (query) => libraryApi.queryLibrary(query),
+})
+
+const libraryCounts = ref<LibraryQueryCounts | null>(null);
+
+async function fetchLibraryPage(offset: number, limit: number): Promise<LibraryQueryResult> {
+  const query = buildLibraryQuery(offset, limit)
+  const requestKey = pageQueryKey(query)
+  const result = await libraryPages.load(query)
+  // Contadores: solo de la primera página, solo si la clave pedida sigue
+  // siendo la del estado actual y solo si la generación no fue invalidada.
+  // Al paginar (offset > 0) no se recalculan: la cabecera conserva los de la
+  // consulta.
+  if (
+    offset === 0 &&
+    result.page.counts &&
+    result.generation === libraryPages.generation.value &&
+    requestKey === pageQueryKey(buildLibraryQuery(0, limit))
+  ) {
+    libraryCounts.value = result.page.counts;
+  }
+  return result.page
+}
+
+// ==============================================
+// L03 (#100): estado de la vista → LibraryQuery y → URL
+// ==============================================
+// UNA traducción compartida: la consulta (buildLibraryQuery) y la URL
+// (syncUrlFromView) leen el mismo estado, para que no puedan divergir. Las
+// dimensiones del contrato que la vista todavía no dirige (servicios,
+// cuentas, colecciones además de favoritos, «en playlist», cuarentena,
+// género) no tienen ni control ni contador: no se inventan.
+
+/** Estado gestionado por la vista, en la forma del contrato LibraryQuery. */
+function currentLibraryState(): LibraryUrlState {
+  const filters = activeFilters.value;
+  // OR dentro de la dimensión de estado de descarga.
+  const downloadStatuses: DownloadStatusFilter[] = [];
+  if (filters.includes('downloaded')) downloadStatuses.push('downloaded');
+  if (filters.includes('queued')) downloadStatuses.push('queued');
+  if (filters.includes('downloading')) downloadStatuses.push('downloading');
+  if (filters.includes('failed')) downloadStatuses.push('failed');
+  if (filters.includes('notDownloaded')) downloadStatuses.push('not_downloaded');
+  // OR dentro de la dimensión de calidad (buckets del servidor, mismas
+  // etiquetas que el deep-link FE-10 del dashboard). Orden canónico del
+  // contrato para que el round-trip URL → vista → URL sea estable.
+  let qualityBuckets: QualityBucketFilter[] = [];
+  if (filters.includes('flac')) qualityBuckets.push('hi_res', 'cd_quality');
+  if (filters.includes('mp3')) qualityBuckets.push('lossy');
+  if (filters.includes('quality') && qualityFilter.value) {
+    for (const label of qualityFilter.value.split(', ')) {
+      const bucket = (Object.entries(QUALITY_BUCKET_LABELS) as Array<[QualityBucketFilter, string]>)
+        .find(([, l]) => l === label)?.[0];
+      if (bucket && !qualityBuckets.includes(bucket)) qualityBuckets.push(bucket);
+    }
+  }
+  qualityBuckets = (['hi_res', 'cd_quality', 'lossy'] as QualityBucketFilter[]).filter((b) =>
+    qualityBuckets.includes(b)
+  );
+  return {
+    text: searchQuery.value.trim(),
+    sort: sortBy.value as LibrarySortKey,
+    direction: sortDirection.value,
+    downloadStatuses,
+    qualityBuckets,
+    favoritesOnly: filters.includes('favorites'),
+  };
+}
+
+/** Contrato LibraryQuery: el estado de la vista se traduce a dimensiones. */
+function buildLibraryQuery(offset: number, limit: number | null): LibraryQuery {
+  const state = currentLibraryState();
+  return {
+    text: state.text || null,
+    serviceIds: [],
+    accountIds: [],
+    collections: [],
+    favoritesOnly: state.favoritesOnly,
+    downloadStatuses: state.downloadStatuses,
+    qualityBuckets: state.qualityBuckets,
+    inPlaylists: null,
+    duplicates: null,
+    quarantine: 'exclude',
+    genre: [],
+    sort: state.sort,
+    direction: state.direction,
+    offset,
+    limit,
+  };
+}
+
+// ---------------------------------------------
+// Estado de la vista EN LA URL (deep-linking).
+// La URL es la fuente al montar y al volver atrás (atrás restaura lista y
+// filtro); la vista escribe en ella en cada cambio — `push` en cambios
+// discretos (filtros, orden) para que atrás recorra estados, `replace` en
+// el texto para no inundar el historial por tecla. `lastWrittenUrl`
+// recuerda la última serialización aplicada o escrita: los cambios propios
+// no se re-aplican (guard del watcher de ruta).
+// ---------------------------------------------
+let lastWrittenUrl: string | null = null;
+let suppressSearchWatcher = false;
+let suppressSortWatcher = false;
+
+/** Query canónico para el estado actual: claves gestionadas reemplazadas,
+ * legacy FE-10 (`filter=`) canonicalizado, params ajenos (p. ej. `track`)
+ * conservados. */
+function canonicalQuery(state: LibraryUrlState): Record<string, unknown> {
+  const query: Record<string, unknown> = { ...(route?.query ?? {}) };
+  for (const key of Object.values(LIBRARY_URL_KEYS)) delete query[key];
+  delete query.filter;
+  Object.assign(query, buildLibraryUrlQuery(state));
+  return query;
+}
+
+/** Escribe el estado actual en la URL. No-op si ya coincide. */
+function syncUrlFromView(push: boolean) {
+  if (!router) return;
+  const query = canonicalQuery(currentLibraryState());
+  const serialized = JSON.stringify(query);
+  if (serialized === lastWrittenUrl) return;
+  lastWrittenUrl = serialized;
+  const navigate = push ? router.push : router.replace;
+  void navigate.call(router, { query: query as Record<string, string> }).catch(() => {
+    // Navegación redundante o a la misma URL: inofensiva.
+  });
+}
+
+/**
+ * URL → estado de la vista. Devuelve si algo cambió (y por tanto toca
+ * recargar). Asignaciones solo con diff real: si nada cambia, ningún
+ * watcher se dispara y no hay recarga (un back a la misma vista no relanza
+ * la consulta). Las dimensiones pendientes que llegan por deep-link se
+ * reportan y NO se aplican.
+ */
+function applyUrlState(): boolean {
+  const parsed = parseLibraryUrlQuery(route?.query as Record<string, unknown> | undefined);
+  const state = parsed.state;
+  lastWrittenUrl = JSON.stringify(canonicalQuery(state));
+
+  let changed = false;
+  if (searchQuery.value !== state.text) {
+    suppressSearchWatcher = true;
+    searchQuery.value = state.text;
+    // Un debounce en vuelo del texto anterior pediría dos veces: se cancela.
+    if (searchDebounceTimer) {
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = null;
+    }
+    changed = true;
+  }
+  if (sortBy.value !== state.sort || sortDirection.value !== state.direction) {
+    suppressSortWatcher = true;
+    sortBy.value = state.sort;
+    sortDirection.value = state.direction;
+    changed = true;
+  }
+  const previousQualityLabel = qualityFilter.value;
+  const nextFilters = filtersFromState(state, parsed.legacyQualityLabel);
+  if (nextFilters.join('|') !== activeFilters.value.join('|')) {
+    activeFilters.value = nextFilters;
+    changed = true;
+  }
+  // Un cambio de bucket del deep-link FE-10 cambia la representación
+  // ('quality' + etiqueta) sin cambiar los ids de filtro: también recarga.
+  if (qualityFilter.value !== previousQualityLabel) {
+    changed = true;
+  }
+  if (parsed.unsupported.length) {
+    console.warn('[library] deep-link params sin semántica todavía, ignorados:', parsed.unsupported.join(', '));
+  }
+  return changed;
+}
+
+/** Filtros (ids de píldora / 'quality') que representan el estado.
+ * Con etiqueta legacy FE-10 se conserva SU representación exacta
+ * ('quality' + etiqueta): colapsarla a la píldora 'flac' ampliaría el
+ * filtro (flac = hi_res + cd_quality) y rompería el deep-link del
+ * dashboard. Los buckets sin píldora exacta usan la misma vía. */
+function filtersFromState(state: LibraryUrlState, legacyLabel: string | null): string[] {
+  const filters: string[] = [];
+  if (state.downloadStatuses.includes('downloaded')) filters.push('downloaded');
+  if (state.downloadStatuses.includes('queued')) filters.push('queued');
+  if (state.downloadStatuses.includes('downloading')) filters.push('downloading');
+  if (state.downloadStatuses.includes('failed')) filters.push('failed');
+  if (state.downloadStatuses.includes('not_downloaded')) filters.push('notDownloaded');
+  if (state.favoritesOnly) filters.push('favorites');
+  let buckets = state.qualityBuckets;
+  if (legacyLabel !== null) {
+    // FE-10 legacy con etiqueta: representación exacta, sin colapsar los
+    // buckets a píldoras (los demás filtros de la URL se conservan).
+    qualityFilter.value = legacyLabel;
+    filters.push('quality');
+    return filters;
+  }
+  if (buckets.includes('hi_res') && buckets.includes('cd_quality')) {
+    filters.push('flac');
+    buckets = buckets.filter((b) => b !== 'hi_res' && b !== 'cd_quality');
+  }
+  if (buckets.includes('lossy')) {
+    filters.push('mp3');
+    buckets = buckets.filter((b) => b !== 'lossy');
+  }
+  if (buckets.length) {
+    filters.push('quality');
+    qualityFilter.value = buckets.map((b) => QUALITY_BUCKET_LABELS[b]).join(', ');
+  } else {
+    qualityFilter.value = '';
+  }
+  return filters;
+}
+
+// ==============================================
+// L03 (#100): cabecera con chips de estado (spec #96, historias 9-11)
+// ==============================================
+// El contador de cada chip se calcula en servidor sobre el filtro actual
+// SIN la condición del propio chip (los contadores de L01 vienen con la
+// primera página y la vista los conserva al paginar): el número del chip
+// coincide con el total que se ve al aplicarlo. El chip Álbumes (L07, #104)
+// cuenta álbumes distintos con pistas vivas y navega a su lista. Artistas,
+// cuarentena y duplicados siguen deshabilitados con su motivo (#105, #72,
+// #73) — el contador que no existe se muestra como '—', nunca inventado.
+type HeaderChipId = 'albums' | 'artists' | 'downloaded' | 'quarantine' | 'duplicates';
+
+interface HeaderChip {
+  id: HeaderChipId;
+  label: string;
+  icon: string;
+  disabled: boolean;
+  reason: string;
+  /** `null` = sin contador (pendiente o primera página aún en vuelo). */
+  count: number | null;
+  active: boolean;
+}
+
+const headerChips = computed<HeaderChip[]>(() => [
+  {
+    id: 'albums',
+    label: 'Albums',
+    icon: 'album',
+    // L07 (#104): la pestaña de álbumes ya existe. El chip cuenta álbumes
+    // distintos con al menos una pista viva en el filtro (contador del
+    // servidor) y navega a la lista; no aplica una dimensión de pista.
+    disabled: false,
+    reason: 'Browse albums with at least one live track in the current filter',
+    count: libraryCounts.value?.albums ?? null,
+    active: false,
+  },
+  {
+    id: 'artists',
+    label: 'Artists',
+    icon: 'artist',
+    // L08 (#105): la pestaña de artistas ya existe. El chip cuenta artistas
+    // distintos con al menos una pista viva en el filtro (contador del
+    // servidor) y navega a la lista; no aplica una dimensión de pista. El
+    // tooltip no promete «el filtro actual»: al navegar solo heredan texto y
+    // orden (#336), no estado de descarga, calidad ni favoritos.
+    disabled: false,
+    reason: 'Browse artists with at least one live track; only the search text and order carry over to the artists list',
+    count: libraryCounts.value?.artists ?? null,
+    active: false,
+  },
+  {
+    id: 'downloaded',
+    label: 'Downloaded',
+    icon: 'download_done',
+    disabled: false,
+    reason: 'Filter downloaded tracks',
+    count: libraryCounts.value?.downloaded ?? null,
+    active: activeFilters.value.includes('downloaded'),
+  },
+  {
+    id: 'quarantine',
+    label: 'Quarantine',
+    icon: 'rule',
+    disabled: true,
+    reason: 'Pending: #72 defines the quarantine table and L09 wires the library to it',
+    count: null,
+    active: false,
+  },
+  {
+    id: 'duplicates',
+    label: 'Duplicates',
+    icon: 'content_copy',
+    disabled: true,
+    reason: 'Pending: #73 defines ISRC/fingerprint identity and L10 wires the duplicates view',
+    count: null,
+    active: false,
+  },
+]);
+
+function toggleHeaderChip(chip: HeaderChip) {
+  if (chip.disabled) return;
+  if (chip.id === 'albums' || chip.id === 'artists') {
+    // L07/L08: las pestañas comparten texto y orden con la vista de pistas;
+    // el resto de dimensiones de pista no aplican a esas listas.
+    router.push({
+      path: chip.id === 'albums' ? '/library/albums' : '/library/artists',
+      query: libraryTabQuery(chip.id, route.query),
+    });
+    return;
+  }
+  if (chip.id === 'downloaded') {
+    toggleFilter('downloaded');
+  }
 }
 
 const browser = useTrackBrowser<LibraryTrack, Track>({
   source: { kind: 'paged', load: fetchLibraryPage },
-  searchSource: { load: searchTracks },
   mapRow: mapToTrack,
   pageSize: PAGE_SIZE,
-  searchPageSize: SEARCH_PAGE_SIZE,
 });
 
 const selection = browser.selection;
-const selectedCount = selection.selectedCount;
 const tracks = browser.rows;
 const totalTracks = browser.total;
 const currentOffset = browser.currentOffset;
 const hasMore = browser.hasMore;
 const isLoadingMore = browser.isLoadingMore;
-const pageAppendCount = browser.pageAppendCount;
-const searchResults = browser.search.rows;
-const isSearching = browser.search.isSearching;
-const hasMoreSearch = browser.search.hasMore;
+
+// L05 (#102): la selección tiene dos modos. En «todo el filtro» el contador
+// sale del total del servidor (no de la página cargada) menos las exclusiones;
+// en ids explícitos sale de los ids marcados. Nunca se mezclan.
+const selectAllMatching = ref(false);
+const excludedIds = ref<number[]>([]);
+const excludedIdSet = computed(() => new Set(excludedIds.value));
+const selectedCount = computed(() =>
+  selectAllMatching.value
+    ? Math.max(0, totalTracks.value - excludedIdSet.value.size)
+    : selection.selectedCount.value
+);
+const allMatchingSelected = computed(
+  () => selectAllMatching.value && excludedIds.value.length === 0
+);
+
+function isTrackSelected(id: number): boolean {
+  return selectAllMatching.value ? !excludedIdSet.value.has(id) : selection.isSelected(id);
+}
+
+function toggleTrackSelection(id: number): void {
+  if (!selectAllMatching.value) {
+    selection.toggle(id);
+    return;
+  }
+  const index = excludedIds.value.indexOf(id);
+  if (index === -1) {
+    excludedIds.value.push(id);
+  } else {
+    excludedIds.value.splice(index, 1);
+  }
+}
+
 
 /** Failure of the last load; distinguishes "empty library" from "could not read". */
 const isLoading = browser.isLoading;
 const loadError = browser.loadError;
+
+// L13 (#110): la vista sigue activa o cacheada por <KeepAlive>. La caché se
+// invalida siempre que una mutación de la app cambia la consulta; si la vista
+// está oculta, la recarga espera a onActivated (una sola consulta al volver).
+let viewActive = true
+let cacheDirty = false
+useLibraryCacheInvalidation()
+const offLibraryInvalidated = onLibraryPagesInvalidated(() => {
+  libraryPages.invalidate()
+  cacheDirty = true
+  if (viewActive) {
+    debouncedReloadLibrary()
+  }
+})
 
 // Load tracks from backend
 async function loadLibrary() {
@@ -1594,7 +2216,8 @@ async function loadLibrary() {
   // recarga parte de selección vacía (solo con carga exitosa; el contador
   // derivado no puede quedar huérfano como antes quedaba el incremental).
   if (browser.loadError.value === null) {
-    selection.clear();
+    clearSelection();
+    cacheDirty = false
   }
 }
 
@@ -1656,43 +2279,44 @@ async function fetchQueueStats() {
 // mide la distancia al fondo DENTRO del corte de throttle (PR-01/PR-02);
 // aquí solo se decide si toca pedir la página siguiente.
 function maybeLoadMore(scrollBottom: number) {
-  if (scrollBottom < 300) {
-    if (searchQuery.value.trim()) {
-      if (hasMoreSearch.value && !isSearching.value) {
-        loadMoreSearchResults();
-      }
-    } else {
-      if (hasMore.value && !isLoadingMore.value) {
-        loadMore();
-      }
-    }
+  if (scrollBottom < 300 && hasMore.value && !isLoadingMore.value) {
+    loadMore();
   }
 }
 
 // Initialize data
 loadColumnsOrder();
+// L03 (#100): la URL es la fuente del estado inicial — se aplica ANTES de la
+// primera carga para que el deep-link llegue a la primera consulta y no se
+// pida dos veces. Los watchers aún no están registrados (van más abajo),
+// así que los flags de supresión que applyUrlState deja puestos no los
+// consume nadie y se limpian aquí.
+applyUrlState();
+suppressSearchWatcher = false;
+suppressSortWatcher = false;
 loadLibrary();
 
-// Database search: la mecánica (prefijo `*` por palabra, paginador propio de
-// 100 y guards) vive en el composable; aquí quedan los alias con los nombres
-// históricos. El debounce del input es ritmo de la vista y sigue aquí.
-const performDatabaseSearch = browser.search.run;
-const loadMoreSearchResults = browser.search.loadMore;
-
-watch(searchQuery, (newQuery) => {
+// L02 (#99): la búsqueda alimenta `query_library.text` (FTS con relevancia
+// en servidor) y se combina con los filtros EN SERVIDOR. Espera 250 ms desde
+// la ÚLTIMA tecla (una sola consulta por pausa, ninguna por pulsación) y el
+// token de secuencia de fetchLibraryPage descarta la respuesta vieja.
+// L03 (#100): el texto también vive en la URL — la carga del debounce es la
+// que lo escribe (replace, sin entradas de historial por tecla). Si el texto
+// llegó de la URL (applyUrlState), el flag suprime el debounce: la carga la
+// hizo quien aplicó el estado.
+const SEARCH_DEBOUNCE_MS = 250
+watch(searchQuery, () => {
+  if (suppressSearchWatcher) {
+    suppressSearchWatcher = false
+    return
+  }
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
   }
-
-  if (!newQuery.trim()) {
-    browser.search.reset()
-    return
-  }
-
-  isSearching.value = true
   searchDebounceTimer = setTimeout(() => {
-    performDatabaseSearch(newQuery)
-  }, 300)
+    loadLibrary()
+    syncUrlFromView(false)
+  }, SEARCH_DEBOUNCE_MS)
 })
 
 // Playlists
@@ -1726,7 +2350,7 @@ async function addTrackToPlaylist(playlistId: number, trackId: number) {
 // Track selection & downloads. La selección vive en el composable por ids
 // (ADR-0025, decisión 3): el contador se deriva de los ids, no se lleva a mano.
 function handleTrackClick(track: Track) {
-  selection.toggle(track.id);
+  toggleTrackSelection(track.id);
 }
 
 const { play, playNext, enqueue, toggle: togglePlayback, current: playerCurrent } = usePlayer();
@@ -1828,6 +2452,38 @@ async function handleAddToQueue(track: Track) {
   await handleDownload(track);
 }
 
+/** L14 (#109): re-descargar una pista ya descargada. Reutiliza la única
+ * ruta de re-descarga existente (`force_redownload_tracks`: limpia el
+ * Download y las filas de cola de esa pista y la vuelve a encolar por
+ * `perform_add_to_queue`). No es una segunda cola. */
+async function handleReDownload(track: Track) {
+  closeContextMenu()
+  try {
+    await loadEffectivePrefs()
+    const queued = await queueApi.forceRedownloadTracks([track.id], 50, effectiveMaxQualityLabel())
+    if (queued < 1) {
+      toast.error('Could not re-download', `No source could be re-queued for "${track.title}".`)
+      return
+    }
+    track.downloadStatus = 'queued'
+    track.downloadQuality = null
+    toast.success(`Re-download queued for "${track.title}"`)
+  } catch (error: any) {
+    console.error('Failed to re-download:', error)
+    toast.error(`Failed to re-download: ${String(error?.message || error || '')}`)
+  }
+}
+
+/** Acción del panel: «Download» encola una pista sin fichero y «Re-download»
+ * usa la ruta de re-descarga para una pista ya descargada. */
+async function handlePanelDownload(track: Track, alreadyDownloaded: boolean) {
+  if (alreadyDownloaded || track.downloadStatus === 'downloaded') {
+    await handleReDownload(track)
+    return
+  }
+  await handleDownload(track)
+}
+
 async function handleDownload(track: Track) {
   try {
     await loadEffectivePrefs()
@@ -1856,77 +2512,131 @@ async function handleDownload(track: Track) {
   }
 }
 
-const isEnqueuingSelection = ref(false)
+// L05 (#102): TODA acción por lotes pasa por preview + run_library_action.
+// La selección se envía como ids explícitos o como «todo el filtro» con
+// exclusiones; el servidor resuelve, bloquea en 500 y agrega el resumen.
+const isBulkRunning = ref(false)
+const bulkDialog = ref<{ action: LibraryBatchAction; preview: LibraryActionPreview } | null>(null)
+const bulkPlaylistId = ref<number | null>(null)
+const bulkProgress = ref<LibraryActionProgress | null>(null)
 
-async function downloadSelectedTracks() {
-  if (isEnqueuingSelection.value) return
-  const selectedTracks = tracks.value.filter(t => selection.isSelected(t.id))
-  if (selectedTracks.length === 0) return
-
-  isEnqueuingSelection.value = true
-  try {
-    await loadEffectivePrefs()
-    const trackIds = selectedTracks.map(t => t.id)
-    const allowDowngrade = isDowngradeAllowed()
-    const res = await enqueueTracks(
-      trackIds,
-      50,
-      effectiveMaxQualityLabel(),
-      undefined,
-      !allowDowngrade,
-      allowDowngrade,
-      true,
-      true
-    )
-
-    const selected = res?.selected ?? trackIds.length
-    const eligible = res?.eligible ?? 0
-    const enqueued = res?.enqueued ?? 0
-    const excluded = res?.excluded_preflight ?? 0
-    const reasons = res?.skip_reasons ?? []
-
-    const enqueuedTracks = Array.isArray(res?.tracks) ? res.tracks : []
-    const enqueuedSet = new Set(
-      enqueuedTracks
-        .filter((t: any) => t?.is_eligible)
-        .map((t: any) => t?.track_id)
-    )
-
-    selectedTracks.forEach(t => {
-      if (enqueuedSet.has(t.id) || (enqueuedSet.size === 0 && enqueued > 0)) {
-        t.downloadStatus = 'queued'
-      }
-    })
-
-    if (enqueued > 0) {
-      const breakdownMsg = excluded > 0 && reasons.length > 0
-        ? ` (${excluded} excluded: ${reasons[0]})`
-        : excluded > 0
-        ? ` (${excluded} excluded)`
-        : ''
-      toast.success(
-        'Tracks Enqueued',
-        `Enqueued ${enqueued} of ${selected} tracks into download queue${breakdownMsg}.`
-      )
-    } else {
-      const firstReason = reasons.length > 0 ? `: ${reasons[0]}` : ''
-      toast.info(
-        'No Eligible Tracks',
-        `0 of ${selected} tracks enqueued${firstReason}.`
-      )
+function currentSelection(): LibrarySelection {
+  if (selectAllMatching.value) {
+    return {
+      mode: 'filter',
+      // offset/limit no intervienen: el servidor selecciona todo el filtro.
+      query: buildLibraryQuery(0, null),
+      excludedIds: [...excludedIds.value],
     }
+  }
+  return { mode: 'ids', ids: [...selection.selectedIds.value] }
+}
+
+function bulkDownloadAction(): LibraryBatchAction {
+  return {
+    action: 'queue_download',
+    priority: 50,
+    qualityPreference: effectiveMaxQualityLabel(),
+    allowFallback: isDowngradeAllowed(),
+  }
+}
+
+function omissionSummary(omissions: Array<{ count: number; message: string }>): string {
+  return omissions
+    .filter((omission) => omission.count > 0)
+    .map((omission) => `${omission.count} ${omission.message.toLowerCase()}`)
+    .join(', ')
+}
+
+async function openBulkAction(action: LibraryBatchAction) {
+  if (isBulkRunning.value) return
+  const selection = currentSelection()
+  try {
+    const preview = await libraryApi.previewLibraryAction(selection, action)
+    if (preview.total === 0) {
+      toast.info('Nothing selected', 'The current selection has no tracks.')
+      return
+    }
+    if (preview.eligible === 0) {
+      const reasons = omissionSummary(preview.omissions)
+      toast.info(
+        'No eligible tracks',
+        `0 of ${preview.total} selected tracks can run.${reasons ? ` ${reasons}.` : ''}`
+      )
+      return
+    }
+    bulkDialog.value = { action, preview }
+  } catch (error) {
+    console.error('Failed to preview library action:', error)
+    toast.error('Could not preview the action', String(error))
+  }
+}
+
+async function openBulkDownload() {
+  showBulkMenu.value = false
+  await loadEffectivePrefs()
+  await openBulkAction(bulkDownloadAction())
+}
+
+async function openBulkFavorite(favorite: boolean) {
+  showBulkMenu.value = false
+  await openBulkAction({ action: 'set_favorite', favorite })
+}
+
+async function openBulkAddToPlaylist() {
+  showBulkMenu.value = false
+  if (bulkPlaylistId.value === null) return
+  await openBulkAction({ action: 'add_to_playlist', playlistId: bulkPlaylistId.value })
+}
+
+async function confirmBulkAction() {
+  const dialog = bulkDialog.value
+  if (!dialog || isBulkRunning.value) return
+  const selection = currentSelection()
+  if (selection.mode === 'ids' && selection.ids.length === 0) {
+    bulkDialog.value = null
+    return
+  }
+
+  isBulkRunning.value = true
+  try {
+    const summary: LibraryActionSummary = await libraryApi.runLibraryAction(
+      selection,
+      dialog.action,
+      dialog.preview.total,
+      dialog.preview.eligible
+    )
+    const details = [
+      `${summary.succeeded} succeeded`,
+      `${summary.failed} failed`,
+      `${summary.skipped} omitted`,
+    ].join(' · ')
+    const reasons = omissionSummary(summary.omissions)
+    const recalculated = summary.recalculated
+      ? ' The library changed while previewing; the summary was recalculated.'
+      : ''
+    const message = `${details}.${reasons ? ` ${reasons}.` : ''}${recalculated}`
+    if (summary.failed > 0) {
+      toast.error('Batch action finished with failures', message)
+    } else {
+      toast.success('Batch action finished', message)
+    }
+    bulkDialog.value = null
     clearSelection()
     showBulkMenu.value = false
-  } catch (error: any) {
-    console.error('Failed to queue bulk download:', error)
-    const errStr = String(error?.message || error || '')
-    toast.error(`Failed to download selection: ${errStr}`)
+    await loadLibrary()
+  } catch (error) {
+    console.error('Failed to run library action:', error)
+    toast.error('Batch action failed', String(error))
   } finally {
-    isEnqueuingSelection.value = false
+    isBulkRunning.value = false
+    bulkProgress.value = null
   }
 }
 
 function clearSelection() {
+  selectAllMatching.value = false
+  excludedIds.value = []
   selection.clear()
 }
 
@@ -2094,6 +2804,14 @@ async function handleRemoveFromLibrary(track: Track) {
 }
 
 async function handleBulkRemove() {
+  if (selectAllMatching.value) {
+    // Acción destructiva: no se ofrece en «seleccionar todo».
+    toast.info(
+      'Per-track action',
+      'Removing tracks is not offered for all matching tracks. Select the tracks explicitly.'
+    );
+    return;
+  }
   const selectedTracks = tracks.value.filter(t => selection.isSelected(t.id));
   if (selectedTracks.length === 0) return;
 
@@ -2104,7 +2822,7 @@ async function handleBulkRemove() {
     const ids = selectedTracks.map(t => t.id);
     const removed = await libraryApi.bulkRemoveTracks(ids);
     tracks.value = tracks.value.filter(t => !selection.isSelected(t.id));
-    selection.clear();
+    clearSelection();
     showBulkMenu.value = false;
     await reconcilePlaylistCounts();
     toast.success('Tracks removed', `${removed} tracks removed from library`);
@@ -2155,6 +2873,24 @@ function getServiceIcon(service: string): string {
   return short[canonical] || canonical.charAt(0).toUpperCase() || '?';
 }
 
+/** L14 (#109): etiqueta accesible de los cinco estados de descarga. */
+function downloadStatusLabel(status: Track['downloadStatus']): string {
+  switch (status) {
+    case 'downloaded': return 'Downloaded'
+    case 'queued': return 'Queued for download'
+    case 'downloading': return 'Downloading'
+    case 'failed': return 'Download failed'
+    case 'stale': return 'File stale or missing'
+    default: return 'Not downloaded'
+  }
+}
+
+/** Calidad efectiva del fichero; si el backend aún no la proyecta (filas
+ * antiguas o fixtures), cae al formato que ya mostraba la columna. */
+function effectiveQuality(track: Track): string {
+  return track.downloadQuality || track.quality || '—'
+}
+
 function getQualityStyle(quality: string): string {
   const q = quality.toUpperCase();
   if (q.includes('24/') || q.includes('HI-RES') || q.includes('HIRES')) {
@@ -2202,115 +2938,44 @@ function getLyricsTypeIcon(type: string): { icon: string; class: string; title: 
 }
 
 function toggleSelectAll() {
-  // Misma semántica que antes: si todo lo cargado está seleccionado se vacía,
-  // si no, la selección pasa a ser exactamente las filas actuales.
-  if (tracks.value.every(t => selection.isSelected(t.id))) {
-    selection.clear()
-  } else {
-    selection.selectAll(tracks.value)
+  // L05 (#102): la casilla de cabecera selecciona TODO el filtro, no la página
+  // cargada (el total lo da el servidor). Si ya está todo seleccionado, vacía.
+  if (selectAllMatching.value || (selectedCount.value > 0 && tracks.value.every(t => isTrackSelected(t.id)))) {
+    clearSelection()
+    return
   }
+  selectAllMatching.value = true
+  excludedIds.value = []
 }
 
-// Only page appends may reuse a sorted prefix; all other invalidations sort anew.
-// `pageAppendCount` lo incrementa el composable en cada append de página.
-let sortedPrefix: Track[] = []
-let previousSortKey = ''
-let previousFilterKey = ''
-let previousSource: Track[] | null = null
-let previousFilteredLength = 0
-let previousAppendCount = -1
-
-function compareTracks(a: Track, b: Track): number {
-  let comparison = 0
-  switch (sortBy.value) {
-    case 'title': comparison = a.title.localeCompare(b.title); break
-    case 'artist': comparison = a.artist.localeCompare(b.artist); break
-    case 'album': comparison = a.album.localeCompare(b.album); break
-    case 'duration': comparison = a.duration.localeCompare(b.duration); break
-    case 'quality': comparison = a.quality.localeCompare(b.quality); break
-    case 'metadataScore': comparison = (a.metadataScore ?? 0) - (b.metadataScore ?? 0); break
-  }
-  return sortDirection.value === 'desc' ? -comparison : comparison
+/** Cambia de «todo el filtro» a los ids de las filas ya cargadas. */
+function selectLoadedPageOnly() {
+  selectAllMatching.value = false
+  excludedIds.value = []
+  selection.selectAll(tracks.value)
 }
 
-function mergeSorted(prefix: Track[], appended: Track[]): Track[] {
-  const merged: Track[] = []
-  let i = 0
-  let j = 0
-  while (i < prefix.length && j < appended.length) {
-    // Stable sort: earlier pages precede later ones on equal keys.
-    if (compareTracks(prefix[i], appended[j]) <= 0) merged.push(prefix[i++])
-    else merged.push(appended[j++])
+// L01 (#98): filtros, búsqueda y orden viven EN SERVIDOR (query_library:
+// orden con desempates NOCASE estables y nulos al final). L13 (#110): el
+// renderer no filtra, no ordena y no conserva un alias «filtered»: las filas
+// que pinta son exactamente las páginas que devuelve el servidor.
+//
+// La dirección y la clave de orden son parte de la consulta: al cambiarlas
+// se pide la página de nuevo (la dirección afecta SOLO a la clave primaria
+// y los desempates los fija el servidor). L03 (#100): también viven en la
+// URL; si llegaron de ella (applyUrlState) la carga ya se hizo.
+watch([sortBy, sortDirection], () => {
+  if (suppressSortWatcher) {
+    suppressSortWatcher = false
+    return
   }
-  while (i < prefix.length) merged.push(prefix[i++])
-  while (j < appended.length) merged.push(appended[j++])
-  return merged
-}
-
-const filteredTracks = computed(() => {
-  let trackList = searchQuery.value.trim() ? searchResults.value : tracks.value
-  
-  if (activeFilters.value.includes('flac')) {
-    trackList = trackList.filter(t => t.quality.includes('/') && !t.quality.includes('kbps'))
-  }
-  if (activeFilters.value.includes('mp3')) {
-    trackList = trackList.filter(t => t.quality.includes('kbps'))
-  }
-  if (activeFilters.value.includes('downloaded')) {
-    trackList = trackList.filter(t => t.downloadStatus === 'downloaded')
-  }
-  if (activeFilters.value.includes('notDownloaded')) {
-    trackList = trackList.filter(t => t.downloadStatus !== 'downloaded')
-  }
-  if (activeFilters.value.includes('multiSource')) {
-    trackList = trackList.filter(t => t.services.length >= 2)
-  }
-  if (activeFilters.value.includes('favorites')) {
-    trackList = trackList.filter(t => t.isFavorite)
-  }
-  if (activeFilters.value.includes('quality')) {
-    // FE-10: deep-link quality filter. Tracks carry the backend-computed
-    // bucket; tracks without one fall back to an exact quality-string match.
-    trackList = trackList.filter(t => {
-      if (!qualityFilter.value) return true
-      if (t.qualityBucket) return t.qualityBucket === qualityFilter.value
-      return !!t.quality && t.quality !== '—' && t.quality.toUpperCase() === qualityFilter.value.toUpperCase()
-    })
-  }
-  
-  const sortKey = `${sortBy.value}:${sortDirection.value}`
-  const filterKey = JSON.stringify(activeFilters.value) + '|' + qualityFilter.value
-
-  // The sorted prefix can only be reused when the sort key and filters are
-  // unchanged, the previous pass ran over the very same collection (same
-  // identities, same length), and exactly one page was appended since.
-  // Anything else re-sorts the whole list, exactly as before.
-  const isAppendOnly =
-    sortKey === previousSortKey &&
-    filterKey === previousFilterKey &&
-    previousSource === tracks.value &&
-    trackList === tracks.value &&
-    pageAppendCount.value > previousAppendCount &&
-    previousFilteredLength < trackList.length
-
-  previousSortKey = sortKey
-  previousFilterKey = filterKey
-  previousSource = trackList
-  previousFilteredLength = trackList.length
-  previousAppendCount = pageAppendCount.value
-
-  if (isAppendOnly) {
-    const appendedSorted = trackList.slice(sortedPrefix.length).sort(compareTracks)
-    sortedPrefix = mergeSorted(sortedPrefix, appendedSorted)
-    return sortedPrefix
-  }
-
-  sortedPrefix = [...trackList].sort(compareTracks)
-  return sortedPrefix
+  syncUrlFromView(true)
+  scheduleLibraryReload()
 })
 
-// Ventana virtual: kernel compartido (useVirtualWindow, ADR-0025). Los
-// nombres históricos se conservan como alias; el template no cambia.
+// Ventana virtual de la lista: kernel compartido (useVirtualWindow,
+// ADR-0025). Filas de 56 px, overscan 10, throttle de 120 ms y footer de fin
+// de lista de 48 px.
 const {
   containerRef: listContainerRef,
   scrollTop: libraryScrollTop,
@@ -2322,7 +2987,7 @@ const {
   visibleItems: visibleTracks,
   handleScroll,
   reset: resetVirtualScroll,
-} = useVirtualWindow(filteredTracks, {
+} = useVirtualWindow(tracks, {
   rowHeight: ROW_HEIGHT,
   overscan: OVERSCAN,
   footerHeight: () => (!hasMore.value && tracks.value.length > 0 ? END_OF_LIST_FOOTER_PX : 0),
@@ -2330,7 +2995,7 @@ const {
   onScrollMeasured: maybeLoadMore,
 })
 
-watch([() => filteredTracks.value.length, searchQuery, () => activeFilters.value], () => {
+watch([() => tracks.value.length, searchQuery, () => activeFilters.value], () => {
   if (listContainerRef.value && libraryScrollTop.value > totalVirtualHeight.value) {
     resetVirtualScroll()
   }
@@ -2338,6 +3003,8 @@ watch([() => filteredTracks.value.length, searchQuery, () => activeFilters.value
 
 // Album interface for grid view
 interface Album {
+  /** Identidad estable del grupo (albumId real o título+artista). */
+  key: string
   id: number
   albumId?: number | null
   title: string
@@ -2353,33 +3020,26 @@ interface Album {
   tracks: Track[]
 }
 
-// Todo colapsado al entrar: los nombres de demo iniciales eran datos falsos.
+// L13 (#110): agrupar NO es filtrar ni ordenar. Los grupos se forman en el
+// orden en que el servidor devuelve las filas (Map conserva la primera
+// aparición) y las pistas dentro de cada grupo mantienen ese mismo orden. No
+// hay `localeCompare` ni comparador de «fecha añadida» en el renderer.
 const expandedGroups = ref<string[]>([])
 
-const groupedByArtist = computed(() => {
-  const groups: { artist: string; tracks: Track[] }[] = []
-  const artistMap = new Map<string, Track[]>()
-  
-  for (const track of filteredTracks.value) {
-    const existing = artistMap.get(track.artist)
-    if (existing) {
-      existing.push(track)
-    } else {
-      artistMap.set(track.artist, [track])
-    }
-  }
-  
-  artistMap.forEach((tracks, artist) => {
-    groups.push({ artist, tracks })
-  })
-  
-  return groups.sort((a, b) => a.artist.localeCompare(b.artist))
-})
+type GroupKind = 'artist' | 'album' | 'genre' | 'quality'
+
+interface GroupSection {
+  key: string
+  kind: GroupKind
+  label: string
+  tracks: Track[]
+  album?: Album
+}
 
 const groupedByAlbum = computed<Album[]>(() => {
   const albumMap = new Map<string, Track[]>()
-  
-  for (const track of filteredTracks.value) {
+
+  for (const track of tracks.value) {
     const key = track.albumId ? `id_${track.albumId}` : `${track.album}||${track.artist}`
     const existing = albumMap.get(key)
     if (existing) {
@@ -2388,17 +3048,18 @@ const groupedByAlbum = computed<Album[]>(() => {
       albumMap.set(key, [track])
     }
   }
-  
+
   const albums: Album[] = []
   let idCounter = 1
-  
-  albumMap.forEach((tracks) => {
-    const firstTrack = tracks[0]
+
+  albumMap.forEach((albumTracks, groupKey) => {
+    const firstTrack = albumTracks[0]
     const albumRealId = firstTrack.albumId ?? idCounter++
     const uniqueServices = new Set<string>()
-    tracks.forEach(t => t.services.forEach(s => uniqueServices.add(s)))
-    
+    albumTracks.forEach(t => t.services.forEach(s => uniqueServices.add(s)))
+
     albums.push({
+      key: groupKey,
       id: albumRealId,
       albumId: firstTrack.albumId ?? null,
       title: firstTrack.album,
@@ -2407,49 +3068,66 @@ const groupedByAlbum = computed<Album[]>(() => {
       artGradient: firstTrack.artGradient,
       services: Array.from(uniqueServices),
       quality: firstTrack.quality,
-      downloadStatus: tracks.every(t => t.downloadStatus === 'downloaded') ? 'downloaded' : 
-                      tracks.some(t => t.downloadStatus === 'queued') ? 'queued' : 'not_downloaded',
-      metadataScore: Math.round(tracks.reduce((sum, t) => sum + (t.metadataScore ?? 0), 0) / tracks.length),
-      trackCount: tracks.length,
+      downloadStatus: albumTracks.every(t => t.downloadStatus === 'downloaded') ? 'downloaded' :
+                      albumTracks.some(t => t.downloadStatus === 'queued') ? 'queued' : 'not_downloaded',
+      metadataScore: Math.round(albumTracks.reduce((sum, t) => sum + (t.metadataScore ?? 0), 0) / albumTracks.length),
+      trackCount: albumTracks.length,
       isSelected: false,
-      tracks: tracks
+      tracks: albumTracks
     })
   })
-  
-  return albums.sort((a, b) => a.title.localeCompare(b.title))
+
+  return albums
 })
 
-// Real Genre Grouping
-const groupedByGenre = computed(() => {
-  const groups: { genre: string; tracks: Track[] }[] = []
-  const genreMap = new Map<string, Track[]>()
-  
-  for (const track of filteredTracks.value) {
-    const g = track.genre ? track.genre.trim() : 'Unknown Genre'
-    const existing = genreMap.get(g)
+const groupedByArtist = computed<GroupSection[]>(() => {
+  const artistMap = new Map<string, Track[]>()
+  for (const track of tracks.value) {
+    const existing = artistMap.get(track.artist)
     if (existing) {
       existing.push(track)
     } else {
-      genreMap.set(g, [track])
+      artistMap.set(track.artist, [track])
     }
   }
-  
-  genreMap.forEach((tracks, genre) => {
-    groups.push({ genre, tracks })
-  })
-  
-  return groups.sort((a, b) => {
-    if (a.genre === 'Unknown Genre') return 1
-    if (b.genre === 'Unknown Genre') return -1
-    return a.genre.localeCompare(b.genre)
-  })
+  return Array.from(artistMap, ([artist, groupTracks]) => ({
+    key: `artist:${artist}`,
+    kind: 'artist' as const,
+    label: artist,
+    tracks: groupTracks,
+  }))
 })
 
-const groupedByQuality = computed(() => {
-  const groups: { quality: string; tracks: Track[] }[] = []
+const albumSections = computed<GroupSection[]>(() => groupedByAlbum.value.map(album => ({
+  key: `album:${album.key}`,
+  kind: 'album' as const,
+  label: album.title,
+  tracks: album.tracks,
+  album,
+})))
+
+const groupedByGenre = computed<GroupSection[]>(() => {
+  const genreMap = new Map<string, Track[]>()
+  for (const track of tracks.value) {
+    const genre = track.genre ? track.genre.trim() : 'Unknown Genre'
+    const existing = genreMap.get(genre)
+    if (existing) {
+      existing.push(track)
+    } else {
+      genreMap.set(genre, [track])
+    }
+  }
+  return Array.from(genreMap, ([genre, groupTracks]) => ({
+    key: `genre:${genre}`,
+    kind: 'genre' as const,
+    label: genre,
+    tracks: groupTracks,
+  }))
+})
+
+const groupedByQuality = computed<GroupSection[]>(() => {
   const qualityMap = new Map<string, Track[]>()
-  
-  for (const track of filteredTracks.value) {
+  for (const track of tracks.value) {
     const quality = (!track.quality || track.quality === '—') ? 'Unknown' : track.quality
     const existing = qualityMap.get(quality)
     if (existing) {
@@ -2458,16 +3136,131 @@ const groupedByQuality = computed(() => {
       qualityMap.set(quality, [track])
     }
   }
-  
-  qualityMap.forEach((tracks, quality) => {
-    groups.push({ quality, tracks })
-  })
-  
-  return groups.sort((a, b) => {
-    if (a.quality === 'Unknown') return 1
-    if (b.quality === 'Unknown') return -1
-    return b.quality.localeCompare(a.quality)
-  })
+  return Array.from(qualityMap, ([quality, groupTracks]) => ({
+    key: `quality:${quality}`,
+    kind: 'quality' as const,
+    label: quality,
+    tracks: groupTracks,
+  }))
+})
+
+const groupSections = computed<GroupSection[]>(() => {
+  switch (groupBy.value) {
+    case 'artist': return groupedByArtist.value
+    case 'album': return albumSections.value
+    case 'genre': return groupedByGenre.value
+    case 'quality': return groupedByQuality.value
+    default: return []
+  }
+})
+
+// Filas heterogéneas de la vista agrupada: una cabecera por grupo y, si está
+// expandido, una fila por pista. Alturas fijas por tipo: el kernel variable
+// usa los prefijos acumulados para saber qué ventana pintar.
+const GROUP_HEADER_HEIGHT = 64
+const GROUP_TRACK_HEIGHT = 52
+const GROUP_OVERSCAN = 8
+
+interface GroupDisplayRow {
+  id: string
+  rowType: 'header' | 'track'
+  groupKind: GroupKind
+  groupKey: string
+  height: number
+  header?: GroupSection
+  track?: Track
+  trackIndex?: number
+}
+
+const groupDisplayRows = computed<GroupDisplayRow[]>(() => {
+  const rows: GroupDisplayRow[] = []
+  for (const section of groupSections.value) {
+    rows.push({
+      id: `header:${section.key}`,
+      rowType: 'header',
+      groupKind: section.kind,
+      groupKey: section.key,
+      height: GROUP_HEADER_HEIGHT,
+      header: section,
+    })
+    if (expandedGroups.value.includes(section.key)) {
+      section.tracks.forEach((track, trackIndex) => {
+        rows.push({
+          id: `track:${section.key}:${track.id}`,
+          rowType: 'track',
+          groupKind: section.kind,
+          groupKey: section.key,
+          height: GROUP_TRACK_HEIGHT,
+          track,
+          trackIndex,
+        })
+      })
+    }
+  }
+  return rows
+})
+
+const {
+  containerRef: groupContainerRef,
+  totalHeight: totalGroupHeight,
+  offsetY: groupOffsetY,
+  visibleItems: visibleGroupRows,
+  handleScroll: handleGroupScroll,
+  reset: resetGroupScroll,
+} = useVirtualWindow(groupDisplayRows, {
+  rowHeight: GROUP_TRACK_HEIGHT,
+  rowHeightFor: (index) => groupDisplayRows.value[index]?.height ?? GROUP_TRACK_HEIGHT,
+  overscan: GROUP_OVERSCAN,
+  scrollThrottleMs: SCROLL_THROTTLE_MS,
+  onScrollMeasured: maybeLoadMore,
+})
+
+// Grid virtualizado: las columnas responden a los breakpoints del diseño
+// (mismos que el grid de Tailwind) y el alto de fila se deriva del ancho de
+// baldosa, para que la ventana visible no dependa de un `aspect-square`
+// calculado por el navegador.
+const GRID_GAP_PX = 20
+const GRID_INFO_PX = 92
+const GRID_HORIZONTAL_PADDING_PX = 72
+const GRID_OVERSCAN = 3
+
+const gridColumns = ref(2)
+const gridAvailableWidth = ref(1024)
+
+function updateGridMetrics() {
+  const width = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 1024
+  gridAvailableWidth.value = width
+  gridColumns.value = width >= 1536 ? 6 : width >= 1024 ? 5 : width >= 768 ? 4 : width >= 640 ? 3 : 2
+}
+updateGridMetrics()
+
+const gridTileSize = computed(() => Math.max(
+  120,
+  Math.floor((gridAvailableWidth.value - GRID_HORIZONTAL_PADDING_PX - GRID_GAP_PX * (gridColumns.value - 1)) / gridColumns.value)
+))
+const gridRowHeight = computed(() => gridTileSize.value + GRID_INFO_PX + GRID_GAP_PX)
+
+const gridRows = computed<Album[][]>(() => {
+  const rows: Album[][] = []
+  const albums = groupedByAlbum.value
+  for (let index = 0; index < albums.length; index += gridColumns.value) {
+    rows.push(albums.slice(index, index + gridColumns.value))
+  }
+  return rows
+})
+
+const {
+  containerRef: gridContainerRef,
+  totalHeight: totalGridHeight,
+  offsetY: gridOffsetY,
+  visibleItems: visibleGridRows,
+  handleScroll: handleGridScroll,
+} = useVirtualWindow(gridRows, {
+  rowHeight: gridRowHeight,
+  overscan: GRID_OVERSCAN,
+  footerHeight: () => (!hasMore.value && gridRows.value.length > 0 ? END_OF_LIST_FOOTER_PX : 0),
+  scrollThrottleMs: SCROLL_THROTTLE_MS,
+  onScrollMeasured: maybeLoadMore,
 })
 
 function toggleGroupExpand(groupName: string) {
@@ -2490,7 +3283,25 @@ function getQualityBadgeStyle(quality: string): string {
 }
 
 // Methods
+/**
+ * Recarga coalescida de la vista (L13, #110): una ráfaga síncrona de cambios
+ * de filtro/orden produce UNA consulta cuando el estado ya está asentado, no
+ * una por clic. La caché se encarga de que volver a un filtro ya visitado no
+ * consulte de nuevo.
+ */
+let reloadQueued = false
+function scheduleLibraryReload() {
+  if (reloadQueued) return
+  reloadQueued = true
+  void Promise.resolve().then(() => {
+    reloadQueued = false
+    void loadLibrary()
+  })
+}
+
 function toggleFilter(filterId: string) {
+  // Piezas deshabilitadas con su motivo: no activan un filtro sin semántica.
+  if (filterPills.find(f => f.id === filterId)?.disabled) return
   if (filterId === 'all') {
     activeFilters.value = ['all']
   } else {
@@ -2506,9 +3317,12 @@ function toggleFilter(filterId: string) {
     }
   }
 
-  if (filterId === 'duplicates' || filterId === 'favorites' || activeFilters.value.includes('all')) {
-    loadLibrary()
-  }
+  // Cualquier cambio de filtro cambia la consulta: se pide de nuevo al
+  // servidor (los contadores vienen con la primera página) y se refleja en
+  // la URL (push: atrás recorre estados de filtro). La recarga se coalesce:
+  // una ráfaga de clics deja una sola consulta.
+  scheduleLibraryReload()
+  syncUrlFromView(true)
 }
 
 function removeFilter(filterId: string) {
@@ -2516,9 +3330,8 @@ function removeFilter(filterId: string) {
   if (activeFilters.value.length === 0) {
     activeFilters.value = ['all']
   }
-  if (filterId === 'duplicates' || filterId === 'favorites') {
-    loadLibrary()
-  }
+  scheduleLibraryReload()
+  syncUrlFromView(true)
 }
 
 function getFilterLabel(filterId: string) {
@@ -2531,8 +3344,14 @@ function getFilterLabel(filterId: string) {
 function clearAllFilters() {
   activeFilters.value = ['all']
   qualityFilter.value = ''
-  searchQuery.value = ''
-  loadLibrary()
+  if (searchQuery.value !== '') {
+    // La carga la hace el loadLibrary de abajo: sin doble consulta ni
+    // replace posterior del debounce.
+    suppressSearchWatcher = true
+    searchQuery.value = ''
+  }
+  scheduleLibraryReload()
+  syncUrlFromView(true)
 }
 
 // Keep the deep-link value in sync with the chip: whenever the 'quality'
@@ -2552,39 +3371,46 @@ function handleKeydown(event: KeyboardEvent) {
 
   if (event.key === 'd' || event.key === 'D') {
     if (selectedCount.value > 0) {
-      downloadSelectedTracks()
+      void openBulkDownload()
     } else if (contextMenu.value.track) {
       handleDownload(contextMenu.value.track)
     }
   } else if (event.key === 'q' || event.key === 'Q') {
     // FE-9: "Add to Downloads" — same enqueue path as D (download queue).
     if (selectedCount.value > 0) {
-      downloadSelectedTracks()
+      void openBulkDownload()
     } else if (contextMenu.value.track) {
       void handleAddToQueue(contextMenu.value.track)
     }
   } else if (event.key === 'n' || event.key === 'N') {
     // FE-9: "Play Next" on the context track or the first selected track.
-    const nextTarget = contextMenu.value.track ?? tracks.value.find(t => selection.isSelected(t.id))
+    const nextTarget = contextMenu.value.track ?? tracks.value.find(t => isTrackSelected(t.id))
     if (nextTarget) void handlePlayNext(nextTarget)
   } else if (event.key === 'f' || event.key === 'F') {
     if (contextMenu.value.track) {
       handleToggleFavorite(contextMenu.value.track)
     } else {
-      const selected = tracks.value.find(t => selection.isSelected(t.id))
+      const selected = tracks.value.find(t => isTrackSelected(t.id))
       if (selected) handleToggleFavorite(selected)
     }
   } else if (event.key === ' ' || event.code === 'Space') {
-    // FE-9: Space = Play/Pause as announced by the context menu and the
-    // shortcuts modal. With the menu open on an idle player it starts that
-    // track ("Play Now"); otherwise it toggles the current playback.
-    event.preventDefault()
+    // FE-9: with the context menu open on an idle player, Space starts that
+    // track ("Play Now"). General play/pause is a window shortcut since P04
+    // (#135): if the registry already dispatched it (preventDefault), it is
+    // not repeated here — two toggles would leave the transport as it was.
     if (contextMenu.value.visible && contextMenu.value.track && !playerCurrent.value) {
+      event.preventDefault()
       void handleTrackPlay(contextMenu.value.track)
-    } else {
+    } else if (!event.defaultPrevented) {
+      event.preventDefault()
       togglePlayback()
     }
   } else if (event.key === 'Escape') {
+    // L04 (#101): el panel de detalle es la capa superior; Escape lo cierra.
+    if (detailTrackId.value !== null) {
+      closeTrackDetail()
+      return
+    }
     clearSelection()
     closeContextMenu()
     showShortcutsModal.value = false
@@ -2594,26 +3420,13 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
-// FE-10: consume the DashboardView deep-links. `?filter=quality&quality=<bucket>`
-// comes from the quality cards and `?filter=duplicates` from the duplicates
-// shortcut. Reading it on mount alone left a stale filter when the query
-// changes in place (back/forward, or another deep-link to the same route),
-// so the query is watched like MetadataView does for `?filter=needs_work`.
-function applyRouteFilters() {
-  const filterParam = route?.query?.filter
-  if (typeof filterParam !== 'string' || filterParam === '') return
-
-  if (filterParam === 'quality') {
-    const qualityParam = route?.query?.quality
-    qualityFilter.value = typeof qualityParam === 'string' && qualityParam ? qualityParam : ''
-    if (qualityFilter.value) {
-      activeFilters.value = ['quality']
-    }
-    return
-  }
-
-  activeFilters.value = [filterParam]
-}
+// FE-10 / L03 (#100): consume los deep-links de la biblioteca. El legacy del
+// dashboard (`?filter=quality&quality=<bucket>`; `?filter=duplicates` sin
+// semántica) y las claves nuevas (q, sort, dir, dl, quality, fav) los
+// parsea `applyUrlState` (composables/libraryUrlState.ts). Leerlo solo al
+// montar dejaba un filtro viejo cuando el query cambia en el sitio
+// (back/forward u otro deep-link a la misma ruta), así que el watcher de
+// ruta de abajo re-aplica el estado serializado.
 
 // ==============================================
 // Item 45: deep-link /library?track=<id>
@@ -2652,7 +3465,7 @@ async function focusTrackFromQuery() {
     pagesLoaded++
   }
 
-  const trackIdx = filteredTracks.value.findIndex(t => t.id === trackId)
+  const trackIdx = tracks.value.findIndex(t => t.id === trackId)
   if (trackIdx >= 0 && listContainerRef.value) {
     listContainerRef.value.scrollTop = Math.max(0, trackIdx * ROW_HEIGHT - (libraryViewportHeight.value / 2))
     libraryScrollTop.value = listContainerRef.value.scrollTop
@@ -2671,16 +3484,202 @@ async function focusTrackFromQuery() {
     highlightedTrackId.value = null
     highlightClearTimer = null
   }, 5000)
+
+  // L04 (#101): el deep link también abre el panel de esa pista.
+  openTrackDetail(trackId)
+}
+
+// ==============================================
+// L04 (#101): panel lateral de detalle de pista
+// ==============================================
+// UNA consulta al abrirse (get_library_track_detail: Track, fuentes,
+// pertenencias y descarga en una llamada — no por campo, fuente o
+// pertenencia). Tras una acción o un evento de sync se refresca el panel
+// entero con la misma llamada. Una pista inexistente muestra el error
+// tipado (`track_not_found`), no una fila vacía.
+const detailTrackId = ref<number | null>(null)
+const detailData = ref<TrackDetail | null>(null)
+
+/** L14 (#109): calidad efectiva del panel = formato + profundidad/frecuencia
+ * reales del fichero. No decide calidad ni fallback: solo muestra lo que el
+ * Download ya tiene. */
+function detailDownloadQuality(download: NonNullable<TrackDetail['download']>): string {
+  const parts: string[] = []
+  if (download.fileFormat) parts.push(download.fileFormat)
+  if (download.bitDepth !== null && download.sampleRate !== null) {
+    parts.push(`${download.bitDepth}/${download.sampleRate / 1000}`)
+  }
+  return parts.join(' · ')
+}
+const detailError = ref<TrackDetailError | null>(null)
+const detailLoading = ref(false)
+const detailPlaylistChoice = ref<number | null>(null)
+// Token de secuencia: si el panel cambia de pista o se cierra mientras una
+// respuesta está en vuelo, la respuesta vieja se descarta.
+let detailQuerySeq = 0
+
+/** La fila canónica del panel, mapeada al Track de la vista para reusar los
+ * manejadores existentes (play, descarga, favorito, abrir ficha). */
+const panelTrack = computed<Track | null>(() => (detailData.value ? mapToTrack(detailData.value.track, 0) : null))
+/** L14 (#109): hay Download aunque el fichero se haya verificado como
+ * ausente (fila `downloads` presente): la acción correcta es re-descargar. */
+const panelHasDownload = computed<boolean>(() => {
+  const download = detailData.value?.download
+  return !!download && (download.status === 'downloaded' || !!download.filePath)
+})
+
+async function openTrackDetail(trackId: number) {
+  detailTrackId.value = trackId
+  detailPlaylistChoice.value = null
+  await refreshTrackDetail()
+}
+
+async function refreshTrackDetail() {
+  const trackId = detailTrackId.value
+  if (trackId === null) return
+  const seq = ++detailQuerySeq
+  detailLoading.value = true
+  detailError.value = null
+  try {
+    const detail = await libraryApi.getTrackDetail(trackId)
+    if (seq !== detailQuerySeq || detailTrackId.value !== trackId) return
+    detailData.value = detail
+  } catch (error) {
+    if (seq !== detailQuerySeq || detailTrackId.value !== trackId) return
+    // El wrapper normaliza el rechazo al error tipado del contrato.
+    detailError.value = error as TrackDetailError
+    detailData.value = null
+  } finally {
+    if (seq === detailQuerySeq) detailLoading.value = false
+  }
+}
+
+function closeTrackDetail() {
+  // Un token nuevo invalida cualquier respuesta en vuelo del panel cerrado.
+  detailQuerySeq++
+  detailTrackId.value = null
+  detailData.value = null
+  detailError.value = null
+  detailLoading.value = false
+  detailPlaylistChoice.value = null
+}
+
+/** Tras una acción del panel: refresca el panel y la lista sin esperar al
+ * debounce (el debounce es para tormentas de eventos, no para una acción
+ * explícita del usuario). */
+async function refreshPanelAndList() {
+  await Promise.allSettled([refreshTrackDetail(), loadLibrary()])
+}
+
+async function panelFavorite() {
+  const track = panelTrack.value
+  if (!track) return
+  await handleToggleFavorite(track)
+  // El estado confirmado llega del backend; la fila canónica manda.
+  await refreshTrackDetail()
+}
+
+async function panelAddToPlaylist() {
+  const trackId = detailTrackId.value
+  const playlistId = detailPlaylistChoice.value
+  if (trackId === null || playlistId === null) return
+  await addTrackToPlaylist(playlistId, trackId)
+  await refreshTrackDetail()
+}
+
+/** Borrar audio con confirmación: elimina solo el Download y el fichero,
+ * nunca el Track, sus fuentes ni su pertenencia (story 22 del spec #96). */
+async function panelDeleteAudio() {
+  const trackId = detailTrackId.value
+  const track = panelTrack.value
+  if (trackId === null || !track) return
+  const deleted = await confirmDeleteAudio(track)
+  if (deleted) await refreshPanelAndList()
+}
+
+/** L14 (#109): borrado de audio por pista y con confirmación. Elimina solo
+ * el Download, sus entradas de cola y el fichero; el Track, sus TrackSource,
+ * su pertenencia y la evidencia de edición se conservan (lo garantiza el
+ * backend de L04, reutilizado aquí). */
+async function deleteAudioFromContextMenu() {
+  const track = contextMenu.value.track
+  closeContextMenu()
+  if (!track) return
+  const deleted = await confirmDeleteAudio(track)
+  if (!deleted) return
+  if (detailTrackId.value === track.id) await refreshTrackDetail()
+  await loadLibrary()
+}
+
+async function confirmDeleteAudio(track: Track): Promise<boolean> {
+  const confirmed = window.confirm(`Delete downloaded audio for "${track.title}"? The track, its sources and memberships are kept.`)
+  if (!confirmed) return false
+  try {
+    const summary = await libraryApi.deleteTrackAudio(track.id)
+    track.downloadStatus = 'not_downloaded'
+    track.downloadQuality = null
+    track.downloadedFrom = null
+    track.filePath = null
+    toast.success('Audio deleted', `Download removed${summary.audioFileDeleted ? ' and file deleted' : ''}`)
+    return true
+  } catch (error) {
+    toast.error('Failed to delete audio', String(error))
+    return false
+  }
 }
 
 // Lifecycle
 let queueStatsInterval: ReturnType<typeof setInterval> | null = null
 
+// MB dump catalog import (#264 punto 1)
+const mbDumpPanelOpen = ref(false)
+const mbDumpPath = ref('')
+const mbDumpImporting = ref(false)
+const mbDumpProgressLine = ref('')
+const mbDumpMessage = ref('')
+const mbDumpError = ref(false)
+const mbDumpState = ref<MbDumpImportState | null>(null)
+
+function toggleMbDumpPanel() {
+  mbDumpPanelOpen.value = !mbDumpPanelOpen.value
+  if (mbDumpPanelOpen.value) {
+    getMbDumpImportState()
+      .then((s) => { mbDumpState.value = s })
+      .catch(() => { mbDumpState.value = null })
+  }
+}
+
+async function startMbDumpImport() {
+  if (mbDumpImporting.value || !mbDumpPath.value.trim()) return
+  mbDumpImporting.value = true
+  mbDumpError.value = false
+  mbDumpMessage.value = ''
+  mbDumpProgressLine.value = ''
+  try {
+    const counts = await importMbDump(mbDumpPath.value.trim())
+    mbDumpMessage.value = `Catalog imported: ${counts.recording} recordings · ${counts.artist_credit_name} artist credits · ${counts.isrc} isrcs · ${counts.artist} artists`
+  } catch (e) {
+    mbDumpError.value = true
+    mbDumpMessage.value = `Import failed: ${e instanceof Error ? e.message : String(e)}`
+  } finally {
+    mbDumpImporting.value = false
+    getMbDumpImportState()
+      .then((s) => { mbDumpState.value = s })
+      .catch(() => { mbDumpState.value = null })
+  }
+}
+
 onMounted(async () => {
   document.addEventListener('click', closeContextMenu)
   window.addEventListener('keydown', handleKeydown)
+  // Si el viewport cambia de ancho, las columnas del grid cambian: el kernel
+  // recalcula la ventana con el nuevo alto de fila.
+  window.addEventListener('resize', updateGridMetrics)
 
-  applyRouteFilters()
+  // L03 (#100): la URL es la fuente del estado inicial (deep-linking).
+  // applyUrlState asigna sin disparar watchers suprimidos; la carga única
+  // es la de abajo.
+  applyUrlState()
 
   await loadLibrary()
   await fetchQueueStats()
@@ -2688,43 +3687,119 @@ onMounted(async () => {
   // Item 45: after the initial load, handle the ?track=<id> deep-link.
   await focusTrackFromQuery()
 
-  queueStatsInterval = setInterval(fetchQueueStats, 4000)
+  // FE-PERF-01: startQueueStatsInterval hace de guard (véase su comentario).
+  startQueueStatsInterval()
 
+  // L04 (#101): con el panel abierto, un evento de sync refresca también el
+  // panel entero (misma llamada única), sin recargar la página.
+  const refreshDetailIfOpen = () => {
+    if (detailTrackId.value !== null) void refreshTrackDetail()
+  }
+  // La invalidación de caché y la recarga con debounce las dispara
+  // `useLibraryCacheInvalidation` (matriz de eventos, L13); aquí solo se
+  // refresca el panel abierto con la misma llamada única.
   eventBus.on(TauriEvents.LIBRARY_UPDATED, async () => {
-    debouncedReloadLibrary()
+    refreshDetailIfOpen()
   })
   eventBus.on(TauriEvents.IMPORT_COMPLETE, async () => {
-    debouncedReloadLibrary()
+    refreshDetailIfOpen()
   })
   eventBus.on(TauriEvents.SYNC_COMPLETE, async () => {
-    debouncedReloadLibrary()
+    refreshDetailIfOpen()
+  })
+  eventBus.on(TauriEvents.MB_DUMP_PROGRESS, (progress: MbDumpProgress) => {
+    mbDumpProgressLine.value = `${progress.table}: ${progress.rows}/${progress.expected} rows`
   })
   eventBus.on(TauriEvents.DOWNLOAD_PROGRESS, async () => {
     fetchQueueStats()
   })
+  // L05 (#102): los eventos del runner son agregados (uno por bloque / final);
+  // la barra de lote muestra el avance sin una fila por pista.
+  eventBus.on(TauriEvents.LIBRARY_ACTION_PROGRESS, (progress: LibraryActionProgress) => {
+    bulkProgress.value = progress
+  })
+  eventBus.on(TauriEvents.LIBRARY_ACTION_FINISHED, () => {
+    bulkProgress.value = null
+  })
 })
 
-watch(() => [...activeFilters.value], async (newFilters, oldFilters) => {
-  const hasNow = newFilters.includes('duplicates');
-  const hadBefore = oldFilters ? oldFilters.includes('duplicates') : false;
-  if (hasNow !== hadBefore) {
-    await loadLibrary();
+// FE-10 / L03 (#100): react to query changes on the same route (browser
+// back/forward between filter states, dashboard deep-links, tab round-trip)
+// instead of keeping the mount-time state. La clave es el query SERIALIZADO
+// (no la identidad del objeto route) y solo cuando la vista es la activa:
+// una instancia cacheada por KeepAlive no debe pedir en la sombra. La vista
+// no se re-aplica a sí misma: `syncUrlFromView` dejó `lastWrittenUrl` antes
+// de navegar y el guard evita el eco.
+watch(
+  () => (route && route.path === '/library' ? JSON.stringify(route.query) : ''),
+  () => {
+    if (!route || route.path !== '/library') return
+    const serialized = JSON.stringify(route.query)
+    if (serialized === lastWrittenUrl) return
+    if (applyUrlState()) {
+      void loadLibrary()
+    }
+  }
+)
+
+// L04 (#101): un cambio de ruta cierra el panel. Con KeepAlive la instancia
+// sigue montada al navegar a otra vista; el panel no debe quedar flotando
+// al volver.
+watch(
+  () => route?.path,
+  (path, previous) => {
+    if (previous !== undefined && path !== '/library' && detailTrackId.value !== null) {
+      closeTrackDetail()
+    }
+  }
+)
+
+// FE-PERF-01: con LibraryView cacheada por <KeepAlive>, el sondeo de 4s de la
+// cola no debe seguir latiendo mientras la vista está oculta. onActivated/
+// onDeactivated SOLO disparan en instancias dentro de un KeepAlive, así que
+// una vista fuera del include conserva el comportamiento de siempre (start en
+// onMounted, stop en onUnmounted). El guard evita el doble intervalo: con
+// KeepAlive, onActivated llega justo tras el mount y antes de que acaben los
+// `await` de onMounted, que ya arrancan el sondeo.
+function startQueueStatsInterval() {
+  if (queueStatsInterval) return
+  queueStatsInterval = setInterval(fetchQueueStats, 4000)
+}
+
+function stopQueueStatsInterval() {
+  if (queueStatsInterval) {
+    clearInterval(queueStatsInterval)
+    queueStatsInterval = null
+  }
+}
+
+onActivated(() => {
+  viewActive = true
+  startQueueStatsInterval()
+  // Una mutación ocurrida mientras la vista estaba cacheada invalidó la
+  // caché; al volver se relee una vez en vez de mostrar filas viejas.
+  if (cacheDirty) {
+    void loadLibrary()
   }
 })
 
-// FE-10: react to deep-link query changes on the same route (e.g. browser
-// back between two quality buckets) instead of keeping the mount-time filter.
-watch(() => [route?.query?.filter, route?.query?.quality], () => {
-  applyRouteFilters()
+onDeactivated(() => {
+  viewActive = false
+  stopQueueStatsInterval()
+  // Sin recargas en la sombra: si un evento invalidó la caché mientras la
+  // vista estaba oculta, `cacheDirty` hace la única recarga al volver.
+  if (reloadDebounceTimer) {
+    clearTimeout(reloadDebounceTimer)
+    reloadDebounceTimer = null
+  }
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', closeContextMenu)
   window.removeEventListener('keydown', handleKeydown)
-  if (queueStatsInterval) {
-    clearInterval(queueStatsInterval)
-    queueStatsInterval = null
-  }
+  window.removeEventListener('resize', updateGridMetrics)
+  offLibraryInvalidated()
+  stopQueueStatsInterval()
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
   }

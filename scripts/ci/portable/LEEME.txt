@@ -1,0 +1,19 @@
+======================================================
+                 SYNCIFY PORTABLE (Windows)           
+======================================================
+
+1. INICIO RAPIDO:
+   Haz doble clic en Syncify.exe para iniciar la aplicacion.
+
+2. WINDOWS MODIFICADO O SIN EDGE / WEBVIEW2:
+   Syncify utiliza WebView2 para la interfaz.
+   Si al abrir Syncify.exe indica que falta WebView2,
+   ejecuta 'instalar_webview2_si_falla.exe' una sola vez.
+
+3. TODO ESTA PRE-CONFIGURADO:
+   - FFmpeg y Chromaprint fpcalc listos en bin/
+   - Python 3.11 y librerias listos en python/
+   - No requiere instalar dependencias adicionales.
+
+Disfruta de Syncify!
+======================================================

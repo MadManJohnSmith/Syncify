@@ -16,7 +16,6 @@ import type {
     ServiceSyncSettings,
     QualityPreference,
     FolderSettings,
-    DuplicateSettings,
     AudioProcessingSettings,
     LyricsProviderSetting,
     LyricsConfig,
@@ -174,25 +173,76 @@ export async function getServiceSyncSettings(): Promise<ServiceSyncSettings[]> {
 /**
  * Update per-service sync settings
  */
+// #197 (SB02): `incrementalSync` fuera del contrato de sync por servicio.
 export async function updateServiceSyncSettings(
     serviceName: string,
     syncFavorites: boolean,
     syncPlaylists: boolean,
-    syncAlbums: boolean,
-    incrementalSync: boolean
+    syncAlbums: boolean
 ): Promise<ServiceSyncSettings> {
     return invokeCommand<ServiceSyncSettings>('update_service_sync_settings', {
         serviceName,
         syncFavorites,
         syncPlaylists,
         syncAlbums,
-        incrementalSync,
     });
 }
 
 // ==============================================
 // SPRINT 2: DOWNLOADS + FILE SETTINGS
 // ==============================================
+
+/** Preferred download account per service (D09, `service_preferred_accounts`). */
+export interface ServicePreferredAccount {
+    service_name: string;
+    account_id: number;
+    updated_at: string;
+}
+
+/**
+ * Read the preferred download account of every service.
+ */
+export async function getServicePreferredAccounts(): Promise<ServicePreferredAccount[]> {
+    const raw = await invokeCommand<unknown>('get_service_preferred_accounts');
+    return asArray<ServicePreferredAccount>(raw);
+}
+
+/**
+ * Set (or clear with `null`) the preferred download account of a service.
+ * The preference is soft: the resolver still falls back when it cannot serve.
+ */
+export async function setServicePreferredAccount(
+    serviceName: string,
+    accountId: number | null
+): Promise<ServicePreferredAccount | null> {
+    return invokeCommand<ServicePreferredAccount | null>('set_service_preferred_account', {
+        serviceName,
+        accountId,
+    });
+}
+
+/**
+ * Per-service quality caps the worker actually applies
+ * (`service_max_quality_rank` in `commands/settings.rs`). `inherit` delegates
+ * to the global ceiling; high/lossless/hires are the three real caps.
+ */
+export const WORKER_QUALITY_TIERS = ['inherit', 'high', 'lossless', 'hires'] as const;
+export type WorkerQualityTier = (typeof WORKER_QUALITY_TIERS)[number];
+
+/**
+ * Fold a stored/legacy value into the worker vocabulary. Aliases the worker
+ * understands (`master`→hires, `normal`→high, `any`→no cap≈hires) map to their
+ * real tier; anything unknown behaves like `inherit` (no service cap).
+ */
+export function normalizeServiceQuality(raw: unknown): WorkerQualityTier {
+    const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+    if (!value) return 'inherit';
+    if (['high', 'normal', '320', '320kbps', 'medium'].includes(value)) return 'high';
+    if (['lossless', 'cd', 'flac', '16-44', 'flac_16'].includes(value)) return 'lossless';
+    if (['hires', 'hi_res', 'hi-res', 'hi_res_lossless', 'hires_lossless', 'master', '24-96', '24-192', 'flac_24'].includes(value)) return 'hires';
+    if (['any', 'best', 'auto', 'unlimited'].includes(value)) return 'hires';
+    return 'inherit';
+}
 
 /**
  * Get quality preferences for all services
@@ -241,21 +291,6 @@ export async function previewFolderPath(trackId: number): Promise<string> {
     return invokeCommand<string>('preview_folder_path', { trackId });
 }
 
-/**
- * Get duplicate settings
- */
-export async function getDuplicateSettings(): Promise<DuplicateSettings> {
-    return invokeCommand<DuplicateSettings>('get_duplicate_settings');
-}
-
-/**
- * Update duplicate settings
- */
-export async function updateDuplicateSettings(settings: DuplicateSettings): Promise<DuplicateSettings> {
-    return invokeCommand<DuplicateSettings>('update_duplicate_settings', { settings });
-}
-
-/**
 /**
  * Get audio processing settings
  */
@@ -425,14 +460,32 @@ export async function setMaxConcurrentDownloads(max: number): Promise<void> {
 }
 
 /**
+ * Fallback actions the worker actually applies. `prompt` was offered by the
+ * old selector but no worker branch implements it, so it is gone: the UI must
+ * not promise a decision the backend will never make.
+ */
+export const SUPPORTED_FALLBACK_ACTIONS = ['try_next', 'skip'] as const;
+export type WorkerFallbackAction = (typeof SUPPORTED_FALLBACK_ACTIONS)[number];
+
+/**
+ * Fold any stored/legacy/unknown value into the worker vocabulary. `skip`
+ * means "fail rather than degrade"; everything else (including the retired
+ * `prompt`) behaves as the default `try_next`.
+ */
+export function normalizeFallbackAction(raw: unknown): WorkerFallbackAction {
+    return raw === 'skip' ? 'skip' : 'try_next';
+}
+
+/**
  * Update fallback action setting
  */
 export async function updateFallbackAction(fallbackAction: string): Promise<FolderSettings> {
+    const normalized = normalizeFallbackAction(fallbackAction);
     try {
-        return await invokeCommand<FolderSettings>('update_fallback_action', { fallbackAction });
+        return await invokeCommand<FolderSettings>('update_fallback_action', { fallbackAction: normalized });
     } catch {
         const folder = await getFolderSettings();
-        folder.fallback_action = fallbackAction;
+        folder.fallback_action = normalized;
         return updateFolderSettings(folder);
     }
 }
@@ -502,15 +555,12 @@ export async function getDownloadSettings(): Promise<DownloadSettings> {
     const generalKeys = [
         'dl_concurrent_downloads',
         'dl_retry_failed',
-        'dl_retry_count',
-        'dl_retry_delay',
         'dl_download_path',
         'download_dir',
         'dl_temp_dir',
         'temp_dir',
         'dl_create_artist_folder',
-        'dl_create_album_folder',
-        'dl_auto_download_favorites'
+        'dl_create_album_folder'
     ];
     const [folder, quality, kvRaw, defaultPath] = await Promise.all([
         getFolderSettings().catch(() => null),
@@ -656,13 +706,13 @@ export const settingsApi = {
     getServiceSyncSettings,
     updateServiceSyncSettings,
     // Sprint 2: Downloads + File Settings
+    getServicePreferredAccounts,
+    setServicePreferredAccount,
     getQualityPreferences,
     updateQualityPreference,
     getFolderSettings,
     updateFolderSettings,
     previewFolderPath,
-    getDuplicateSettings,
-    updateDuplicateSettings,
     getAudioProcessingSettings,
     updateAudioProcessingSettings,
     getDownloadSettings,

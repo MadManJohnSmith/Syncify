@@ -97,3 +97,33 @@ export function pickArray<T = unknown>(raw: unknown, keys: string[]): T[] {
     const value = pick<unknown>(raw, keys);
     return asArray<T>(value);
 }
+
+/** Bullet mask `maskEmail` renders in place of hidden characters. */
+const EMAIL_MASK = '•••';
+
+/**
+ * Masks an email address for display (ADR-0007 decision 7): the address is
+ * identity data, but the full value must never be rendered in the UI nor
+ * written to logs. Keeps the first characters of the local part and the whole
+ * domain, so two accounts of the same provider stay tellable apart, and hides
+ * the rest.
+ *
+ * - `ana@spotify.com` → `an•••@spotify.com` (local part ≥ 3 chars: keep 2)
+ * - `jo@example.com`  → `j•••@example.com`  (2 chars: keep 1)
+ * - `a@example.com`   → `•••@example.com`   (1 char: keep none)
+ * - `not-an-email`, `a@b@c.com`, `@x.com`, `x@` → `•••` (not an address: hide it all)
+ * - null, undefined or blank → null (absence stays absent)
+ *
+ * Callers feed raw backend values only: the API layer masks each payload once
+ * at the boundary, so a masked address is never masked a second time.
+ */
+export function maskEmail(value: string | null | undefined): string | null {
+    if (value == null) return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parts = trimmed.split('@');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return EMAIL_MASK;
+    const [local, domain] = parts;
+    const stem = local.length >= 3 ? local.slice(0, 2) : local.slice(0, local.length - 1);
+    return `${stem}${EMAIL_MASK}@${domain}`;
+}

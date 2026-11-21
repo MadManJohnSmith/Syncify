@@ -178,17 +178,9 @@ pub async fn perform_record_local_play(
     }
 }
 
-/// Cuenta una escucha de una pista local. La UI genera un UUID v4 canónico
-/// por reproducción lógica y lo invoca UNA sola vez por sesión al cruzar el
-/// umbral de 30 s de reproducción real acreditada; el backend deduplica por
-/// PK ante reintentos (respuesta IPC perdida) y rechaza el token reutilizado
-/// con otra pista.
-#[tauri::command]
-pub async fn record_local_play(
-    state: State<'_, crate::AppState>,
-    track_id: i64,
-    listen_session_id: String,
-) -> Result<PlayStats, String> {
-    tracing::info!("record_local_play: track_id={track_id}");
-    perform_record_local_play(&state.db, track_id, &listen_session_id).await
-}
+// La acreditación de escucha ya no es un comando IPC (#132, P01): el backend
+// acumula los 30 s reales en el ticker (`services::playback_session`) y llama
+// a `perform_record_local_play` directamente — la UI no cronometra. La
+// semántica transaccional e idempotente no cambia: el umbral lo cruza el
+// motor, la deduplicación por PK de `listen_session_id` sigue protegiendo
+// frente a reintentos y el token reutilizado con otra pista se rechaza.

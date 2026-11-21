@@ -132,16 +132,18 @@ fn gstreamer_block() -> String {
 
 #[test]
 fn appimage_still_injects_gstreamer_plugins_under_usr_lib() {
-    let workflow_path = src_tauri_dir()
+    // Desde #276 la cadena del AppImage vive en el script de packaging: la
+    // inyección de GStreamer dejó de estar inline en build-linux.yml.
+    let script_path = src_tauri_dir()
         .parent()
         .unwrap()
-        .join(".github/workflows/build-linux.yml");
-    let workflow = fs::read_to_string(&workflow_path)
-        .unwrap_or_else(|e| panic!("No se pudo leer {}: {}", workflow_path.display(), e));
-    let plugdir = workflow
+        .join("scripts/ci/package_appimage.sh");
+    let script = fs::read_to_string(&script_path)
+        .unwrap_or_else(|e| panic!("No se pudo leer {}: {}", script_path.display(), e));
+    let plugdir = script
         .lines()
         .find(|line| line.trim_start().starts_with("PLUGDIR="))
-        .expect("build-linux.yml debe seguir inyectando los plugins con PLUGDIR=");
+        .expect("package_appimage.sh debe seguir inyectando los plugins con PLUGDIR=");
 
     assert!(
         plugdir.contains("usr/lib/gstreamer-1.0"),

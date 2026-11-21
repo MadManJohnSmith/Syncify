@@ -1,7 +1,7 @@
 // Download orchestrator - coordinates multiple download services with resilience and cooperative cancellation
 
 use crate::download::amazon::AmazonDownloader;
-use crate::download::lyrics::LyricsClient;
+use crate::download::lyrics::{new_lyrics_client, LyricsClient};
 use crate::download::progress::{
     DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
 };
@@ -140,6 +140,12 @@ pub struct DownloadOrchestrator {
     /// D02 enrutará por aquí y los tests sustituyen entradas con
     /// `with_provider_override`.
     providers: std::collections::BTreeMap<String, Arc<dyn DownloadProvider>>,
+    /// A03-ter (#342): transporte de la puerta única de refresco de
+    /// credenciales (ADR-0007 decisión 14). Lo consumen la entrada proactiva
+    /// de `download_via_provider` y la reactiva de
+    /// `persist_rejected_primary_account`; los tests inyectan un transporte
+    /// falso con `with_refresh_transport`.
+    refresh_transport: Arc<dyn crate::commands::account_refresh::CredentialRefreshTransport>,
 }
 
 impl DownloadOrchestrator {
@@ -182,7 +188,7 @@ impl DownloadOrchestrator {
             qobuz,
             tidal,
             songlink: Arc::new(SongLinkClient::new()),
-            lyrics: Arc::new(LyricsClient::new()),
+            lyrics: Arc::new(new_lyrics_client()),
             enrichment: Arc::new(EnrichmentEngine::new()),
             service_priority: vec![
                 "qobuz".to_string(),
@@ -190,7 +196,22 @@ impl DownloadOrchestrator {
                 "amazon".to_string(),
             ],
             db: None,
+            refresh_transport: Arc::new(
+                crate::commands::account_refresh::ProductionRefreshTransport::default(),
+            ),
         }
+    }
+
+    /// A03-ter (#342): seam de pruebas para la puerta de refresco — el mismo
+    /// patrón que `with_provider_override`. Producción nunca lo llama: usa el
+    /// transporte real construido en `new()`.
+    #[allow(dead_code)] // Cubierta por `tests/account_refresh_wiring_test.rs`.
+    pub fn with_refresh_transport(
+        mut self,
+        transport: Arc<dyn crate::commands::account_refresh::CredentialRefreshTransport>,
+    ) -> Self {
+        self.refresh_transport = transport;
+        self
     }
 
     /// Registro por defecto: un adaptador por descargador real, compartiendo
@@ -260,6 +281,43 @@ impl DownloadOrchestrator {
             .and_then(|plan| plan.primary())
             .and_then(|candidate| candidate.account.as_ref())
             .map(|account| account.account_id);
+
+        // A03-ter (#342): puerta única de refresco (ADR-0007 decisión 14) —
+        // proactivo ANTES de resolver tokens cuando el plan nombra cuenta y el
+        // proveedor publica la expiración (Tidal: `token_expiry`; Qobuz no la
+        // publica y la puerta no toca nada). Mejor esfuerzo: un fallo de la
+        // puerta no falla la descarga — el camino del proveedor reporta sus
+        // propios errores de autenticación y la reacción al 401/403 va por
+        // `persist_rejected_primary_account`, que usa la misma puerta.
+        if let (Some(db), Some(account_id)) = (self.db.as_ref(), account_id) {
+            match crate::commands::account_refresh::refresh_account_credential(
+                db,
+                service,
+                account_id,
+                self.refresh_transport.as_ref(),
+                crate::commands::account_refresh::now_epoch_secs(),
+            )
+            .await
+            {
+                Ok(crate::commands::account_refresh::RefreshOutcome::Refreshed) => {
+                    info!(
+                        service = %service,
+                        account_id,
+                        "[Orchestrator] credential refreshed proactively before token resolution"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!(
+                        service = %service,
+                        account_id,
+                        error = %e,
+                        "[Orchestrator] proactive credential refresh could not run; continuing"
+                    );
+                }
+            }
+        }
+
         let provider_request = ProviderRequest {
             request: request.clone(),
             account_id,
@@ -1480,7 +1538,7 @@ impl DownloadOrchestrator {
 
         let is_lossless_or_hires = QualityPolicy::is_lossless_or_hires(&request.quality);
 
-        if primary_service == "qobuz" {
+        let result = if primary_service == "qobuz" {
             self.download_primary_qobuz(request, is_lossless_or_hires, cancel_token)
                 .await
         } else if primary_service == "tidal" {
@@ -1494,7 +1552,15 @@ impl DownloadOrchestrator {
                 &primary_service,
             )
             .await
+        };
+
+        // DLX-01 (#42): cronología por pista como artefacto de medición. Opt-in
+        // vía SYNCIFY_DLX_TIMELINE_DIR; nunca altera el resultado de la descarga.
+        if let Ok(res) = &result {
+            crate::download::timeline::record_download_result(res);
         }
+
+        result
     }
 
     fn download_primary_qobuz<'a>(
@@ -1810,6 +1876,17 @@ impl DownloadOrchestrator {
     ///
     /// Falla en silencio a propósito: la descarga ya está completa y el archivo es
     /// válido; perder la anotación solo reintenta esa cuenta más adelante.
+    ///
+    /// A03-ter (#342): la marca pasa por la puerta única
+    /// (`handle_credential_rejection`, ADR-0007 decisión 14). Para estos
+    /// servicios el estado final es el mismo que el `UPDATE` ad-hoc que había —
+    /// la cuenta queda `credentials_invalid` — pero ahora: la puerta anti-bucle
+    /// no re-marca una cuenta ya marcada, un fallo TRANSITORIO del intento de
+    /// refresco no envenena credenciales sanas (decisión 12) y el `reason`
+    /// persistido se sanea en la frontera de `mark_account_credentials_invalid`.
+    /// El `status` es 401: los dos únicos sitios que llaman ya clasificaron el
+    /// error como rechazo de autenticación de la CUENTA, y 401/403 siguen la
+    /// misma rama dentro de la puerta.
     pub async fn persist_rejected_primary_account(
         &self,
         attempted_account: Option<i64>,
@@ -1821,27 +1898,31 @@ impl DownloadOrchestrator {
         let Some(db) = self.db.as_ref() else {
             return;
         };
-        let now = chrono::Utc::now().to_rfc3339();
-        match sqlx::query(
-            "UPDATE accounts SET credentials_invalid = 1, invalid_reason = 'token_expired', \
-             last_auth_error = 'Provider rejected credentials', last_auth_error_at = ? \
-             WHERE id = ? AND service_id IN (SELECT id FROM services WHERE LOWER(name) = LOWER(?)) \
-             AND COALESCE(credentials_invalid, 0) = 0",
+        match crate::commands::account_refresh::handle_credential_rejection(
+            db,
+            service,
+            account_id,
+            401,
+            self.refresh_transport.as_ref(),
+            "provider rejected credentials during download",
         )
-        .bind(&now)
-        .bind(account_id)
-        .bind(service)
-        .execute(db)
         .await
         {
-            Ok(result) if result.rows_affected() > 0 => {
+            Ok(crate::commands::account_refresh::RejectionOutcome::MarkedForReauth) => {
                 tracing::info!(
                     account_id,
                     service = %service,
                     "[Orchestrator] Persisted credential rejection of the rejected primary account"
                 );
             }
-            Ok(_) => {}
+            Ok(outcome) => {
+                tracing::debug!(
+                    account_id,
+                    service = %service,
+                    ?outcome,
+                    "[Orchestrator] credential rejection handled by the shared gate without a new mark"
+                );
+            }
             Err(err) => {
                 tracing::warn!(
                     account_id,
@@ -2259,11 +2340,13 @@ impl DownloadOrchestrator {
                             }
                         }
 
-                        // 2. Probar Tidal a 320 kbps (verificando suelo mínimo de 320 kbps)
-                        if QualityPolicy::is_below_minimum_floor(
+                        // 2. Probar Tidal a 320 kbps (D05: el suelo lo decide la
+                        // matriz por proveedor, no el 320 global en duro)
+                        if syncify_core_domain::quality::is_below_provider_floor(
+                            "tidal",
+                            false,
+                            None,
                             fallback_match.candidate_audio_quality.as_deref(),
-                            None,
-                            None,
                         ) {
                             let floor_err = format!(
                                         "RejectedQuality: Tidal candidate quality '{:?}' is below the 320 kbps minimum floor",
@@ -2500,6 +2583,8 @@ impl DownloadOrchestrator {
         let intent = crate::download::DownloadIntent {
             canonical_track_id: request.canonical_track_id.unwrap_or_default(),
             requested_service: request.service_name.clone(),
+            destination_service: None,
+            source_service: request.service_name.clone(),
             requested_quality: Some(request.quality.clone()),
             strict_quality: request.strict_quality,
             allow_fallback: request.allow_fallback,
@@ -4894,5 +4979,488 @@ mod tests {
         let cancel_message = AuthRetryFailure::Cancelled.to_string();
         assert!(is_cancellation_error(&cancel_message));
         assert!(!cancel_message.contains("ProviderEntityFailure"));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // A03-ter (#342): la puerta única de refresco en los dos puntos de la
+    // descarga — proactiva en `download_via_provider` (antes de resolver
+    // tokens) y reactiva en `persist_rejected_primary_account`. Reloj real
+    // con vencimientos relativos y transporte falso contando llamadas: cero
+    // red, cero bucle.
+    // ═════════════════════════════════════════════════════════════════════
+
+    use crate::download::provider_gateway::ProviderCapabilities;
+    use crate::download::resolver::{
+        CandidateAccount, CandidateIdentity, DownloadPlan, PlanCandidate, ResolvedQuality,
+    };
+    use syncify_core_domain::quality::AudioTier;
+
+    struct CountingTransport {
+        outcome: Result<serde_json::Value, crate::commands::account_refresh::RefreshError>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingTransport {
+        fn ok(payload: serde_json::Value) -> Self {
+            Self {
+                outcome: Ok(payload),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn err(error: crate::commands::account_refresh::RefreshError) -> Self {
+            Self {
+                outcome: Err(error),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl crate::commands::account_refresh::CredentialRefreshTransport for CountingTransport {
+        fn refresh<'a>(
+            &'a self,
+            _db: &'a sqlx::SqlitePool,
+            _service: &'a str,
+            _account_id: i64,
+            _creds: &'a serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            serde_json::Value,
+                            crate::commands::account_refresh::RefreshError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.outcome.clone()
+            })
+        }
+    }
+
+    /// Proveedor falso que responde OK sin red: la descarga en sí no es el
+    /// sujeto del test, solo que la puerta actuó ANTES del despacho.
+    struct OkProvider {
+        service: &'static str,
+    }
+
+    impl DownloadProvider for OkProvider {
+        fn service_name(&self) -> &'static str {
+            self.service
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                supports_lossless: true,
+            }
+        }
+
+        fn download<'a>(
+            &'a self,
+            request: &'a ProviderRequest,
+            _cancel_token: Option<&'a CancellationToken>,
+        ) -> std::pin::Pin<
+            Box<dyn Future<Output = Result<ProviderDelivery, ProviderError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                Ok(ProviderDelivery::from_result(
+                    crate::download::progress::DownloadResult {
+                        file_path: "no-existe.flac".to_string(),
+                        service: self.service.to_string(),
+                        ..Default::default()
+                    },
+                    request.account_id,
+                ))
+            })
+        }
+    }
+
+    async fn wiring_db() -> sqlx::SqlitePool {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        crate::crypto::init_crypto([42u8; 32])
+            .ok()
+            .unwrap_or_default();
+        db
+    }
+
+    async fn insert_tidal_wiring_account(
+        db: &sqlx::SqlitePool,
+        creds: &serde_json::Value,
+        marked: bool,
+    ) -> i64 {
+        let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'tidal'")
+            .fetch_one(db)
+            .await
+            .unwrap();
+        let encrypted = crate::crypto::encrypt(&creds.to_string()).unwrap();
+        sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, display_name, email, is_active, credentials_json, credentials_invalid) \
+             VALUES (?, 'Wiring', 'wiring@test.invalid', 1, ?, ?) RETURNING id",
+        )
+        .bind(service_id)
+        .bind(&encrypted)
+        .bind(if marked { 1 } else { 0 })
+        .fetch_one(db)
+        .await
+        .unwrap()
+    }
+
+    fn planned_tidal_request(account_id: i64) -> DownloadRequest {
+        DownloadRequest {
+            item_id: "wiring-item".to_string(),
+            service_name: Some("tidal".to_string()),
+            service_track_id: Some("999".to_string()),
+            resolution_plan: Some(DownloadPlan {
+                canonical_track_id: 1,
+                candidates: vec![PlanCandidate {
+                    service_id: 3,
+                    service_name: "tidal".to_string(),
+                    service_track_id: "999".to_string(),
+                    candidate_tier: AudioTier::Lossless,
+                    identity: CandidateIdentity {
+                        track_source_id: 1,
+                        canonical_track_id: 1,
+                        isrc: None,
+                    },
+                    account: Some(CandidateAccount {
+                        account_id,
+                        is_active: true,
+                        streaming_entitled: Some(1),
+                    }),
+                    sibling_accounts: vec![],
+                    service_priority: None,
+                    quality_score: None,
+                    bit_depth: None,
+                }],
+                quality: ResolvedQuality {
+                    effective: "lossless".to_string(),
+                    candidate: "lossless".to_string(),
+                    clamped: false,
+                },
+                strict_quality: false,
+                allow_fallback: false,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn now_secs() -> i64 {
+        crate::commands::account_refresh::now_epoch_secs()
+    }
+
+    #[tokio::test]
+    async fn proactive_gate_refreshes_expired_credential_before_dispatch() {
+        let db = wiring_db().await;
+        let now = now_secs();
+        let account_id = insert_tidal_wiring_account(
+            &db,
+            &serde_json::json!({
+                "access_token": "viejo",
+                "refresh_token": "rt",
+                "token_expiry": (now - 100) as f64,
+            }),
+            false,
+        )
+        .await;
+        let transport = Arc::new(CountingTransport::ok(serde_json::json!({
+            "access_token": "nuevo",
+            "refresh_token": "rt",
+            "token_expiry": (now + 3600) as f64,
+        })));
+        let orchestrator = DownloadOrchestrator::new()
+            .with_db(db.clone())
+            .with_provider_override("tidal", Arc::new(OkProvider { service: "tidal" }))
+            .with_refresh_transport(transport.clone());
+        let request = planned_tidal_request(account_id);
+
+        let result = orchestrator
+            .download_via_provider(
+                "tidal",
+                &request,
+                ProviderRouting {
+                    origin_service: Some("tidal".to_string()),
+                    origin_service_track_id: Some("999".to_string()),
+                    effective_service_track_id: Some("999".to_string()),
+                    match_method: Some("exact_locked_source".to_string()),
+                    match_confidence: Some(1.0),
+                    fallback_reason: None,
+                },
+                None,
+            )
+            .await;
+
+        assert!(result.is_ok(), "la descarga falsa responde OK: {result:?}");
+        // El transporte se llamó UNA vez (proactivo, sin doble refresco: el
+        // pipeline aguas abajo ve el token ya fresco) y la puerta persistió
+        // el payload nuevo en la MISMA fila.
+        assert_eq!(
+            transport.call_count(),
+            1,
+            "la puerta refresca ANTES del despacho, una sola vez"
+        );
+        let stored: String =
+            sqlx::query_scalar("SELECT credentials_json FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let plain = crate::crypto::decrypt(&stored).unwrap();
+        let creds: serde_json::Value = serde_json::from_str(&plain).unwrap();
+        assert_eq!(
+            creds["access_token"], "nuevo",
+            "la puerta persistió el payload"
+        );
+    }
+
+    #[tokio::test]
+    async fn proactive_gate_skips_fresh_credential() {
+        let db = wiring_db().await;
+        let now = now_secs();
+        let account_id = insert_tidal_wiring_account(
+            &db,
+            &serde_json::json!({
+                "access_token": "fresco",
+                "refresh_token": "rt",
+                "token_expiry": (now + 3600) as f64,
+            }),
+            false,
+        )
+        .await;
+        let transport = Arc::new(CountingTransport::ok(serde_json::json!({
+            "access_token": "no-debe-persistirse",
+        })));
+        let orchestrator = DownloadOrchestrator::new()
+            .with_db(db.clone())
+            .with_provider_override("tidal", Arc::new(OkProvider { service: "tidal" }))
+            .with_refresh_transport(transport.clone());
+        let request = planned_tidal_request(account_id);
+
+        let result = orchestrator
+            .download_via_provider(
+                "tidal",
+                &request,
+                ProviderRouting {
+                    origin_service: Some("tidal".to_string()),
+                    origin_service_track_id: Some("999".to_string()),
+                    effective_service_track_id: Some("999".to_string()),
+                    match_method: Some("exact_locked_source".to_string()),
+                    match_confidence: Some(1.0),
+                    fallback_reason: None,
+                },
+                None,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(
+            transport.call_count(),
+            0,
+            "credencial fresca: la puerta no llama al transporte"
+        );
+    }
+
+    #[tokio::test]
+    async fn proactive_gate_blocked_account_receives_no_attempts() {
+        let db = wiring_db().await;
+        let now = now_secs();
+        let account_id = insert_tidal_wiring_account(
+            &db,
+            &serde_json::json!({
+                "access_token": "viejo",
+                "refresh_token": "rt",
+                "token_expiry": (now - 100) as f64,
+            }),
+            true,
+        )
+        .await;
+        let transport = Arc::new(CountingTransport::ok(serde_json::json!({
+            "access_token": "no-debe-persistirse",
+        })));
+        let orchestrator = DownloadOrchestrator::new()
+            .with_db(db.clone())
+            .with_provider_override("tidal", Arc::new(OkProvider { service: "tidal" }))
+            .with_refresh_transport(transport.clone());
+        let request = planned_tidal_request(account_id);
+
+        let result = orchestrator
+            .download_via_provider(
+                "tidal",
+                &request,
+                ProviderRouting {
+                    origin_service: Some("tidal".to_string()),
+                    origin_service_track_id: Some("999".to_string()),
+                    effective_service_track_id: Some("999".to_string()),
+                    match_method: Some("exact_locked_source".to_string()),
+                    match_confidence: Some(1.0),
+                    fallback_reason: None,
+                },
+                None,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "la puerta es mejor esfuerzo: la descarga sigue"
+        );
+        assert_eq!(
+            transport.call_count(),
+            0,
+            "puerta anti-bucle: una cuenta marcada no recibe intentos"
+        );
+    }
+
+    #[tokio::test]
+    async fn proactive_gate_skips_without_plan_or_db() {
+        let db = wiring_db().await;
+        let now = now_secs();
+        let account_id = insert_tidal_wiring_account(
+            &db,
+            &serde_json::json!({
+                "access_token": "viejo",
+                "refresh_token": "rt",
+                "token_expiry": (now - 100) as f64,
+            }),
+            false,
+        )
+        .await;
+        let transport = Arc::new(CountingTransport::ok(serde_json::json!({
+            "access_token": "no-debe-persistirse",
+        })));
+
+        // Sin plan: la puerta no puede nombrar la cuenta y no actúa.
+        let sin_plan = DownloadRequest {
+            item_id: "sin-plan".to_string(),
+            service_name: Some("tidal".to_string()),
+            service_track_id: Some("999".to_string()),
+            ..Default::default()
+        };
+        let orchestrator = DownloadOrchestrator::new()
+            .with_db(db.clone())
+            .with_provider_override("tidal", Arc::new(OkProvider { service: "tidal" }))
+            .with_refresh_transport(transport.clone());
+        orchestrator
+            .download_via_provider(
+                "tidal",
+                &sin_plan,
+                ProviderRouting {
+                    origin_service: Some("tidal".to_string()),
+                    origin_service_track_id: Some("999".to_string()),
+                    effective_service_track_id: Some("999".to_string()),
+                    match_method: Some("exact_locked_source".to_string()),
+                    match_confidence: Some(1.0),
+                    fallback_reason: None,
+                },
+                None,
+            )
+            .await
+            .expect("descarga sin plan sigue su curso");
+        assert_eq!(transport.call_count(), 0, "sin plan no hay puerta");
+
+        // Sin pool: la puerta tampoco puede actuar.
+        let sin_db = DownloadOrchestrator::new()
+            .with_provider_override("tidal", Arc::new(OkProvider { service: "tidal" }))
+            .with_refresh_transport(transport.clone());
+        sin_db
+            .download_via_provider(
+                "tidal",
+                &planned_tidal_request(account_id),
+                ProviderRouting {
+                    origin_service: Some("tidal".to_string()),
+                    origin_service_track_id: Some("999".to_string()),
+                    effective_service_track_id: Some("999".to_string()),
+                    match_method: Some("exact_locked_source".to_string()),
+                    match_confidence: Some(1.0),
+                    fallback_reason: None,
+                },
+                None,
+            )
+            .await
+            .expect("descarga sin pool sigue su curso");
+        assert_eq!(transport.call_count(), 0, "sin pool no hay puerta");
+    }
+
+    #[tokio::test]
+    async fn reactive_transient_refresh_failure_does_not_poison_valid_credentials() {
+        let db = wiring_db().await;
+        // Sin vencimiento publicado: la puerta intenta UN refresco reactivo y
+        // su fallo TRANSITORIO no marca (decisión 12). Con vencimiento
+        // publicado la puerta marca sin intento — ese caso lo cubre la
+        // caracterización (`does_not_rewrite_an_already_marked_account`).
+        let account_id =
+            insert_tidal_wiring_account(&db, &serde_json::json!({ "access_token": "vivo" }), false)
+                .await;
+        let transport = Arc::new(CountingTransport::err(
+            crate::commands::account_refresh::RefreshError::Transient("red caída".to_string()),
+        ));
+        let orchestrator = DownloadOrchestrator::new()
+            .with_db(db.clone())
+            .with_refresh_transport(transport.clone());
+
+        orchestrator
+            .persist_rejected_primary_account(Some(account_id), "tidal")
+            .await;
+
+        assert_eq!(transport.call_count(), 1, "UN intento de refresco reactivo");
+        let invalid: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            invalid, 0,
+            "decisión 12: un fallo transitorio del refresco no marca credenciales sanas"
+        );
+    }
+
+    #[tokio::test]
+    async fn reactive_provider_rejection_marks_account_once() {
+        let db = wiring_db().await;
+        // Sin vencimiento publicado: la puerta intenta UN refresco reactivo.
+        let account_id =
+            insert_tidal_wiring_account(&db, &serde_json::json!({ "access_token": "vivo" }), false)
+                .await;
+        let transport = Arc::new(CountingTransport::err(
+            crate::commands::account_refresh::RefreshError::ProviderRejected(
+                "grant rechazado".to_string(),
+            ),
+        ));
+        let orchestrator = DownloadOrchestrator::new()
+            .with_db(db.clone())
+            .with_refresh_transport(transport.clone());
+
+        orchestrator
+            .persist_rejected_primary_account(Some(account_id), "tidal")
+            .await;
+        orchestrator
+            .persist_rejected_primary_account(Some(account_id), "tidal")
+            .await;
+
+        assert_eq!(
+            transport.call_count(),
+            1,
+            "puerta anti-bucle: el segundo rechazo no reintenta"
+        );
+        let invalid: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(credentials_invalid, 0) FROM accounts WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(invalid, 1, "la cuenta queda marcada para reautenticar");
     }
 }

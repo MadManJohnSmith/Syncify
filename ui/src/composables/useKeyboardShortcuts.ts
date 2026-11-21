@@ -8,6 +8,12 @@ export interface ShortcutBinding {
     description?: string
     category?: string
     when?: () => boolean
+    /**
+     * Never dispatch while the focus is in a text field, not even for Ctrl
+     * combinations. Playback shortcuts set it: inside a field Ctrl+Arrow is
+     * word navigation, not prev/next.
+     */
+    ignoreWhenTyping?: boolean
 }
 
 export interface ShortcutOptions {
@@ -15,6 +21,7 @@ export interface ShortcutOptions {
     category?: string
     global?: boolean
     when?: () => boolean
+    ignoreWhenTyping?: boolean
 }
 
 // Parse key combo string like "Ctrl+K" or "Shift+Enter"
@@ -99,7 +106,8 @@ export function registerShortcut(
         handler,
         description: options?.description,
         category: options?.category,
-        when: options?.when
+        when: options?.when,
+        ignoreWhenTyping: options?.ignoreWhenTyping
     }
     globalBindings.value.set(keys, binding)
     return () => {
@@ -113,6 +121,21 @@ export function getRegisteredShortcuts(): ShortcutBinding[] {
 }
 
 /**
+ * True when the event goes to something the user is typing in. `<select>` is
+ * included: arrows change its value. `isContentEditable` is not implemented
+ * by every engine (jsdom among them), so the attribute of the ancestors is
+ * checked too.
+ */
+export function isTypingTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') {
+        return true
+    }
+    if (target.isContentEditable) return true
+    return target.closest('[contenteditable]:not([contenteditable="false"])') !== null
+}
+
+/**
  * Searches `bindings` for the first combo that matches the event and runs it.
  * Returns whether it fired anything.
  */
@@ -122,19 +145,18 @@ function dispatchBinding(
 ): boolean {
     if (event.defaultPrevented) return false
 
-    const target = event.target as HTMLElement | null
-    const isInput = Boolean(
-        target && (
-            target.tagName === 'INPUT' ||
-            target.tagName === 'TEXTAREA' ||
-            target.isContentEditable
-        )
-    )
+    const typing = isTypingTarget(event.target)
 
     for (const [keys, binding] of bindings) {
         if (!matchesKeys(event, keys)) continue
         if (binding.when && !binding.when()) continue
-        if (isInput && !keys.toLowerCase().includes('ctrl') && !keys.toLowerCase().includes('escape')) continue
+        if (typing) {
+            // Legacy behaviour: Ctrl and Escape still reach bindings from a
+            // field (Ctrl+K, Escape to close). `ignoreWhenTyping` opts out.
+            const allowedInTextField = !binding.ignoreWhenTyping
+                && (keys.toLowerCase().includes('ctrl') || keys.toLowerCase().includes('escape'))
+            if (!allowedInTextField) continue
+        }
 
         event.preventDefault()
         binding.handler(event)
@@ -193,7 +215,8 @@ export function useKeyboardShortcuts() {
             handler,
             description: options?.description,
             category: options?.category,
-            when: options?.when
+            when: options?.when,
+            ignoreWhenTyping: options?.ignoreWhenTyping
         }
 
         if (options?.global) {
@@ -282,7 +305,8 @@ export function useShortcut(
     const unregister = registerShortcut(keys, handler, {
         description: options?.description,
         category: options?.category,
-        when: options?.when
+        when: options?.when,
+        ignoreWhenTyping: options?.ignoreWhenTyping
     })
 
     if (getCurrentInstance()) {
@@ -290,4 +314,84 @@ export function useShortcut(
     }
 
     return unregister
+}
+
+// ---------------------------------------------------------------------------
+// Playback shortcuts (P04, #135)
+// ---------------------------------------------------------------------------
+
+/**
+ * Actions the playback shortcuts invoke. The app wires them to `usePlayer`,
+ * whose mutations go through the backend queue commands; tests pass a
+ * simulated queue instead.
+ */
+export interface PlaybackShortcutActions {
+    toggle: () => void
+    seekBy: (seconds: number) => void
+    next: () => void
+    previous: () => void
+    changeVolume: (delta: number) => void
+    toggleMute: () => void
+    toggleShuffle: () => void
+    cycleRepeat: () => void
+}
+
+/** Lateral arrow jump, in seconds. */
+export const PLAYBACK_SEEK_STEP_SEC = 5
+/** Vertical arrow step over the 0..1 volume scale. */
+export const PLAYBACK_VOLUME_STEP = 0.05
+
+/**
+ * An open editor that owns the keyboard (the lyrics sync editor) marks itself
+ * with this attribute; playback shortcuts stay out of its way until it closes.
+ */
+export const PLAYBACK_SHORTCUTS_BLOCK_SELECTOR = '[data-playback-shortcuts="off"]'
+
+export function isPlaybackShortcutsBlocked(): boolean {
+    return typeof document !== 'undefined'
+        && document.querySelector(PLAYBACK_SHORTCUTS_BLOCK_SELECTOR) !== null
+}
+
+interface PlaybackShortcutDef {
+    keys: string
+    description: string
+    run: (actions: PlaybackShortcutActions) => void
+}
+
+/**
+ * Window playback shortcuts. None shares a combination with the existing
+ * view bindings: the letter shortcuts of LibraryView are D, Q, N, F and V,
+ * and Ctrl+R / Ctrl+/ / Ctrl+1..8 require Ctrl (only prev/next do here).
+ */
+const playbackShortcutDefs: readonly PlaybackShortcutDef[] = [
+    { keys: 'Space', description: 'Play / pause', run: actions => actions.toggle() },
+    { keys: 'ArrowLeft', description: 'Seek back 5 seconds', run: actions => actions.seekBy(-PLAYBACK_SEEK_STEP_SEC) },
+    { keys: 'ArrowRight', description: 'Seek forward 5 seconds', run: actions => actions.seekBy(PLAYBACK_SEEK_STEP_SEC) },
+    { keys: 'Ctrl+ArrowLeft', description: 'Previous track', run: actions => actions.previous() },
+    { keys: 'Ctrl+ArrowRight', description: 'Next track', run: actions => actions.next() },
+    { keys: 'ArrowUp', description: 'Volume up', run: actions => actions.changeVolume(PLAYBACK_VOLUME_STEP) },
+    { keys: 'ArrowDown', description: 'Volume down', run: actions => actions.changeVolume(-PLAYBACK_VOLUME_STEP) },
+    { keys: 'M', description: 'Mute / unmute', run: actions => actions.toggleMute() },
+    { keys: 'S', description: 'Toggle shuffle', run: actions => actions.toggleShuffle() },
+    { keys: 'R', description: 'Cycle repeat mode', run: actions => actions.cycleRepeat() },
+]
+
+/** Combinations published by the playback shortcuts (tests and help sheet). */
+export const PLAYBACK_SHORTCUT_KEYS: readonly string[] = playbackShortcutDefs.map(def => def.keys)
+
+/**
+ * Registers the window playback shortcuts in the shared registry and returns
+ * the function that removes them. It adds no listener of its own: the single
+ * registry listener dispatches them.
+ */
+export function registerPlaybackShortcuts(actions: PlaybackShortcutActions): () => void {
+    const unbinders = playbackShortcutDefs.map(def =>
+        registerShortcut(def.keys, () => def.run(actions), {
+            description: def.description,
+            category: 'Playback',
+            ignoreWhenTyping: true,
+            when: () => !isPlaybackShortcutsBlocked()
+        })
+    )
+    return () => unbinders.forEach(unbind => unbind())
 }

@@ -385,16 +385,19 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+// FE-PERF-01: nombre explícito — el `include` de <KeepAlive> (App.vue /
+// keepAliveViews.ts) filtra por `name`, y debe coincidir exactamente.
+defineOptions({ name: 'DashboardView' })
+import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToast } from '@/composables/useToast'
+import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { getVersion } from '@tauri-apps/api/app'
 // R13: unified confirm (previously the native plugin-dialog, outside the window).
 import { confirm } from '@/composables/useToast'
 import { libraryApi } from '@/api/library'
 import { queueApi } from '@/api/queue'
 import { accountsApi } from '@/api/accounts'
-import { metadataApi } from '@/api/metadata'
 import { lyricsApi } from '@/api/lyrics'
 import { dashboardApi } from '@/api/dashboard'
 import { getStorageStats, type StorageStats } from '@/api/storage'
@@ -630,16 +633,18 @@ async function fetchData() {
   error.value = null
 
   try {
+    // FE-PERF-04 (#51): los recuentos equivalentes del Dashboard van en UNA
+    // lectura unificada (`get_dashboard_snapshot`): la vista `library_stats`
+    // + los seis recuentos del snapshot + el historial + metadatos + letras.
+    // Lo que queda fuera son agregados que el snapshot no cubre (cola,
+    // servicios, disco, top artistas/géneros, calidad, duplicados).
     const [
-      libStats, qStats, services, meta, lyrics, snaps, storage,
+      snapRead, qStats, services, storage,
       topArtists, topGenres, qualityList, dupeStats
     ] = await Promise.all([
-      libraryApi.getLibraryStats(),
+      dashboardApi.getDashboardSnapshot(getDaysForTimeRange(timeRange.value)),
       queueApi.getQueueStats(),
       accountsApi.getServiceStatuses(),
-      metadataApi.getMetadataStats(),
-      lyricsApi.getLyricsStats(),
-      dashboardApi.getLibrarySnapshots(getDaysForTimeRange(timeRange.value)).catch(() => []),
       getStorageStats(),
       libraryApi.getTopArtists(5),
       libraryApi.getTopGenres(5).catch(() => []),
@@ -647,11 +652,12 @@ async function fetchData() {
       dashboardApi.getDuplicateStats().catch(() => 0) // Fallback inline for partial failures
     ])
 
-    libraryStats.value = libStats
+    libraryStats.value = snapRead.stats
     queueStats.value = qStats
     serviceStatuses.value = services
-    metadataStats.value = meta
-    lyricsStats.value = lyrics
+    metadataStats.value = snapRead.metadata
+    lyricsStats.value = snapRead.lyrics
+    const snaps: LibrarySnapshot[] = snapRead.snapshots
     snapshots.value = snaps
     storageData.value = storage
     topArtistsData.value = topArtists
@@ -667,8 +673,8 @@ async function fetchData() {
         total: Math.round((s.total_tracks / maxTracks) * 100),
         downloaded: Math.round((s.downloaded_tracks / maxTracks) * 100)
       }))
-    } else if (libStats && libStats.total_tracks > 0) {
-      const dlPct = Math.round((libStats.total_downloads / libStats.total_tracks) * 100)
+    } else if (snapRead.stats.total_tracks > 0) {
+      const dlPct = Math.round((snapRead.stats.total_downloads / snapRead.stats.total_tracks) * 100)
       growthData.value = [
         { label: 'Current', total: 100, downloaded: dlPct }
       ]
@@ -826,8 +832,66 @@ async function fetchMissingLyrics() {
   }
 }
 
+// FE-PERF-01: con Dashboard cacheado por <KeepAlive> ya no se relee en cada
+// visita, y sin esto las cifras quedarian congeladas. Un cambio de biblioteca
+// o de cola marca la vista como "stale" y las cifras se releen UNA vez por
+// rafaga de cambios: al vuelo si la vista esta activa, o al volver a ella si
+// estaba oculta. Navegar sin que nada cambie NO repite llamadas (criterio de
+// #49). No altera QUE se lee (los agregados son carril de #51): solo cuando.
+const eventBus = useEventBus()
+const isDashboardActive = ref(true)
+const dashboardStale = ref(false)
+let staleRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let dashboardRefreshing = false
+
+async function refreshDashboardData() {
+  if (!isDashboardActive.value || dashboardRefreshing || !dashboardStale.value) return
+  dashboardRefreshing = true
+  dashboardStale.value = false
+  try {
+    await fetchData()
+  } finally {
+    dashboardRefreshing = false
+  }
+}
+
+function markDashboardStale() {
+  dashboardStale.value = true
+  // Purga de cambios mientras la vista esta oculta: se relee al reactivarla.
+  if (isDashboardActive.value && !staleRefreshTimer) {
+    staleRefreshTimer = setTimeout(() => {
+      staleRefreshTimer = null
+      void refreshDashboardData()
+    }, 1500)
+  }
+}
+
+onActivated(() => {
+  isDashboardActive.value = true
+  if (staleRefreshTimer) {
+    clearTimeout(staleRefreshTimer)
+    staleRefreshTimer = null
+  }
+  void refreshDashboardData()
+})
+
+onDeactivated(() => {
+  isDashboardActive.value = false
+})
+
+onUnmounted(() => {
+  if (staleRefreshTimer) clearTimeout(staleRefreshTimer)
+})
+
 onMounted(async () => {
-  await dashboardApi.createLibrarySnapshot().catch(() => null)
+  void eventBus.on(TauriEvents.LIBRARY_UPDATED, markDashboardStale)
+  void eventBus.on(TauriEvents.SYNC_COMPLETE, markDashboardStale)
+  void eventBus.on(TauriEvents.IMPORT_COMPLETE, markDashboardStale)
+  void eventBus.on(TauriEvents.DOWNLOAD_PROGRESS, markDashboardStale)
+
+  // FE-PERF-04 (#51): ya no hay `create_library_snapshot` previo — la lectura
+  // unificada `get_dashboard_snapshot` escribe el snapshot del día dentro de
+  // la misma llamada que trae los agregados.
   await fetchData()
 
   // Get app version

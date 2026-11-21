@@ -222,6 +222,8 @@ export const TauriEvents = {
     DOWNLOAD_PROGRESS: 'syncify:download_progress',
     DOWNLOAD_COMPLETE: 'syncify:download_progress',
     DOWNLOAD_FAILED: 'syncify:download_progress',
+    // DownloadJob (D07, spec #111 / issue #119): ciclo y contadores del job.
+    DOWNLOAD_JOB_PROGRESS: 'syncify:download_job_progress',
 
     // Canonical progress channel (scans, organizer, tools, single-track pipeline)
     PROGRESS: 'syncify:progress',
@@ -233,11 +235,27 @@ export const TauriEvents = {
     SYNC_PROGRESS: 'sync-progress',
     SYNC_COMPLETE: 'sync-complete',
     SYNC_FAILED: 'sync-failed',
+    // SyncRun: corridas con estado del contrato de sincronización (ADR-0006,
+    // issue #65). Los emite el job de corridas; la ficha de cuenta los escucha.
+    SYNC_RUN_STARTED: 'sync-run-started',
+    SYNC_RUN_PROGRESS: 'sync-run-progress',
+    SYNC_RUN_FINISHED: 'sync-run-finished',
+    SYNC_RUN_ERROR: 'sync-run-error',
+    MB_DUMP_PROGRESS: 'mb-dump-progress',
 
     // Auth events
     AUTH_STATE_UPDATED: 'auth-state-updated',
+    /** Ciclo de vida de cuenta cambió (issue #85): enabled|disabled|archived. */
+    ACCOUNT_STATE_CHANGED: 'account-state-changed',
     AUTH_SESSION_EXPIRED: 'auth-session-expired',
     SYNC_SETTINGS_UPDATED: 'sync-settings-updated',
+
+    // In-app login per account (issue #84): the webview window reports the
+    // attempt lifecycle; the credentials themselves arrive via auth-state-updated.
+    ACCOUNT_LOGIN_STARTED: 'account-login-started',
+    ACCOUNT_LOGIN_COMPLETED: 'account-login-completed',
+    ACCOUNT_LOGIN_FAILED: 'account-login-failed',
+    ACCOUNT_LOGIN_CANCELLED: 'account-login-cancelled',
 
     // Enrichment events.
     ENRICHMENT_PROGRESS: 'enrichment-progress',
@@ -247,6 +265,9 @@ export const TauriEvents = {
 
     // Library events
     LIBRARY_UPDATED: 'library-updated',
+    // L05 (#102): avance por bloque y resumen agregado de acciones por lotes.
+    LIBRARY_ACTION_PROGRESS: 'library-action-progress',
+    LIBRARY_ACTION_FINISHED: 'library-action-finished',
 
     // Lyrics & Artwork events
     LYRICS_FETCH_PROGRESS: 'lyrics-fetch-progress',
@@ -272,9 +293,12 @@ export const TauriEvents = {
     // Playback events (motor nativo, fase 1)
     PLAYER_TICK: 'player:tick',
     PLAYER_ENDED: 'player:ended',
-    PLAYER_MPRIS_ACTION: 'player:mpris-action',
     // Fase 2: estado de la caché de streaming (buffer, calidad obtenida)
     PLAYER_STREAM_STATE: 'player:stream-state',
+    // P01 (#132): el backend decidió la siguiente pista tras el fin natural
+    PLAYER_ADVANCED: 'player:advanced',
+    // P02 (#133): modos persistidos por el backend (MPRIS reordena la cola)
+    PLAYER_MODES_CHANGED: 'player:modes-changed',
 } as const;
 
 export type TauriEventName = typeof TauriEvents[keyof typeof TauriEvents];

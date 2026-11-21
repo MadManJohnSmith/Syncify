@@ -87,34 +87,17 @@ Rust, no solo el `app_id`. Antes de eso: ítem 9.1 del plan post-auditoría
 - **Cierra**: con las credenciales del propietario — la OAuth app de SoundCloud y el
   developer token de Apple Music—. Es una comprobación, no una implementación.
 
-### D-04 — 4 de los 6 documentos de `docs/features/` siguen re-derivados solo por rutas
-
-- **Ejecución**: [#58](https://github.com/MadManJohnSmith/Syncify/issues/58), [#59](https://github.com/MadManJohnSmith/Syncify/issues/59), [#60](https://github.com/MadManJohnSmith/Syncify/issues/60) y [#61](https://github.com/MadManJohnSmith/Syncify/issues/61) (spec [#36](https://github.com/MadManJohnSmith/Syncify/issues/36)).
-
-- **Observado**: esta revisión re-derivó del código la narrativa de
-  `docs/features/metadata-enrichment.md` y `docs/features/playlist-system.md`, que
-  describían como vigente un flujo de Spotify Audio Features retirado con S68 y
-  afirmaban que solo Spotify importaba playlists en Rust cuando el motor unificado
-  las importa para cinco servicios. Los otros cuatro —`auth-flow.md`,
-  `download-pipeline.md`, `library-import.md` y `settings-system.md`— conservan el
-  encabezado que declara su narrativa como referencia de diseño sin verificar.
-- **Cierra**: re-derivar los cuatro restantes cuando toque modificar ese subsistema.
-  No depende de una entrada externa, pero tampoco de una entrega con fecha: es tiempo
-  de lectura que se ejecuta junto al próximo cambio de cada subsistema, y hasta
-  entonces se declara con su condición en vez de quedar como pendiente suelto.
-
 ## Alcance condicionado: lo que este registro NO declara como pendiente
 
-Las dos entradas anteriores (D-01 y D-04) están **registradas, con su condición de
-cierre, y ninguna de las dos bloquea una entrega**. No son defectos: son alcance
-condicionado. Un cierre correcto las declara como tales y no como trabajo pendiente,
-porque confundirlas convierte un bloqueo conocido en una promesa que el proyecto no
-puede cumplir.
+La entrada anterior (D-01) está **registrada, con su condición de cierre, y no
+bloquea una entrega**. No es un defecto: es alcance condicionado. Un cierre correcto
+lo declara como tal y no como trabajo pendiente, porque confundirlo convierte un
+bloqueo conocido en una promesa que el proyecto no puede cumplir. (D-04, que
+compartía esta sección hasta el 2026-11-14, se cerró ese día: ver su entrada.)
 
 | ID | Condiciona | Entrada externa que la resuelve |
 |---|---|---|
 | D-01 | Verificación end-to-end de los brazos SoundCloud y Apple Music contra sus APIs reales | Credenciales del propietario (OAuth app y developer token JWT) |
-| D-04 | Narrativa de los 4 documentos de `docs/features/` aún no re-derivada | Tiempo de lectura por subsistema, no una dependencia externa |
 
 Lo que este registro **no** afirma en ningún caso: que la funcionalidad del producto
 esté completa. La verificación end-to-end de SoundCloud y Apple Music sigue sin estar
@@ -150,13 +133,49 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   `services/tidal.rs` 9, `services/qobuz.rs` 21 y `commands/service.rs` 28. Los cinco
   ficheros de mayor riesgo del plan quedan cubiertos; el ratchet baja de 243 a 113 (patrón
   bruto; 95 silenciosos + 18 que propagan) y solo puede bajar.
+- **Progreso (lote D-06a, servicios de proveedor, 2026-11-14, [#37](https://github.com/MadManJohnSmith/Syncify/issues/37))**:
+  42 puntos migrados a `crate::db::write_or_log`, ninguno propaga (son escrituras
+  best-effort dentro de bucles de importación/merge/hidratación donde abortar cambiaría
+  el comportamiento observable): `services/musicbrainz.rs` 13 (`resolve_ghost_artists` 6,
+  `hydrate_stub_albums` 7), `services/apple_music.rs` 10, `services/spotify.rs` 8,
+  `services/track_matcher.rs` 5, `services/deezer.rs` 4, `services/tidal_pipeline.rs` 1
+  y `crypto.rs` 1 (el flag de migración de credenciales, ya no fatal por diseño).
+  Spotify tenía un octavo punto en forma multilínea (`let _ =` con la query en la línea
+  siguiente) que la expresión del ratchet no contaba; migrado igualmente. Medido con la
+  expresión del ratchet: 99 sitios antes del lote, 58 después; el suelo registrado baja
+  de 113 a 58.
+- **Hecho (2026-11-14, lote comandos/worker/caché, [#38])**: los 44 puntos restantes
+  fuera de los servicios de proveedor pasan por la frontera o propagan, revisados uno a
+  uno: `commands/settings.rs` 3 y `commands/playlists.rs` 1 propagan con `?` (los
+  hermanos de su misma transacción ya abortaban con `map_err(..)?`; perder la escritura
+  y confirmar igual era exactamente el daño de D-06), y con `write_or_log` —
+  `services/operation_recovery.rs` 10 (reconciliación de arranque y caminos canónicos),
+  `commands/backup.rs` 6 (restauración: upserts `INSERT OR IGNORE` y favoritos
+  best-effort), `worker.rs` 5, `import_cache.rs` 4, `commands/enrichment.rs` 3,
+  `commands/accounts.rs` 3, `main.rs` 3 (arranque: purga y siembra de credenciales),
+  `commands/queue.rs` 2, `services/enrichment.rs` 2, `commands/lyrics.rs` 1 y
+  `commands/migration.rs` 1. Sin cambio de comportamiento observable fuera del log.
+  Nota de recuento: la cifra del issue (ajustes 10, cola 5, dashboard 2) se midió antes
+  de SB00/SB01; al llegar a `origin/dev` settings tenía 3, queue 2 y dashboard ya
+  propagaba. El ratchet (`scripts/tests/test_silent_write_ratchet.py`, métrica de una
+  línea sobre todo `src-tauri/src`) baja de 113 a 60 con este lote y solo puede
+  seguir bajando.
 - **Lo que la frontera destapó (2026-10-19)**: en la primera prueba manual,
   `context="enrich_and_persist_sync_track"` registró 51 fallos que antes eran
   invisibles: `UNIQUE constraint failed: tracks.isrc`. Corregido en `c7325a7`
   (ver D-07). Es el argumento de la frontera: no cambia el comportamiento, pero
   convierte un fallo mudo en una línea de log accionable.
-- **Cierra**: migrar el resto por lotes (enrichment 45, service 28, qobuz 21, favorites 19,
-  tidal 17), un fichero por commit con su suite verde, y seguir bajando el baseline.
+- **Cierra**: migrar el resto por lotes y seguir bajando el baseline; el ratchet
+  automático es [#39](https://github.com/MadManJohnSmith/Syncify/issues/39). Con los
+  dos lotes de 2026-11-14 (#37 servicios de proveedor y #38 comandos/worker/caché)
+  fusionados, la métrica del ratchet mide **19** apariciones: 18 que ya propagan
+  (`commands/favorites.rs` 10, `services/tidal.rs` 8) y 1 dentro de un bloque
+  comentado de `main.rs`, sin efecto en ejecución. El suelo registrado baja de 113 a
+  19 (medido 2026-11-14 sobre el árbol con ambos lotes; solo puede seguir bajando).
+  Desde [#39](https://github.com/MadManJohnSmith/Syncify/issues/39) el ratchet
+  (`scripts/tests/test_silent_write_ratchet.py`) es automático: su `BASELINE` (19,
+  fecha de medición 2026-11-14) debe coincidir con esta cifra — el test la sincroniza
+  — y el patrón cubre también la query en la línea siguiente al `let _ =`.
 
 ### D-08 — Dos funciones monstruo
 
@@ -188,9 +207,11 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   El orquestador baja a **3 809 líneas** (desde 4 546: un 16 % menos) y el límite de 8
   argumentos se marca con `allow(clippy::too_many_arguments)` en el brazo, no en el
   orquestador.
-- **Límite conocido**: ningún test de integración recorre los brazos con red; la equivalencia
-  se apoya en el compilador, en el contrato de cada brazo (autenticación sin red, sin fases
-  no se toca nada) y en la suite completa, no en una reproducción con proveedor real.
+- **Límite conocido**: ningún test de integración recorre los brazos con red real; la
+  equivalencia se apoya en el compilador, en el contrato de cada brazo (autenticación sin
+  red, sin fases no se toca nada) y en la suite completa. El quinto brazo (Qobuz) ya tiene
+  su reproducción de red contra proveedor simulado (2026-11-16, abajo); los otros cuatro
+  siguen sin ella.
 - **Hecho (2026-10-19, tercer brazo)**: Spotify extraído a `sync_spotify_arm` (841 líneas).
   El struct crece con `reported_favorites`/`reported_albums`/`reported_playlists`
   (`Option<i64>`, los recuentos que declara el proveedor) y el call site de Deezer se alineó
@@ -224,8 +245,81 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   convierte en el contador único del orquestador (hoy se siembra y se vuelca por brazo) y
   escribir la caracterización con red que hoy falta (secuencia de progreso completa y
   recuento por servicio contra un proveedor simulado).
+- **Hecho (2026-11-14, D-08a, #40)**: contador único unificado en PR #205 (fusionado
+  2026-11-05). `ArmOutcome`
+  pasó a llamarse `SyncOutcome` y ya no se siembra ni se vuelca por brazo: el orquestador
+  crea una instancia (`SyncOutcome::default()` en `src-tauri/src/commands/service.rs`, en
+  `perform_sync_service_with_emitter_inner`), los cinco brazos (y `apple_music` embebido) la
+  mutan in situ por `&mut`, y el resto de la función lee de ella; desaparecieron los 153
+  volcados campo a campo y el saco de snapshots. El contrato queda documentado en el doc
+  comment del propio struct. La caracterización con red sigue pendiente (issue #41).
+- **Hecho (2026-11-16, D-08b, #41)**: caracterización de la red del quinto brazo
+  (`sync_qobuz_arm`) contra un proveedor simulado en proceso, sin red:
+  `src-tauri/tests/qobuz_sync_arm_simulated_provider_test.rs` levanta un servidor HTTP en
+  `127.0.0.1:0` y apunta el cliente Qobuz a él con la costura de entorno
+  `SYNCIFY_QOBUZ_API_BASE` (mismo molde que `SYNCIFY_DEEZER_API_BASE`), con migraciones
+  reales sobre SQLite `:memory:` y credenciales con token almacenado. Fija la petición que
+  el brazo envía (`favorite/getUserFavorites?type=tracks&offset=0&limit=50`, firmada con
+  `app_id`/`request_sig`), los contadores del `SyncOutcome` único (2 favoritos → 2 pistas,
+  2 `library_entries`, `account_import_counts` con lo declarado y lo importado), la
+  secuencia completa de fases, la idempotencia de la segunda pasada y el golden de las
+  cadenas de i18n que viajan en el payload de los eventos de progreso: la comparación es
+  exacta por plantilla y una cadena traducida en el payload hace fallar el test (prueba
+  negativa incluida). La caracterización con red de los otros cuatro brazos sigue
+  pendiente (D-01, credenciales).
 - **Cierra**: un brazo por commit, cada uno con su test de caracterización verde antes y
   después, y el orquestador reducido a un bucle corto sobre los brazos.
+
+### D-09 — Reintento DASH re-descarga sobre un temporal a medio escribir
+
+- **Observado (2026-11-20, review de PR #349, hallazgo preexistente)**: en la rama DASH de
+  `download_audio_payload_with_progress` (`crates/syncify-tidal-downloader/src/lib.rs`), el
+  `File::create` del temporal está fuera del bucle de reintentos: si `write_all` falla a
+  medias en el intento N (p. ej. disco lleno), el intento N+1 re-descarga el segmento y
+  añade sin truncar. El control de completitud aterrizado en #349 es de longitud (bytes en
+  disco == bytes consumidos) y no detectaría el solape; el remux posterior lo tumbaría casi
+  siempre con `RemuxError`, así que el defecto visible es un fallo de descarga, no
+  corrupción silenciosa. La estructura de reintentos es idéntica antes y después de #349:
+  el PR no la empeora, y sus garantías nuevas (libro de consumo en orden, purga del
+  temporal en fallo de segmento/init) no cubren este camino.
+- **Corrección que lo cerraría**: truncar o recrear el temporal al inicio de cada intento,
+  con un test que reproduzca el fallo de escritura a medias. Cobertura simétrica opcional:
+  un test offline con servidor local para `PayloadIncomplete` en la rama directa (los
+  criterios de #45 eran DASH y esa rama solo tiene tests live `#[ignore]`).
+- **Cierra**: el truncado por intento con su test rojo→verde.
+
+### D-10 — Preview y confirmación del wizard de migración no conocen `collections`
+
+- **Observado (2026-11-21, review y re-check de PR #350, registrado como limitación en su cuerpo)**: tras M01 (#166), el job puede llevar `collections` con pistas y álbumes, pero el preview (`migration.rs:254`) no recibe colecciones y el wizard sigue mostrando `total_tracks` como «N items previewed» y «migrating N tracks»: un job solo-álbumes confirma con métricas de pistas. Además `pairKey` (`MigrationView.vue:1906`) no incluye la selección: se puede previsualizar con favoritos, volver atrás, añadir álbumes y el gate sigue considerando el preview «actual». ADR-0015 §5 (dry-run por colección) pide el preview por colección y sigue pendiente. Copia in-app que insinúa de más: el paso de revisión dice que «las listas se espejan de las pistas transferidas», cierto en el motor, pero el wizard nunca envía `playlist_ids`, así que hoy seleccionar Playlists no crea ninguna lista.
+- **Corrección que lo cerraría**: preview por colección (ADR-0015 §5), `pairKey` con la selección en la clave, métricas de confirmación por tipo, y condicionar o corregir la copia del espejo de listas.
+- **Cierra**: el preview por colección aterrizado con su test, y la copia sin promesas que el wire no cumple.
+
+### D-11 — Fila `pending` residual si la cancelación llega dentro de la fase de álbumes
+
+- **Observado (2026-11-21, re-check de PR #350)**: el fix de #350 (`&& !cancelled` en `migration.rs:2449`) impide ABRIR la fase de álbumes con el job ya cancelado, pero si la cancelación llega DENTRO de la fase, `run_album_collection` sigue insertando la fila `pending` del primer álbum antes de mirar el estado en la primera iteración. Comportamiento preexistente que la review no pidió cambiar; deja un ítem `pending` en un job cancelado.
+- **Corrección que lo cerraría**: comprobar `cancelled` antes de cada inserción (o capturar el estado al entrar en la iteración), con un test determinista del mismo molde que el de la fase ya arreglada (trigger sobre la primera fila).
+- **Cierra**: la comprobación por inserción con su test rojo→verde.
+
+### D-12 — Estado obsoleto del detalle de artista al cambiar de artista in-place
+
+- **Observado (2026-11-21, re-check de PR #351)**: tras aterrizar la recarga real
+  por parámetro (#351: `watch(() => route.params.id)` en `ArtistDetailView.vue`),
+  quedan dos ventanas sin protección:
+  1. `loadArtist` no tiene secuenciación: con una navegación A→B rápida, la
+     respuesta que llega última pinta el artista aunque la URL sea otra, y el
+     estado persiste hasta la siguiente navegación. `loadArtistCollection` además
+     relee `artistId.value` en cada página: cambiar de artista a mitad de la
+     enumeración de Download All/Shuffle puede mezclar pistas de dos artistas en
+     la misma cola.
+  2. `isFavorite` nunca se reinicia ni se carga en `loadArtist`, mientras el
+     backend sí persiste el favorito por artista (`src-tauri/src/commands/favorites.rs`):
+     tras A→B el corazón conserva el estado del artista anterior y en el primer
+     montaje no refleja el backend.
+- **Corrección que lo cerraría**: el patrón barato ya presente en el propio
+  fichero (`tracksRequestSeq`): un `artistRequestSeq` para `loadArtist` y
+  `loadArtistCollection`, capturar el id al iniciar cada acción de cola, y
+  reiniciar (o leer) `isFavorite` en `loadArtist`, con un test de carrera A→B.
+- **Cierra**: la secuenciación + captura de id + `isFavorite` con su test de carrera.
 
 ## Cerrado en esta revisión
 
@@ -451,3 +545,15 @@ sidecar) viaja en `FlacPictureSanitizeReport::dropped_unrepairable_blocks`, en l
 `actions` y en el `details_json` de la fila de `repair_history`, y el usuario la ve en
 el modal de historial de reparaciones.
 
+
+## D-04 — Cerrada el 2026-11-14
+
+La entrada pedía re-derivar del código los cuatro documentos de `docs/features/`
+que seguían con narrativa de diseño sin verificar (`auth-flow.md`,
+`download-pipeline.md`, `library-import.md` y `settings-system.md`). Se re-derivaron
+completos contra el árbol con la misma disciplina que los dos ya revisados
+(metadata-enrichment y playlist-system): símbolos y comportamiento verificados, sello
+«Estado de revisión» con fecha 2026-11-14 en cada uno. Evidencia: PR #291 (`788c195`);
+issues de ejecución #58–#61 cerrados citando el SHA. Lo que queda de la spec #36 es
+la verificación de red de los brazos SoundCloud y Apple Music, que vive en D-01
+condicionada a credenciales del propietario.

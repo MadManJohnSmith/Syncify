@@ -17,6 +17,7 @@ import {
     refreshAccountIdentities,
     setAccountDisplayName,
 } from '@/api/accounts';
+import { maskEmail } from '@/api/normalize';
 import { mockInvoke, resetMocks } from '../setup';
 
 describe('accounts_handles_missing_fields_test', () => {
@@ -111,5 +112,75 @@ describe('accounts_handles_missing_fields_test', () => {
         expect(zeroed.imported).toBe(0);
         expect(zeroed.skipped).toBe(0);
         expect(zeroed.errors).toEqual([]);
+    });
+});
+
+describe('accounts_mask_emails_test (ADR-0007 decision 7)', () => {
+    beforeEach(() => {
+        resetMocks();
+        vi.clearAllMocks();
+    });
+
+    it('masks an address to two local chars plus the domain, or hides it all', () => {
+        expect(maskEmail('ana@spotify.com')).toBe('an•••@spotify.com');
+        expect(maskEmail('jo@example.com')).toBe('j•••@example.com');
+        expect(maskEmail('a@example.com')).toBe('•••@example.com');
+        expect(maskEmail('  ana@spotify.com  ')).toBe('an•••@spotify.com');
+        // Not shaped like an address: hide it all instead of guessing.
+        expect(maskEmail('not-an-email')).toBe('•••');
+        expect(maskEmail('a@b@c.com')).toBe('•••');
+        expect(maskEmail('@x.com')).toBe('•••');
+        expect(maskEmail('x@')).toBe('•••');
+        // Absence stays absent.
+        expect(maskEmail(null)).toBeNull();
+        expect(maskEmail(undefined)).toBeNull();
+        expect(maskEmail('')).toBeNull();
+        expect(maskEmail('   ')).toBeNull();
+    });
+
+    it('masks the email of every account at the IPC boundary', async () => {
+        mockInvoke(() => [
+            { id: 1, service_name: 'spotify', display_name: 'John', email: 'john.doe@example.com' },
+            { id: 2, service_name: 'qobuz', display_name: null, email: 'ana@qobuz.com' },
+        ]);
+
+        const accounts = await getAccounts();
+
+        expect(accounts[0].email).toBe('jo•••@example.com');
+        expect(accounts[1].email).toBe('an•••@qobuz.com');
+        // The full addresses never leave this module's payload.
+        const serialized = JSON.stringify(accounts);
+        expect(serialized).not.toContain('john.doe@example.com');
+        expect(serialized).not.toContain('ana@qobuz.com');
+    });
+
+    it('keeps absent emails absent and collapses non-address values to the bullet mask', async () => {
+        mockInvoke(() => [
+            { id: 1, email: null },
+            { id: 2, email: '' },
+            { id: 3, email: 'not-an-email' },
+            { id: 4, email: '@x.com' },
+        ]);
+
+        const accounts = await getAccounts();
+
+        expect(accounts[0].email).toBeNull();
+        expect(accounts[1].email).toBeNull();
+        expect(accounts[2].email).toBe('•••');
+        expect(accounts[3].email).toBe('•••');
+    });
+
+    it('masks the status account_email while preserving array identity', async () => {
+        const statuses = [
+            { name: 'Spotify', connected: true, account_email: 'john.doe@example.com' },
+            { name: 'Qobuz', connected: false, account_email: null },
+        ];
+        mockInvoke(() => statuses);
+
+        const res = await getServiceStatuses();
+
+        expect(res).toBe(statuses);
+        expect(statuses[0].account_email).toBe('jo•••@example.com');
+        expect(statuses[1].account_email).toBeNull();
     });
 });

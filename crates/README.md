@@ -9,7 +9,8 @@ coincidir, es señal de que el crate se movió y la doc no.
 |---|---|
 | `syncify-core-domain` | Dominio puro sin I/O: política de calidad (piso 320 kbps en `quality.rs`), modelos de error (`ErrorTaxonomy` en `errors.rs`), esquema de manifest, eventos de progreso tipados, reglas de preservación de portadas, validadores de bytes y utilidades de proceso (`CREATE_NO_WINDOW` en `process.rs`). |
 | `syncify-metadata-domain` | Contrato de dominio y motor determinista de precedencia para el enriquecimiento de metadatos: scoring, conflicto de fuentes, género, idioma y país (`scoring.rs`, `genre.rs`, `language.rs`, `country.rs`). |
-| `syncify-lyrics-domain` | Contrato de dominio de letras y motor determinista puro: cabeceras LRC, marcadores de borrado y manejo de karaoke (`header.rs`). |
+| `syncify-lyrics-domain` | Contrato de dominio de letras y motor determinista puro: cabeceras LRC, marcadores de borrado, manejo de karaoke (`header.rs`) y selección secuencial con mejora entre fuentes (`selection.rs`). |
+| `syncify-lyrics-engine` | Motor de letras v2 (ADR-0017): un módulo por Fuente de letras, política y selección en el crate; el cliente HTTP, el limitador y el token de Apple Music llegan inyectados vía `EngineHooks` desde la fachada de `src-tauri`. |
 | `syncify-flac-writer` | Escritura de tags VorbisComment en FLAC agnóstica de fuente, con preservación no destructiva de `METADATA_BLOCK_PICTURE` y del WebP animado; incluye la sanitización con recuperación de portadas (`sanitize_flac_pictures_with_recovery`, `salvage_cover_to_jpeg`). |
 | `syncify-fmp4-flac` | Conversión de FLAC en ISOBMFF fragmentado (el DASH de Tidal) a FLAC nativo. |
 | `syncify-tidal-downloader` | Descargador segmentado del DASH de Tidal; usa `syncify-fmp4-flac` para remontar el contenedor. |

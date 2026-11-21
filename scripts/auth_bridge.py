@@ -213,7 +213,59 @@ def handle_spotify(args=None, *extra_args, sp_dc: str = None, **kwargs) -> dict:
 def handle_tidal(action: str):
     """Handle Tidal auth actions via device code flow."""
     from services.tidal_auth import tidal_login, tidal_status, tidal_logout, tidal_refresh, TidalAuth
-    
+
+    # In-app webview login (issue #84): the app splits the device code flow so
+    # its OWN webview shows the verification URL and NO browser is launched by
+    # the bridge on this path.
+    if action == "login_start":
+        from services.tidal_auth import tidal_login_start
+        result = tidal_login_start()
+        if result.get("status") == "success":
+            device_info = result.get("device_info") or {}
+            return {
+                "message": result.get("message", "Device code created"),
+                "device_code": result.get("device_code"),
+                "verification_url": result.get("verification_url") or device_info.get("verification_url"),
+            }
+        raise BridgeFailure(result.get("message", "Tidal login_start failed"))
+
+    if action == "login_poll":
+        from services.tidal_auth import tidal_login_poll
+        # SEC-022 mold: the device code arrives via stdin (JSON payload), never
+        # via argv (it is not a secret, but it is provider-issued state).
+        device_code = None
+        try:
+            if not sys.stdin.isatty():
+                content = sys.stdin.read().strip()
+                if content:
+                    data = json.loads(content)
+                    if isinstance(data, dict):
+                        device_code = data.get("device_code")
+        except Exception:
+            device_code = None
+        result = tidal_login_poll(device_code)
+        if result.get("status") == "success":
+            auth = TidalAuth(verbose=False)
+            tokens = auth.get_stored_tokens() or {}
+            user_obj = tokens.get("user") or {}
+            tidal_name = (
+                user_obj.get("username")
+                or user_obj.get("profileName")
+                or user_obj.get("userName")
+                or user_obj.get("displayName")
+            )
+            return {
+                "message": result.get("message", "Connected to Tidal"),
+                "access_token": tokens.get("access_token"),
+                "refresh_token": tokens.get("refresh_token"),
+                "token_expiry": tokens.get("token_expiry"),
+                "user_id": str(tokens.get("user_id", user_obj.get("userId", ""))),
+                "country_code": user_obj.get("countryCode", "US"),
+                "email": user_obj.get("email"),
+                "display_name": tidal_name,
+            }
+        raise BridgeFailure(result.get("message", "Tidal login_poll failed"))
+
     if action == "login":
         auth = TidalAuth(verbose=False)
         result = tidal_login(auth)
@@ -538,8 +590,13 @@ def _parse(argv):
     if service not in HANDLERS:
         raise BridgeFailure(f"Unknown service: {service}. Valid: {list(HANDLERS.keys())}")
 
-    if action not in ("login", "status", "logout", "refresh"):
-        raise BridgeFailure(f"Unknown action: {action}. Valid: login, status, logout, refresh")
+    if action not in ("login", "login_start", "login_poll", "status", "logout", "refresh"):
+        raise BridgeFailure(f"Unknown action: {action}. Valid: login, login_start, login_poll, status, logout, refresh")
+
+    if action in ("login_start", "login_poll") and service != "tidal":
+        raise BridgeFailure(f"Action '{action}' is only supported for 'tidal': it is the device code "
+                f"flow split for the in-app webview login. Other services capture their artifact "
+                f"in the app's webview and hand it to '{service} login'.")
 
     if action == "refresh" and service not in REFRESH_CAPABLE_SERVICES:
         raise BridgeFailure(f"Token refresh is not supported for '{service}': the provider does not issue "

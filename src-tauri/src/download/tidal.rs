@@ -6,7 +6,7 @@ use crate::download::progress::{
 use crate::download::qobuz::derive_acoustid_id;
 use anyhow::{anyhow, Result};
 use std::path::Path;
-use syncify_flac_writer::{apply_and_verify_flac_tags, FlacMetadata};
+use syncify_flac_writer::{apply_and_verify_flac_tags_with_options, FlacMetadata};
 use tokio_util::sync::CancellationToken;
 
 pub use syncify_tidal_downloader::*;
@@ -347,7 +347,7 @@ impl TidalOrchestratorExt for TidalDownloader {
 
         if stream_res.codec == "FLAC" {
             PROGRESS_TRACKER.update(DownloadProgress::finalizing(item_id));
-            let flac_meta = FlacMetadata {
+            let mut flac_meta = FlacMetadata {
                 title: request.track_name.clone(),
                 artist: request.artist_name.clone(),
                 album: request.album_name.clone(),
@@ -373,9 +373,29 @@ impl TidalOrchestratorExt for TidalDownloader {
                 audio_source: Some("Tidal".to_string()),
                 bit_depth: Some(real_bit_depth),
                 sample_rate: Some(real_sample_rate),
+                download_date: Some(chrono::Utc::now().to_rfc3339()),
+                quality_score: Some(
+                    syncify_core_domain::quality::classify_audio_tier(
+                        Some(real_bit_depth),
+                        Some(real_sample_rate as i32),
+                        None,
+                        Some("FLAC"),
+                    )
+                    .as_str()
+                    .to_string(),
+                ),
                 ..Default::default()
             };
-            let _ = apply_and_verify_flac_tags(&output_path, &flac_meta);
+            // SB03 (#198): política de write_*; sin BD en este brazo cae a los
+            // defaults de fábrica (histórico).
+            let tag_prefs = if let Some(db) = db_opt {
+                crate::services::tag_writer::load_tag_policy(db).await
+            } else {
+                crate::models::MetadataPreferences::default()
+            };
+            crate::services::tag_writer::apply_tag_policy(&mut flac_meta, &tag_prefs);
+            let tag_opts = crate::services::tag_writer::tag_write_options(&tag_prefs);
+            let _ = apply_and_verify_flac_tags_with_options(&output_path, &flac_meta, &tag_opts);
             // D-03: this no-DB fallback is a FLAC write path too, so the cover art is
             // sanitized here as well. There is no ledger to record into on this branch,
             // which the service reports as an error log instead of swallowing the loss.
@@ -487,7 +507,9 @@ mod tests {
                 last_synced TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 streaming_entitled INTEGER NOT NULL DEFAULT -1,
-                entitlement_checked_at TEXT
+                entitlement_checked_at TEXT,
+                -- #85: ciclo de vida de cuenta; el fixture replica la migración 0107.
+                state TEXT NOT NULL DEFAULT 'enabled'
             );",
         )
         .execute(&pool)

@@ -1,0 +1,6 @@
+# Canal unico de Rust del repo (#249): local, CI y releases compilan con el
+# mismo compilador. Los componentes y targets NO viven aqui: cada workflow los
+# pide como inputs de la accion de toolchain. Un bump es un commit deliberado
+# en este fichero y en la rama @<canal> de cada workflow que compila Rust.
+[toolchain]
+channel = "1.98.1"

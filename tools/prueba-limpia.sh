@@ -10,6 +10,10 @@
 #
 # No compartas esos logs: pueden contener cuentas y detalles de la biblioteca.
 # Para apuntar a otro clon: SYNCIFY_REPO=/ruta/al/clon tools/prueba-limpia.sh
+#
+# El target de Rust es uno por checkout bajo ~/.cache (fuera de tmpfs), el mismo
+# criterio que AGENTS.md y tools/prepush-check.sh desde el 2026-11-19. Respeta
+# CARGO_TARGET_DIR si ya viene exportado.
 set -o pipefail
 umask 077
 
@@ -23,7 +27,7 @@ terminal_log="$log_dir/terminal-$(date +%Y%m%d-%H%M%S).log"
 export RUST_LOG="info"
 export RUST_BACKTRACE="1"
 export SYNCIFY_LOG_DIR="$log_dir"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/syncify-rust-target}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/syncify-target-$(basename "$repo")}"
 
 printf 'Syncify manual test log: %s\n' "$terminal_log"
 printf 'Native application logs: %s\n' "$log_dir"

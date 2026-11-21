@@ -10,13 +10,14 @@ import {
     type DownloadSettingsDto,
     type EffectiveDownloadPreferences,
     deriveStagingRoot,
-    determinePathStatus
+    determinePathStatus,
+    normalizeFallbackAction,
+    normalizeServiceQuality
 } from '@/api/settings'
 import { useEventBus } from '@/composables/useEventBus'
 import type {
     QualityPreference,
     FolderSettings,
-    DuplicateSettings,
     AudioProcessingSettings,
 } from '@/api/types'
 
@@ -51,18 +52,6 @@ const folderSettings = reactive<FolderSettings>({
     fallback_action: 'try_next',
 })
 
-// Duplicate settings (singleton)
-const duplicateSettings = reactive<DuplicateSettings>({
-    id: 1,
-    enable_detection: true,
-    prefer_higher_quality: true,
-    prefer_lossless: true,
-    replace_same_quality_different_source: false,
-    quality_threshold_kbps: 64,
-    delete_duplicates_immediately: false,
-    move_to_trash: true,
-})
-
 // Audio processing settings (singleton)
 const audioProcessingSettings = reactive<AudioProcessingSettings>({
     id: 1,
@@ -78,14 +67,15 @@ const audioProcessingSettings = reactive<AudioProcessingSettings>({
 })
 
 // General download KV settings (singleton)
+// Note: retryCount/retryDelay were retired (#261) — the worker's retry budget
+// and backoff come from domain constants, so these settings only lied.
 const generalSettings = reactive({
+    // Nota: autoDownloadFavorites se retiró (#197, SB02) — el disparador de
+    // auto-descarga de favoritos no existe (PLAN A-04).
     concurrentDownloads: '3',
     retryFailed: '3',
-    retryCount: '3',
-    retryDelay: '5000',
     organizeByArtist: true,
     organizeByAlbum: true,
-    autoDownloadFavorites: false,
     maxSpeed: 0,
     pauseOnMetered: false,
 })
@@ -126,7 +116,7 @@ const concurrentDownloads = computed({
 const fallbackAction = computed({
     get: () => folderSettings.fallback_action || 'try_next',
     set: (val: string) => {
-        folderSettings.fallback_action = val
+        folderSettings.fallback_action = normalizeFallbackAction(val)
     }
 })
 
@@ -232,7 +222,7 @@ async function loadFromBackendInner() {
                 folderSettings.artist_separator = effective.artistSeparator
                 folderSettings.replace_spaces_with = effective.replaceSpacesWith
                 folderSettings.max_path_length = effective.maxPathLength
-                folderSettings.fallback_action = effective.fallbackAction
+                folderSettings.fallback_action = normalizeFallbackAction(effective.fallbackAction)
 
                 downloadDto.library_root = effective.downloadPath
                 downloadDto.staging_root = effective.stagingPath
@@ -240,21 +230,14 @@ async function loadFromBackendInner() {
                 downloadDto.free_space_bytes = effective.freeSpaceBytes
 
                 generalSettings.concurrentDownloads = effective.maxConcurrentDownloads.toString()
-                generalSettings.retryCount = effective.maxRetries.toString()
                 generalSettings.retryFailed = effective.maxRetries.toString()
-                generalSettings.retryDelay = (effective.retryDelaySeconds * 1000).toString()
-                generalSettings.autoDownloadFavorites = effective.autoDownloadFavorites
 
                 if (effective.downloadPath) {
                     lastValidLibraryRoot.value = effective.downloadPath
                 }
 
                 // Also load auxiliary singleton tables
-                const [duplicate, audio] = await Promise.all([
-                    settingsApi.getDuplicateSettings().catch(() => null),
-                    settingsApi.getAudioProcessingSettings().catch(() => null),
-                ])
-                if (duplicate) Object.assign(duplicateSettings, duplicate)
+                const audio = await settingsApi.getAudioProcessingSettings().catch(() => null)
                 if (audio) Object.assign(audioProcessingSettings, audio)
 
                 return
@@ -266,21 +249,17 @@ async function loadFromBackendInner() {
         const generalKeys = [
             'dl_concurrent_downloads',
             'dl_retry_failed',
-            'dl_retry_count',
-            'dl_retry_delay',
             'dl_download_path',
             'download_dir',
             'dl_temp_dir',
             'temp_dir',
             'dl_create_artist_folder',
-            'dl_create_album_folder',
-            'dl_auto_download_favorites'
+            'dl_create_album_folder'
         ]
 
-        const [quality, folder, duplicate, audio, generalKV, defaultDownloadPath, unifiedDto] = await Promise.all([
+        const [quality, folder, audio, generalKV, defaultDownloadPath, unifiedDto] = await Promise.all([
             settingsApi.getQualityPreferences().catch(() => []),
             settingsApi.getFolderSettings().catch(() => null),
-            settingsApi.getDuplicateSettings().catch(() => null),
             settingsApi.getAudioProcessingSettings().catch(() => null),
             settingsApi.getSettingsByKeys(generalKeys).catch(() => ({} as Record<string, string>)),
             settingsApi.getDefaultDownloadPath().catch(() => ''),
@@ -293,10 +272,8 @@ async function loadFromBackendInner() {
         // Update folder settings
         if (folder) {
             Object.assign(folderSettings, folder)
+            folderSettings.fallback_action = normalizeFallbackAction(folderSettings.fallback_action)
         }
-
-        // Update duplicate settings
-        if (duplicate) Object.assign(duplicateSettings, duplicate)
 
         // Update audio processing settings
         if (audio) Object.assign(audioProcessingSettings, audio)
@@ -305,8 +282,6 @@ async function loadFromBackendInner() {
         const kv = (generalKV || {}) as Record<string, string>
         if (kv.dl_concurrent_downloads) generalSettings.concurrentDownloads = kv.dl_concurrent_downloads
         if (kv.dl_retry_failed) generalSettings.retryFailed = kv.dl_retry_failed
-        if (kv.dl_retry_count) generalSettings.retryCount = kv.dl_retry_count
-        if (kv.dl_retry_delay) generalSettings.retryDelay = kv.dl_retry_delay
 
         const configuredDownloadPath = (kv.dl_download_path ?? kv.download_dir ?? '').trim()
         const resolvedLibraryRoot = unifiedDto?.library_root || configuredDownloadPath || folder?.base_folder || defaultDownloadPath || ''
@@ -325,7 +300,6 @@ async function loadFromBackendInner() {
 
         if (kv.dl_create_artist_folder) generalSettings.organizeByArtist = kv.dl_create_artist_folder === 'true'
         if (kv.dl_create_album_folder) generalSettings.organizeByAlbum = kv.dl_create_album_folder === 'true'
-        if (kv.dl_auto_download_favorites) generalSettings.autoDownloadFavorites = kv.dl_auto_download_favorites === 'true'
 
         console.log('Loaded unified download settings:', {
             library_root: downloadDto.library_root,
@@ -347,13 +321,10 @@ async function saveGeneralSettings() {
         const mapped: Record<string, string> = {
             dl_concurrent_downloads: generalSettings.concurrentDownloads,
             dl_retry_failed: generalSettings.retryFailed,
-            dl_retry_count: generalSettings.retryCount,
-            dl_retry_delay: generalSettings.retryDelay,
             dl_download_path: root,
             download_dir: root,
             dl_create_artist_folder: generalSettings.organizeByArtist.toString(),
             dl_create_album_folder: generalSettings.organizeByAlbum.toString(),
-            dl_auto_download_favorites: generalSettings.autoDownloadFavorites.toString(),
         }
         if (staging) {
             mapped.dl_temp_dir = staging
@@ -378,11 +349,13 @@ async function setMaxConcurrent(max: number) {
     await settingsApi.saveSetting('dl_concurrent_downloads', clamped.toString())
 }
 
-// Update fallback action (e.g. 'try_next', 'skip', 'prompt')
+// Update fallback action. Only the two values the worker applies are accepted;
+// the retired `prompt` folds into the default `try_next`.
 async function updateFallbackAction(action: string) {
-    folderSettings.fallback_action = action
+    const normalized = normalizeFallbackAction(action)
+    folderSettings.fallback_action = normalized
     try {
-        const updated = await settingsApi.updateFallbackAction(action)
+        const updated = await settingsApi.updateFallbackAction(normalized)
         if (updated) Object.assign(folderSettings, updated)
     } catch (e) {
         console.error('Failed to update fallback action:', e)
@@ -440,7 +413,8 @@ async function updateGlobalQuality(maxQuality: string, preferredFormat?: string)
     isUpdatingGlobalQuality.value = true
     try {
         const knownServices = ['qobuz', 'tidal', 'spotify', 'deezer', 'apple_music', 'soundcloud']
-        const format = preferredFormat || (maxQuality === 'hires' || maxQuality === 'lossless' ? 'flac' : 'mp3')
+        const normalizedQuality = normalizeServiceQuality(maxQuality)
+        const format = preferredFormat || (normalizedQuality === 'hires' || normalizedQuality === 'lossless' ? 'flac' : 'mp3')
         
         const updatedList: QualityPreference[] = []
         for (const svc of knownServices) {
@@ -451,7 +425,7 @@ async function updateGlobalQuality(maxQuality: string, preferredFormat?: string)
 
             const updated = await settingsApi.updateQualityPreference(
                 svc,
-                maxQuality,
+                normalizedQuality,
                 targetFormat,
                 fallbackQuality,
                 fallbackFormat
@@ -627,18 +601,6 @@ async function saveDownloadSettings() {
     }
 }
 
-// Save duplicate settings
-async function saveDuplicateSettings() {
-    try {
-        const updated = await settingsApi.updateDuplicateSettings({ ...duplicateSettings })
-        Object.assign(duplicateSettings, updated)
-        return updated
-    } catch (e) {
-        console.error('Failed to save duplicate settings:', e)
-        throw e
-    }
-}
-
 // Save audio processing settings
 async function saveAudioProcessingSettings() {
     try {
@@ -681,7 +643,6 @@ export function useDownloadSettings() {
         folderSettings,
         generalSettings,
         temporaryPath,
-        duplicateSettings,
         audioProcessingSettings,
 
         // Computed
@@ -713,9 +674,6 @@ export function useDownloadSettings() {
         // Folder
         saveFolderSettings,
         previewPath,
-
-        // Duplicate
-        saveDuplicateSettings,
 
         // Audio Processing
         saveAudioProcessingSettings,

@@ -204,8 +204,10 @@ fn test_legacy_syncify_cli_archived_and_neutralized() {
                 // duplicación innecesaria y se marca; el app_id lo audita
                 // qobuz_credentials_leak_test.
                 let relative = file.strip_prefix(&repo_root).unwrap_or(&file);
+                // Rutas canónicas escritas con '/': el separador nativo de
+                // Windows no decide la pertenencia.
                 let canonical_secret_home = matches!(
-                    relative.to_string_lossy().as_ref(),
+                    relative.to_string_lossy().replace('\\', "/").as_str(),
                     "src-tauri/src/services/qobuz.rs" | "scripts/services/qobuz_service.py"
                 );
                 if !canonical_secret_home

@@ -9,8 +9,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::crypto;
 use crate::download::lyrics::{
-    validate_and_embed_flac_lyrics, LyricsPipelineService, LyricsResolution, LyricsSyncType,
-    ResolutionStatus,
+    validate_and_embed_flac_lyrics, LyricsResolution, LyricsSyncType, ResolutionStatus,
 };
 use crate::download::progress::{DownloadPhase, DownloadPhaseTimings, DownloadPhaseTracker};
 use crate::services::animated_cover::{resolve_and_download_animated_cover, AnimatedCoverStatus};
@@ -28,7 +27,7 @@ use crate::services::repair_guardrail::{
 };
 pub use syncify_core_domain::metadata::TidalTrack;
 pub use syncify_flac_writer::{
-    apply_and_verify_flac_tags, audit_flac_stage, verify_flac_tags, FlacMetadata,
+    apply_and_verify_flac_tags_with_options, audit_flac_stage, verify_flac_tags, FlacMetadata,
 };
 pub use syncify_tidal_downloader::{PipelineError, TidalDownloader, TidalGuiCredentials};
 
@@ -997,6 +996,63 @@ async fn verify_or_recover_numeric_track(
     ))
 }
 
+/// LY07 (#180): the library identity the deletion-mark gates consult. The
+/// `hint_track_id` passes the same identity proof §8 applies before
+/// attributing rows (ISRC equality or clean-title containment), so a stale or
+/// wrong hint can never suppress another track's lyrics. Without a validated
+/// identity there is no deletion intent to consult — same contract as the
+/// Qobuz pipeline's `LyricsTrackIdentity::Direct`.
+async fn lyrics_gate_track_id(
+    db: &DbPool,
+    hint_track_id: Option<i64>,
+    title: &str,
+    isrc: &str,
+) -> Option<i64> {
+    let hint = hint_track_id?;
+    let candidate: Option<(i64, String, Option<String>)> =
+        sqlx::query_as("SELECT id, title, isrc FROM tracks WHERE id = ?")
+            .bind(hint)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None);
+    let (cid, ctitle, cisrc) = candidate?;
+    let title_clean = crate::download::qobuz::clean_title(title);
+    let ctitle_clean = crate::download::qobuz::clean_title(&ctitle);
+    let isrc_matches = !isrc.is_empty() && cisrc.as_deref() == Some(isrc);
+    let title_matches = title_clean == ctitle_clean
+        || title_clean.contains(&ctitle_clean)
+        || ctitle_clean.contains(&title_clean);
+    if isrc_matches || title_matches {
+        Some(cid)
+    } else {
+        None
+    }
+}
+
+/// LY07: track-level deletion gate (total mark standing). Fail-closed: a DB
+/// error reading the marks blocks the acquisition, because a mark must never
+/// be bypassed by a failed check (LY-12b).
+async fn lyrics_total_mark_blocks(db: &DbPool, track_id: i64) -> bool {
+    match crate::commands::lyrics::lyrics_track_blocked(db, track_id).await {
+        Ok(blocked) => blocked,
+        Err(e) => {
+            warn!(track_id, error = %e, "Deletion-mark consult failed for lyrics: treating as blocked");
+            true
+        }
+    }
+}
+
+/// LY07: per-format deletion gate. Fail-closed like the track-level gate.
+async fn lyrics_format_mark_blocks(db: &DbPool, track_id: i64, format: &str) -> bool {
+    match crate::commands::lyrics::lyrics_auto_blocked(db, track_id, format).await {
+        Ok(blocked) => blocked,
+        Err(e) => {
+            warn!(track_id, format, error = %e, "Deletion-mark consult failed for lyrics: treating as blocked");
+            true
+        }
+    }
+}
+
 /// Pipeline body. `journal` is `Some` whenever a recovery-journal entry is open
 /// for this download; every milestone is reported through it.
 async fn execute_tidal_single_track_download_inner<F>(
@@ -1893,60 +1949,91 @@ where
                 .with_resolved_track(resolved_info.clone()),
         );
 
-        let lyrics_service = LyricsPipelineService::from_db(db).await;
+        let lyrics_service = crate::download::lyrics::pipeline_from_db(db).await;
         let duration_sec = track.duration as f64;
         let mut resolved_lyrics_res: Option<LyricsResolution> = None;
 
-        match lyrics_service
-            .resolve_lyrics_and_sidecar(
-                &artist_name,
-                &track.title,
-                Some(&album_title),
-                duration_sec,
-            )
-            .await
-        {
-            Ok((res, sidecar_opt)) => {
-                if res.status == ResolutionStatus::Resolved {
-                    let tags = res.to_tag_contract();
-                    if let Some(ref lyr) = tags.lyrics {
-                        flac_meta.lyrics_lrc = Some(lyr.clone());
-                    }
-                    if let Some(ref src) = tags.source {
-                        flac_meta.lyrics_source = Some(src.clone());
-                    }
-                    lyrics_result_str = format!("{}_{:?}", res.provider, res.sync_type);
+        // LY07 (#180): consult the deletion marks with the validated library
+        // identity before resolving, embedding or staging anything.
+        let lyrics_mark_track =
+            lyrics_gate_track_id(db, request.hint_track_id, &track.title, &isrc_str).await;
+        let lyrics_marks_standing = match lyrics_mark_track {
+            Some(tid) => lyrics_total_mark_blocks(db, tid).await,
+            None => false,
+        };
 
-                    // Sidecar .lrc ONLY for valid synced lyrics (KaraokeWordSynced or LineSynced)
-                    if let Some(ref lrc_content) = sidecar_opt {
-                        let lrc_sidecar = staged_file_path.with_extension("lrc");
-                        if let Ok(_) = tokio::fs::write(&lrc_sidecar, lrc_content).await {
-                            info!(provider = %res.provider, sync_type = ?res.sync_type, "[Pipeline §6b] Synced lyrics acquired and sidecar staged");
-                        }
-                        let sync_level = match res.sync_type {
-                            LyricsSyncType::KaraokeWordSynced => "word",
-                            LyricsSyncType::LineSynced => "line",
-                            _ => "none",
+        if lyrics_marks_standing {
+            info!("[Pipeline §6b] Lyrics resolution skipped: deletion mark standing (LY-12b)");
+        } else {
+            match lyrics_service
+                .resolve_lyrics_and_sidecar(
+                    &artist_name,
+                    &track.title,
+                    Some(&album_title),
+                    duration_sec,
+                )
+                .await
+            {
+                Ok((res, sidecar_opt)) => {
+                    if res.status == ResolutionStatus::Resolved {
+                        // LY07: the resolved format must not be marked either.
+                        let lyrics_format = match res.sync_type {
+                            LyricsSyncType::KaraokeWordSynced | LyricsSyncType::LineSynced => "lrc",
+                            LyricsSyncType::Plain => "plain",
+                            LyricsSyncType::Instrumental => "instrumental",
+                            LyricsSyncType::None => "none",
                         };
-                        staged_lrc_info = Some((
-                            lrc_content.clone(),
-                            sync_level.to_string(),
-                            res.provider.clone(),
-                            true,
-                        ));
-                    } else {
-                        info!(provider = %res.provider, sync_type = ?res.sync_type, "[Pipeline §6b] Plain lyrics acquired (no sidecar created)");
-                    }
+                        let format_blocked = match lyrics_mark_track {
+                            Some(tid) => lyrics_format_mark_blocks(db, tid, lyrics_format).await,
+                            None => false,
+                        };
+                        if format_blocked {
+                            info!(
+                                format = %lyrics_format,
+                                "[Pipeline §6b] Resolved lyrics dropped: format marked as deleted (LY-12b)"
+                            );
+                        } else {
+                            let tags = res.to_tag_contract();
+                            if let Some(ref lyr) = tags.lyrics {
+                                flac_meta.lyrics_lrc = Some(lyr.clone());
+                            }
+                            if let Some(ref src) = tags.source {
+                                flac_meta.lyrics_source = Some(src.clone());
+                            }
+                            lyrics_result_str = format!("{}_{:?}", res.provider, res.sync_type);
 
-                    resolved_lyrics_res = Some(res);
-                } else {
-                    lyrics_result_str = format!("{:?}", res.status);
-                    info!("[Pipeline §6b] Lyrics status: {:?}", res.status);
+                            // Sidecar .lrc ONLY for valid synced lyrics (KaraokeWordSynced or LineSynced)
+                            if let Some(ref lrc_content) = sidecar_opt {
+                                let lrc_sidecar = staged_file_path.with_extension("lrc");
+                                if let Ok(_) = tokio::fs::write(&lrc_sidecar, lrc_content).await {
+                                    info!(provider = %res.provider, sync_type = ?res.sync_type, "[Pipeline §6b] Synced lyrics acquired and sidecar staged");
+                                }
+                                let sync_level = match res.sync_type {
+                                    LyricsSyncType::KaraokeWordSynced => "word",
+                                    LyricsSyncType::LineSynced => "line",
+                                    _ => "none",
+                                };
+                                staged_lrc_info = Some((
+                                    lrc_content.clone(),
+                                    sync_level.to_string(),
+                                    res.provider.clone(),
+                                    true,
+                                ));
+                            } else {
+                                info!(provider = %res.provider, sync_type = ?res.sync_type, "[Pipeline §6b] Plain lyrics acquired (no sidecar created)");
+                            }
+
+                            resolved_lyrics_res = Some(res);
+                        }
+                    } else {
+                        lyrics_result_str = format!("{:?}", res.status);
+                        info!("[Pipeline §6b] Lyrics status: {:?}", res.status);
+                    }
                 }
-            }
-            Err(e) => {
-                lyrics_result_str = "Failed".to_string();
-                info!(error = %e, "[Pipeline §6b] Lyrics not available from any source");
+                Err(e) => {
+                    lyrics_result_str = "Failed".to_string();
+                    info!(error = %e, "[Pipeline §6b] Lyrics not available from any source");
+                }
             }
         }
 
@@ -2156,7 +2243,22 @@ where
 
         // Apply all tags (base + cover + lyrics + enrichment) in one pass
         phase_tracker.start_phase(DownloadPhase::Tagging);
-        match apply_and_verify_flac_tags(&staged_file_path, &flac_meta) {
+        // SB03 (#198): política write_* + provenancia de descarga.
+        let tag_prefs = crate::services::tag_writer::load_tag_policy(db).await;
+        flac_meta.download_date = Some(chrono::Utc::now().to_rfc3339());
+        flac_meta.quality_score = Some(
+            syncify_core_domain::quality::classify_audio_tier(
+                flac_meta.bit_depth,
+                flac_meta.sample_rate.map(|r| r as i32),
+                None,
+                Some("FLAC"),
+            )
+            .as_str()
+            .to_string(),
+        );
+        crate::services::tag_writer::apply_tag_policy(&mut flac_meta, &tag_prefs);
+        let tag_opts = crate::services::tag_writer::tag_write_options(&tag_prefs);
+        match apply_and_verify_flac_tags_with_options(&staged_file_path, &flac_meta, &tag_opts) {
             Ok(_) => {
                 tagging_result_str = "Success (metaflac Verified)".to_string();
                 info!("[Pipeline §6] FLAC tagging completed (base + cover + lyrics + enrichment)");
@@ -2343,51 +2445,81 @@ where
         );
 
         let mut m4a_lyrics_str: Option<String> = None;
-        let lyrics_service = LyricsPipelineService::from_db(db).await;
+        let lyrics_service = crate::download::lyrics::pipeline_from_db(db).await;
         let duration_sec = track.duration as f64;
-        match lyrics_service
-            .resolve_lyrics_and_sidecar(
-                &artist_name,
-                &track.title,
-                Some(&album_title),
-                duration_sec,
-            )
-            .await
-        {
-            Ok((res, sidecar_opt)) => {
-                if res.status == ResolutionStatus::Resolved {
-                    let tags = res.to_tag_contract();
-                    m4a_lyrics_str = tags.unsynced_lyrics.clone().or(tags.lyrics.clone());
-                    lyrics_result_str = format!("{}_{:?}", res.provider, res.sync_type);
+        // LY07 (#180): same deletion-mark gate as the FLAC path, with the
+        // validated library identity resolved before any write.
+        let m4a_mark_track =
+            lyrics_gate_track_id(db, request.hint_track_id, &track.title, &isrc_str).await;
+        let m4a_marks_standing = match m4a_mark_track {
+            Some(tid) => lyrics_total_mark_blocks(db, tid).await,
+            None => false,
+        };
 
-                    // Sidecar .lrc ONLY if valid synced lyrics exist (KaraokeWordSynced or LineSynced)
-                    if let Some(ref lrc_content) = sidecar_opt {
-                        let lrc_path = staged_file_path.with_extension("lrc");
-                        if let Err(w_err) = tokio::fs::write(&lrc_path, lrc_content).await {
-                            warn!(path = %lrc_path.display(), error = %w_err, "[Pipeline §6b] Failed to write staged .lrc for M4A");
-                        }
-                        info!(provider = %res.provider, "[Pipeline §6b] Synced lyrics acquired and sidecar staged for M4A");
-                        let sync_level = match res.sync_type {
-                            LyricsSyncType::KaraokeWordSynced => "word",
-                            LyricsSyncType::LineSynced => "line",
-                            _ => "none",
+        if m4a_marks_standing {
+            info!("[Pipeline §6b] Lyrics resolution skipped: deletion mark standing (LY-12b, M4A)");
+        } else {
+            match lyrics_service
+                .resolve_lyrics_and_sidecar(
+                    &artist_name,
+                    &track.title,
+                    Some(&album_title),
+                    duration_sec,
+                )
+                .await
+            {
+                Ok((res, sidecar_opt)) => {
+                    if res.status == ResolutionStatus::Resolved {
+                        let lyrics_format = match res.sync_type {
+                            LyricsSyncType::KaraokeWordSynced | LyricsSyncType::LineSynced => "lrc",
+                            LyricsSyncType::Plain => "plain",
+                            LyricsSyncType::Instrumental => "instrumental",
+                            LyricsSyncType::None => "none",
                         };
-                        staged_lrc_info = Some((
-                            lrc_content.clone(),
-                            sync_level.to_string(),
-                            res.provider.clone(),
-                            false,
-                        ));
+                        let format_blocked = match m4a_mark_track {
+                            Some(tid) => lyrics_format_mark_blocks(db, tid, lyrics_format).await,
+                            None => false,
+                        };
+                        if format_blocked {
+                            info!(
+                                format = %lyrics_format,
+                                "[Pipeline §6b] Resolved lyrics dropped: format marked as deleted (LY-12b, M4A)"
+                            );
+                        } else {
+                            let tags = res.to_tag_contract();
+                            m4a_lyrics_str = tags.unsynced_lyrics.clone().or(tags.lyrics.clone());
+                            lyrics_result_str = format!("{}_{:?}", res.provider, res.sync_type);
+
+                            // Sidecar .lrc ONLY if valid synced lyrics exist (KaraokeWordSynced or LineSynced)
+                            if let Some(ref lrc_content) = sidecar_opt {
+                                let lrc_path = staged_file_path.with_extension("lrc");
+                                if let Err(w_err) = tokio::fs::write(&lrc_path, lrc_content).await {
+                                    warn!(path = %lrc_path.display(), error = %w_err, "[Pipeline §6b] Failed to write staged .lrc for M4A");
+                                }
+                                info!(provider = %res.provider, "[Pipeline §6b] Synced lyrics acquired and sidecar staged for M4A");
+                                let sync_level = match res.sync_type {
+                                    LyricsSyncType::KaraokeWordSynced => "word",
+                                    LyricsSyncType::LineSynced => "line",
+                                    _ => "none",
+                                };
+                                staged_lrc_info = Some((
+                                    lrc_content.clone(),
+                                    sync_level.to_string(),
+                                    res.provider.clone(),
+                                    false,
+                                ));
+                            } else {
+                                info!(provider = %res.provider, "[Pipeline §6b] Plain lyrics acquired for M4A (no sidecar created)");
+                            }
+                        }
                     } else {
-                        info!(provider = %res.provider, "[Pipeline §6b] Plain lyrics acquired for M4A (no sidecar created)");
+                        lyrics_result_str = format!("{:?}", res.status);
                     }
-                } else {
-                    lyrics_result_str = format!("{:?}", res.status);
                 }
-            }
-            Err(e) => {
-                lyrics_result_str = "Failed".to_string();
-                info!(error = %e, "[Pipeline §6b] Lyrics not available (M4A)");
+                Err(e) => {
+                    lyrics_result_str = "Failed".to_string();
+                    info!(error = %e, "[Pipeline §6b] Lyrics not available (M4A)");
+                }
             }
         }
 
@@ -3252,9 +3384,10 @@ where
         let album_id: i64 = match existing_album_id {
             Some(aid) => {
                 if is_compilation {
-                    let _ = sqlx::query("UPDATE albums SET is_compilation = 1 WHERE id = ? AND is_compilation != 1")
+                    let _ = crate::db::write_or_log("execute_tidal_single_track_download", sqlx::query("UPDATE albums SET is_compilation = 1 WHERE id = ? AND is_compilation != 1")
                         .bind(aid)
                         .execute(&mut *tx)
+                        )
                         .await;
                 }
                 aid
@@ -3421,6 +3554,7 @@ where
         "tidal",
         !allow_fallback,
         allow_fallback,
+        320, // matriz Tidal: el piso lossy global de esta ruta de streaming sigue siendo 320
     );
 
     // Prevent UNIQUE constraint collision on downloads.file_path if another track formerly occupied it
@@ -3492,8 +3626,30 @@ where
     }
 
     // F5.3: Persist synced lyrics (.lrc) in the database upon physical promotion (mitiga A11)
+    // LY07 (#180): the validated identity gates the insert — a standing mark
+    // for the track (total) or the lrc format leaves both the DB row and the
+    // promoted sidecar untouched.
+    let lyrics_persist_blocked = lyrics_total_mark_blocks(db, track_db_id).await
+        || lyrics_format_mark_blocks(db, track_db_id, "lrc").await;
+    if lyrics_persist_blocked {
+        info!(
+            track_id = track_db_id,
+            "[Pipeline §9] Lyrics persistence skipped: deletion mark standing (LY-12b)"
+        );
+    }
     let final_lrc_path = final_path.with_extension("lrc");
-    if !final_lrc_path.exists() {
+    if lyrics_persist_blocked && final_lrc_path.exists() {
+        // §8 promotes staged sidecars before the ledger identity is resolved.
+        // When the validated track turns out to carry a mark, the promoted
+        // sidecar is a resurrection: remove it (same cleanup contract as
+        // `delete_lyrics`, which always removes sidecars for the format).
+        if let Err(rm_err) = tokio::fs::remove_file(&final_lrc_path).await {
+            warn!(path = %final_lrc_path.display(), error = %rm_err, "[Pipeline §9] Failed to remove sidecar for marked track");
+        } else {
+            debug!(path = %final_lrc_path.display(), "[Pipeline §9] Sidecar removed: deletion mark standing (LY-12b)");
+        }
+    }
+    if !lyrics_persist_blocked && !final_lrc_path.exists() {
         if let Some((ref c, _, _, _)) = staged_lrc_info {
             if !c.trim().is_empty() {
                 if let Err(w_err) = tokio::fs::write(&final_lrc_path, c).await {
@@ -3504,7 +3660,7 @@ where
             }
         }
     }
-    if final_lrc_path.exists() {
+    if !lyrics_persist_blocked && final_lrc_path.exists() {
         let (content, sync_level, source, embedded) =
             if let Some((c, s, prov, emb)) = staged_lrc_info {
                 (c, s, prov, emb)
@@ -3599,6 +3755,7 @@ where
         "tidal",
         !allow_fallback,
         allow_fallback,
+        320, // matriz Tidal: el piso lossy global de esta ruta de streaming sigue siendo 320
     );
     let download_result_str = q_eval.decision.to_string();
 
@@ -4571,27 +4728,53 @@ pub async fn reenrich_download_file_with_baseline(
         }
     }
 
-    let lyrics_service = LyricsPipelineService::from_db(db).await;
-    let lyrics_res = lyrics_service
-        .resolve_lyrics_and_sidecar(&final_artist, &final_title, Some(&final_album), 180.0)
-        .await
-        .ok();
+    // LY07 (#180): a standing deletion mark suppresses lyric re-acquisition
+    // during repair too — the repair must not resurrect what the user deleted.
+    let repair_lyrics_allowed = !lyrics_total_mark_blocks(db, old_track_id).await;
+
+    let lyrics_service = crate::download::lyrics::pipeline_from_db(db).await;
+    let lyrics_res = if repair_lyrics_allowed {
+        lyrics_service
+            .resolve_lyrics_and_sidecar(&final_artist, &final_title, Some(&final_album), 180.0)
+            .await
+            .ok()
+    } else {
+        info!(
+            track_id = old_track_id,
+            "Lyrics resolution skipped during re-enrichment: deletion mark standing (LY-12b)"
+        );
+        None
+    };
 
     let mut lyrics_lrc: Option<String> = None;
     let mut lyrics_src: Option<String> = None;
     if let Some((res, sidecar_opt)) = lyrics_res {
         if res.status == ResolutionStatus::Resolved {
-            let tags = res.to_tag_contract();
-            lyrics_lrc = tags.lyrics;
-            lyrics_src = tags.source;
-            lyrics_applied = true;
+            let lyrics_format = match res.sync_type {
+                LyricsSyncType::KaraokeWordSynced | LyricsSyncType::LineSynced => "lrc",
+                LyricsSyncType::Plain => "plain",
+                LyricsSyncType::Instrumental => "instrumental",
+                LyricsSyncType::None => "none",
+            };
+            if lyrics_format_mark_blocks(db, old_track_id, lyrics_format).await {
+                info!(
+                    track_id = old_track_id,
+                    format = %lyrics_format,
+                    "Resolved lyrics dropped during re-enrichment: format marked as deleted (LY-12b)"
+                );
+            } else {
+                let tags = res.to_tag_contract();
+                lyrics_lrc = tags.lyrics;
+                lyrics_src = tags.source;
+                lyrics_applied = true;
 
-            if let Some(ref lrc_content) = sidecar_opt {
-                let sidecar_dest = current_path.with_extension("lrc");
-                if let Err(w_err) = tokio::fs::write(&sidecar_dest, lrc_content).await {
-                    warn!(path = %sidecar_dest.display(), error = %w_err, "Failed to write sidecar .lrc during re-enrichment");
-                } else {
-                    applied_actions.push("sidecar_lrc_written".to_string());
+                if let Some(ref lrc_content) = sidecar_opt {
+                    let sidecar_dest = current_path.with_extension("lrc");
+                    if let Err(w_err) = tokio::fs::write(&sidecar_dest, lrc_content).await {
+                        warn!(path = %sidecar_dest.display(), error = %w_err, "Failed to write sidecar .lrc during re-enrichment");
+                    } else {
+                        applied_actions.push("sidecar_lrc_written".to_string());
+                    }
                 }
             }
         }
@@ -4605,7 +4788,7 @@ pub async fn reenrich_download_file_with_baseline(
 
     // Tagging
     let tags_applied = if ext_lower == "flac" {
-        let flac_meta = FlacMetadata {
+        let mut flac_meta = FlacMetadata {
             title: final_title.clone(),
             artist: final_artist.clone(),
             album: final_album.clone(),
@@ -4631,7 +4814,13 @@ pub async fn reenrich_download_file_with_baseline(
             lyrics_source: lyrics_src.clone(),
             ..Default::default()
         };
-        apply_and_verify_flac_tags(&current_path, &flac_meta).is_ok()
+        // SB03 (#198): el re-etiquetado de reparación respeta la misma
+        // política write_* / preserve_custom_tags (sin provenancia: no es una
+        // descarga nueva).
+        let tag_prefs = crate::services::tag_writer::load_tag_policy(db).await;
+        crate::services::tag_writer::apply_tag_policy(&mut flac_meta, &tag_prefs);
+        let tag_opts = crate::services::tag_writer::tag_write_options(&tag_prefs);
+        apply_and_verify_flac_tags_with_options(&current_path, &flac_meta, &tag_opts).is_ok()
     } else {
         let mp4_meta = Mp4Metadata {
             title: final_title.clone(),
@@ -5024,5 +5213,104 @@ mod expiry_buffer_tests {
         c.token_expiry = None;
         c.expires_at = None;
         assert!(c.is_expired(0.0));
+    }
+}
+
+#[cfg(test)]
+mod ly07_deletion_mark_pipeline_tests {
+    //! LY07 (#180): the Tidal pipeline consults the deletion marks through a
+    //! validated library identity, and the consult fails closed. The gates
+    //! themselves are the canonical predicates of `commands::lyrics`; here the
+    //! pipeline-side identity proof and the fail-closed contract are exercised
+    //! against `:memory:` databases.
+
+    use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::str::FromStr;
+
+    async fn fixture_with_tracks() -> DbPool {
+        let options = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .foreign_keys(true);
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE tracks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, isrc TEXT); \
+             INSERT INTO tracks (id, title, isrc) VALUES (7, 'Fixture Song', 'GB Fixture')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        db
+    }
+
+    async fn fixture_with_marks(track_id: i64, format: &str) -> DbPool {
+        let db = fixture_with_tracks().await;
+        sqlx::query(
+            "CREATE TABLE lyrics_deletion_marks (track_id INTEGER NOT NULL, format TEXT NOT NULL, PRIMARY KEY(track_id, format)); \
+             CREATE TABLE lyrics_restored_formats (track_id INTEGER NOT NULL, format TEXT NOT NULL, PRIMARY KEY(track_id, format)); \
+             INSERT INTO lyrics_deletion_marks VALUES (?, ?)",
+        )
+        .bind(track_id)
+        .bind(format)
+        .execute(&db)
+        .await
+        .unwrap();
+        db
+    }
+
+    #[tokio::test]
+    async fn validated_hint_passes_the_same_identity_proof_as_section_8() {
+        let db = fixture_with_tracks().await;
+        // Title containment, ISRC equality: both accept the hint.
+        assert_eq!(
+            lyrics_gate_track_id(&db, Some(7), "Fixture Song (Live)", "gb fixture").await,
+            Some(7)
+        );
+        assert_eq!(
+            lyrics_gate_track_id(&db, Some(7), "Fixture Song", "GBAX1234567").await,
+            Some(7)
+        );
+        // A hint that matches neither axis is rejected: its marks must not
+        // suppress another recording's lyrics.
+        assert_eq!(
+            lyrics_gate_track_id(&db, Some(7), "Different Song", "GBAX1234567").await,
+            None
+        );
+        // Direct download without a hint: no persisted identity to consult.
+        assert_eq!(
+            lyrics_gate_track_id(&db, None, "Fixture Song", "").await,
+            None
+        );
+        // A hint pointing at a missing row carries no identity either.
+        assert_eq!(
+            lyrics_gate_track_id(&db, Some(404), "Fixture Song", "").await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn format_and_total_marks_block_their_formats() {
+        let db = fixture_with_marks(7, "lrc").await;
+        assert!(lyrics_format_mark_blocks(&db, 7, "lrc").await);
+        assert!(!lyrics_format_mark_blocks(&db, 7, "plain").await);
+        // A per-format mark alone does not stand as a total mark.
+        assert!(!lyrics_total_mark_blocks(&db, 7).await);
+
+        let db = fixture_with_marks(7, "*").await;
+        assert!(lyrics_format_mark_blocks(&db, 7, "lrc").await);
+        assert!(lyrics_format_mark_blocks(&db, 7, "plain").await);
+        assert!(lyrics_total_mark_blocks(&db, 7).await);
+    }
+
+    #[tokio::test]
+    async fn mark_consult_fails_closed_without_the_schema() {
+        let db = fixture_with_tracks().await;
+        // No marks tables: a broken consult must never bypass LY-12b.
+        assert!(lyrics_total_mark_blocks(&db, 7).await);
+        assert!(lyrics_format_mark_blocks(&db, 7, "lrc").await);
     }
 }

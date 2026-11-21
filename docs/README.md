@@ -25,10 +25,12 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
 ## Especificaciones de Módulos y Arquitectura Vigente
 
 - **`features/`**: especificaciones funcionales de los subsistemas principales
-  (8 ficheros). Cada una abre con un sello `**Estado de revisión:**` que dice
+  (9 ficheros). Cada una abre con un sello `**Estado de revisión:**` que dice
   cuándo se contrastó contra el árbol:
   - `auth-flow.md`: flujos de autenticación OAuth, PKCE y scraping de sesión,
     reconciliación multi-cuenta.
+  - `authentication.md`: la sonda de diagnóstico solo-debug del login de
+    Deezer (cookie jar, sin valores) de AUTH-WV-01.
   - `download-pipeline.md`: arquitectura del orquestador, cola y los motores
     nativos por proveedor.
   - `track-browser.md`: la maquinaria de listas de pistas — kernel de ventana
@@ -39,7 +41,11 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
     AcoustID, y el worker de fondo.
   - `playlist-system.md`: sincronización y persistencia de listas de
     reproducción.
-  - `settings-system.md`: configuración jerárquica y persistencia en SQLite.
+  - `settings-system.md`: configuración jerárquica y persistencia en SQLite,
+    defaults únicos y reset completo en backend.
+  - `backup.md`: manifest v2 — export/import con ajustes y cuentas sin
+    secretos, reautenticación al restaurar y fallo seguro ante versiones
+    futuras.
   - `PLAYER_PHASE1_MPRIS.md`: reproductor integrado — MediaSession, motor
     nativo (`crates/syncify-player`) y el servicio MPRIS nativo
     (`src-tauri/src/services/mpris.rs`). La comprobación D-Bus de extremo a

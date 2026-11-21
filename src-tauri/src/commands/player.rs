@@ -25,7 +25,6 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::services::mpris::{MprisMetadataInput, MprisService};
 use crate::services::playback_session::{PlayerLoadResult, PlayerState, TickOutput};
 use crate::services::stream_cache::StreamCacheState;
 
@@ -103,17 +102,6 @@ pub fn player_set_rate(state: State<'_, PlayerState>, rate: f64) -> Result<(), S
     state.set_rate(rate)
 }
 
-/// Actualiza los metadatos y modos que ve el panel MPRIS del escritorio.
-/// En plataformas sin MPRIS (o sin bus de sesión) es un no-op.
-#[tauri::command]
-pub fn player_mpris_update(
-    state: State<'_, MprisService>,
-    metadata: MprisMetadataInput,
-) -> Result<(), String> {
-    state.update_metadata(&metadata);
-    Ok(())
-}
-
 /// Arranca el ticker de eventos del player (se llama una vez en `setup`).
 /// Cada paso consume `PlayerState::tick()` y emite, en orden: los estados de
 /// stream que la frontera haya producido, la actualización de MPRIS,
@@ -138,16 +126,63 @@ pub fn spawn_player_ticker<R: tauri::Runtime>(app: &AppHandle<R>) {
             if let Some(session) = out.stall_refill {
                 crate::services::playback_session::spawn_stall_refill(app.clone(), session);
             }
-            if let Some((status, position)) = out.mpris {
-                if let Some(mpris) = app.try_state::<MprisService>() {
-                    mpris.update_playback(status, position);
+            if let Some(mpris_tick) = out.mpris {
+                if let Some(mpris) = app.try_state::<crate::services::mpris::MprisService>() {
+                    mpris.update_playback(
+                        &app,
+                        mpris_tick.status,
+                        mpris_tick.position,
+                        mpris_tick
+                            .track_id
+                            .map(|track_id| crate::services::mpris::NowPlaying {
+                                track_id,
+                                duration: mpris_tick.duration,
+                            }),
+                    );
                 }
             }
             if let Some(payload) = out.tick {
                 let _ = app.emit("player:tick", payload);
             }
             if let Some(payload) = out.ended {
-                let _ = app.emit("player:ended", payload);
+                let _ = app.emit("player:ended", &payload);
+                // P01 (#132): el backend decide la siguiente pista y avanza.
+                // La UI ya no orquesta el fin de pista; sincroniza su vista
+                // con `player:advanced`.
+                crate::services::playback_advance::spawn_auto_advance(app.clone(), payload.seq);
+            }
+            if let Some(credit) = out.listen_credit {
+                // P01 (#132): el backend acumula 30 s reales y acredita una
+                // única vez por sesión (dedupe por PK en `playback_listens`).
+                // Un fallo no es recuperable desde el ticker: queda en el log.
+                let db = match app.try_state::<crate::AppState>() {
+                    Some(state) => state.db.clone(),
+                    None => continue,
+                };
+                tauri::async_runtime::spawn(async move {
+                    match crate::commands::playback::perform_record_local_play(
+                        &db,
+                        credit.track_id,
+                        &credit.listen_session_id,
+                    )
+                    .await
+                    {
+                        Ok(stats) if stats.counted => {
+                            tracing::info!(
+                                track_id = credit.track_id,
+                                play_count = stats.play_count,
+                                "escucha acreditada por el backend (30 s reales)"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                track_id = credit.track_id,
+                                "no se pudo acreditar la escucha: {e}"
+                            );
+                        }
+                    }
+                });
             }
         }
     });
