@@ -859,7 +859,8 @@ impl DownloadWorker {
     ///
     /// La producción y los tests usan esta misma llamada: si el gate rechaza,
     /// la fila NO se promociona y el fichero promovido sale de la biblioteca
-    /// junto con la fila que la propia entrega hubiera escrito antes del gate.
+    /// junto con la fila que la propia entrega hubiera escrito antes del gate
+    /// (la propiedad la prueba el journal de la descarga, no el `track_id`).
     /// Antes, el orden solo se vigilaba buscando cadenas en el fuente.
     pub async fn verify_then_complete(
         &self,
@@ -903,50 +904,21 @@ impl DownloadWorker {
     /// #338: un rechazo de verificación no deja en la biblioteca ni el fichero
     /// ni la fila de la propia entrega. Algunas rutas —Tidal escribe en
     /// `tidal_pipeline` §9 y hace commit— crean la fila de `downloads` ANTES
-    /// del gate, así que la limpieza distingue esa fila (mismo `track_id` que
-    /// la cola) de una fila ajena que ocupa el path: la propia se retira y el
-    /// audio rechazado se mueve a cuarentena explícita en vez de destruirse.
-    /// Una fila de otra pista conserva fila y fichero, y un fallo del ledger no
-    /// autoriza a tocar nada.
+    /// del gate, así que la limpieza necesita saber si esa fila es de esta
+    /// entrega: la propia se retira y el audio rechazado se mueve a cuarentena
+    /// explícita. Sin prueba de propiedad, fila y fichero se conservan, y un
+    /// fallo del ledger tampoco autoriza a tocar nada.
     ///
     /// Devuelve la ruta de cuarentena cuando movió el fichero, para que el
     /// motivo del fallo la nombre.
     async fn discard_rejected_delivery(&self, queue_id: i64, file_path: &str) -> Option<PathBuf> {
-        let queue_track: Result<Option<i64>, sqlx::Error> =
-            sqlx::query_scalar("SELECT track_id FROM download_queue WHERE id = ?")
-                .bind(queue_id)
-                .fetch_optional(&self.db)
-                .await;
-        let queue_track = match queue_track {
-            Ok(Some(track_id)) => track_id,
-            Ok(None) => {
-                // Sin fila de cola no hay forma de saber qué fila del ledger es
-                // de esta entrega: no se destruye evidencia.
-                tracing::warn!(
-                    queue_id,
-                    file_path,
-                    "[Worker] Rejected delivery kept: the queue row is gone, ownership is unknowable"
-                );
-                return None;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    queue_id,
-                    file_path,
-                    error = %e,
-                    "[Worker] Cannot confirm queue ownership of a rejected delivery; keeping the file"
-                );
-                return None;
-            }
-        };
-
-        let owners: Result<Vec<(i64, i64)>, sqlx::Error> =
-            sqlx::query_as("SELECT id, track_id FROM downloads WHERE file_path = ?")
+        let rows: Result<Vec<i64>, sqlx::Error> =
+            sqlx::query_scalar("SELECT id FROM downloads WHERE file_path = ?")
                 .bind(file_path)
                 .fetch_all(&self.db)
                 .await;
-        let owners = match owners {
-            Ok(owners) => owners,
+        let rows = match rows {
+            Ok(rows) => rows,
             Err(e) => {
                 // Un fallo del ledger no autoriza a borrar: el fichero se
                 // conserva y el aviso deja rastro. Borrar a ciegas podría
@@ -961,19 +933,39 @@ impl DownloadWorker {
             }
         };
 
-        let owns_delivery = owners.iter().any(|(_, track_id)| *track_id == queue_track);
-        let foreign_owner = owners
-            .iter()
-            .find(|(_, track_id)| *track_id != queue_track)
-            .map(|(downloads_id, _)| *downloads_id);
+        if !rows.is_empty() {
+            let owns_delivery = match self
+                .delivery_journal_claims_output(queue_id, file_path)
+                .await
+            {
+                Ok(owns) => owns,
+                Err(e) => {
+                    tracing::warn!(
+                        queue_id,
+                        file_path,
+                        error = %e,
+                        "[Worker] Cannot read the delivery journal; keeping the ledger row and the file"
+                    );
+                    return None;
+                }
+            };
+            if !owns_delivery {
+                tracing::warn!(
+                    queue_id,
+                    file_path,
+                    rows = rows.len(),
+                    "[Worker] Rejected delivery kept: no journal entry of this delivery claims the path"
+                );
+                return None;
+            }
 
-        if owns_delivery {
-            if let Err(e) =
-                sqlx::query("DELETE FROM downloads WHERE file_path = ? AND track_id = ?")
-                    .bind(file_path)
-                    .bind(queue_track)
-                    .execute(&self.db)
-                    .await
+            // La ruta la promovió esta operación, así que la fila —una sola: la
+            // ruta de Tidal borra las ajenas en la misma transacción— es de la
+            // entrega aunque su `track_id` no coincida con el de la cola.
+            if let Err(e) = sqlx::query("DELETE FROM downloads WHERE file_path = ?")
+                .bind(file_path)
+                .execute(&self.db)
+                .await
             {
                 // La fila de la entrega sigue ahí: mover el fichero dejaría una
                 // fila apuntando a una ruta que ya no existe.
@@ -988,22 +980,35 @@ impl DownloadWorker {
             tracing::warn!(
                 queue_id,
                 file_path,
-                track_id = queue_track,
+                rows = rows.len(),
                 "[Worker] Rejected delivery withdrew the ledger row written before the gate"
             );
         }
 
-        if let Some(downloads_id) = foreign_owner {
-            tracing::warn!(
-                queue_id,
-                file_path,
-                downloads_id,
-                "[Worker] Rejected delivery kept: the ledger owns this path for another track"
-            );
-            return None;
-        }
-
         self.quarantine_rejected_file(queue_id, file_path).await
+    }
+
+    /// #338: prueba de propiedad de la entrega que el worker fija justo antes
+    /// del gate: `DownloadJournal::start` abre la entrada con
+    /// `entity_id = queue_id` y `checkpoint_promoted` registra el
+    /// `expected_output_path` promovido. Una entrada del journal que declara
+    /// esta ruta demuestra que la escribió esta descarga, sin depender del
+    /// `track_id` del ledger: `tidal_pipeline` §9 puede resolver o crear una
+    /// pista canónica distinta a la de la cola.
+    async fn delivery_journal_claims_output(
+        &self,
+        queue_id: i64,
+        file_path: &str,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM operation_journal \
+             WHERE entity_id = ? AND expected_output_path = ?",
+        )
+        .bind(queue_id.to_string())
+        .bind(file_path)
+        .fetch_one(&self.db)
+        .await
+        .map(|count| count > 0)
     }
 
     /// #338: aparta el fichero de una entrega rechazada sin destruir audio
