@@ -4,9 +4,9 @@
 > sigue en español; no hay traducción de este documento todavía. El índice
 > que marca su estado está en `docs/README.en.md`.
 
-**Estado de revisión:** 2026-11-18 — PL01 (#154) sobre el modelo local de PL00 (#153): crear/renombrar/editar la local no toca la identidad (`local_uuid`), la local se borra de verdad, la importada deja tombstone (`deleted_at`) que el sync no resucita, y borrar la cuenta elimina las importadas sin tocar las locales. Sin verificar: importaciones contra servicios reales en vivo.
+**Estado de revisión:** 2026-11-21 — PL02 (#155) sobre el modelo de ocurrencias de PL00 (#153): añadir una pista ya presente crea otra ocurrencia, quitar quita una, reordenar mapea cada entrada a su ocurrencia y persiste posiciones contiguas 1..N, `track_count` cuenta ocurrencias y el import de archivo conserva repeticiones. Antes: PL01 (#154) — CRUD local, identidad estable y borrado con tombstone. Sin verificar: importaciones contra servicios reales en vivo.
 
-**Último cambio:** 2026-11-18 — CRUD local y borrado de PL01 (#154). Antes: re-revisión 2026-10-25 — símbolos en lugar de números de línea y razonamiento de SoundCloud corregido. Antes: ítem 9.1 del plan post-auditoría (2026-10-02) — estado real de la importación de playlists por servicio. Antes: S40 — 2026-03-30 — archivos: `migrations/0006_playlists.sql`, `commands/library.rs`, `commands/service.rs`
+**Último cambio:** 2026-11-21 — ocurrencias y posiciones de PL02 (#155). Antes: 2026-11-18 — CRUD local y borrado de PL01 (#154). Antes: re-revisión 2026-10-25 — símbolos en lugar de números de línea y razonamiento de SoundCloud corregido. Antes: ítem 9.1 del plan post-auditoría (2026-10-02) — estado real de la importación de playlists por servicio. Antes: S40 — 2026-03-30 — archivos: `migrations/0006_playlists.sql`, `commands/library.rs`, `commands/service.rs`
 **Leer antes de modificar:** `commands/tools.rs` (Python bridge playlist commands), `scripts/playlist_bridge.py`
 **Archivos core:**
 - `migrations/0006_playlists.sql` (schema), `migrations/0048_playlist_sync.sql` (identidad remota `playlist_sources`) y `migrations/0110_pl00_local_playlist_model.sql` (modelo local: `local_uuid`, tombstone `deleted_at`, unicidad por posición)
@@ -72,13 +72,25 @@ FRONTEND → invoke("delete_playlist", { id })
       con la que no la recrea — PL01 #154)
 
 FRONTEND → invoke("add_to_playlist", { playlist_id, track_ids })
-    → library.rs: INSERT OR IGNORE INTO playlist_tracks per track_id
+    → library.rs: una ocurrencia por track_id al final de la lista (repetir la
+      pista la vuelve a añadir; posiciones MAX+1 y track_count de ocurrencias
+      en la misma transacción — PL02 #155)
 
 FRONTEND → invoke("get_playlists")
     → library.rs: SELECT ... WHERE deleted_at IS NULL ORDER BY name
 
+FRONTEND → invoke("remove_from_playlist", { playlist_id, track_ids })
+    → playlists.rs: cada entrada quita UNA ocurrencia (la de menor posición de
+      esa pista) y recompacta posiciones 1..N + track_count en la misma
+      transacción (PL02 #155)
+
+FRONTEND → invoke("reorder_playlist_tracks", { playlist_id, positions })
+    → playlists.rs: el payload es el orden completo; la k-ésima entrada de una
+      pista mueve su k-ésima ocurrencia y se persiste 1..N (PL02 #155)
+
 FRONTEND → invoke("get_local_playlist_tracks", { playlist_id })
     → library.rs: SELECT tracks JOIN playlist_tracks WHERE playlist_id=?
+      (una fila por ocurrencia, con su position)
 ```
 
 Borrar una cuenta elimina sus playlists importadas (`DELETE FROM playlists
@@ -162,9 +174,34 @@ UNIQUE constraint: `(playlist_id, position)` (0110: posiciones canónicas
 | `playlists` | `account_id` | import / create_playlist | FK with CASCADE |
 | `playlists` | `service_playlist_id` | import | Spotify/Qobuz playlist ID |
 | `playlist_tracks` | `position` | import | Preserves original order |
-| `playlist_tracks` | `playlist_id`, `track_id` | import / add_to_playlist | UNIQUE pair |
+| `playlist_tracks` | `playlist_id`, `track_id` | import / add_to_playlist | no es único: la misma pista se repite; lo único es `(playlist_id, position)` (PL02 #155) |
 
 ---
+
+## Ocurrencias de la misma pista (PL02 #155)
+
+Una playlist es una secuencia de ocurrencias, no un conjunto de pistas: la
+misma pista puede aparecer varias veces y cada fila de `playlist_tracks` es una
+ocurrencia con su propia `position`.
+
+| Acción | Semántica |
+|---|---|
+| Añadir (`add_to_playlist`) | crea siempre una ocurrencia nueva al final; repetir la pista la repite |
+| Quitar (`remove_from_playlist`) | quita UNA ocurrencia por entrada del payload (la de menor posición de esa pista); con la pista repetida en el payload, cada repetición consume la siguiente |
+| Reordenar (`reorder_playlist_tracks`) | el payload es el orden completo; cada entrada mueve su ocurrencia y las posiciones quedan contiguas 1..N |
+| `track_count` | número de ocurrencias (`COUNT(*)` de `playlist_tracks`), no de pistas distintas |
+| Import M3U/CSV/TXT | conserva las repeticiones del archivo tal cual, en orden |
+
+Posiciones canónicas: **1..N** contiguas, como fija 0110 y recompacta
+`recompact_playlist_tracks_in_conn` (el único sitio que asigna posiciones). La
+UI numera las filas desde 1 al mostrarlas; el payload del reorden usa índices
+1..N que el backend reescribe como secuencia contigua.
+
+La acción por lotes de biblioteca (`library_actions::apply_add_to_playlist`)
+sigue siendo idempotente por pista y reporta `already_in_playlist` en su
+preview: es una superficie distinta (selección masiva con preview) y no crea
+ocurrencias. Alinear esa acción con la semántica de ocurrencias queda fuera de
+PL02.
 
 ## Eventos Tauri emitidos
 
@@ -232,4 +269,4 @@ objeto `playlistsApi`, entre otros); las vistas no invocan `invoke` directamente
 2. **Re-importar no duplica playlists**: `upsert_playlist_and_source()` busca primero en `playlist_sources` por `(account_id, service_playlist_id)` y, si no encuentra, actualiza o inserta en `playlists`; las rutas que no pasan por él (p. ej. `AppleMusicClient::import_playlists`) hacen su propio `ON CONFLICT` sobre la misma clave. Lo que sí cambia en una reimportación son `playlist_tracks`: las pistas se re-vinculan y el orden se rehace.
 3. **Playlist tracks vs library entries**: una pista puede estar en `playlist_tracks` sin fila en `library_entries`, y entonces la vista de biblioteca no la muestra. El motor unificado (`EnrichmentEngine`) y el importador de Apple Music crean la entrada (`library_entries` con `is_liked=1`); las rutas que solo escriben `playlist_tracks` no.
 4. **Local playlists cuelgan de la cuenta 1**: la columna `account_id` es `NOT NULL` con FK a `accounts`, y `create_playlist` (`commands/library.rs`) hace `account_id.unwrap_or(1)`, así que nunca inserta `NULL` — las playlists creadas desde la UI quedan asociadas a la cuenta 1, con `service_playlist_id = 'local_' || name` y `track_count = 0`.
-5. **Position tracking**: solo las rutas que recomprimen al final lo garantizan. `import_spotify_playlists` llama a `recompact_playlist_positions(playlist_id)` tras cada playlist y deja las posiciones en 1..N; las que no (p. ej. `AppleMusicClient::import_playlists`, que escribe `position` desde el índice de la relación) dejan la posición como vino del servicio, así que un reordenado en el origen se propaga como desalineación local.
+5. **Position tracking**: solo las rutas que recomprimen al final lo garantizan. `import_spotify_playlists` llama a `recompact_playlist_positions(playlist_id)` tras cada playlist y deja las posiciones en 1..N; las que no (p. ej. `AppleMusicClient::import_playlists`, que escribe `position` desde el índice de la relación) dejan la posición como vino del servicio, así que un reordenado en el origen se propaga como desalineación local. Las operaciones del usuario (alta, quitar, reordenar) sí dejan 1..N y `track_count` al día (PL02 #155).
