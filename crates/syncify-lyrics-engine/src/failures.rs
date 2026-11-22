@@ -93,9 +93,11 @@ fn classify_http_failure(error: &reqwest::Error) -> LyricsFailureKind {
 }
 
 /// Vocabulario de motivos sobre el mensaje del fetcher. Los patrones siguen a
-/// los errores que producen las 13 Fuentes del motor; el orden importa: una
+/// los errores que producen las 12 Fuentes del motor; el orden importa: una
 /// credencial caducada gana a un 403 genérico y un límite de tasa gana a un
-/// «request failed» de transporte.
+/// «request failed» de transporte. La palabra «token» por sí sola no es señal
+/// de auth: aparece en URLs de transporte (`?usertoken=…`) y en nombres de
+/// endpoint; las señales son el estado HTTP y los mensajes explícitos.
 pub fn classify_failure_message(message: &str) -> LyricsFailureKind {
     let message = message.to_lowercase();
 
@@ -114,9 +116,12 @@ pub fn classify_failure_message(message: &str) -> LyricsFailureKind {
             "forbidden",
             "requires auth",
             "sp_dc",
-            "token",
             "credential",
             "not configured",
+            "could not extract apple music token",
+            "invalid token",
+            "token expired",
+            "missing token",
         ],
     ) {
         return LyricsFailureKind::RequiresAuth;
@@ -130,6 +135,7 @@ pub fn classify_failure_message(message: &str) -> LyricsFailureKind {
             "connection",
             "connect",
             "dns",
+            "sending request",
             "request failed",
             "500",
             "502",
@@ -153,6 +159,22 @@ pub fn classify_failure_message(message: &str) -> LyricsFailureKind {
         return LyricsFailureKind::Failed;
     }
     LyricsFailureKind::NotFound
+}
+
+/// Redacta credenciales que viajan en URLs antes de guardar el diagnóstico del
+/// proveedor: parámetros de query con token y el userinfo de cualquier URL.
+/// El `detail` se persiste y se registra; una cookie `sp_dc` o un `usertoken`
+/// de Musixmatch no deben quedar ahí.
+pub fn redact_failure_detail(detail: &str) -> String {
+    let query_credentials =
+        regex::Regex::new(r"(?i)([?&](?:token|usertoken|access_token|sp_dc)=)[^&\s#)\]},]+")
+            .expect("regex de query params válida");
+    let sanitized = query_credentials.replace_all(detail, "${1}[REDACTED]");
+    let url_userinfo =
+        regex::Regex::new(r"(?i)(https?://)[^/\s@]+@").expect("regex de userinfo válida");
+    url_userinfo
+        .replace_all(&sanitized, "${1}[REDACTED]@")
+        .into_owned()
 }
 
 fn has_any(message: &str, needles: &[&str]) -> bool {

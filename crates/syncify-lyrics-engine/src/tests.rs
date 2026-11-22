@@ -1013,9 +1013,17 @@ fn test_backend_http_timeout_handling() {
 // segundo intento de la misma identidad devuelve el fallo cacheado sin volver
 // a sondear mientras viva el proceso. Estos tests fijan ese contrato para que
 // la entrega de #184 no lo cambie por accidente.
+//
+// El mapa es global al proceso y el harness ejecuta los tests en paralelo:
+// ambos tests lo vacían y escriben, así que se serializan con este mutex. Sin
+// él, uno puede borrar la entrada del otro entre el `set` y la lectura.
+static IDENTITY_CACHE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn identity_cache_key_normalizes_case_and_whitespace() {
+    let _guard = IDENTITY_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     crate::cache::clear_lyrics_cache();
     crate::cache::set_cached_lyrics(
         "  Artist X ",
@@ -1036,6 +1044,9 @@ fn identity_cache_key_normalizes_case_and_whitespace() {
 
 #[test]
 fn identity_cache_reuses_negative_resolution_without_expiry() {
+    let _guard = IDENTITY_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     futures::executor::block_on(async {
         crate::cache::clear_lyrics_cache();
 
@@ -1110,6 +1121,13 @@ fn failure_classifier_covers_the_engine_vocabulary() {
             "Kugou search parse failed: error decoding response body",
             LyricsFailureKind::Failed,
         ),
+        (
+            // A transport error whose URL carries Musixmatch's `usertoken`
+            // contains the word "token" but is not an auth failure.
+            "Musixmatch search request failed: error sending request for url \
+             (https://api.musixmatch.com/ws/1.1/matcher.lyrics.get?usertoken=SECRET123)",
+            LyricsFailureKind::SourceUnavailable,
+        ),
     ] {
         assert_eq!(
             classify_failure_message(message),
@@ -1117,6 +1135,38 @@ fn failure_classifier_covers_the_engine_vocabulary() {
             "mensaje clasificado mal: {message:?}"
         );
     }
+}
+
+#[test]
+fn failure_detail_redacts_credentials_before_persistence() {
+    use crate::failures::redact_failure_detail;
+
+    let musixmatch = "error sending request for url \
+         (https://api.musixmatch.com/ws/1.1/matcher.lyrics.get?q_track=Song&usertoken=SECRET123&format=json)";
+    let redacted = redact_failure_detail(musixmatch);
+    assert!(
+        !redacted.contains("SECRET123"),
+        "el usertoken no sobrevive a la redacción: {redacted}"
+    );
+    assert!(
+        redacted.contains("usertoken=[REDACTED]"),
+        "el parámetro se conserva redactado: {redacted}"
+    );
+    assert!(
+        redacted.contains("q_track=Song"),
+        "los parámetros inocuos se conservan: {redacted}"
+    );
+
+    let with_userinfo = "error sending request for url \
+         (https://alice:hunter2@example.com/path?access_token=abc123&sp_dc=cookie-value)";
+    let redacted = redact_failure_detail(with_userinfo);
+    assert!(!redacted.contains("hunter2"), "{redacted}");
+    assert!(!redacted.contains("abc123"), "{redacted}");
+    assert!(!redacted.contains("cookie-value"), "{redacted}");
+    assert!(
+        redacted.contains("[REDACTED]@example.com"),
+        "el host se conserva y el userinfo se redacta: {redacted}"
+    );
 }
 
 #[test]

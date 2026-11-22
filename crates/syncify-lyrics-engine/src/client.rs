@@ -12,8 +12,8 @@ use tracing::debug;
 
 use crate::config::{LyricsEngineConfig, LyricsSourceSetting, LYRICS_SOURCE_IDS};
 use crate::failures::{
-    classify_source_error, LyricsCascadeReport, LyricsFailureKind, LyricsResolutionReport,
-    LyricsSourceFailure,
+    classify_source_error, redact_failure_detail, LyricsCascadeReport, LyricsFailureKind,
+    LyricsResolutionReport, LyricsSourceFailure,
 };
 use crate::hooks::EngineHooks;
 use crate::sources::musixmatch::MxmToken;
@@ -254,7 +254,10 @@ impl LyricsClient {
                     report.failures.push(LyricsSourceFailure {
                         provider_id: source.provider_id.clone(),
                         kind: classify_source_error(&error),
-                        detail: error.to_string(),
+                        // The error can embed the request URL (Musixmatch puts
+                        // the `usertoken` in the query string): never let a
+                        // credential reach the report or the database.
+                        detail: redact_failure_detail(&error.to_string()),
                     });
                     SourceOutcome::NoCandidate
                 }
