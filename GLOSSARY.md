@@ -107,6 +107,13 @@ explícitamente ese formato la anula.
 _Evitar_: tratarla como caché de la resolución: es voluntad del usuario, no un
 resultado.
 
+**Caché negativa**:
+Registro persistente de que una **Fuente de letras** no resolvió una pista, con
+su motivo y caducidad. La consultan la resolución y los barridos para no volver
+a sondear esa fuente hasta que expire; el resultado positivo no se guarda aquí.
+_Evitar_: confundirla con la **Marca de borrado**, que es voluntad del usuario,
+no evidencia de resolución.
+
 **Cosecha**:
 Barrido del disco local que incorpora letras ya presentes en ficheros (tags
 embebidos o sidecars) a la biblioteca. No resuelve en red.

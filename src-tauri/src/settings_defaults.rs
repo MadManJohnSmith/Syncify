@@ -479,6 +479,11 @@ pub async fn reset_all_settings(db: &DbPool) -> Result<(), String> {
     .await
     .map_err(err("lyrics_config"))?;
 
+    // The reset restores language/sync/cadence and provider priorities, so the
+    // negative evidence classified under the previous policy is obsolete. Kept
+    // in the same transaction as the reset: either both happen or neither does.
+    crate::services::lyrics_negative_cache::clear_all_in_tx(&mut tx).await?;
+
     let adv = AdvancedSettings::default();
     sqlx::query("DELETE FROM advanced_settings WHERE id = 1")
         .execute(&mut *tx)

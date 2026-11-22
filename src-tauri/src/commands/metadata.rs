@@ -293,6 +293,20 @@ pub async fn update_track_metadata(
         .await
         .map_err(|e| format!("Failed to commit changes: {}", e))?;
 
+    // Title, artist and album are the identity the lyrics cascade resolves
+    // against; any of them changing makes a previous `not_found` stale. The
+    // cache is derived data, so a failure to invalidate is logged, never an
+    // error that would report the metadata save as failed after committing it.
+    if let Err(error) =
+        crate::services::lyrics_negative_cache::clear_for_track(&state.db, track_id).await
+    {
+        tracing::warn!(
+            track_id,
+            error = %error,
+            "no se pudo invalidar la caché negativa de letras tras editar metadatos"
+        );
+    }
+
     // Return updated track
     get_track_details(&state.db, track_id)
         .await
