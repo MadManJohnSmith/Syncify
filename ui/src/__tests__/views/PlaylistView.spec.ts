@@ -267,6 +267,42 @@ describe('PlaylistView', () => {
         expect(invokeCalls).toContainEqual({ cmd: 'remove_from_playlist', args: { playlistId: 1, trackIds: [301] } });
     });
 
+    it('quitar una repetición deja la otra ocurrencia en la lista', async () => {
+        // PL02 (#155): la misma pista dos veces en posiciones distintas; quitar
+        // una fila no puede borrar las demás repeticiones del mismo track id.
+        const invokeCalls: { cmd: string; args: any }[] = [];
+        let playlistFetches = 0;
+        const duplicatePage = makePage([
+            { id: 301, position: 1, title: 'Chill Track 1', artist_name: 'Artist 1', album_name: 'Album 1', duration_ms: 180000 },
+            { id: 301, position: 3, title: 'Chill Track 1', artist_name: 'Artist 1', album_name: 'Album 1', duration_ms: 180000 }
+        ]);
+        mockInvoke((cmd, args) => {
+            invokeCalls.push({ cmd, args });
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'get_local_playlist_tracks') {
+                playlistFetches += 1;
+                return playlistFetches === 1
+                    ? duplicatePage
+                    : makePage([{ id: 301, position: 1, title: 'Chill Track 1', artist_name: 'Artist 1', album_name: 'Album 1', duration_ms: 180000 }]);
+            }
+            if (cmd === 'remove_from_playlist') return 1;
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.group').find((el: any) => el.text().includes('Chill Vibes'))!.trigger('click');
+        await flushPromises();
+        expect(wrapper.findAll('.track-row')).toHaveLength(2);
+
+        const removeButtons = wrapper.findAll('button[aria-label="Remove Chill Track 1 from playlist"]');
+        await removeButtons[1].trigger('click');
+        await flushPromises();
+
+        expect(invokeCalls).toContainEqual({ cmd: 'remove_from_playlist', args: { playlistId: 1, trackIds: [301] } });
+        expect(wrapper.findAll('.track-row')).toHaveLength(1);
+    });
+
     it('keeps the import dialog open for unsupported URLs without invoking an import', async () => {
         const invokeCalls: { cmd: string; args: any }[] = [];
         mockInvoke((cmd, args) => {
