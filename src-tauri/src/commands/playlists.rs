@@ -2101,10 +2101,12 @@ fn apply_smart_rules<'a>(
             "haslyrics" | "has_lyrics" => {
                 let is_true =
                     val == "true" || val == "1" || val.to_lowercase() == "yes" || val.is_empty();
+                // La tabla `lyrics` guarda el texto en `content` (plain, lrc o ttml);
+                // formatos con fila pero sin texto (instrumentales) no cuentan.
                 if is_true {
-                    builder.push("EXISTS (SELECT 1 FROM lyrics l WHERE l.track_id = t.id AND ((l.plain_lyrics IS NOT NULL AND LENGTH(TRIM(l.plain_lyrics)) > 0) OR (l.synced_lyrics IS NOT NULL AND LENGTH(TRIM(l.synced_lyrics)) > 0)))");
+                    builder.push("EXISTS (SELECT 1 FROM lyrics l WHERE l.track_id = t.id AND l.content IS NOT NULL AND LENGTH(TRIM(l.content)) > 0)");
                 } else {
-                    builder.push("NOT EXISTS (SELECT 1 FROM lyrics l WHERE l.track_id = t.id AND ((l.plain_lyrics IS NOT NULL AND LENGTH(TRIM(l.plain_lyrics)) > 0) OR (l.synced_lyrics IS NOT NULL AND LENGTH(TRIM(l.synced_lyrics)) > 0)))");
+                    builder.push("NOT EXISTS (SELECT 1 FROM lyrics l WHERE l.track_id = t.id AND l.content IS NOT NULL AND LENGTH(TRIM(l.content)) > 0)");
                 }
             }
             "addeddate" | "added_date" => match op.as_str() {

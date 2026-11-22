@@ -323,6 +323,83 @@ async fn test_create_smart_playlist_persistence_and_tracks_population() {
     assert_eq!(fetched.rules_json.as_deref(), Some(rules_json));
 }
 
+async fn seed_lyrics_coverage(pool: &SqlitePool) {
+    // Track 1 (Bohemian Rhapsody): plain lyrics with real content.
+    sqlx::query(
+        "INSERT INTO lyrics (track_id, format, sync_level, source, content, language) \
+         VALUES (1, 'plain', 'none', 'genius', 'Is this the real life?', 'en')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // Track 2 (Love of My Life): line-synced lyrics with real content.
+    sqlx::query(
+        "INSERT INTO lyrics (track_id, format, sync_level, source, content, language) \
+         VALUES (2, 'lrc', 'line', 'lrclib_synced', '[00:12.00]Love of my life', 'en')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // Track 3 (One More Time): a lyrics row whose content is only whitespace.
+    sqlx::query(
+        "INSERT INTO lyrics (track_id, format, sync_level, source, content, language) \
+         VALUES (3, 'plain', 'none', 'genius', '   ', 'en')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // Track 4 (Billie Jean) intentionally has no lyrics row.
+}
+
+#[tokio::test]
+async fn test_has_lyrics_rule_matches_real_lyrics_schema() {
+    let pool = create_test_db().await;
+    seed_test_catalog(&pool).await;
+    seed_lyrics_coverage(&pool).await;
+
+    // has_lyrics = true -> tracks 1 and 2 have non-blank lyrics rows.
+    let rules_with_lyrics = r#"[{"field":"hasLyrics","operator":"is","value":"true"}]"#;
+    let count_with = preview_smart_playlist_count_core(&pool, rules_with_lyrics)
+        .await
+        .expect("Preview has_lyrics=true must not fail on the lyrics schema");
+    assert_eq!(
+        count_with, 2,
+        "Only tracks with non-blank lyrics content must match"
+    );
+
+    // has_lyrics = false -> track 4 (no row) and track 3 (blank content).
+    let rules_without_lyrics = r#"[{"field":"has_lyrics","operator":"is","value":"false"}]"#;
+    let count_without = preview_smart_playlist_count_core(&pool, rules_without_lyrics)
+        .await
+        .expect("Preview has_lyrics=false must not fail on the lyrics schema");
+    assert_eq!(
+        count_without, 2,
+        "Tracks without lyrics or with blank content must match the negation"
+    );
+
+    // Materializing the smart playlist must use the same predicate.
+    let created = create_smart_playlist_core(&pool, "With Lyrics", rules_with_lyrics, Some(1))
+        .await
+        .expect("Create has_lyrics smart playlist");
+    assert_eq!(created.track_count, 2);
+
+    let materialized: Vec<(i64,)> = sqlx::query_as(
+        "SELECT track_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC",
+    )
+    .bind(created.id)
+    .fetch_all(&pool)
+    .await
+    .expect("Query playlist_tracks");
+    assert_eq!(
+        materialized.into_iter().map(|(id,)| id).collect::<Vec<_>>(),
+        vec![1, 2],
+        "Materialized smart playlist must contain the tracks with real lyrics"
+    );
+}
+
 #[tokio::test]
 async fn test_empty_rules_and_error_handling() {
     let pool = create_test_db().await;
