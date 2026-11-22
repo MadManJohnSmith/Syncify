@@ -110,7 +110,10 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
   interfaz (FE-PERF-01…04; FE-PERF-02 aplicado en código).
 - **`COLA_WEBKIT_COMPOSICION_ACELERADA.md`**: hipótesis abierta de
   composición WebKitGTK con sus invariantes de compatibilidad.
-- **HANDOFF.md**: relevo vivo del 2026-11-05; estado por flujo y siguiente paso (descargas).
+- **`HANDOFF.md`**: puntero sin estado (desde el 2026-11-22): cómo re-derivar
+  el estado vigente (tracker, `git log origin/main..origin/dev`, ramas
+  `wave/*`, matriz) y dónde está el último relevo fechado
+  (`historico/HANDOFF-*.md`).
 - **`PLAN_MEJORA_POST_BETA.md`**: lista de espera del post-beta (no cola de
   trabajo). Ojo: sus IDs `C-01…C-06` y `D-01/D-02` son **propios** y no
   coinciden con los de la Deuda.

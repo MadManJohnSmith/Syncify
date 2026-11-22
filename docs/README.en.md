@@ -111,7 +111,10 @@ against the code.
   (FE-PERF-01…04; FE-PERF-02 applied in code).
 - `COLA_WEBKIT_COMPOSICION_ACELERADA.md`: open WebKitGTK composition
   hypothesis with its compatibility invariants.
-- `HANDOFF.md`: live handoff dated 2026-11-05; per-flow state and next step (downloads).
+- `HANDOFF.md`: stateless pointer (since 2026-11-22): how to re-derive the
+  current state (tracker, `git log origin/main..origin/dev`, `wave/*`
+  branches, adjustment matrix) and where the latest dated handoff lives
+  (`historico/HANDOFF-*.md`, Spanish).
 - `PLAN_MEJORA_POST_BETA.md`: the post-beta waiting list (not a work queue).
   Note: its IDs `C-01…C-06` and `D-01/D-02` are **its own** namespace and do
   not match the debt register's.
