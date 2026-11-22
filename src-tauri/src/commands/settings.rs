@@ -952,6 +952,12 @@ pub async fn update_lyrics_provider(
 ) -> Result<LyricsProviderSetting, String> {
     tracing::info!("update_lyrics_provider: {}", provider_id);
 
+    // Changing enabled/priority changes which Fuentes the cascade probes: the
+    // failures recorded under the old policy are no longer evidence against the
+    // new one. Clear first so a clear failure never leaves a stale cache behind
+    // a config that already changed.
+    crate::services::lyrics_negative_cache::clear_all(&state.db).await?;
+
     sqlx::query(
         "UPDATE lyrics_provider_settings SET enabled = ?, priority = ?, updated_at = datetime('now')
          WHERE provider_id = ?"
@@ -980,6 +986,10 @@ pub async fn reorder_lyrics_providers(
     provider_ids: Vec<String>,
 ) -> Result<Vec<LyricsProviderSetting>, String> {
     tracing::info!("reorder_lyrics_providers: {:?}", provider_ids);
+
+    // Priority changes the probe order and which Fuente wins; failure rows
+    // recorded before the reorder are invalidated as a whole.
+    crate::services::lyrics_negative_cache::clear_all(&state.db).await?;
 
     for (index, provider_id) in provider_ids.iter().enumerate() {
         sqlx::query(
@@ -1018,6 +1028,11 @@ pub async fn update_lyrics_config(
     config: LyricsConfig,
 ) -> Result<LyricsConfig, String> {
     tracing::info!("update_lyrics_config");
+
+    // Language, sync level and retry cadence are inputs of the classifier and
+    // of the expiry window: previously recorded failures were classified under
+    // the old policy, so they stop suppressing Fuentes.
+    crate::services::lyrics_negative_cache::clear_all(&state.db).await?;
 
     sqlx::query(
         "UPDATE lyrics_config SET min_sync_level = ?, preferred_language = ?, storage_format = ?,

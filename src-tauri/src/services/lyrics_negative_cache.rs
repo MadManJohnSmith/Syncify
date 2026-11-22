@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use syncify_lyrics_domain::ResolutionStatus;
 use syncify_lyrics_engine::{
     LyricsCascadeReport, LyricsClient, LyricsResolutionReport, LyricsSourceFailure,
@@ -24,10 +24,14 @@ use syncify_lyrics_engine::{
 pub const DEFAULT_TTL_HOURS: i64 = 168;
 
 /// Ventana de la caché negativa según la cadencia de reintento configurada
-/// (`lyrics_config.retry_frequency`). `never` y los valores desconocidos usan
-/// la semana de fábrica: desactivan el barrido automático, no la evidencia.
+/// (`lyrics_config.retry_frequency`). `always` significa «no suprimir»: la fila
+/// puede registrarse para auditoría, pero `expires_at > datetime('now')` no se
+/// cumple y la Fuente se vuelve a sondear en el siguiente intento. `never` y
+/// los valores desconocidos usan la semana de fábrica: desactivan el barrido
+/// automático, no la evidencia.
 pub fn ttl_hours(retry_frequency: &str) -> i64 {
     match retry_frequency.trim().to_ascii_lowercase().as_str() {
+        "always" => 0,
         "hourly" => 1,
         "daily" => 24,
         "weekly" => DEFAULT_TTL_HOURS,
@@ -99,6 +103,31 @@ pub async fn record_failures(
         .map_err(|e| format!("lyrics negative cache write failed: {e}"))
 }
 
+/// Olvida toda la evidencia negativa: la causa de un fallo puede ser la
+/// configuración o unas credenciales que acaban de cambiar, así que las filas
+/// anteriores dejan de ser válidas. Se llama desde los comandos que cambian
+/// esos ajustes y desde el reset completo.
+pub async fn clear_all(db: &SqlitePool) -> Result<(), String> {
+    clear_all_executor(db).await
+}
+
+/// Variante para una transacción abierta por el llamador: el reset de ajustes
+/// y la invalidación de la caché son una sola unidad.
+pub async fn clear_all_in_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<(), String> {
+    clear_all_executor(&mut **tx).await
+}
+
+async fn clear_all_executor<'e, E>(executor: E) -> Result<(), String>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM lyrics_resolution_failures")
+        .execute(executor)
+        .await
+        .map_err(|e| format!("lyrics negative cache clear failed: {e}"))?;
+    Ok(())
+}
+
 /// Olvida la evidencia negativa de una pista: se llama cuando una resolución
 /// positiva la deja obsoleta.
 pub async fn clear_for_track(db: &SqlitePool, track_id: i64) -> Result<(), String> {
@@ -150,12 +179,22 @@ pub async fn resolve_with_negative_cache(
     duration_sec: f64,
     deletion_mark_standing: bool,
 ) -> Result<LyricsResolutionReport, String> {
-    let skip = failing_sources(db, track_id).await?;
+    let skip = match failing_sources(db, track_id).await {
+        Ok(skip) => skip,
+        Err(error) => {
+            tracing::warn!(
+                track_id,
+                error = %error,
+                "no se pudo leer la caché negativa de letras; se resuelve sin saltar Fuentes"
+            );
+            HashSet::new()
+        }
+    };
     let report = client
         .orchestrate_resolution_reporting(artist, title, album, duration_sec, &skip)
         .await;
     if let Some(track_id) = track_id {
-        record_outcome(
+        let outcome = record_outcome(
             db,
             track_id,
             deletion_mark_standing,
@@ -163,7 +202,14 @@ pub async fn resolve_with_negative_cache(
             &report.failures,
             &client.config().retry_frequency,
         )
-        .await?;
+        .await;
+        if let Err(error) = outcome {
+            tracing::warn!(
+                track_id,
+                error = %error,
+                "no se pudo actualizar la caché negativa de letras; la resolución sigue"
+            );
+        }
     }
     Ok(report)
 }
@@ -179,12 +225,22 @@ pub async fn fetch_with_negative_cache(
     duration_sec: f64,
     deletion_mark_standing: bool,
 ) -> Result<LyricsCascadeReport, String> {
-    let skip = failing_sources(db, track_id).await?;
+    let skip = match failing_sources(db, track_id).await {
+        Ok(skip) => skip,
+        Err(error) => {
+            tracing::warn!(
+                track_id,
+                error = %error,
+                "no se pudo leer la caché negativa de letras; se resuelve sin saltar Fuentes"
+            );
+            HashSet::new()
+        }
+    };
     let report = client
         .fetch_all_sources_skipping(artist, title, duration_sec, &skip)
         .await;
     if let Some(track_id) = track_id {
-        record_outcome(
+        let outcome = record_outcome(
             db,
             track_id,
             deletion_mark_standing,
@@ -192,7 +248,64 @@ pub async fn fetch_with_negative_cache(
             &report.failures,
             &client.config().retry_frequency,
         )
-        .await?;
+        .await;
+        if let Err(error) = outcome {
+            tracing::warn!(
+                track_id,
+                error = %error,
+                "no se pudo actualizar la caché negativa de letras; la resolución sigue"
+            );
+        }
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// Un resultado positivo deja obsoleta toda la evidencia negativa de la
+    /// pista: `record_outcome` es la rama que lo hace y debe limpiar, no
+    /// refrescar la fila. La migración real se aplica para que la tabla y la FK
+    /// sean las de producción.
+    #[tokio::test]
+    async fn positive_resolution_clears_the_track_failure_rows() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool en memoria");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migraciones reales");
+        sqlx::query("INSERT INTO tracks (id, title) VALUES (1, 'Song')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO lyrics_resolution_failures \
+                 (track_id, provider_id, reason, detail, expires_at) \
+             VALUES (1, 'lrclib_synced', 'not_found', 'stale', datetime('now', '+1 day'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        record_outcome(&pool, 1, false, true, &[], "weekly")
+            .await
+            .expect("la limpieza positiva no falla");
+
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM lyrics_resolution_failures WHERE track_id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            remaining, 0,
+            "una resolución positiva limpia la evidencia negativa de la pista"
+        );
+    }
 }
