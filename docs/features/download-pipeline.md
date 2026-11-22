@@ -6,7 +6,14 @@
 
 **Estado de revisión:** 2026-11-14 — re-derivación contra el árbol (verificación dirigida de símbolos y comportamiento; D-04b, issue #59). Re-deriva y absorbe la re-revisión del 2026-10-25 (cadena de encolado `queue_downloads` → `commands/queue.rs::add_to_queue`; bucle del worker event-driven con `slot_available_notify`; claim atómico vía `claim_next_item`; `process_download_claimed` + `process_download_internal`; estado `cancelled`; payload de `syncify:download_progress`) y las entradas del 2026-11-06/07 (puerto de proveedores ADR-0023, invalidación de caché de streaming ADR-0024). Ajustado ahora al árbol: `worker.rs` ronda hoy las 3.400 líneas; el arranque del worker ya no es un reset simple — ejecuta en orden `sanitize_stuck_downloads` (TASK-84: descargas `downloading` de más de 1 h a `failed` y staging purgado), `reconcile_downloads_on_startup` (`services/operation_recovery.rs`), `recover_interrupted_jobs` (`download/job.rs`) para el reset restante a `queued`, `repair_unresolved_queue_sources` y la restauración de la concurrencia desde `sync_settings` (SB01: superficie canónica; la KV `dl_concurrent_downloads` queda como lectura tolerante de legado). El barrido periódico cada 60 s aplica la misma sanitización TASK-84. Sigue sin verificar en escritorio real la ejecución de descargas de punta a punta (GUI, red viva): véase README §"Verification and limitations".
 
-**Último cambio:** 2026-11-19 — L14 (issue #109): la biblioteca expone los
+**Último cambio:** 2026-11-21 — #338 (follow-up de D05/#117): el gate falla
+cerrado ante FLAC/M4A ilegible (lector ausente ≠ lectura fallida), el recheck
+estricto no confía en la calidad anunciada, la duración de cabecera documenta
+su límite frente al truncado de cola, Deezer free queda declarado para
+D11, Tidal ya no duplica el `320` y un rechazo no deja fichero promovido
+sin dueño — archivos: `download/verification.rs`, `worker.rs`,
+`download/quality_reconcile.rs`, `services/tidal_pipeline.rs`,
+`crates/syncify-core-domain/src/quality.rs`. Previo: 2026-11-19 — L14 (issue #109): la biblioteca expone los
 cinco estados de descarga y la calidad efectiva en la consulta de página,
 filtra por estado y calidad, comparte la regla de estados con la cobertura de
 álbum (L07) y reutiliza `add_to_queue` / `force_redownload_tracks` /
@@ -182,7 +189,8 @@ que decide qué se puede encolar está en `commands/queue.rs`
 Antes de promocionar una fila a `complete`, el worker corre el gate
 `verify_delivery_before_complete` (`download/verification.rs`, ejercitado por
 `tests/delivery_verification_test.rs`) sobre el fichero ya promovido y
-recortado (TASK-76):
+recortado (TASK-76), a través de `verify_then_complete` (`worker.rs`), que es
+la costura única gate → `mark_complete`:
 
 - **Duración física** dentro de la tolerancia fijada de ±2 s frente a la del
   catálogo (`DURATION_TOLERANCE_SECS`); el silencio recortado por el trimmer
@@ -202,17 +210,69 @@ recortado (TASK-76):
   `CompletedWithQualityFallback`, `quality_fallback_used = 1` y motivo).
 
 Si el gate falla, la fila se marca `failed` con el prefijo
-`DeliveryVerificationFailed:` y **no se escribe el ledger de `downloads`**.
-`mark_complete` conserva además una defensa: una decisión `RejectedQuality`
-nunca se promociona a `complete`.
+`DeliveryVerificationFailed:` y **no queda fila de esa entrega en el ledger de
+`downloads`**. `mark_complete` conserva además una defensa: una decisión
+`RejectedQuality` nunca se promociona a `complete`. Un rechazo después de
+`checkpoint_promoted` retira el rastro de la propia entrega. Algunas rutas
+(Tidal, `tidal_pipeline` §9) escriben su fila de `downloads` y hacen commit
+antes del gate, y esa fila puede llevar un `track_id` distinto al de la cola:
+el pipeline rechaza el hint por mismatch de identidad y resuelve por
+`track_sources`/ISRC/artista+título, o crea una pista nueva. La propiedad no se
+deduce del `track_id`: el journal de la descarga (`operation_journal`,
+`entity_id = queue_id`) fija el `expected_output_path` justo antes del gate, y
+solo cuando una entrada de esta entrega declara la ruta se retira su fila —por
+`file_path`, que en esa ruta ya es única porque §9 borra las ajenas en la misma
+transacción— y se aparta el fichero. Hay tres casos en el rechazo: con prueba
+del journal, fila (por `file_path`) y fichero se retiran; con filas en la ruta
+pero sin prueba se conservan fila y fichero, porque podrían pertenecer a otra
+pista; y si no hay ninguna fila para el path —el caso dominante fuera de
+Tidal, pues solo el pipeline de Tidal escribe en `downloads` antes del gate—
+el fichero va directo a cuarentena. También se conserva todo si falla la
+consulta o el borrado del ledger. El fichero se mueve a una cuarentena
+explícita
+(`<directorio de la entrega>/.syncify-quarantine/`, con el `queue_id` en el
+nombre) para conservar el audio válido de un rechazo por portada, tags o
+calidad; la biblioteca no lo indexa (tampoco lo hace con el fichero original,
+que ya no está). Si crear la cuarentena o mover el fichero falla, el rechazo
+**elimina el audio como último recurso**: la invariante es que la biblioteca no
+indexe la entrega rechazada, no que el audio sobreviva. El motivo del fallo
+incluye la ruta de cuarentena cuando se movió. El orden gate → `mark_complete`
+se prueba por comportamiento con `verify_then_complete`, la misma costura que
+usa el worker, no buscando cadenas en el fuente; en producción `mark_complete`
+no tiene otra llamada, así que no hay ruta de promoción que esquive el gate.
+
+**Límites de evidencia (#338).** «Falta de lector» y «lectura fallida» son
+cosas distintas: MP3 sigue sin lector hasta D16 y sus checks se saltan, pero un
+FLAC/M4A no vacío que metaflac/mp4ameta no puede parsear **falla cerrado**. Bajo
+política estricta, una reinspección física fallida tampoco cae a los valores
+anunciados por el proveedor. La duración verificada sale de la cabecera
+(STREAMINFO/mvhd): detecta un preview o un fichero equivocado con cabecera más
+corta; si no hay ninguna duración física, el check se salta por falta de
+evidencia y solo la política estricta rechaza la reinspección fallida; y **no**
+detecta un truncado por la cola que conserva la cabecera completa; la
+corroboración con longitud decodificable queda fuera porque
+duplicaría un decode completo por pista. El verificador existe
+(`verify_flac_integrity_stream` en `crates/syncify-flac-writer`: MD5 PCM de
+STREAMINFO o decode-check) y cablearlo exige medir antes ese coste por pista,
+así que el hito documenta el límite en vez de improvisarlo. Ambos lados están
+fijados en `tests/delivery_verification_test.rs` y en los tests unitarios del
+módulo.
 
 **Piso de bitrate por proveedor** (matriz en
 `syncify_core_domain::quality::provider_lossy_floor_kbps`, consumida por
-`quality_reconcile` y por los adaptadores D11/D12): SoundCloud 128, Deezer 320
+`quality_reconcile` y, cuando aterricen, por los adaptadores D11/D12):
+SoundCloud 128, Deezer 320
 (128 en cuentas free), Qobuz/Tidal/Amazon 320 por su matriz. El piso global de
 320 dejó de aplicarse en duro; la reconciliación y el orquestador consultan la
 matriz del servicio que entrega. Un MP3 128 se declara como lo que es
-(`lossy`), nunca se etiqueta lossless.
+(`lossy`), nunca se etiqueta lossless. Ningún adaptador repite el `320` a
+mano: Tidal también resuelve su piso por la matriz. La mitad `account_free`
+del piso de Deezer **sigue abierta** y queda como entregable de D11 (el
+adaptador nativo de Deezer; D12 es su gemelo de SoundCloud): el registro de
+`download/providers/` solo tiene Qobuz, Tidal y Amazon, así que ninguna ruta
+de descarga entrega con `service = "deezer"`, y `accounts` tampoco persiste el
+plan; cuando el adaptador aterrice debe pasar la capa de la cuenta en vez del
+`false` fijo de `quality_reconcile`.
 
 **Atribución de cuenta**: `DownloadResult.account_id` viaja desde
 `ProviderDelivery.account_id` y el ledger escribe `downloads.account_id` con

@@ -383,9 +383,11 @@
                 <span class="text-sm font-semibold text-ink">Lyrics</span>
                 <span
                   v-if="parsedLyrics.length > 0"
+                  data-testid="lyrics-sync-badge"
                   class="px-2 py-0.5 rounded-full text-[10px] bg-accent/20 text-accent font-medium"
+                  :title="hasWordTimings ? 'Word-by-word synchronized lyrics' : 'Line-synchronized lyrics'"
                 >
-                  Synchronized (LRC)
+                  {{ hasWordTimings ? 'Karaoke (word)' : 'Synchronized (LRC)' }}
                 </span>
                 <span
                   v-else-if="lyrics?.content"
@@ -432,7 +434,21 @@
                         : 'text-text-secondary text-base sm:text-lg hover:text-ink'
                   ]"
                 >
-                  <p class="leading-relaxed">{{ line.text }}</p>
+                  <!-- LY10 (#181): la línea karaoke se rellena palabra a palabra.
+                       Sin timings inline (words vacío) se pinta el texto plano y
+                       queda el resaltado por línea de siempre. -->
+                  <p v-if="line.words.length === 0" class="leading-relaxed">{{ line.text }}</p>
+                  <p v-else class="leading-relaxed">
+                    <span
+                      v-for="(word, wIdx) in line.words"
+                      :key="wIdx"
+                      :data-testid="`lyric-word-${idx}-${wIdx}`"
+                      :data-word-start="word.startSec"
+                      :class="['karaoke-word', wordClass(idx, wIdx)]"
+                      :style="wordFillStyle(idx, wIdx)"
+                      @click.stop="seek(word.startSec)"
+                      >{{ word.text }}</span>
+                  </p>
                 </div>
               </template>
 
@@ -812,7 +828,7 @@ import { readTrackTags } from '../../api/metadata'
 import { getLyrics } from '../../api/lyrics'
 import type { Lyrics } from '../../api/types'
 import { invokeCommand } from '../../api/tauri'
-import { parseLrc, findActiveLyricIndex, type ParsedLyricLine } from '../../utils/lrcParser'
+import { parseLrc, findActiveLyricIndex, findActiveWordIndex, resolveWordEndSec, wordFillPercent, type ParsedLyricLine } from '../../utils/lrcParser'
 import TrackCover from '../TrackCover.vue'
 
 const player = usePlayer()
@@ -890,6 +906,43 @@ const activeLyricIndex = computed<number>(() => {
   if (parsedLyrics.value.length === 0) return -1
   return findActiveLyricIndex(parsedLyrics.value, positionSec.value)
 })
+
+// LY10 (#181): word/syllable level — only when the stored source carries inline
+// timings. Otherwise the panel keeps the line-level highlight (explicit fallback).
+const hasWordTimings = computed<boolean>(() => parsedLyrics.value.some((line) => line.words.length > 0))
+
+const activeWordIndex = computed<number>(() => {
+  const line = parsedLyrics.value[activeLyricIndex.value]
+  if (!line || line.words.length === 0) return -1
+  return findActiveWordIndex(line.words, positionSec.value)
+})
+
+/** Class of a word inside the active line: sung, being sung (wipe), or pending. */
+function wordClass(lineIdx: number, wordIdx: number): string {
+  if (lineIdx !== activeLyricIndex.value) return ''
+  const activeWord = activeWordIndex.value
+  if (activeWord < 0 || wordIdx > activeWord) return 'karaoke-word--pending'
+  if (wordIdx < activeWord) return 'karaoke-word--sung'
+  return 'karaoke-word--active'
+}
+
+/**
+ * Fill progress for the word being sung. The last word of a line ends at the
+ * next line; the last word of the track has no known end and is painted whole
+ * (no invented duration).
+ */
+function wordFillStyle(lineIdx: number, wordIdx: number): Record<string, string> | undefined {
+  const line = parsedLyrics.value[lineIdx]
+  if (!line || lineIdx !== activeLyricIndex.value || wordIdx !== activeWordIndex.value) {
+    return undefined
+  }
+  const word = line.words[wordIdx]
+  if (!word) return undefined
+  const nextLineStartSec = parsedLyrics.value[lineIdx + 1]?.timeSec ?? null
+  const endSec = resolveWordEndSec(line.words, wordIdx, nextLineStartSec)
+  const percent = wordFillPercent(word.startSec, endSec, positionSec.value)
+  return { '--word-fill': `${percent}%` }
+}
 
 // Auto-scroll to active lyric line
 watch(activeLyricIndex, (newIdx) => {
@@ -1313,6 +1366,34 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* LY10 (#181): karaoke wipe. Sung words keep the accent; the active word is
+   filled left-to-right with the sung share (`--word-fill`), and pending words
+   stay dim so the eye sees what is coming. */
+.karaoke-word {
+  white-space: pre-wrap;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.karaoke-word--sung {
+  color: var(--accent);
+}
+
+.karaoke-word--pending {
+  color: var(--text-3);
+}
+
+.karaoke-word--active {
+  background-image: linear-gradient(
+    90deg,
+    var(--accent) 0 var(--word-fill, 0%),
+    var(--text-3) var(--word-fill, 0%) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
 .fullscreen-fade-enter-active,
 .fullscreen-fade-leave-active {
   transition: opacity 0.3s ease, transform 0.3s ease;

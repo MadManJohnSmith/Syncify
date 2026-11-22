@@ -222,41 +222,64 @@ pub async fn delete_playlist_core(db: &sqlx::SqlitePool, id: i64) -> Result<(), 
 }
 
 /// Remove specific tracks from a playlist and compact positions
+///
+/// PL02 (#155): una entrada del payload quita UNA ocurrencia, no todas. Con la
+/// misma pista repetida, cada repetición del payload consume la siguiente
+/// ocurrencia de menor posición, de izquierda a derecha. Si el payload trae la
+/// pista una sola vez, la lista conserva sus demás repeticiones.
 #[tauri::command]
 pub async fn remove_from_playlist(
     state: State<'_, AppState>,
     playlist_id: i64,
     track_ids: Vec<i64>,
 ) -> Result<usize, String> {
+    remove_from_playlist_core(&state.db, playlist_id, &track_ids).await
+}
+
+/// Núcleo testeable de `remove_from_playlist`: quita una ocurrencia por entrada
+/// y deja las posiciones contiguas 1..N y `track_count` al día en la MISMA
+/// transacción (si la recompactación fallara, el borrado no se confirma).
+pub async fn remove_from_playlist_core(
+    db: &sqlx::SqlitePool,
+    playlist_id: i64,
+    track_ids: &[i64],
+) -> Result<usize, String> {
     if track_ids.is_empty() {
         return Ok(0);
     }
 
-    let mut tx = state
-        .db
+    let mut tx = db
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
     let mut removed = 0usize;
     for tid in track_ids {
-        let res = sqlx::query("DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?")
-            .bind(playlist_id)
-            .bind(tid)
-            .execute(&mut *tx)
-            .await;
+        let res = sqlx::query(
+            r#"
+            DELETE FROM playlist_tracks
+            WHERE id = (
+                SELECT id FROM playlist_tracks
+                WHERE playlist_id = ? AND track_id = ?
+                ORDER BY position ASC, id ASC
+                LIMIT 1
+            )
+            "#,
+        )
+        .bind(playlist_id)
+        .bind(tid)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to remove track {}: {}", tid, e))?;
 
-        if let Ok(r) = res {
-            removed += r.rows_affected() as usize;
-        }
+        removed += res.rows_affected() as usize;
     }
+
+    recompact_playlist_tracks_in_conn(&mut tx, playlist_id).await?;
 
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit track removal: {}", e))?;
-
-    // TASK-79: Recompact positions sequentially (strictly 1-indexed) and update track_count
-    recompact_playlist_positions(&state.db, playlist_id).await?;
 
     Ok(removed)
 }
@@ -294,19 +317,40 @@ pub async fn sanitize_single_playlist(
         )
     })?;
 
+    let remaining = recompact_playlist_tracks_in_conn(&mut tx, playlist_id).await?;
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit playlist sanitization: {}", e))?;
+
+    Ok(remaining)
+}
+
+/// Recompacta las pistas de UNA playlist dentro de una conexión/transacción ya
+/// abierta: posiciones contiguas 1..N en el orden actual, y
+/// `playlists.track_count` = número de OCURRENCIAS.
+///
+/// PL02 (#155): es el único sitio que asigna posiciones canónicas, para que
+/// quitar una ocurrencia y reordenar compartan la misma regla sin abrir
+/// transacciones anidadas. El staging negativo evita colisiones transitorias
+/// con `UNIQUE(playlist_id, position)` mientras se reasigna.
+pub async fn recompact_playlist_tracks_in_conn(
+    conn: &mut sqlx::SqliteConnection,
+    playlist_id: i64,
+) -> Result<usize, String> {
     // 1. Fetch tracks ordered by current position ASC, and added_at ASC, id ASC as tie-breakers
     let remaining: Vec<(i64,)> = sqlx::query_as(
         "SELECT id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, added_at ASC, id ASC",
     )
     .bind(playlist_id)
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut *conn)
     .await
     .map_err(|e| format!("Failed to fetch playlist tracks for recompact: {}", e))?;
 
     // 2. Stage existing positions to unique negative values to avoid UNIQUE(playlist_id, position) collisions
     sqlx::query("UPDATE playlist_tracks SET position = -(id + 1) WHERE playlist_id = ?")
         .bind(playlist_id)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await
         .map_err(|e| format!("Failed to stage playlist track positions: {}", e))?;
 
@@ -316,7 +360,7 @@ pub async fn sanitize_single_playlist(
         sqlx::query("UPDATE playlist_tracks SET position = ? WHERE id = ?")
             .bind(canonical_pos)
             .bind(row_id)
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await
             .map_err(|e| format!("Failed to reassign playlist track position: {}", e))?;
     }
@@ -327,13 +371,9 @@ pub async fn sanitize_single_playlist(
     )
     .bind(playlist_id)
     .bind(playlist_id)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await
     .map_err(|e| format!("Failed to update playlists.track_count: {}", e))?;
-
-    tx.commit()
-        .await
-        .map_err(|e| format!("Failed to commit playlist sanitization: {}", e))?;
 
     Ok(remaining.len())
 }
@@ -587,56 +627,111 @@ pub async fn sanitize_playlists(
 }
 
 /// Reorder tracks in a playlist given target positions
+///
+/// PL02 (#155): el payload es el orden COMPLETO deseado (una entrada por
+/// ocurrencia, no por pista). Con la misma pista repetida, la k-ésima entrada
+/// de esa pista en el payload mueve la k-ésima ocurrencia en el orden actual;
+/// así dos repeticiones nunca se pisan ni se pierde el destino pedido.
 #[tauri::command]
 pub async fn reorder_playlist_tracks(
     state: State<'_, AppState>,
     playlist_id: i64,
     positions: Vec<PlaylistTrackPosition>,
 ) -> Result<(), String> {
-    let mut tx = state
-        .db
+    reorder_playlist_tracks_core(&state.db, playlist_id, &positions).await
+}
+
+/// Núcleo testeable de `reorder_playlist_tracks`.
+///
+/// Mapea cada entrada del payload a una fila concreta de `playlist_tracks`
+/// (no a un `track_id`, que puede repetirse), escribe las posiciones canónicas
+/// 0..n-1 en ese orden —1..N en la base, la secuencia contigua que fija 0110—
+/// y sincroniza `track_count` con el número de ocurrencias. Las ocurrencias que
+/// el payload no menciona conservan su orden relativo al final, de modo que un
+/// payload parcial (mover una pista) sigue siendo válido.
+pub async fn reorder_playlist_tracks_core(
+    db: &sqlx::SqlitePool,
+    playlist_id: i64,
+    positions: &[PlaylistTrackPosition],
+) -> Result<(), String> {
+    let mut tx = db
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
-    // Stage existing positions to negative values to avoid UNIQUE(playlist_id, position) collisions during sequential update
-    sqlx::query("UPDATE playlist_tracks SET position = -position - 1 WHERE playlist_id = ?")
+    // Fila y pista de cada ocurrencia, en el orden actual de la playlist.
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT id, track_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, id ASC",
+    )
+    .bind(playlist_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to read playlist occurrences: {}", e))?;
+
+    // Ocurrencias pendientes por pista, en orden de playlist: pop_front consume
+    // la repetición siguiente de esa pista.
+    let mut pending: std::collections::HashMap<i64, std::collections::VecDeque<i64>> =
+        std::collections::HashMap::new();
+    for (row_id, track_id) in &rows {
+        pending.entry(*track_id).or_default().push_back(*row_id);
+    }
+
+    // `new_position` ordena el payload; el orden de entrada desempata (sort
+    // estable), que es como la UI envía el orden final.
+    let mut wanted: Vec<&PlaylistTrackPosition> = positions.iter().collect();
+    wanted.sort_by_key(|item| item.new_position);
+
+    let mut desired: Vec<i64> = Vec::with_capacity(rows.len());
+    let mut moved: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for item in wanted {
+        let row_id = pending
+            .get_mut(&item.track_id)
+            .and_then(|queue| queue.pop_front())
+            .ok_or_else(|| {
+                format!(
+                    "Track {} has no remaining occurrence in playlist {}",
+                    item.track_id, playlist_id
+                )
+            })?;
+        moved.insert(row_id);
+        desired.push(row_id);
+    }
+
+    // Lo que el payload no menciona se queda detrás, en su orden actual.
+    for (row_id, _) in &rows {
+        if !moved.contains(row_id) {
+            desired.push(*row_id);
+        }
+    }
+
+    // Staging negativo → asignación canónica 1..N en una sola pasada.
+    sqlx::query("UPDATE playlist_tracks SET position = -(id + 1) WHERE playlist_id = ?")
         .bind(playlist_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("Failed to stage playlist reordering: {}", e))?;
 
-    for item in positions {
-        // PL00 (#153): la misma pista puede aparecer varias veces, así que
-        // track_id ya no identifica una fila única. Cada entrada del payload
-        // mueve UNA ocurrencia: la primera en el orden de la playlist (tras el
-        // staging negativo, position DESC recupera el orden original ASC).
-        sqlx::query(
-            r#"
-            UPDATE playlist_tracks
-            SET position = ?
-            WHERE id = (
-                SELECT id FROM playlist_tracks
-                WHERE playlist_id = ? AND track_id = ?
-                ORDER BY position DESC, id ASC
-                LIMIT 1
-            )
-            "#,
-        )
-        .bind(item.new_position)
-        .bind(playlist_id)
-        .bind(item.track_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to update track position: {}", e))?;
+    for (index, row_id) in desired.iter().enumerate() {
+        sqlx::query("UPDATE playlist_tracks SET position = ? WHERE id = ?")
+            .bind(index as i64 + 1)
+            .bind(row_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to assign playlist position: {}", e))?;
     }
+
+    sqlx::query(
+        "UPDATE playlists SET track_count = (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    )
+    .bind(playlist_id)
+    .bind(playlist_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to update playlist track count: {}", e))?;
 
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit reordering: {}", e))?;
-
-    // TASK-79: Recompact after reordering to guarantee 1-indexed continuous sequence and track_count consistency
-    recompact_playlist_positions(&state.db, playlist_id).await?;
 
     Ok(())
 }

@@ -114,6 +114,9 @@ pub use storage::*;
 pub mod sync_run;
 pub use sync_run::*;
 
+pub mod sync_profile;
+pub use sync_profile::*;
+
 pub mod tags;
 pub use tags::*;
 

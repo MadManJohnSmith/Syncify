@@ -14,6 +14,7 @@ pub mod collection;
 pub mod events;
 pub mod fake;
 pub mod job;
+pub mod profile;
 pub mod qobuz_source;
 pub mod runs;
 pub mod source;

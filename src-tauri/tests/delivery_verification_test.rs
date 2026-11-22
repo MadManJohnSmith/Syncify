@@ -16,8 +16,13 @@
 //!    promociona a `complete` (defensa en `mark_complete`).
 //! 6. SoundCloud 128 está en el piso por proveedor: se acepta, se declara y
 //!    nunca se etiqueta lossless.
-//! 7. El gate corre ANTES de `mark_complete` en `process_download_internal`
-//!    (guardia estructural sobre el fuente).
+//! 7. El gate corre ANTES de `mark_complete`: `verify_then_complete` es la
+//!    costura que usa `process_download_internal` y el test la ejerce por
+//!    comportamiento (#338; antes era una guardia de cadenas sobre el fuente).
+//! 8. #338: un FLAC/M4A no vacío que el lector no puede parsear falla cerrado
+//!    (lector ausente ≠ lectura fallida) y un rechazo no deja el fichero
+//!    promovido sin dueño ni la fila que la propia entrega (Tidal,
+//!    `tidal_pipeline` §9) escribió antes del gate.
 
 use std::path::Path;
 
@@ -27,6 +32,7 @@ use syncify_core_domain::quality::{
 };
 use syncify_tauri_lib::download::progress::DownloadResult;
 use syncify_tauri_lib::download::verification::ExpectedDelivery;
+use syncify_tauri_lib::services::operation_recovery::{DownloadJournal, DownloadJournalParams};
 use syncify_tauri_lib::worker::{DownloadWorker, DownloadWorkerState};
 use tempfile::TempDir;
 
@@ -161,6 +167,65 @@ async fn ledger_row(
     .fetch_optional(pool)
     .await
     .unwrap()
+}
+
+/// Fila de `downloads` tal como la escribe `tidal_pipeline` §9: `INSERT ...
+/// ON CONFLICT(track_id)`, confirmada antes de que el worker corra el gate.
+async fn seed_pipeline_ledger_row(pool: &sqlx::SqlitePool, track_id: i64, path: &Path) {
+    sqlx::query(
+        "INSERT INTO downloads (track_id, source_service_id, file_path, file_format, \
+         bit_depth, sample_rate, file_size_bytes, metadata_completeness, requested_quality, \
+         effective_quality, requested_format, effective_format, quality_decision, \
+         provider_fallback_used, quality_fallback_used) \
+         VALUES (?, 1, ?, 'FLAC', 24, 96000, 4096, 100, 'hires', \
+         'FLAC 24-bit / 96.0kHz', 'FLAC', 'FLAC', 'CompletedExactQuality', 0, 0)",
+    )
+    .bind(track_id)
+    .bind(path.to_string_lossy().to_string())
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Prueba de propiedad que la producción fija antes del gate: el journal de la
+/// descarga (`DownloadJournal::start` + `checkpoint_promoted`, worker.rs) deja
+/// `entity_id = queue_id` y `expected_output_path` con la ruta promovida.
+async fn seed_delivery_journal(
+    pool: &sqlx::SqlitePool,
+    queue_id: i64,
+    track_id: i64,
+    dir: &TempDir,
+    path: &Path,
+) {
+    let journal = DownloadJournal::start(
+        pool,
+        &DownloadJournalParams {
+            operation_id: format!("op-gate-{queue_id}"),
+            queue_id,
+            track_id,
+            provider: Some("tidal".to_string()),
+            input_identity: None,
+            output_dir: dir.path().to_string_lossy().to_string(),
+            allow_fallback: false,
+        },
+    )
+    .await
+    .expect("el journal de la entrega abre");
+    journal
+        .checkpoint_promoted(&path.to_string_lossy(), None)
+        .await;
+}
+
+/// Nombres de los ficheros que la limpieza de un rechazo conserva en la
+/// cuarentena hermana del directorio de la entrega.
+fn quarantined_files(parent: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(parent.join(".syncify-quarantine")) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect()
 }
 
 fn delivered_result(file: &Path) -> DownloadResult {
@@ -546,35 +611,393 @@ fn provider_delivery_account_propagates_into_result() {
     assert_eq!(delivery.result.account_id, Some(3));
 }
 
-/// Guardia estructural: el gate corre en `process_download_internal` ANTES de
-/// `mark_complete`, y un fallo del gate es un fallo de verificación que no
-/// toca el ledger. La llamada al gate y el manejo del error deben seguir
-/// entre la verificación física básica y la promoción.
-#[test]
-fn gate_wiring_runs_before_mark_complete() {
-    let source =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/worker.rs"))
-            .expect("worker.rs legible");
-    let gate_call = source
-        .find("verify_delivery_before_complete(")
-        .expect("el worker llama al gate");
-    let gate_error = source[gate_call..]
-        .find("DeliveryVerificationFailed")
-        .expect("el fallo del gate se marca como fallo de verificación");
-    let complete_call = source
-        .find("self.mark_complete(queue_id, &download_result)")
-        .expect("la promoción sigue existiendo");
+/// #338: el orden gate → `mark_complete` se verifica por comportamiento, no
+/// buscando cadenas en el fuente. `verify_then_complete` es la misma costura
+/// que usa `process_download_internal`: un rechazo del gate deja la fila en
+/// `downloading`, sin ledger, y borra el fichero promovido sin dueño; una
+/// entrega válida sí promociona.
+#[tokio::test]
+async fn gate_runs_before_mark_complete_and_cleans_rejected_promotion() {
+    let dir = TempDir::new().unwrap();
+    let pool = migrated_pool(&dir, "order.db").await;
+    let (queue_id, track_id) = seed_downloading_row(&pool, &dir, 1, "hires").await;
+    let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+
+    // Físico 197 s frente a catálogo 200 s: el gate rechaza.
+    let rejected = dir.path().join("rejected.flac");
+    write_verified_flac(&rejected, 197 * 44_100);
+    let reason = worker
+        .verify_then_complete(
+            queue_id,
+            &delivered_result(&rejected),
+            expected_delivery(200_000),
+            true,
+            false,
+            0.0,
+        )
+        .await
+        .expect_err("el gate debe rechazar antes de mark_complete");
     assert!(
-        gate_error < complete_call,
-        "el gate (fallo en {}) debe correr antes de mark_complete ({}): \
-         un fichero no verificado no se promociona",
-        gate_error,
-        complete_call
+        reason.contains("duration out of tolerance"),
+        "motivo: {reason}"
     );
-    // El fallo de verificación persiste con el prefijo reservado y sin ledger.
-    let failure_block = &source[gate_error..complete_call];
+    assert_eq!(
+        queue_status(&pool, queue_id).await,
+        "downloading",
+        "un rechazo no promociona la fila"
+    );
+    assert!(ledger_row(&pool, track_id).await.is_none(), "sin ledger");
     assert!(
-        failure_block.contains("mark_permanent_failure"),
-        "el fallo de verificación marca la fila"
+        !rejected.exists(),
+        "el fichero promovido rechazado no puede quedar sin dueño"
     );
+
+    // La misma costura con una entrega válida promociona y escribe el ledger.
+    let accepted = dir.path().join("accepted.flac");
+    write_verified_flac(&accepted, 200 * 44_100);
+    worker
+        .verify_then_complete(
+            queue_id,
+            &delivered_result(&accepted),
+            expected_delivery(200_000),
+            true,
+            false,
+            0.0,
+        )
+        .await
+        .expect("una entrega verificada completa");
+    assert_eq!(queue_status(&pool, queue_id).await, "complete");
+    assert!(
+        ledger_row(&pool, track_id).await.is_some(),
+        "ledger escrito"
+    );
+}
+
+/// #338 AC: un FLAC o M4A no vacío que el lector no puede parsear no se marca
+/// `complete` (antes el gate lo trataba como «formato sin lector»).
+#[tokio::test]
+async fn unreadable_flac_and_m4a_never_complete() {
+    let dir = TempDir::new().unwrap();
+
+    for (name, bytes) in [
+        ("corrupt.flac", b"fLaC-not-a-parseable-tag-chain".as_slice()),
+        ("corrupt.m4a", b"not-an-mp4-container".as_slice()),
+    ] {
+        let pool = migrated_pool(&dir, &format!("unreadable-{name}.db")).await;
+        let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+        let (queue_id, track_id) = seed_downloading_row(&pool, &dir, 1, "lossless").await;
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+
+        let reason = worker
+            .verify_then_complete(
+                queue_id,
+                &delivered_result(&path),
+                expected_delivery(200_000),
+                false,
+                false,
+                0.0,
+            )
+            .await
+            .expect_err("un fichero ilegible con lector debe fallar cerrado");
+        assert!(
+            reason.contains("tags unreadable in a format that declares a reader"),
+            "{name}: motivo: {reason}"
+        );
+        assert_eq!(queue_status(&pool, queue_id).await, "downloading");
+        assert!(
+            ledger_row(&pool, track_id).await.is_none(),
+            "{name}: sin ledger"
+        );
+        assert!(!path.exists(), "{name}: sin fichero huérfano");
+    }
+}
+
+/// FLAC con bloque de tags correcto pero sin STREAMINFO: los tags se dejan
+/// leer, la cabecera de audio no. `inspect_physical_audio_file` no puede dar
+/// métricas de este fichero.
+fn write_tagged_flac_without_streaminfo(path: &Path) {
+    let mut tag = metaflac::Tag::new();
+    let vc = tag.vorbis_comments_mut();
+    vc.set("TITLE", vec!["Verified Track"]);
+    vc.set("ARTIST", vec!["Verified Artist"]);
+    vc.set("ALBUM", vec!["Verified Album"]);
+    vc.set("TRACKNUMBER", vec!["3"]);
+    vc.set("DISCNUMBER", vec!["1"]);
+    tag.write_to_path(path).unwrap();
+    assert!(
+        metaflac::Tag::read_from_path(path)
+            .unwrap()
+            .get_streaminfo()
+            .is_none(),
+        "el fixture no debe traer STREAMINFO"
+    );
+}
+
+/// #338 AC: bajo política estricta, una reinspección física fallida NO se
+/// sustituye por la calidad anunciada por el proveedor. Antes del cierre, el
+/// gate caía a `bit_depth`/`sample_rate` declarados (24-bit/96 kHz → hires) y
+/// un fichero sin métricas físicas se promocionaba como pérdida.
+#[tokio::test]
+async fn strict_policy_never_trusts_declared_values_when_inspection_fails() {
+    let dir = TempDir::new().unwrap();
+    let pool = migrated_pool(&dir, "strict-inspection.db").await;
+    let (queue_id, track_id) = seed_downloading_row(&pool, &dir, 0, "lossless").await;
+    let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+
+    let path = dir.path().join("no-streaminfo.flac");
+    write_tagged_flac_without_streaminfo(&path);
+    let res = delivered_result(&path);
+
+    // Sin política estricta, la falta de métricas físicas sigue siendo falta
+    // de evidencia: el gate físico no inventa un fallo.
+    worker
+        .verify_delivery_before_complete(
+            queue_id,
+            &res,
+            expected_delivery(200_000),
+            false,
+            false,
+            0.0,
+        )
+        .await
+        .expect("sin strict, la falta de métricas no es un fallo");
+
+    let reason = worker
+        .verify_delivery_before_complete(
+            queue_id,
+            &res,
+            expected_delivery(200_000),
+            false,
+            true,
+            0.0,
+        )
+        .await
+        .expect_err("la política estricta no puede confiar en lo anunciado");
+    assert!(
+        reason.contains("strict quality policy does not trust declared values"),
+        "motivo: {reason}"
+    );
+    assert_eq!(queue_status(&pool, queue_id).await, "downloading");
+    assert!(ledger_row(&pool, track_id).await.is_none(), "sin ledger");
+}
+
+/// #338: sin prueba de propiedad, la limpieza no destruye una entrega ajena.
+/// El journal de esta descarga no declara el path (no hay entrega registrada
+/// que lo escribiera), así que una fila de otra pista conserva fila y fichero.
+#[tokio::test]
+async fn rejected_delivery_keeps_a_path_the_ledger_already_owns() {
+    let dir = TempDir::new().unwrap();
+    let pool = migrated_pool(&dir, "owned-path.db").await;
+    let (queue_id, _queue_track) = seed_downloading_row(&pool, &dir, 1, "hires").await;
+    let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+
+    let path = dir.path().join("owned.flac");
+    write_verified_flac(&path, 197 * 44_100);
+    let other_track: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Other Track') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    seed_pipeline_ledger_row(&pool, other_track, &path).await;
+
+    let reason = worker
+        .verify_then_complete(
+            queue_id,
+            &delivered_result(&path),
+            expected_delivery(200_000),
+            true,
+            false,
+            0.0,
+        )
+        .await
+        .expect_err("el gate rechaza la duración fuera de tolerancia");
+    assert!(
+        reason.contains("duration out of tolerance"),
+        "motivo: {reason}"
+    );
+    assert!(
+        path.exists(),
+        "sin prueba de que la entrega escribió el path, la limpieza no lo toca"
+    );
+    assert!(
+        ledger_row(&pool, other_track).await.is_some(),
+        "la fila de la otra pista sigue siendo suya"
+    );
+    assert!(
+        quarantined_files(dir.path()).is_empty(),
+        "no se aparta un fichero que no consta como entrega de esta cola"
+    );
+}
+
+/// #338 (revisión de #356): la ruta real de Tidal escribe la fila del ledger
+/// en `tidal_pipeline` §9 y hace commit ANTES de que el worker ejecute el
+/// gate. El journal de la descarga (`entity_id = queue_id`) ya declara el path
+/// promovido, así que la fila es de la propia entrega: si el gate la rechaza,
+/// la fila y el fichero no pueden quedar en la biblioteca mientras la cola se
+/// marca `failed`.
+#[tokio::test]
+async fn rejected_delivery_removes_the_pipeline_row_of_the_same_delivery() {
+    let dir = TempDir::new().unwrap();
+    let pool = migrated_pool(&dir, "pipeline-row.db").await;
+    let (queue_id, track_id) = seed_downloading_row(&pool, &dir, 1, "hires").await;
+    let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+
+    let path = dir.path().join("pipeline-owned.flac");
+    write_verified_flac(&path, 197 * 44_100);
+
+    seed_pipeline_ledger_row(&pool, track_id, &path).await;
+    seed_delivery_journal(&pool, queue_id, track_id, &dir, &path).await;
+    assert!(
+        ledger_row(&pool, track_id).await.is_some(),
+        "fixture: la fila de la propia entrega ya existe cuando corre el gate"
+    );
+
+    let reason = worker
+        .verify_then_complete(
+            queue_id,
+            &delivered_result(&path),
+            expected_delivery(200_000),
+            true,
+            false,
+            0.0,
+        )
+        .await
+        .expect_err("el gate rechaza la duración fuera de tolerancia");
+    assert!(
+        reason.contains("duration out of tolerance"),
+        "motivo: {reason}"
+    );
+
+    assert!(
+        ledger_row(&pool, track_id).await.is_none(),
+        "la fila escrita por la propia entrega no puede sobrevivir al rechazo"
+    );
+    assert!(
+        !path.exists(),
+        "el fichero rechazado no puede quedar en la ruta de la biblioteca"
+    );
+    assert_eq!(
+        quarantined_files(dir.path()).len(),
+        1,
+        "el audio rechazado se conserva en cuarentena explícita, no se destruye"
+    );
+    assert_eq!(
+        queue_status(&pool, queue_id).await,
+        "downloading",
+        "el gate no promociona la fila; el llamador la marca failed"
+    );
+}
+
+/// #338 (revisión de #356): `tidal_pipeline` rechaza el hint por mismatch de
+/// identidad y resuelve por `track_sources`/ISRC/artista+título, o crea una
+/// pista nueva. La fila que escribe §9 puede llevar un `track_id` DIVERGENTE
+/// al de la cola, así que la propiedad no puede comparar `track_id`: es el
+/// journal de la entrega (`expected_output_path`) quien prueba que el path lo
+/// escribió esta descarga.
+#[tokio::test]
+async fn rejected_delivery_removes_a_pipeline_row_with_a_diverged_track_id() {
+    let dir = TempDir::new().unwrap();
+    let pool = migrated_pool(&dir, "pipeline-diverged.db").await;
+    let (queue_id, queue_track) = seed_downloading_row(&pool, &dir, 1, "hires").await;
+    let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+
+    let path = dir.path().join("diverged-owned.flac");
+    write_verified_flac(&path, 197 * 44_100);
+
+    let diverged_track: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title) VALUES ('Verified Track (Remaster)') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_ne!(
+        diverged_track, queue_track,
+        "fixture: la fila de §9 describe otra pista canónica"
+    );
+    seed_pipeline_ledger_row(&pool, diverged_track, &path).await;
+    seed_delivery_journal(&pool, queue_id, queue_track, &dir, &path).await;
+
+    let reason = worker
+        .verify_then_complete(
+            queue_id,
+            &delivered_result(&path),
+            expected_delivery(200_000),
+            true,
+            false,
+            0.0,
+        )
+        .await
+        .expect_err("el gate rechaza la duración fuera de tolerancia");
+    assert!(
+        reason.contains("duration out of tolerance"),
+        "motivo: {reason}"
+    );
+
+    assert!(
+        ledger_row(&pool, diverged_track).await.is_none(),
+        "la fila de la entrega se retira aunque su track_id diverja del de la cola"
+    );
+    assert!(
+        ledger_row(&pool, queue_track).await.is_none(),
+        "el rechazo no deja ledger para el track de la cola"
+    );
+    assert!(
+        !path.exists(),
+        "el fichero rechazado no puede quedar en la ruta de la biblioteca"
+    );
+    assert_eq!(
+        quarantined_files(dir.path()).len(),
+        1,
+        "el audio rechazado se conserva en cuarentena explícita"
+    );
+}
+
+/// #338: sin entrada de journal que declare el path, una fila con `track_id`
+/// divergente es indistinguible de la entrega de otra pista; el rechazo
+/// conserva fila y fichero (no se destruye evidencia ajena).
+#[tokio::test]
+async fn rejected_delivery_keeps_a_diverged_row_no_journal_claims() {
+    let dir = TempDir::new().unwrap();
+    let pool = migrated_pool(&dir, "diverged-no-journal.db").await;
+    let (queue_id, queue_track) = seed_downloading_row(&pool, &dir, 1, "hires").await;
+    let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+
+    let path = dir.path().join("diverged-unclaimed.flac");
+    write_verified_flac(&path, 197 * 44_100);
+
+    let diverged_track: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks (title) VALUES ('Another Canonical Track') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    seed_pipeline_ledger_row(&pool, diverged_track, &path).await;
+
+    let reason = worker
+        .verify_then_complete(
+            queue_id,
+            &delivered_result(&path),
+            expected_delivery(200_000),
+            true,
+            false,
+            0.0,
+        )
+        .await
+        .expect_err("el gate rechaza la duración fuera de tolerancia");
+    assert!(
+        reason.contains("duration out of tolerance"),
+        "motivo: {reason}"
+    );
+
+    assert!(
+        ledger_row(&pool, diverged_track).await.is_some(),
+        "sin journal no se puede atribuir la fila a esta entrega"
+    );
+    assert!(
+        path.exists(),
+        "tampoco se toca un fichero sin prueba de autoría"
+    );
+    assert!(ledger_row(&pool, queue_track).await.is_none());
+    assert!(quarantined_files(dir.path()).is_empty());
 }

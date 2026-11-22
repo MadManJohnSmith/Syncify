@@ -678,10 +678,11 @@ async fn test_collections_gating_refuses_undeclared_or_unknown_requests() {
         result
     );
 
-    // Artists no lo declara nadie todavía.
+    // Artists (M02) los declaran qobuz/tidal/spotify; los destinos sin follow
+    // — aquí deezer — siguen sin ofrecerlos.
     let result = start_albums_job(
         &app,
-        "qobuz",
+        "deezer",
         Some(account),
         None,
         vec!["artists"],
@@ -694,7 +695,7 @@ async fn test_collections_gating_refuses_undeclared_or_unknown_requests() {
             .err()
             .map(|e| e.contains("does not support the 'artists' collection"))
             .unwrap_or(false),
-        "qobuz must refuse artists, got: {:?}",
+        "deezer must refuse artists, got: {:?}",
         result
     );
 

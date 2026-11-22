@@ -18,6 +18,7 @@ pub mod incremental_enrichment;
 pub mod lastfm;
 pub mod library_membership;
 pub mod logging;
+pub mod lyrics_negative_cache;
 pub mod manifest_writer;
 pub mod mb_dump_import;
 pub mod mp4_writer;

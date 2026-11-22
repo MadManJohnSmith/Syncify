@@ -17,6 +17,11 @@ pub fn reconcile_physical_audio_quality(res: &mut DownloadResult, request: &Down
     let path = std::path::Path::new(&res.file_path);
     let phys_info = crate::download::audio_inspector::inspect_physical_audio_file(path);
 
+    // D05/#338: el piso lossy es por proveedor (el servicio que ENTREGA decide),
+    // no el 320 global en duro; una sola matriz, sin literales por adaptador.
+    let lossy_floor_kbps =
+        syncify_core_domain::quality::provider_lossy_floor_kbps(&res.service, false);
+
     let (
         verified_bd,
         verified_sr,
@@ -50,7 +55,9 @@ pub fn reconcile_physical_audio_quality(res: &mut DownloadResult, request: &Down
                 res.sample_rate as f64 / 1000.0
             )
         } else {
-            format!("{} 320kbps", fmt)
+            // Sin inspección local no hay bitrate físico: se declara el piso
+            // del proveedor, no un 320 inventado (misma matriz que abajo).
+            format!("{} {}kbps", fmt, lossy_floor_kbps)
         };
         (
             res.bit_depth,
@@ -71,11 +78,11 @@ pub fn reconcile_physical_audio_quality(res: &mut DownloadResult, request: &Down
         res.bitrate = verified_bitrate;
     }
 
-    // D05: el piso lossy es por proveedor (el servicio que ENTREGA decide),
-    // no el 320 global en duro. La capa free de la cuenta la aplica el
-    // adaptador (D11/D12) cuando resuelve la cuenta; aquí manda la matriz.
-    let lossy_floor_kbps =
-        syncify_core_domain::quality::provider_lossy_floor_kbps(&res.service, false);
+    // #338: la mitad `account_free` NO se resuelve todavía en ninguna ruta
+    // productiva: no existe adaptador de descarga de Deezer (D11/D12) y
+    // `accounts` no persiste el plan. Queda como entregable explícito de
+    // D11/D12: cuando el adaptador resuelva la cuenta, debe pasar su capa en
+    // vez del `false` fijo de aquí.
     let q_eval = syncify_core_domain::quality::QualityPolicy::evaluate_stream_resolution(
         &request.quality,
         &quality_label,

@@ -162,7 +162,7 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   nuevo). Ambos con el modelo fijado ese día y target privado por
   carril (`/tmp/syncify-target-sb05`, `/tmp/syncify-target-d06c`).
   Fuente: orden del propietario en la sesión del 2026-11-16.
-- **2026-11-18, cambio de modelo de delegación (vigente)**: los
+- **2026-11-18, cambio de modelo de delegación (vigente a 2026-11-18; superado el 2026-11-19 por «capacidad de carriles ampliada», el 2026-11-21 y el 2026-11-22 — ver la página de la wiki)**: los
   subagentes pasan a `opencode-go/deepseek-v4.1-flash` (proveedor
   OpenCode). Suplanta la decisión del 2026-11-16
   (`builtin:zai-start-plan\GLM-5.3-Flash`): esa madrugada el proveedor
@@ -376,7 +376,8 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   concurrency limit exceeded` no es solo «no background»: al relanzar #165
   mientras #247 estaba en vuelo, el proveedor mató #247 a mitad de clippy.
   Regla: un solo carril Flash a la vez; el siguiente entra cuando el
-  anterior cierra. Fuente: fallos de #165-retry y #247 en la sesión.
+  anterior cierra. *(Superado el 2026-11-19 por «capacidad de carriles
+  ampliada» y el 2026-11-22 por el techo de ≤3 carriles por PC.)* Fuente: fallos de #165-retry y #247 en la sesión.
 - **2026-11-18, agentvm1 sigue sin ZCode autenticado**: sesiones nuevas y
   reenvíos con `mode: auto` a la misma sesión fallan con
   `provider_not_configured · Provider authentication failed`; solo
@@ -411,8 +412,10 @@ tracker y `docs/auditoria/matriz-ajustes.md`.
   del padre y tumba a los demás (cascada de `interrupted`). Con un único
   hijo y sin PRs abiertos, el carril llega a entregar. Regla operativa:
   rotar de uno en uno, y no lanzar el siguiente hasta cerrar el anterior.
+  *(Superado el 2026-11-19 por «capacidad de carriles ampliada» y el
+  2026-11-22 por el techo de ≤3 carriles por PC.)*
   Fuente: interrupciones encadenadas de #102/#116/#135/#91/#121.
-- **2026-11-19, capacidad de carriles ampliada (vigente)**: orden del
+- **2026-11-19, capacidad de carriles ampliada (vigente a 2026-11-19; superado el 2026-11-21 y el 2026-11-22 — ver la página de la wiki)**: orden del
   propietario — hasta **dos subagentes** con
   `opencode-go/deepseek-v4.1-flash` y **dos** con
   `builtin:zai-start-plan\GLM-5.3-Flash` a la vez. Suplanta la rotación

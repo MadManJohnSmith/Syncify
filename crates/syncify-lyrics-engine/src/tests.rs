@@ -1005,3 +1005,213 @@ fn test_backend_http_timeout_handling() {
         Some("Request timed out after 10000ms".to_string())
     );
 }
+
+// LY03 (#184) — caracterización de la caché de identidad ANTES de la caché
+// negativa persistente. `LYRICS_CACHE` es un mapa en memoria por identidad
+// (artista, título, álbum normalizados) que guarda también las resoluciones
+// no resueltas y no tiene caducidad ni granularidad por Fuente de letras: un
+// segundo intento de la misma identidad devuelve el fallo cacheado sin volver
+// a sondear mientras viva el proceso. Estos tests fijan ese contrato para que
+// la entrega de #184 no lo cambie por accidente.
+//
+// El mapa es global al proceso y el harness ejecuta los tests en paralelo:
+// ambos tests lo vacían y escriben, así que se serializan con este mutex. Sin
+// él, uno puede borrar la entrada del otro entre el `set` y la lectura.
+static IDENTITY_CACHE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn identity_cache_key_normalizes_case_and_whitespace() {
+    let _guard = IDENTITY_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    crate::cache::clear_lyrics_cache();
+    crate::cache::set_cached_lyrics(
+        "  Artist X ",
+        "Song Y ",
+        Some("Album Z"),
+        LyricsResolution::new_not_found("Orchestrator", "multi_provider_cascade"),
+        None,
+    );
+
+    let cache = crate::cache::LYRICS_CACHE.read().unwrap();
+    let entries = cache.as_ref().expect("la caché se inicializa al sembrar");
+    assert_eq!(
+        entries.keys().cloned().collect::<Vec<_>>(),
+        vec!["artist x:::song y:::album z".to_string()],
+        "la clave es artista:::título:::álbum en minúsculas y sin espacios de borde"
+    );
+}
+
+#[test]
+fn identity_cache_reuses_negative_resolution_without_expiry() {
+    let _guard = IDENTITY_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    futures::executor::block_on(async {
+        crate::cache::clear_lyrics_cache();
+
+        // Sin fuentes configuradas, una sonda real no podría devolver nada: si
+        // el resultado no viniera de la caché, el test lo delataría como
+        // no-resuelto recién orquestado en vez de la resolución sembrada.
+        let mut config = LyricsEngineConfig::default();
+        config.sources.clear();
+        let client = LyricsClient::with_parts_and_config(
+            reqwest::Client::new(),
+            Arc::new(NoopHooks),
+            config,
+        );
+        let service = crate::pipeline::LyricsPipelineService::with_client(client);
+
+        let mut negative =
+            LyricsResolution::new_not_found("Orchestrator", "multi_provider_cascade");
+        negative.error = Some("fallo sembrado por el test".to_string());
+        crate::cache::set_cached_lyrics(
+            "Artist X",
+            "Song Y",
+            Some("Album Z"),
+            negative.clone(),
+            None,
+        );
+
+        let (resolution, sidecar) = service
+            .resolve_lyrics_and_sidecar("artist x", "song y", Some("album z"), 180.0)
+            .await
+            .expect("la caché negativa se sirve como resultado");
+
+        assert_eq!(resolution, negative);
+        assert_eq!(sidecar, None);
+    });
+}
+
+// LY03 (#184) — el clasificador es el vocabulario que persiste la caché
+// negativa: `reason` en `lyrics_resolution_failures`. Los mensajes vienen de
+// los fetchers reales del motor, no de ejemplos inventados.
+
+#[test]
+fn failure_classifier_covers_the_engine_vocabulary() {
+    use crate::failures::{classify_failure_message, LyricsFailureKind};
+
+    for (message, expected) in [
+        ("No lyrics found", LyricsFailureKind::NotFound),
+        (
+            "QQMusic: 0 matches for Artist - Song",
+            LyricsFailureKind::NotFound,
+        ),
+        (
+            "LRCLIB search failed: HTTP 429 Too Many Requests",
+            LyricsFailureKind::RateLimited,
+        ),
+        (
+            "Musixmatch token.get returned status 401",
+            LyricsFailureKind::RequiresAuth,
+        ),
+        (
+            "Spotify sp_dc token is not configured",
+            LyricsFailureKind::RequiresAuth,
+        ),
+        (
+            "NetEase search request failed: error sending request for url: connection refused",
+            LyricsFailureKind::SourceUnavailable,
+        ),
+        (
+            "LRCLIB request timed out after 10000ms",
+            LyricsFailureKind::SourceUnavailable,
+        ),
+        (
+            "Kugou search parse failed: error decoding response body",
+            LyricsFailureKind::Failed,
+        ),
+        (
+            // A transport error whose URL carries Musixmatch's `usertoken`
+            // contains the word "token" but is not an auth failure.
+            "Musixmatch search request failed: error sending request for url \
+             (https://api.musixmatch.com/ws/1.1/matcher.lyrics.get?usertoken=SECRET123)",
+            LyricsFailureKind::SourceUnavailable,
+        ),
+    ] {
+        assert_eq!(
+            classify_failure_message(message),
+            expected,
+            "mensaje clasificado mal: {message:?}"
+        );
+    }
+}
+
+#[test]
+fn failure_detail_redacts_credentials_before_persistence() {
+    use crate::failures::redact_failure_detail;
+
+    let musixmatch = "error sending request for url \
+         (https://api.musixmatch.com/ws/1.1/matcher.lyrics.get?q_track=Song&usertoken=SECRET123&format=json)";
+    let redacted = redact_failure_detail(musixmatch);
+    assert!(
+        !redacted.contains("SECRET123"),
+        "el usertoken no sobrevive a la redacción: {redacted}"
+    );
+    assert!(
+        redacted.contains("usertoken=[REDACTED]"),
+        "el parámetro se conserva redactado: {redacted}"
+    );
+    assert!(
+        redacted.contains("q_track=Song"),
+        "los parámetros inocuos se conservan: {redacted}"
+    );
+
+    let with_userinfo = "error sending request for url \
+         (https://alice:hunter2@example.com/path?access_token=abc123&sp_dc=cookie-value)";
+    let redacted = redact_failure_detail(with_userinfo);
+    assert!(!redacted.contains("hunter2"), "{redacted}");
+    assert!(!redacted.contains("abc123"), "{redacted}");
+    assert!(!redacted.contains("cookie-value"), "{redacted}");
+    assert!(
+        redacted.contains("[REDACTED]@example.com"),
+        "el host se conserva y el userinfo se redacta: {redacted}"
+    );
+}
+
+#[test]
+fn cascade_skips_sources_with_a_fresh_failure_without_contacting_them() {
+    futures::executor::block_on(async {
+        let mut config = LyricsEngineConfig::default();
+        config.sources = vec![
+            LyricsSourceSetting {
+                provider_id: "lrclib_synced".into(),
+                enabled: true,
+                priority: 1,
+            },
+            LyricsSourceSetting {
+                provider_id: "kugou".into(),
+                enabled: true,
+                priority: 2,
+            },
+        ];
+        let client = LyricsClient::with_parts_and_config(
+            reqwest::Client::new(),
+            Arc::new(NoopHooks),
+            config,
+        );
+
+        let skip: std::collections::HashSet<String> =
+            ["kugou".to_string(), "lrclib_synced".to_string()]
+                .into_iter()
+                .collect();
+        let report = client
+            .fetch_all_sources_skipping("Artist", "Song", 180.0, &skip)
+            .await;
+
+        assert_eq!(
+            report.skipped,
+            vec!["lrclib_synced".to_string(), "kugou".to_string()],
+            "las fuentes con fallo vigente se saltan en el orden de prioridad"
+        );
+        assert!(
+            report.failures.is_empty(),
+            "saltar no inventa fallos nuevos"
+        );
+        assert!(report.response.is_none(), "no hay sondas, no hay candidato");
+        assert_eq!(
+            report.error.as_deref(),
+            Some("No lyrics matched enabled sources and lyrics policy")
+        );
+    });
+}

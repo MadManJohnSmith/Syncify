@@ -1,6 +1,7 @@
 # Cola técnica pre-beta: orden y solapamiento de etapas dentro de la descarga de una pista
 
 **Estado:** DLX-01…06 y DFL-01 prerregistrados en la matriz. DLX-01 implementado en `dev` (56838d1, PR #282): cronología por pista como artefacto de medición opt-in con medición offline reproducible; la cronología de corridas reales queda por recoger (emisión por `SYNCIFY_DLX_TIMELINE_DIR`). DLX-02 y DLX-06 siguen condicionados, no aplicados. No acelerar antes de medir cronología, p95, throughput y fallos (`docs/auditoria/matriz-ajustes.md:580-590`). Los diez gates exit 0 aportados en el encargo antecedieron a la ampliación final de la prueba Qobuz comunicada por el carril residual: no cubren el candidato final ni cierran seis gates rojos heredados. GUI/cuentas/Symfonium NOT_EXERCISED.
+**Nota 2026-11-22:** DLX-04 (#45) cerrado el 2026-11-21 por el PR #349 (merge `2ced041` en `wave/ola-0-batch-1`, en `main` vía el consolidado #354, `d09f481`); su review dejó la deuda D-09 en `docs/Deuda_Tecnica_y_UX.md`. La sección DLX-04 de abajo conserva el diseño original; DLX-02, DLX-03, DLX-05, DLX-06 y DFL-01 siguen abiertos en el tracker.
 **Fecha de origen:** 2026-10-14. **Última revisión:** 2026-11-13 (DLX-01). **Origen:** petición expresa del propietario sobre cómo se construye una descarga
 individual (orden de metadatos y audio, incrustado de etiquetas, y qué se ejecuta en paralelo o en
 serie), no sobre el volumen del lote ni sobre subir conexiones.

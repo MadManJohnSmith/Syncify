@@ -51,6 +51,10 @@ export interface LibraryTrack {
     lyrics_type: LyricsType | null;  // "synced", "timed", "plain", "unsynced", "none"
     cover_art_url: string | null;    // Album artwork URL
     spotify_track_id?: string | null; // External Spotify ID
+    // PL02 (#155): posición de la ocurrencia dentro de la playlist. Distingue
+    // las repeticiones de la misma pista; las consultas de biblioteca no la
+    // proyectan (queda undefined).
+    position?: number | null;
     // Extended metadata fields
     track_number: number | null;
     disc_number: number | null;
@@ -1373,7 +1377,7 @@ export interface MigrationItem {
     source_track_album: string | null;
     source_playlist_id: string | null;
     source_playlist_name: string | null;
-    /** Collection the item belongs to (0113): 'track' | 'album'. */
+    /** Collection the item belongs to (0113): 'track' | 'album' | 'artist'. */
     kind: string;
     destination_track_id: string | null;
     match_confidence: number | null;
