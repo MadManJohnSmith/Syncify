@@ -105,12 +105,15 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
 - **`PLAN_UNIFICACION_IMPORTACION.md`**: plan maestro de paridad de
   importación entre los 6 servicios (en ejecución, con estado por fase).
 - **`COLA_FLUJO_DESCARGAS_PRE_BETA.md`**: cola viva de cronología y fallback
-  del flujo de descargas (DLX-01…06, DFL-01: nada aplicado aún).
-- **`COLA_RENDIMIENTO_FRONTEND_2026-10-13.md`**: cola viva de rendimiento de
-  interfaz (FE-PERF-01…04; FE-PERF-02 aplicado en código).
+  del flujo de descargas (DLX-01…06, DFL-01; DLX-01 y DLX-04 aplicados, el
+  resto abierto: ver su cabecera).
 - **`COLA_WEBKIT_COMPOSICION_ACELERADA.md`**: hipótesis abierta de
-  composición WebKitGTK con sus invariantes de compatibilidad.
-- **HANDOFF.md**: relevo vivo del 2026-11-05; estado por flujo y siguiente paso (descargas).
+  composición WebKitGTK con sus invariantes de compatibilidad (WK-01
+  ejecutado el 2026-11-21 en la máquina de carriles; ver su cabecera).
+- **`HANDOFF.md`**: puntero sin estado (desde el 2026-11-22): cómo re-derivar
+  el estado vigente (tracker, `git log origin/main..origin/dev`, ramas
+  `wave/*`, matriz) y dónde está el último relevo fechado
+  (`historico/HANDOFF-*.md`).
 - **`PLAN_MEJORA_POST_BETA.md`**: lista de espera del post-beta (no cola de
   trabajo). Ojo: sus IDs `C-01…C-06` y `D-01/D-02` son **propios** y no
   coinciden con los de la Deuda.
@@ -161,6 +164,12 @@ qué sigue abierto solo en ese fichero:
   DSC-, DL-SVC-, MF-…).
 - `perf-probe-2026-10-12.md` y `perf-run-2026-10-12.md`: mediciones de
   rendimiento backend (el índice de expresión sobre ISRC sigue sin hacerse).
+- `HANDOFF-*.md`: relevos de sesión fechados (desde el 2026-11-22 también
+  el que antes era `docs/HANDOFF.md`, como `HANDOFF-2026-11-09.md`); el
+  puntero vivo es `HANDOFF.md` en `docs/`.
+- `COLA_RENDIMIENTO_FRONTEND_2026-10-13.md`: cola de rendimiento de
+  interfaz FE-PERF-01…04, terminada el 2026-11-16 y movida aquí el
+  2026-11-22.
 - `RELEASE_NOTES_v0.6.0.md`, `RELEASE_NOTES_v0.6.1.md` y
   `RELEASE_NOTES_v0.6.2.md`: notas de las releases etiquetadas `v0.6.0`,
   `v0.6.1` y `v0.6.2`.
@@ -177,7 +186,7 @@ ID **y fichero**:
 | `Q-01…Q-17` | `historico/Errores-Pruebas-2026-10-11.md` | `Q-01` también existe en `auditoria/triaje.md` con otro significado |
 | `G-`, `L-`, `DSC-`, `FS-`, `AQ-`, `PR-`, `MET-`, `LY-`, `LOG-`, `M-`, `P-`, `PL-`, `BP-`, `DUP-`, `SYM-`, `BPM-` | `historico/Errores-Pruebas-2026-10-08.md` + `auditoria/triaje.md` + `auditoria/matriz-ajustes.md` | `L-`/`D-` reaparecen en el registro del 10-13 |
 | `DLX-`, `DFL-` | `COLA_FLUJO_DESCARGAS_PRE_BETA.md` | — |
-| `FE-PERF-` | `COLA_RENDIMIENTO_FRONTEND_2026-10-13.md` | — |
+| `FE-PERF-` | `historico/COLA_RENDIMIENTO_FRONTEND_2026-10-13.md` | — |
 | `DL-SVC-`, `DL-DISK-`, `DL-UX-`, `TRAY-OPEN-`, `PLAY-TRACE-` | `historico/Errores-Pruebas-2026-10-13.md` | `D-16/D-17/D-18` colisionan con la Deuda |
 | `MF-*` | `historico/Errores-Pruebas-2026-10-13-flujo-limpio.md` | — |
 | `ED-01…ED-04` | `adr/0003-seleccion-de-edicion.md` | — |
