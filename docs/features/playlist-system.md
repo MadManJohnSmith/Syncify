@@ -4,9 +4,9 @@
 > sigue en español; no hay traducción de este documento todavía. El índice
 > que marca su estado está en `docs/README.en.md`.
 
-**Estado de revisión:** 2026-11-21 — PL02 (#155) sobre el modelo de ocurrencias de PL00 (#153): añadir una pista ya presente crea otra ocurrencia, quitar quita una, reordenar mapea cada entrada a su ocurrencia y persiste posiciones contiguas 1..N, `track_count` cuenta ocurrencias y el import de archivo conserva repeticiones. Antes: PL01 (#154) — CRUD local, identidad estable y borrado con tombstone. Sin verificar: importaciones contra servicios reales en vivo.
+**Estado de revisión:** 2026-11-22 — #362: la regla smart `has_lyrics` evalúa `lyrics.content` (columnas reales) en vez de columnas inexistentes. Antes: 2026-11-21 — PL02 (#155) sobre el modelo de ocurrencias de PL00 (#153): añadir una pista ya presente crea otra ocurrencia, quitar quita una, reordenar mapea cada entrada a su ocurrencia y persiste posiciones contiguas 1..N, `track_count` cuenta ocurrencias y el import de archivo conserva repeticiones. Antes: PL01 (#154) — CRUD local, identidad estable y borrado con tombstone. Sin verificar: importaciones contra servicios reales en vivo.
 
-**Último cambio:** 2026-11-21 — ocurrencias y posiciones de PL02 (#155). Antes: 2026-11-18 — CRUD local y borrado de PL01 (#154). Antes: re-revisión 2026-10-25 — símbolos en lugar de números de línea y razonamiento de SoundCloud corregido. Antes: ítem 9.1 del plan post-auditoría (2026-10-02) — estado real de la importación de playlists por servicio. Antes: S40 — 2026-03-30 — archivos: `migrations/0006_playlists.sql`, `commands/library.rs`, `commands/service.rs`
+**Último cambio:** 2026-11-22 — regla smart `has_lyrics` corregida (#362). Antes: 2026-11-21 — ocurrencias y posiciones de PL02 (#155). Antes: 2026-11-18 — CRUD local y borrado de PL01 (#154). Antes: re-revisión 2026-10-25 — símbolos en lugar de números de línea y razonamiento de SoundCloud corregido. Antes: ítem 9.1 del plan post-auditoría (2026-10-02) — estado real de la importación de playlists por servicio. Antes: S40 — 2026-03-30 — archivos: `migrations/0006_playlists.sql`, `commands/library.rs`, `commands/service.rs`
 **Leer antes de modificar:** `commands/tools.rs` (Python bridge playlist commands), `scripts/playlist_bridge.py`
 **Archivos core:**
 - `migrations/0006_playlists.sql` (schema), `migrations/0048_playlist_sync.sql` (identidad remota `playlist_sources`) y `migrations/0110_pl00_local_playlist_model.sql` (modelo local: `local_uuid`, tombstone `deleted_at`, unicidad por posición)
@@ -202,6 +202,28 @@ sigue siendo idempotente por pista y reporta `already_in_playlist` en su
 preview: es una superficie distinta (selección masiva con preview) y no crea
 ocurrencias. Alinear esa acción con la semántica de ocurrencias queda fuera de
 PL02.
+
+## Smart playlists: reglas y evaluación
+
+`apply_smart_rules` (`src-tauri/src/commands/playlists.rs`) traduce cada regla de
+`rules_json` a SQL parametrizado; las reglas se combinan con AND y las evalúan
+`preview_smart_playlist_count_core` (recuento) y `create_smart_playlist_core`
+(sembrado de `playlist_tracks`). Campos soportados: `genre`, `quality` /
+`audio_quality`, `artist`, `year`, `service`, `hasLyrics` / `has_lyrics`,
+`addedDate` / `added_date` y `title`.
+
+La regla `has_lyrics` (verdadera o falsa) se apoya en la tabla `lyrics` de
+`migrations/0002_normalize_schema.sql`: el texto vive en `content` (con
+`format` = `plain`/`lrc`/`ttml`), y una fila de instrumental puede estar vacía.
+Por eso la condición es `l.content IS NOT NULL AND LENGTH(TRIM(l.content)) > 0`,
+la misma que usa el recuento del dashboard. Las columnas `plain_lyrics` y
+`synced_lyrics` nunca existieron en ese esquema. Mientras #187 (LY08) no aterrice
+el almacén de versiones, `lyrics` es el único almacén que la regla debe leer;
+cuando llegue, la condición tendrá que cubrir la unión de ambos.
+
+Regresión: `src-tauri/tests/smart_playlists_persistence_test.rs`
+(`test_has_lyrics_rule_matches_real_lyrics_schema`) cubre verdadero, falso y el
+sembrado de la playlist sobre una BD `:memory:` migrada.
 
 ## Eventos Tauri emitidos
 
