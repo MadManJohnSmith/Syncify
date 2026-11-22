@@ -23,7 +23,10 @@ use sqlx::{Pool, Sqlite};
 use std::borrow::Cow;
 use std::sync::Arc;
 use syncify_lyrics_domain::ResolutionStatus;
-use syncify_lyrics_engine::{LyricsClient, LyricsEngineConfig, LyricsSourceSetting, NoopHooks};
+use syncify_lyrics_engine::{
+    LyricsClient, LyricsEngineConfig, LyricsFailureKind, LyricsSourceFailure, LyricsSourceSetting,
+    NoopHooks,
+};
 use syncify_tauri_lib::commands::lyrics::resolve_track_lyrics_with_client;
 use syncify_tauri_lib::commands::{
     reorder_lyrics_providers, update_lyrics_config, update_lyrics_provider, update_track_metadata,
@@ -32,7 +35,8 @@ use syncify_tauri_lib::commands::{
 use syncify_tauri_lib::enrichment_worker::EnrichmentWorkerState;
 use syncify_tauri_lib::models::LyricsConfig;
 use syncify_tauri_lib::services::lyrics_negative_cache::{
-    active_failed_sources, fetch_with_negative_cache, resolve_with_negative_cache, ttl_hours,
+    active_failed_sources, fetch_with_negative_cache, record_failures, resolve_with_negative_cache,
+    ttl_hours,
 };
 use syncify_tauri_lib::settings_defaults::reset_all_settings;
 use syncify_tauri_lib::worker::DownloadWorkerState;
@@ -736,6 +740,38 @@ async fn batch_fetch_records_and_skips_fresh_failures() {
         second.skipped,
         vec!["apple_music_ttml".to_string()],
         "la ruta batch también salta la Fuente con fallo vigente"
+    );
+}
+
+/// El detalle se redacta en la frontera de persistencia: aunque un llamador
+/// construya el fallo con la URL cruda, la BD no guarda el `usertoken`.
+#[tokio::test]
+async fn persisted_detail_redacts_credentials() {
+    let pool = setup_migrated_db().await;
+    let failures = vec![LyricsSourceFailure {
+        provider_id: "musixmatch_richsync".to_string(),
+        kind: LyricsFailureKind::SourceUnavailable,
+        detail: "error sending request for url \
+                 (https://api.musixmatch.com/ws/1.1/matcher.lyrics.get?usertoken=SECRET123&format=json)"
+            .to_string(),
+    }];
+
+    record_failures(&pool, 1, &failures, "daily").await.unwrap();
+
+    let detail: String = sqlx::query_scalar(
+        "SELECT detail FROM lyrics_resolution_failures \
+         WHERE track_id = 1 AND provider_id = 'musixmatch_richsync'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        !detail.contains("SECRET123"),
+        "el token no llega a la BD: {detail}"
+    );
+    assert!(
+        detail.contains("usertoken=[REDACTED]"),
+        "el parámetro queda redactado: {detail}"
     );
 }
 

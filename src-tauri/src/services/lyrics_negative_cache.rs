@@ -16,7 +16,8 @@ use std::collections::HashSet;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use syncify_lyrics_domain::ResolutionStatus;
 use syncify_lyrics_engine::{
-    LyricsCascadeReport, LyricsClient, LyricsResolutionReport, LyricsSourceFailure,
+    redact_failure_detail, LyricsCascadeReport, LyricsClient, LyricsResolutionReport,
+    LyricsSourceFailure,
 };
 
 /// Caducidad de fábrica cuando la frecuencia de reintento no define una
@@ -73,6 +74,11 @@ pub async fn record_failures(
         .map_err(|e| format!("lyrics negative cache write failed: {e}"))?;
 
     for failure in failures {
+        // The engine already redacts credentials at the source of the message;
+        // redacting again here guarantees the persistence boundary never stores
+        // a URL with `usertoken`/`token` even if a future caller builds the
+        // failure by hand.
+        let detail = redact_failure_detail(&failure.detail);
         // A resolution can arrive with a track id that no longer exists (stale
         // UI row): the cache is derived data, so it is a no-op instead of
         // turning into an FK error on the resolution path.
@@ -90,7 +96,7 @@ pub async fn record_failures(
         .bind(track_id)
         .bind(&failure.provider_id)
         .bind(failure.kind.as_str())
-        .bind(&failure.detail)
+        .bind(&detail)
         .bind(&expiry_modifier)
         .bind(track_id)
         .execute(&mut *tx)
