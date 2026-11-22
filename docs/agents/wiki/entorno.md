@@ -127,7 +127,7 @@ aquí solo queda lo aprendido con fecha. Relacionadas:
 - **2026-11-22, precisión**: `~/.local/state/syncify/` es el borrador y el
   sitio de los artefactos efímeros (patches, logs, cuerpos de PR, logs con
   datos personales que no se versionan); el handoff, al cerrar la sesión, se
-  versiona en `docs/historico/HANDOFF-<fecha>.md`. La wiki no cita la carpeta
+  versiona en `docs/historico/HANDOFF-*.md` con su fecha. La wiki no cita la carpeta
   de estado como fuente de una regla: ninguna otra máquina ni la puerta de
   docs pueden leerla. Fuente: decisión del dueño del 2026-11-22.
 - **2026-11-19**: el target de Rust ya no vive en `/tmp/syncify-target`.
