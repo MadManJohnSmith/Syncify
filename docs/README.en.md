@@ -106,11 +106,11 @@ against the code.
 - `PLAN_UNIFICACION_IMPORTACION.md`: master plan for import parity across the
   six streaming services, in execution with per-phase status (Spanish).
 - `COLA_FLUJO_DESCARGAS_PRE_BETA.md`: living queue for download-flow timing
-  and fallback work (DLX-01…06, DFL-01: nothing applied yet).
-- `COLA_RENDIMIENTO_FRONTEND_2026-10-13.md`: living queue for UI performance
-  (FE-PERF-01…04; FE-PERF-02 applied in code).
+  and fallback work (DLX-01…06, DFL-01; DLX-01 and DLX-04 applied, the rest
+  open: see its header).
 - `COLA_WEBKIT_COMPOSICION_ACELERADA.md`: open WebKitGTK composition
-  hypothesis with its compatibility invariants.
+  hypothesis with its compatibility invariants (WK-01 run on 2026-11-21 on
+  the lane machine; see its header).
 - `HANDOFF.md`: stateless pointer (since 2026-11-22): how to re-derive the
   current state (tracker, `git log origin/main..origin/dev`, `wave/*`
   branches, adjustment matrix) and where the latest dated handoff lives
@@ -165,6 +165,11 @@ open only in that file:
   DL-SVC-, MF-…).
 - `perf-probe-2026-10-12.md` and `perf-run-2026-10-12.md`: backend performance
   measurements (the ISRC expression index is still not built).
+- `HANDOFF-*.md`: dated session handoffs (since 2026-11-22 this includes
+  the former `docs/HANDOFF.md`, kept as `HANDOFF-2026-11-09.md`); the live
+  pointer is `HANDOFF.md` in `docs/`.
+- `COLA_RENDIMIENTO_FRONTEND_2026-10-13.md`: the FE-PERF-01…04 UI
+  performance queue, finished on 2026-11-16 and moved here on 2026-11-22.
 - `RELEASE_NOTES_v0.6.0.md`, `RELEASE_NOTES_v0.6.1.md` and
   `RELEASE_NOTES_v0.6.2.md`: notes for the tagged releases `v0.6.0`, `v0.6.1`
   and `v0.6.2`.
@@ -181,7 +186,7 @@ IDs repeat across documents with different meanings. Always cite the ID
 | `Q-01…Q-17` | `historico/Errores-Pruebas-2026-10-11.md` | `Q-01` also exists in `auditoria/triaje.md` with another meaning |
 | `G-`, `L-`, `DSC-`, `FS-`, `AQ-`, `PR-`, `MET-`, `LY-`, `LOG-`, `M-`, `P-`, `PL-`, `BP-`, `DUP-`, `SYM-`, `BPM-` | `historico/Errores-Pruebas-2026-10-08.md` + `auditoria/triaje.md` + `auditoria/matriz-ajustes.md` | `L-`/`D-` reappear in the 10-13 register |
 | `DLX-`, `DFL-` | `COLA_FLUJO_DESCARGAS_PRE_BETA.md` | — |
-| `FE-PERF-` | `COLA_RENDIMIENTO_FRONTEND_2026-10-13.md` | — |
+| `FE-PERF-` | `historico/COLA_RENDIMIENTO_FRONTEND_2026-10-13.md` | — |
 | `DL-SVC-`, `DL-DISK-`, `DL-UX-`, `TRAY-OPEN-`, `PLAY-TRACE-` | `historico/Errores-Pruebas-2026-10-13.md` | `D-16/D-17/D-18` collide with the debt register |
 | `MF-*` | `historico/Errores-Pruebas-2026-10-13-flujo-limpio.md` | — |
 | `ED-01…ED-04` | `adr/0003-seleccion-de-edicion.md` | — |

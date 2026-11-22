@@ -91,3 +91,13 @@ Medido sobre el build real (`ui/dist`): `index-*.js` = 429 kB raw / 133 kB gz, `
 **Verificación obligatoria antes y después:** medir en la app real el tiempo desde el clic hasta el primer frame con contenido, scroll sostenido con cuenta de fotogramas perdidos, y llamadas a `get_library` por minuto durante el uso normal. Tests automatizados puros para `loadMore` (mismas filas, mismo orden, sin clonar) y para el listado con `sortBy`. Mantener la ruta compatible de WebKit intacta: nada de este fichero toca `src-tauri/src/main.rs` ni las variables de composición.
 
 **Relacionado:** `docs/COLA_WEBKIT_COMPOSICION_ACELERADA.md` (composición y compatibilidad Intel Iris Xe) y `docs/historico/perf-run-2026-10-12.md` (revisión de backend).
+
+## Cierre (nota del 2026-11-22)
+
+Cola terminada; movida de `docs/` a `docs/historico/` el 2026-11-22 sin
+reescribir lo anterior (la nota va al final para no desplazar las líneas que
+cita `docs/auditoria/matriz-ajustes.md`). Tracker el 2026-11-22: FE-PERF-01
+(#49), FE-PERF-03 (#50) y FE-PERF-04 (#51) cerrados el 2026-11-16, y la spec
+#34 también. FE-PERF-04 no quedó solo `registrado` como dicen su sección y el
+orden recomendado: se aplicó con el PR #301 (squash `0684c43`, lectura
+unificada de los agregados del Dashboard). Evidencia, no estado actual.

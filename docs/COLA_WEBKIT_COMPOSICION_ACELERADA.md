@@ -2,6 +2,7 @@
 
 **Estado:** pendiente de diseño, reproducción y benchmark; sin cambio de código.
 **Fecha de origen:** 2026-10-13. **Última revisión:** 2026-10-25 (nota de estado). *(Nota 2026-10-25: el motivo original para separar este fichero —ficheros «reservados» por el workflow de descargas concurrente— ya no aplica; la cola sigue viva por sí misma y su estado canónico está en `docs/auditoria/matriz-ajustes.md`. El incidente del pánico de bandeja de su sección «Incidente» quedó resuelto por C-22 (`0e53dad`, ver `docs/Deuda_Tecnica_y_UX.md`).)*
+**Nota 2026-11-22:** WK-01 (#52) se ejecutó el 2026-11-21 (PR #353, `f97ff19`, en `main` vía el consolidado #354): harness `tools/wk01-composicion.sh` e informe `docs/historico/wk01-composicion-webkitgtk-2026-11-21.md`. El veredicto vale solo para la máquina de carriles; #52 sigue abierto a propósito hasta medir el portátil Intel Iris Xe. El «Estado» de arriba es del 2026-10-25 y no se reescribe.
 **Ejecución**: [#52](https://github.com/MadManJohnSmith/Syncify/issues/52), [#53](https://github.com/MadManJohnSmith/Syncify/issues/53), [#54](https://github.com/MadManJohnSmith/Syncify/issues/54) y [#55](https://github.com/MadManJohnSmith/Syncify/issues/55) (spec [#35](https://github.com/MadManJohnSmith/Syncify/issues/35)).
 
 ## Incidencia y evidencia
