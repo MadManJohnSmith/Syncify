@@ -215,8 +215,10 @@ PL02.
 La regla `has_lyrics` (verdadera o falsa) se apoya en la tabla `lyrics` de
 `migrations/0002_normalize_schema.sql`: el texto vive en `content` (con
 `format` = `plain`/`lrc`/`ttml`), y una fila de instrumental puede estar vacía.
-Por eso la condición es `l.content IS NOT NULL AND LENGTH(TRIM(l.content)) > 0`,
-la misma que usa el recuento del dashboard. Las columnas `plain_lyrics` y
+Por eso la condición es `l.content IS NOT NULL AND LENGTH(TRIM(l.content)) > 0`.
+El recuento del dashboard usa `content IS NOT NULL AND content != ''` sin
+`TRIM`, así que solo divergen con contenido de solo espacios (que aquí se
+excluye). Las columnas `plain_lyrics` y
 `synced_lyrics` nunca existieron en ese esquema. Mientras #187 (LY08) no aterrice
 el almacén de versiones, `lyrics` es el único almacén que la regla debe leer;
 cuando llegue, la condición tendrá que cubrir la unión de ambos.
