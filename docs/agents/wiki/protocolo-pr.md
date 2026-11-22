@@ -31,20 +31,21 @@ Medido el 2026-11-21 sobre git y GitHub; decidido por el dueño el
     (`623aec8`); el consolidado #354 entró en `main` con **merge commit**
     `d09f481`, y `dev` se avanzó después por fast-forward. Fuente:
     `git log --first-parent` y `docs/historico/HANDOFF-2026-11-21.md`.
-  - Lote 2 (medido el 2026-11-22): los PRs de carril entran en
+  - Lote 2 (completado el 2026-11-22): los 6 PRs de carril entraron en
     `wave/ola-0-batch-2` por squash (`5e42af3`, `0ca49a9`, `74d6735`,
-    `c742093`).
+    `c742093`, `e88c356`, `5e84538`); el consolidado #369 entró en `main`
+    con merge commit `e43ea3a`, y `dev` avanzó por fast-forward después.
   - Decidido el 2026-11-22: con 4–6 PRs verdes en el lote (o un hito
     clave) se abre el consolidado a `main` y se arranca el lote siguiente
     sin esperar al CI de Windows del consolidado.
 - **Docs durante una wave.** Wiki, handoffs, retros y registros fechados
   siguen viajando directos a `dev` (precedente: `1dd31cc`, `b773aba` el
   2026-11-21). Medido el 2026-11-22: eso deja `dev` por delante de `main`
-  y fuera de la rama del lote (`git log origin/main..origin/dev`), así que
-  el fast-forward de `dev` tras el siguiente consolidado ya no es posible
-  sin reconciliar antes. **Pregunta abierta para el dueño**: cómo vuelven
-  esos commits a `main` (¿se incluyen en el consolidado, se fusiona `main`
-  en `dev`, o los docs van también por la wave?).
+  y fuera de la rama del lote (`git log origin/main..origin/dev`).
+  *(Resuelto el 2026-11-22 en el Lote 2: se mergeó `dev` en la wave antes
+  del consolidado (`193d329`), el consolidado `e43ea3a` llevó los docs a
+  `main` y `dev` avanzó por fast-forward. Se adopta ese patrón: merge de
+  `dev` en la wave antes del consolidado.)*
 - **Protección de `main`** (cambiada el 2026-11-21, comprobada el
   2026-11-22 con
   `gh api repos/MadManJohnSmith/Syncify/branches/main/protection/required_status_checks`):
@@ -59,7 +60,11 @@ Medido el 2026-11-21 sobre git y GitHub; decidido por el dueño el
   su código aún fuera de `main` y de `dev`; en el Lote 1, #179 y #342
   seguían abiertos al auditar (2026-11-22) aunque su código (`f5bcd3d`, `623aec8`) ya es ancestro
   de `origin/main`. Opciones: cerrar al entrar en la wave, o al llegar a
-  `main` citando el merge del consolidado.
+  `main` citando el merge del consolidado. *(Aplicado el 2026-11-22 en el
+  cierre del Lote 2: #155 y #184 se cerraron al llegar a `main` citando
+  `e43ea3a`; #69, #338, #167 y #181 siguen cerradas desde la wave. La
+  política no se decide aquí: el Lote 2 deja evidencia de las dos
+  prácticas.)*
 
 ## Qué viaja directo a `dev` y qué vía PR
 
