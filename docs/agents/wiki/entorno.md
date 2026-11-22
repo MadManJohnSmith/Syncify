@@ -111,14 +111,25 @@ aquí solo queda lo aprendido con fecha. Relacionadas:
   enlazada y accesible, pero su lista de proyectos no incluye Syncify;
   agentvm1 sigue inaccesible. Consecuencia operativa: la cola de carriles es
   local y los lotes se reparten en oleadas de ≤3 concurrentes. Fuente:
-  handoff del despacho del Lote 2 (carpeta de estado del dueño) y consulta
-  de proyectos por máquina en la sesión del día.
+  handoff del despacho del Lote 2 (versionado el 2026-11-22 como
+  `docs/historico/HANDOFF-2026-11-21.md`) y consulta de proyectos por
+  máquina en la sesión del día.
+- **2026-11-22, superado por decisión del dueño**: el reparto «una sola
+  máquina, ≤3 concurrentes» de la entrada anterior queda sustituido por ≤3
+  carriles por PC en dos PCs (PC-A y PC-B) con afinidad de máquina por
+  carril; ver el bloque 2026-11-22 de [`modo-ejecucion.md`](modo-ejecucion.md).
 
 ## `/tmp` es efímero
 
 - Regla global del propietario (vigente el 2026-11-13): handoffs y
   artefactos de sesión a `~/.local/state/<proyecto>/`; `/tmp` se pierde con
   cada reinicio.
+- **2026-11-22, precisión**: `~/.local/state/syncify/` es el borrador y el
+  sitio de los artefactos efímeros (patches, logs, cuerpos de PR, logs con
+  datos personales que no se versionan); el handoff, al cerrar la sesión, se
+  versiona en `docs/historico/HANDOFF-<fecha>.md`. La wiki no cita la carpeta
+  de estado como fuente de una regla: ninguna otra máquina ni la puerta de
+  docs pueden leerla. Fuente: decisión del dueño del 2026-11-22.
 - **2026-11-19**: el target de Rust ya no vive en `/tmp/syncify-target`.
   `AGENTS.md`, `tools/prepush-check.sh` y `tools/prueba-limpia.sh` usan
   `${CARGO_TARGET_DIR:-$HOME/.cache/syncify-target-$(basename "$PWD")}`, un

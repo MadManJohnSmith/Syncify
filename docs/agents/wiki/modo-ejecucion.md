@@ -41,8 +41,8 @@ agentvm1 sigue inaccesible (ver `entorno.md`). Los delegados son todos
 el lote cierra con un PR consolidado a `main`; cada PR de carril lleva
 revisión delegada independiente con artefacto `gh pr review --comment` antes
 de integrarse. Anti-3008: commit + push en cada micro-hito (caracterización,
-núcleo, puertas). Fuente: handoff del despacho del Lote 2 en
-`~/.local/state/syncify/`.
+núcleo, puertas). Fuente: handoff del despacho del Lote 2, versionado el
+2026-11-22 como `docs/historico/HANDOFF-2026-11-21.md`.
 
 **Lección fechada 2026-11-21:** para saber si un carril interrumpido dejó
 commits sin pushear, no te fíes del ref remoto local `origin/<rama>` — puede
