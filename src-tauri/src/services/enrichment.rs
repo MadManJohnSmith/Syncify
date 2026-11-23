@@ -2820,31 +2820,52 @@ impl EnrichmentEngine {
                     return Err("needs_review: provider item contradice el ledger".to_string());
                 }
             };
-        // The legacy UNIQUE(tracks.isrc) prevents two canonical rows with the
-        // same ISRC. Cross-service, that ISRC is the same recording exported by
-        // another provider, not a different edition: reuse the canonical track
-        // and let the source-slot guard below keep same-service editions apart.
-        // Ambiguous ISRCs (more than one canonical row) still fail closed.
+        // Decisión 16 del ADR-0006: ISRC primero, huella después; lo ambiguo no
+        // se fusiona. El ISRC y la huella viven en `services::track_identity`
+        // para que la regla sea una sola y testeable sin el motor entero. Una
+        // huella con más de un candidato deja la evidencia de ambos lados en la
+        // cola de revisión (0115) y sigue como Track propio: no fusiona ni
+        // pierde el ítem.
+        let mut identidad_en_revision = false;
         if existing_track_id.is_none() {
-            if let Some(isrc) = isrc_opt.filter(|value| !value.trim().is_empty()) {
-                // Route 2 (2026-10-18): the unique index is `isrc COLLATE NOCASE`,
-                // so the lookup must be NOCASE too. A case-sensitive compare here
-                // treated `USCGH...` and `uscgh...` as different recordings and
-                // the later INSERT blew up on the unique index.
-                let matches: Vec<(i64,)> =
-                    sqlx::query_as("SELECT id FROM tracks WHERE isrc = ? COLLATE NOCASE")
-                        .bind(isrc.trim())
-                        .fetch_all(&mut *tx)
-                        .await
-                        .map_err(|e| format!("ED-02 ISRC lookup failed: {e}"))?;
-                match matches.as_slice() {
-                    [] => {}
-                    [(track_id,)] => existing_track_id = Some(*track_id),
-                    _ => {
-                        return Err(
-                            "needs_review: ISRC maps to multiple canonical tracks".to_string()
-                        )
-                    }
+            let identity_request = crate::services::track_identity::IdentityRequest {
+                service_id: input.service_id,
+                service_track_id: &input.service_track_id,
+                account_id: Some(input.account_id),
+                title: &track_title,
+                artist: &artist_name,
+                album: Some(album_title.as_str()).filter(|value| !value.trim().is_empty()),
+                duration_ms: input.duration_ms,
+                isrc: isrc_opt,
+                explicit: input.origin_meta.explicit,
+            };
+            match crate::services::track_identity::resolve_identity(&mut tx, &identity_request)
+                .await?
+            {
+                crate::services::track_identity::IdentityOutcome::Linked { track_id, basis } => {
+                    tracing::debug!(
+                        service = %input.service_name,
+                        track_id,
+                        ?basis,
+                        "[#73] item linked to canonical track"
+                    );
+                    existing_track_id = Some(track_id);
+                }
+                crate::services::track_identity::IdentityOutcome::New => {}
+                crate::services::track_identity::IdentityOutcome::Ambiguous { candidates } => {
+                    crate::services::track_identity::record_review(
+                        &mut tx,
+                        &identity_request,
+                        &candidates,
+                    )
+                    .await?;
+                    tracing::info!(
+                        service = %input.service_name,
+                        item = %input.service_track_id,
+                        candidates = candidates.len(),
+                        "[#73] ambiguous fingerprint queued for review; importing as its own track"
+                    );
+                    identidad_en_revision = true;
                 }
             }
         }
@@ -3781,7 +3802,11 @@ impl EnrichmentEngine {
             is_already_present,
             is_new_import,
             completeness,
-            availability_status: "available".to_string(),
+            availability_status: if identidad_en_revision {
+                "needs_review".to_string()
+            } else {
+                "available".to_string()
+            },
         })
     }
 }

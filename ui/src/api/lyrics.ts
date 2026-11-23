@@ -110,6 +110,13 @@ export async function batchFetchLyricsWithProgress(trackIds: number[]): Promise<
 }
 
 /**
+ * Ask the running batch fetch to stop after the track in progress.
+ */
+export async function cancelBatchFetchLyrics(): Promise<boolean> {
+    return invokeCommand<boolean>('cancel_batch_fetch_lyrics', {});
+}
+
+/**
  * Fetch all missing lyrics (auto-detect)
  */
 export async function fetchMissingLyrics(limit?: number): Promise<{
@@ -430,6 +437,7 @@ export const lyricsApi = {
     fetchLyrics,
     batchFetchLyrics,
     batchFetchLyricsWithProgress,
+    cancelBatchFetchLyrics,
     fetchMissingLyrics,
     saveLyrics,
     importLyricsFile,

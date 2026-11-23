@@ -6,7 +6,12 @@
 
 **Estado de revisión:** 2026-11-14 — re-derivación contra el árbol (verificación dirigida de símbolos y comportamiento; D-04b, issue #59). Re-deriva y absorbe la re-revisión del 2026-10-25 (cadena de encolado `queue_downloads` → `commands/queue.rs::add_to_queue`; bucle del worker event-driven con `slot_available_notify`; claim atómico vía `claim_next_item`; `process_download_claimed` + `process_download_internal`; estado `cancelled`; payload de `syncify:download_progress`) y las entradas del 2026-11-06/07 (puerto de proveedores ADR-0023, invalidación de caché de streaming ADR-0024). Ajustado ahora al árbol: `worker.rs` ronda hoy las 3.400 líneas; el arranque del worker ya no es un reset simple — ejecuta en orden `sanitize_stuck_downloads` (TASK-84: descargas `downloading` de más de 1 h a `failed` y staging purgado), `reconcile_downloads_on_startup` (`services/operation_recovery.rs`), `recover_interrupted_jobs` (`download/job.rs`) para el reset restante a `queued`, `repair_unresolved_queue_sources` y la restauración de la concurrencia desde `sync_settings` (SB01: superficie canónica; la KV `dl_concurrent_downloads` queda como lectura tolerante de legado). El barrido periódico cada 60 s aplica la misma sanitización TASK-84. Sigue sin verificar en escritorio real la ejecución de descargas de punta a punta (GUI, red viva): véase README §"Verification and limitations".
 
-**Último cambio:** 2026-11-21 — #338 (follow-up de D05/#117): el gate falla
+**Último cambio:** 2026-11-22 — D16 (issue #128): escritor ID3v2 compartido
+para MP3 (título, artista, álbum, álbum-artista, año, pista/disco, ISRC y APIC)
+con relectura y restauración del original ante fallo, enganchado en la entrega
+del orquestador; el gate de D05 ya lee y exige los tags de MP3 — archivos:
+`download/id3_writer.rs`, `download/orchestrator.rs`, `download/verification.rs`,
+`src-tauri/Cargo.toml`. Previo: 2026-11-21 — #338 (follow-up de D05/#117): el gate falla
 cerrado ante FLAC/M4A ilegible (lector ausente ≠ lectura fallida), el recheck
 estricto no confía en la calidad anunciada, la duración de cabecera documenta
 su límite frente al truncado de cola, Deezer free queda declarado para
@@ -34,6 +39,7 @@ filtra por estado y calidad, comparte la regla de estados con la cobertura de
 - `src-tauri/src/download/lyrics.rs` (LyricsClient for embed)
 - `src-tauri/src/download/songlink.rs` (Songlink/Odesli cross-service)
 - `src-tauri/src/download/identity.rs` (reglas de acuerdo de identidad título/duración compartidas por preflight y verificación en descarga)
+- `src-tauri/src/download/id3_writer.rs` (D16: escritor/lector ID3v2 compartido para MP3, con relectura y restauración)
 - `src-tauri/src/download/resolver.rs` (resolve_download_plan: una única decisión de pista/edición, servicio, cuenta y calidad)
 - `src-tauri/src/download/audio_inspector.rs` (métricas reales del fichero descargado: metaflac/mp4ameta/cabeceras)
 - `src-tauri/src/download/verification.rs` (D05: gate de verificación de entrega — duración, tags, portada — antes de `complete`)
@@ -198,8 +204,9 @@ la costura única gate → `mark_complete`:
   lados (MP3 sin lector de duración, catálogo sin `duration_ms`) no se compara.
 - **Tags releídos** (título, artista, álbum, disco, pista) corroboran el
   catálogo: un tag ausente o distinto cuando el catálogo lo declara es fallo.
-  FLAC vía metaflac, M4A vía mp4ameta; MP3 se salta hasta que aterrice el
-  escritor ID3 de D16 (falta de lector no es fallo).
+  FLAC vía metaflac, M4A vía mp4ameta y MP3 vía el escritor ID3 compartido
+  (`download/id3_writer.rs`, D16): un MP3 sin tag ya no se salta, sus tags son
+  evidencia y se exigen los que el catálogo declara.
 - **Portada válida** (datos presentes con magia JPEG/PNG) solo cuando el
   usuario pidió incrustarla (`embed_artwork`).
 - **Calidad física manda**: una decisión `RejectedQuality` de la política
@@ -242,8 +249,8 @@ usa el worker, no buscando cadenas en el fuente; en producción `mark_complete`
 no tiene otra llamada, así que no hay ruta de promoción que esquive el gate.
 
 **Límites de evidencia (#338).** «Falta de lector» y «lectura fallida» son
-cosas distintas: MP3 sigue sin lector hasta D16 y sus checks se saltan, pero un
-FLAC/M4A no vacío que metaflac/mp4ameta no puede parsear **falla cerrado**. Bajo
+cosas distintas: un formato sin lector (p. ej. WAV) se salta, pero un
+FLAC/M4A/MP3 no vacío que su lector no puede parsear **falla cerrado**. Bajo
 política estricta, una reinspección física fallida tampoco cae a los valores
 anunciados por el proveedor. La duración verificada sale de la cabecera
 (STREAMINFO/mvhd): detecta un preview o un fichero equivocado con cabecera más
@@ -278,6 +285,53 @@ plan; cuando el adaptador aterrice debe pasar la capa de la cuenta en vez del
 `ProviderDelivery.account_id` y el ledger escribe `downloads.account_id` con
 la cuenta que entregó (fallback: `resolved_account_id` de la fila), como
 evidencia de enrutado para el panel de jobs.
+
+### Tagging MP3/ID3 compartido (D16 — issue #128)
+
+MP3 no tenía escritor: Qobuz/Tidal etiquetan FLAC con `syncify-flac-writer` y
+M4A/AAC con `mp4ameta`, pero un MP3 salía sin ID3. D16 añade
+`download/id3_writer.rs` como **única** implementación de tagging MP3 y la
+engancha en el orquestador, no en cada adaptador:
+
+- **Crate `id3` 1.17** (ID3v2.3). Se eligió frente a `lofty` porque solo añade
+  un paquete a `Cargo.lock` sin dependencias transitivas nuevas —`bitflags 2`,
+  `byteorder 1` y `flate2` ya estaban— y frente a un writer propio porque los
+  encodings y el tamaño syncsafe son donde se rompe la compatibilidad con
+  reproductores externos. ID3v2.3 es la versión que leen sin ambigüedad los
+  reproductores de escritorio; v2.4 sustituye `TYER` por `TDRC` y hay lectores
+  antiguos que no la interpretan.
+- **Qué escribe**: título (`TIT2`), artista (`TPE1`), álbum (`TALB`),
+  álbum-artista (`TPE2`), año (`TYER`), pista/total (`TRCK`), disco/total
+  (`TPOS`), ISRC (`TSRC`, si el catálogo lo trae) y portada frontal (`APIC`).
+  Es parche: un campo `None` conserva el frame existente, para no borrar un
+  APIC que el adaptador ya incrustó. Un total de pistas desconocido (el
+  pipeline lo deja en 1) no se escribe como `5/1`.
+- **Contrato de fallo**: antes de escribir copia el original a un hermano
+  temporal; tras escribir **relee y compara campo a campo**. Si la escritura o
+  la relectura fallan, restaura el original byte a byte y devuelve error. Si
+  la restauración también falla, el error lo declara explícitamente
+  (`RestoreFailed`). Un MP3 no se entrega «a medias».
+- **Enganche de entrega**: `DownloadOrchestrator::tag_mp3_delivery` corre
+  después de que el proveedor entregue el fichero y antes de que el resultado
+  salga del orquestador. Para FLAC/M4A es un no-op. Deezer/SoundCloud (D11,
+  D12) **aún no tienen adaptador nativo**: cuando lo tengan, cualquier `.mp3`
+  que produzcan pasa por este mismo paso sin una segunda implementación. La
+  portada viaja como `cover_url`, no como bytes: el hook la descarga y la
+  añade con `Mp3Tags::with_cover`. Si la URL falta o la descarga falla, se omite
+  el APIC y no se tumba la entrega; el gate **no exige** portada en MP3 hasta
+  que un adaptador (D11/D12) aporte la URL. FLAC/M4A conservan su gate de
+  portada sin cambios.
+- **Relectura de parche**: la comparación solo exige los campos pedidos
+  (`Some`). Un `None` conserva el frame existente y no se compara, para que un
+  MP3 ya etiquetado no se rechace por no repetir todos los campos.
+- **Verificación**: el gate de D05 lee el ID3 con el mismo módulo. Un MP3 sin
+  tag es `Readable` con campos ausentes (falla los tags que el catálogo
+  declara), y un tag corrupto es `Unreadable` (falla cerrado), igual que
+  FLAC/M4A.
+- **Sin transcodificar y sin migración**: el test compara el payload de audio
+  antes y después de etiquetar y exige igualdad byte a byte. El fixture real
+  es 0,3 s de silencio LAME embebido en el test (no se versiona un binario) y
+  el test parsea la cabecera ID3v2.3 con un lector independiente del crate.
 
 ### Interacción con la sesión de reproducción (P6 — ADR-0024)
 

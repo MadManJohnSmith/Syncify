@@ -12,6 +12,16 @@ aquí solo queda lo aprendido con fecha. Relacionadas:
   exportaciones específicas de máquina no van en `tools/prepush-check.sh`.
   Fuente: `docs/historico/HANDOFF-2026-11-13.md` §Gotcha de entorno.
 
+## Push lento en un worktree con target frío
+
+- **2026-11-22, medido**: un `git push` desde un worktree de delegado puede
+  tardar minutos sin tráfico TCP visible y parece colgado. La causa es el
+  hook pre-push local (`tools/prepush-check.sh`): corre fmt + clippy con el
+  target por defecto del worktree, que puede estar frío. No es la red; no
+  matar el proceso. Contramedida: exportar el `CARGO_TARGET_DIR` del carril
+  antes de pushear, o esperar la puerta. Fuente: push del carril LY03
+  (2026-11-22), interrumpido una vez por confundirlo con un cuelgue.
+
 ## `CARGO_TARGET_DIR` compartido entre checkouts
 
 - **2026-11-13, medido**: los binarios de test hornean `CARGO_MANIFEST_DIR`
@@ -118,6 +128,12 @@ aquí solo queda lo aprendido con fecha. Relacionadas:
   máquina, ≤3 concurrentes» de la entrada anterior queda sustituido por ≤3
   carriles por PC en dos PCs (PC-A y PC-B) con afinidad de máquina por
   carril; ver el bloque 2026-11-22 de [`modo-ejecucion.md`](modo-ejecucion.md).
+- **2026-11-22, medido al despachar el Lote 3**: `t3_environment_links`
+  muestra TARDIS y agentvm2 `reachable`, pero no se re-verificó su lista de
+  proyectos; la última medición (2026-11-21, entrada anterior) sigue
+  diciendo que solo gallifrey tiene Syncify registrado. El Lote 3 arranca
+  con 3 carriles locales (PC-A) y los carriles PC-B esperan slot; las
+  puertas cargo van bajo `flock` por el historial de OOM.
 
 ## `/tmp` es efímero
 
