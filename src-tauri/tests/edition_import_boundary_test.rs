@@ -52,7 +52,7 @@ fn input(
     }
 }
 #[tokio::test]
-async fn distinct_items_without_recording_evidence_stay_distinct() {
+async fn fingerprint_links_items_without_isrc_and_keeps_editions() {
     let pool = setup().await;
     let sid: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'tidal'")
         .fetch_one(&pool)
@@ -78,12 +78,15 @@ async fn distinct_items_without_recording_evidence_stay_distinct() {
         .enrich_and_persist_sync_track(&pool, b)
         .await
         .unwrap();
-    assert_ne!(first.track_id, second.track_id);
+    // #73: sin ISRC, artista + título + duración son evidencia de grabación;
+    // los dos ítems enlazan al mismo Track, pero cada edición conserva su
+    // release en el ledger. Antes de #73 este caso duplicaba el Track.
+    assert_eq!(first.track_id, second.track_id);
     let links: i64 = sqlx::query_scalar("SELECT count(*) FROM edition_item_tracks")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(links, 2);
+    assert_eq!(links, 2, "las dos ediciones siguen registradas");
 }
 #[tokio::test]
 async fn same_isrc_different_item_links_edition_without_overwriting_slot() {
