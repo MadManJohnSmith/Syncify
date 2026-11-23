@@ -1,6 +1,6 @@
 """Puerta de cifras del AGENTS.md.
 
-El AGENTS.md anota recuentos a mano ("362 objetivos de test", "481 tests",
+El AGENTS.md anota recuentos a mano ("362 objetivos de test", "501 tests",
 "158 ficheros de test UI", "los 13 tests #[ignore]", "~19 escrituras
 silenciosas") y eran la unica cifra del repo que ningun gate verificaba: en
 la sesion de cierres del 2026-11-11 cuatro PRs chocaron en rebase por esas
@@ -18,9 +18,9 @@ Cubre lo derivable de forma hermetica. Quedan fuera, a proposito:
   que si es medible.
 - "(2 skipped)" de la suite Python: los skips son condicionales
   (skipIf/skipUnless) y dependen de la plataforma.
-- La cifra "~19" no se mide aqui: su fuente es BASELINE en
-  `test_silent_write_ratchet.py`; esta puerta solo verifica que el AGENTS.md
-  la cite igual, para que no se separen.
+- La cifra "~19" se lee del BASELINE de `test_silent_write_ratchet.py` (una
+  sola fuente de verdad); esta puerta verifica que el AGENTS.md la cite igual,
+  para que no se separen.
 
 El conteo Python usa el interprete que ejecuta la suite: fuera de `.venv` la
 discovery ya pierde modulos (4 import errors) y esta puerta falla con el
