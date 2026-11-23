@@ -658,7 +658,7 @@
         <div v-if="showBatchProgress" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-8">
           <div class="bg-white dark:bg-surface-dark rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
             <div class="px-6 py-4 border-b border-gray-200 dark:border-border-dark">
-              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Fetching Lyrics</h3>
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white">{{ batchProgress.cancelling ? 'Cancelling Lyrics Fetch' : 'Fetching Lyrics' }}</h3>
             </div>
             
             <div class="p-6">
@@ -694,9 +694,14 @@
                 </span>
               </div>
               
-              <!-- Close Button (the backend loop continues independently) -->
-              <button @click="showBatchProgress = false" class="w-full py-2.5 border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 transition-colors">
-                Close (the process keeps running in the background)
+              <!-- Cancel Button (the backend stops after the track in progress) -->
+              <button
+                data-testid="batch-cancel"
+                @click="requestCancelBatchFetch"
+                :disabled="batchProgress.cancelling"
+                class="w-full py-2.5 border border-gray-200 dark:border-border-dark hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-lg text-sm font-medium text-gray-700 dark:text-gray-300 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {{ batchProgress.cancelling ? 'Cancelling after the current track…' : 'Cancel (stops after the current track)' }}
               </button>
             </div>
           </div>
@@ -2324,9 +2329,26 @@ const batchProgress = ref({
   success: 0,
   failed: 0,
   skipped: 0,
+  cancelled: false,
+  cancelling: false,
 })
+const isBatchRunning = ref(false)
 const isUpgrading = ref(false)
 const isEmbeddingBatch = ref(false)
+
+/** Asks the backend to stop the batch after the track currently in flight. */
+async function requestCancelBatchFetch(): Promise<void> {
+  if (!isBatchRunning.value || batchProgress.value.cancelling) return
+  batchProgress.value.cancelling = true
+  try {
+    await lyricsApi.cancelBatchFetchLyrics()
+    notify('Cancelling after the current track…', 'info')
+  } catch (err) {
+    console.error('Cancel failed:', err)
+    batchProgress.value.cancelling = false
+    notify(err instanceof Error ? err.message : String(err), 'error')
+  }
+}
 
 /** Persists the user's sync preference and starts the batch fetch. */
 async function applyFetchMode(mode: FetchMode) {
@@ -2345,8 +2367,10 @@ async function applyFetchMode(mode: FetchMode) {
 }
 
 async function batchFetchSelectedLyrics(mode: FetchMode = 'prefer_synced') {
+  if (isBatchRunning.value) return
   const targets = selectedTracks.value.length > 0 ? [...selectedTracks.value] : selectedTrackId.value ? [selectedTrackId.value] : []
   if (targets.length === 0) return
+  isBatchRunning.value = true
   showBatchProgress.value = true
   batchProgress.value = {
     current: 0,
@@ -2355,6 +2379,8 @@ async function batchFetchSelectedLyrics(mode: FetchMode = 'prefer_synced') {
     success: 0,
     failed: 0,
     skipped: 0,
+    cancelled: false,
+    cancelling: false,
   }
   
   // Subscribe to progress events
@@ -2377,6 +2403,8 @@ async function batchFetchSelectedLyrics(mode: FetchMode = 'prefer_synced') {
         batchProgress.value.failed++
       } else if (payload.status === 'skipped') {
         batchProgress.value.skipped++
+      } else if (payload.status === 'cancelled') {
+        batchProgress.value.cancelled = true
       }
     })
     activeListeners.add(unlisten)
@@ -2387,7 +2415,8 @@ async function batchFetchSelectedLyrics(mode: FetchMode = 'prefer_synced') {
     batchProgress.value.skipped = result.skipped
 
     // Enforce "Synced only": drop any freshly fetched unsynced payloads.
-    if (mode === 'synced_only') {
+    // A cancelled run never reached every target, so it must not prune.
+    if (!batchProgress.value.cancelled && mode === 'synced_only') {
       let dropped = 0
       for (const id of targets) {
         const lyr = await lyricsApi.getLyrics(id)
@@ -2401,6 +2430,10 @@ async function batchFetchSelectedLyrics(mode: FetchMode = 'prefer_synced') {
       }
     }
 
+    if (batchProgress.value.cancelled) {
+      notify(`Lyrics fetch cancelled after ${batchProgress.value.current} of ${batchProgress.value.total} tracks`, 'info')
+    }
+
     await refreshAfterBatch()
   } catch (err) {
     console.error('Batch fetch failed:', err)
@@ -2411,6 +2444,7 @@ async function batchFetchSelectedLyrics(mode: FetchMode = 'prefer_synced') {
       activeListeners.delete(unlisten)
       unlisten()
     }
+    isBatchRunning.value = false
     showBatchProgress.value = false
     clearSelection()
   }
