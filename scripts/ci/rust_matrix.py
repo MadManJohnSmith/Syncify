@@ -3,7 +3,7 @@
 
 La proteccion de `main` exige seis contextos con sufijo de matriz
 (`gh api repos/MadManJohnSmith/Syncify/branches/main/protection/required_status_checks`),
-dos de ellos `(windows-latest)` para Rust, Frontend y Python. Un PR a `main`
+tres de ellos `(windows-latest)`: Rust, Frontend y Python. Un PR a `main`
 tiene que producir la pata Windows de Rust o el merge queda bloqueado por un
 check que nunca aparece. Un PR de carril a `wave/*` no: no hay proteccion que
 la exija y solo paga el tiempo de la pata.

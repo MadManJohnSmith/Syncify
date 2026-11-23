@@ -36,7 +36,7 @@ jobs:
       with:
         base: ${{ github.event.pull_request.base.sha || github.event.before }}
         ref: ${{ github.sha }}
-        filters: "rust:\n  - 'src-tauri/**'\n  - 'crates/**'\n  - '.github/workflows/ci.yml'\nfrontend:\n  - 'ui/**'\n  - '.github/workflows/ci.yml'\npython:\n  - 'scripts/**'\n  - '.github/workflows/ci.yml'\ndocs:\n  - 'docs/**'\n  - '**.md'\n  - 'AGENTS.md'\n  - 'GLOSSARY.md'\n  - '.github/workflows/docs-check.yml'\n"
+        filters: "rust:\n  - 'src-tauri/**'\n  - 'crates/**'\n  - '.github/workflows/ci.yml'\nfrontend:\n  - 'ui/**'\n  - '.github/workflows/ci.yml'\npython:\n  - 'scripts/**'\n  - 'tools/**'\n  - '.github/workflows/ci.yml'\ndocs:\n  - 'docs/**'\n  - '**.md'\n  - 'AGENTS.md'\n  - 'GLOSSARY.md'\n  - '.github/workflows/ci.yml'\n  - '.github/workflows/docs-check.yml'\n"
     - id: areas
       name: Resolver areas afectadas (fallback incluido)
       env:
@@ -328,6 +328,13 @@ jobs:
     - name: Checkout del repositorio
       if: contains(fromJSON(needs.changed.outputs.areas), 'python')
       uses: actions/checkout@v4
+      with:
+        # #368: la suite Python incluye `test_agents_claims`; se mide el árbol
+        # del head del PR, no el merge, para que un test Python añadido en otro
+        # carril no invalide el recuento. El consolidado a main sigue siendo la
+        # red final con la matriz completa.
+        repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
     - name: Configurar Python
       if: contains(fromJSON(needs.changed.outputs.areas), 'python')
       uses: actions/setup-python@v5
