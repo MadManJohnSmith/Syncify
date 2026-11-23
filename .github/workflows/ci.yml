@@ -235,7 +235,7 @@ jobs:
       # el detalle por fichero lo da
       # `CARGO_LOG=cargo::core::compiler::fingerprint=info`.
       run: |
-        set -o pipefail
+        set -euo pipefail
         log="$RUNNER_TEMP/batch_50.log"
         cargo test --locked --test batch_50_audit_test -- --test-threads=1 2>&1 | tee "$log"
         if grep -q "Compiling syncify-tauri" "$log"; then
@@ -339,8 +339,8 @@ jobs:
     # de frontend; el toolchain Rust solo hace falta para `cargo metadata`
     # con el que test_agents_claims mide los objetivos de test. Las
     # dependencias de scripts/ sí hacen falta: la discovery cuenta imports y
-    # sin ellas pierde 37 casos (443 en vez de 480) y la cifra del AGENTS.md
-    # falla por el entorno, no por el árbol.
+    # sin ellas pierde casos, así que la cifra del AGENTS.md fallaría por el
+    # entorno, no por el árbol.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

@@ -246,7 +246,7 @@ class CiNarrativeTests(unittest.TestCase):
         """
         step = self._rust_cache_step()
         workspaces = (step.get("with") or {}).get("workspaces")
-        if workspaces is None:
+        if workspaces is None or not str(workspaces).strip():
             return  # the documented default is already `. -> target`
         cached = []
         for entry in str(workspaces).splitlines():
