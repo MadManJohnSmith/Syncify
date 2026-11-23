@@ -466,6 +466,65 @@ impl DownloadOrchestrator {
         }
     }
 
+    /// D16 (#128): etiqueta ID3v2 el MP3 entregado y relee los tags antes de
+    /// devolverlo. No-op para FLAC/M4A (cada uno tiene su escritor).
+    ///
+    /// Es el ÚNICO enganche en el camino de entrega: cualquier adaptador
+    /// futuro de Deezer/SoundCloud (D11/D12) que produzca `.mp3` pasa por aquí
+    /// sin una segunda implementación. La portada no viaja en
+    /// `DownloadRequest`; si el adaptador ya incrustó un APIC, el parche de
+    /// texto lo conserva.
+    async fn tag_mp3_delivery(
+        request: &DownloadRequest,
+        res: DownloadResult,
+    ) -> Result<DownloadResult> {
+        let path = std::path::PathBuf::from(&res.file_path);
+        if !crate::download::id3_writer::is_mp3_file(&path) {
+            return Ok(res);
+        }
+        let mut tags = crate::download::id3_writer::Mp3Tags::from_download_request(request);
+        // La portada no viaja en `DownloadRequest`, solo su URL: se descarga
+        // aquí, en el único enganche de entrega MP3. Un fallo de red no tumba
+        // la entrega; solo deja el APIC sin escribir.
+        if let Some(url) = request
+            .cover_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        {
+            match reqwest::get(url).await {
+                Ok(response) => match response.bytes().await {
+                    Ok(bytes) => {
+                        match crate::download::id3_writer::Mp3Cover::from_bytes(bytes.to_vec()) {
+                            Ok(cover) => tags = tags.with_cover(cover),
+                            Err(error) => {
+                                warn!(url, %error, "[D16] portada no válida; se omite el APIC")
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        warn!(url, %error, "[D16] no se pudo leer la portada; se omite el APIC")
+                    }
+                },
+                Err(error) => {
+                    warn!(url, %error, "[D16] no se pudo descargar la portada; se omite el APIC")
+                }
+            }
+        }
+        let tagged_path = path.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::download::id3_writer::apply_and_verify_mp3_tags(&tagged_path, &tags)
+        })
+        .await
+        .map_err(|error| anyhow!("Id3TaggingFailed: task cancelled: {error}"))?
+        .map_err(|error| anyhow!("Id3TaggingFailed: {error}"))?;
+        debug!(
+            file = %path.display(),
+            "[Orchestrator] D16: ID3v2 escrito y releído en la entrega MP3"
+        );
+        Ok(res)
+    }
+
     /// Download a track with cooperative cancellation support
     /// Resolve an equivalent edition on Tidal/Qobuz for a stale source following strict equivalence hierarchy
     pub async fn resolve_edition_identity_fallback(
@@ -1552,6 +1611,15 @@ impl DownloadOrchestrator {
                 &primary_service,
             )
             .await
+        };
+
+        // D16 (#128): cualquier entrega MP3 —hoy Qobuz/Tidal en 320, mañana
+        // Deezer/SoundCloud— pasa por el ÚNICO escritor ID3 antes de salir del
+        // orquestador. El gate de D05 relee esos tags después. Un fallo de
+        // escritura o relectura restaura el original y falla la descarga.
+        let result = match result {
+            Ok(res) => Self::tag_mp3_delivery(request, res).await,
+            Err(error) => Err(error),
         };
 
         // DLX-01 (#42): cronología por pista como artefacto de medición. Opt-in
@@ -5462,5 +5530,60 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(invalid, 1, "la cuenta queda marcada para reautenticar");
+    }
+
+    /// D16 (#128): el enganche único de entrega etiqueta cualquier `.mp3` con
+    /// los metadatos del catálogo y no toca FLAC. No simula un adaptador: llama
+    /// al mismo paso que corre `download_track_cancellable`.
+    #[tokio::test]
+    async fn d16_delivery_tags_mp3_and_leaves_other_formats_untouched() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mp3 = dir.path().join("deezer.mp3");
+        // Frame MPEG mínimo: suficiente para reconocerlo como MP3.
+        std::fs::write(&mp3, [0xFF, 0xFB, 0x90, 0x64, 0, 0, 0, 0]).unwrap();
+        let request = DownloadRequest {
+            track_name: "Tema".to_string(),
+            artist_name: "Artista".to_string(),
+            album_name: "Álbum".to_string(),
+            album_artist: Some("Artista del Álbum".to_string()),
+            release_date: Some("2023-05-01".to_string()),
+            track_number: 4,
+            total_tracks: 10,
+            disc_number: 1,
+            isrc: Some("USRC17607839".to_string()),
+            ..DownloadRequest::default()
+        };
+        let delivered = DownloadResult {
+            file_path: mp3.to_string_lossy().into_owned(),
+            ..DownloadResult::default()
+        };
+
+        DownloadOrchestrator::tag_mp3_delivery(&request, delivered)
+            .await
+            .expect("el paso de entrega etiqueta el MP3");
+
+        let tags = crate::download::id3_writer::read_mp3_tags(&mp3).unwrap();
+        assert_eq!(tags.title.as_deref(), Some("Tema"));
+        assert_eq!(tags.artist.as_deref(), Some("Artista"));
+        assert_eq!(tags.album.as_deref(), Some("Álbum"));
+        assert_eq!(tags.album_artist.as_deref(), Some("Artista del Álbum"));
+        assert_eq!(tags.year, Some(2023));
+        assert_eq!(tags.track_number, Some(4));
+        assert_eq!(tags.track_total, Some(10));
+        assert_eq!(tags.disc_number, Some(1));
+        assert_eq!(tags.isrc.as_deref(), Some("USRC17607839"));
+
+        // Un FLAC no pasa por el escritor ID3 ni cambia un byte.
+        let flac = dir.path().join("qobuz.flac");
+        let original = b"fLaC\x80\x00\x00\x22".to_vec();
+        std::fs::write(&flac, &original).unwrap();
+        let delivered = DownloadResult {
+            file_path: flac.to_string_lossy().into_owned(),
+            ..DownloadResult::default()
+        };
+        DownloadOrchestrator::tag_mp3_delivery(&request, delivered)
+            .await
+            .expect("FLAC no se toca");
+        assert_eq!(std::fs::read(&flac).unwrap(), original);
     }
 }
