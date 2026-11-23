@@ -154,7 +154,10 @@ async fn fingerprint_candidates(
     conn: &mut SqliteConnection,
     request: &IdentityRequest<'_>,
 ) -> Result<Vec<IdentityCandidate>, String> {
-    let Some(duration_ms) = request.duration_ms else {
+    // Una duración ausente, 0 o negativa no es evidencia: el repo ya trata
+    // `> 0` como conocido (favorites, download/identity) y hay rutas que
+    // pasan `Some(0)` sin filtrar.
+    let Some(duration_ms) = request.duration_ms.filter(|duration| *duration > 0) else {
         return Ok(Vec::new());
     };
     // Sin artista y título utilizables no hay huella: el título solo no enlaza.
@@ -175,9 +178,10 @@ async fn fingerprint_candidates(
             SELECT t.id, t.title, t.duration_ms, t.isrc, t.explicit, al.title, a.name
             FROM tracks t
             LEFT JOIN albums al ON al.id = t.album_id
-            JOIN track_artists ta ON ta.track_id = t.id AND ta.role = 'primary'
+            JOIN track_artists ta ON ta.track_id = t.id
+                AND (ta.role IN ('primary', 'main') OR ta.role IS NULL)
             JOIN artists a ON a.id = ta.artist_id
-            WHERE t.duration_ms BETWEEN ? AND ?
+            WHERE t.duration_ms BETWEEN ? AND ? AND t.duration_ms > 0
             ORDER BY t.id, a.id
             "#,
     )

@@ -643,6 +643,124 @@ async fn escala_de_referencia_1557_sin_isrc_y_834_de_apple() {
     );
 }
 
+/// #73: las ediciones manuales escriben `role='main'` y las filas legacy
+/// pueden tener NULL; ambos son primarios para la huella, como en el resto
+/// del repo. Sin esto, un Track editado a mano se duplicaba en el siguiente
+/// sync.
+#[tokio::test]
+async fn manual_main_and_null_roles_are_fingerprint_candidates() {
+    let pool = setup().await;
+    let tidal = service_id(&pool, "tidal").await;
+    let acc = account(&pool, tidal).await;
+    let engine = EnrichmentEngine::new();
+
+    for (role, item) in [(Some("main"), "manual-main"), (None, "manual-null")] {
+        let artist = format!("Role Artist {item}");
+        let title = format!("Role Song {item}");
+        let artist_id: i64 =
+            sqlx::query_scalar("INSERT INTO artists(name) VALUES (?) RETURNING id")
+                .bind(&artist)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let track_id: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks(title,duration_ms) VALUES (?, 240000) RETURNING id",
+        )
+        .bind(&title)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO track_artists(track_id, artist_id, role) VALUES (?, ?, ?)")
+            .bind(track_id)
+            .bind(artist_id)
+            .bind(role)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let imported = engine
+            .enrich_and_persist_sync_track(
+                &pool,
+                input(
+                    tidal,
+                    acc,
+                    TrackFixture {
+                        service: "tidal",
+                        item,
+                        artist: &artist,
+                        title: &title,
+                        album: "Album",
+                        duration_ms: Some(240_500),
+                        isrc: None,
+                    },
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(imported.track_id, track_id, "role {role:?} debe enlazar");
+        assert!(!imported.is_new_global_track);
+    }
+}
+
+/// #73: una duración 0 o negativa no es evidencia; hay rutas que pasan
+/// `Some(0)` sin filtrar y no deben enlazar por artista + título.
+#[tokio::test]
+async fn zero_or_negative_duration_is_not_fingerprint_evidence() {
+    let pool = setup().await;
+    let tidal = service_id(&pool, "tidal").await;
+    let acc = account(&pool, tidal).await;
+    let engine = EnrichmentEngine::new();
+
+    let artist_id: i64 =
+        sqlx::query_scalar("INSERT INTO artists(name) VALUES ('No Duration Artist') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let track_id: i64 = sqlx::query_scalar(
+        "INSERT INTO tracks(title,duration_ms) VALUES ('No Duration Song', 240000) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO track_artists(track_id, artist_id, role) VALUES (?, ?, 'primary')")
+        .bind(track_id)
+        .bind(artist_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    for duration in [0_i64, -1_i64] {
+        let imported = engine
+            .enrich_and_persist_sync_track(
+                &pool,
+                input(
+                    tidal,
+                    acc,
+                    TrackFixture {
+                        service: "tidal",
+                        item: if duration == 0 {
+                            "zero-duration"
+                        } else {
+                            "negative-duration"
+                        },
+                        artist: "No Duration Artist",
+                        title: "No Duration Song",
+                        album: "Album",
+                        duration_ms: Some(duration),
+                        isrc: None,
+                    },
+                ),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            imported.track_id, track_id,
+            "duración {duration} no puede enlazar"
+        );
+        assert!(imported.is_new_global_track);
+    }
+}
+
 const MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 const PREVIOUS_VERSION: i64 = 114;
 const NEW_VERSION: i64 = 115;

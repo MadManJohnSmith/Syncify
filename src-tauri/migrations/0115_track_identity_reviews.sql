@@ -8,8 +8,11 @@
 -- la evidencia de ambos lados para que una persona resuelva. El título por sí
 -- solo nunca enlaza, así que no genera fila.
 --
--- Esta migración no toca `tracks` ni `track_sources` (0002, 0097): la identidad
--- se calcula desde lo que ya existe y la cola es un registro aparte.
+-- Esta migración no toca las columnas de `tracks` ni `track_sources` (0002,
+-- 0097): la identidad se calcula desde lo que ya existe y la cola es un
+-- registro aparte. Sí añade el índice aditivo `idx_tracks_duration_identity`
+-- (abajo), que cambia el plan de la búsqueda por duración; el test de
+-- duplicados lo tiene en cuenta.
 --
 -- `status` es la máquina de estados de la revisión:
 --   pending           → el sync la dejó abierta, nadie ha decidido
