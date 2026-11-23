@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import LyricsView from '@/views/LyricsView.vue';
-import { mockInvoke, resetMocks } from '../setup';
+import { mockInvoke, resetMocks, emitMockEvent } from '../setup';
 import type { LibraryTrack, Lyrics } from '@/api/types';
 
 function createTestTrack(overrides: Partial<LibraryTrack> = {}): LibraryTrack {
@@ -395,7 +395,7 @@ describe('LyricsView (fully wired tab)', () => {
         expect(writes[0].contents).toContain('[00:01.00]First line');
     });
 
-    it('characterization: closing the batch dialog only hides it while the backend keeps running', async () => {
+    it('the cancel button stops the backend loop after the track in flight', async () => {
         let resolveBatch!: (value: unknown) => void;
         const batch = new Promise((resolve) => { resolveBatch = resolve; });
         const invoked: string[] = [];
@@ -407,6 +407,7 @@ describe('LyricsView (fully wired tab)', () => {
             };
             if (cmd === 'update_lyrics_config') return { ...CONFIG };
             if (cmd === 'batch_fetch_lyrics_with_progress') return batch;
+            if (cmd === 'cancel_batch_fetch_lyrics') return true;
             if (cmd === 'get_lyrics_stats') return { total_tracks: 1, with_lyrics: 0, synced_lyrics: 0, embedded_lyrics: 0 };
             if (cmd === 'get_lyrics_providers') return PROVIDERS;
             if (cmd === 'get_lyrics_config') return CONFIG;
@@ -423,17 +424,79 @@ describe('LyricsView (fully wired tab)', () => {
         await flushPromises();
 
         expect(document.body.textContent).toContain('Fetching Lyrics');
-        const close = Array.from(document.querySelectorAll('button'))
-            .find(b => b.textContent?.includes('Close'))!;
-        close.click();
+        const cancelBtn = document.querySelector('[data-testid="batch-cancel"]') as HTMLButtonElement;
+        cancelBtn.click();
         await flushPromises();
 
-        // The dialog is gone, but the loop was never asked to stop.
+        // The dialog stays open, visibly waiting for the in-flight track, and
+        // the backend was actually asked to stop.
+        expect(invoked).toContain('cancel_batch_fetch_lyrics');
+        expect(document.body.textContent).toContain('Cancelling after the current track');
+        expect(cancelBtn.disabled).toBe(true);
+
+        emitMockEvent('lyrics-fetch-progress', {
+            status: 'cancelled', current: 1, total: 2, track: 'Batch Song', message: '',
+        });
+        resolveBatch({ fetched: 1, failed: 0, skipped: 0 });
+        await flushPromises();
+
+        // A cancelled run ends without the running dialog lingering.
         expect(document.body.textContent).not.toContain('Fetching Lyrics');
-        expect(invoked).not.toContain('cancel_batch_fetch_lyrics');
+        expect(document.querySelector('[data-testid="batch-cancel"]')).toBeNull();
+    });
 
-        resolveBatch({ fetched: 0, failed: 0, skipped: 1 });
+    it('a batch started after a cancelled one starts clean and can complete', async () => {
+        const deferred: Array<(value: unknown) => void> = [];
+        let cancelCalls = 0;
+        mockInvoke((cmd) => {
+            if (cmd === 'get_library') return {
+                tracks: [createTestTrack({ id: 5, title: 'Batch Song', lyrics_type: 'none' })],
+                total: 1, offset: 0, limit: 500, has_more: false,
+            };
+            if (cmd === 'update_lyrics_config') return { ...CONFIG };
+            if (cmd === 'batch_fetch_lyrics_with_progress') {
+                return new Promise((resolve) => { deferred.push(resolve); });
+            }
+            if (cmd === 'cancel_batch_fetch_lyrics') { cancelCalls++; return true; }
+            if (cmd === 'get_lyrics_stats') return { total_tracks: 1, with_lyrics: 0, synced_lyrics: 0, embedded_lyrics: 0 };
+            if (cmd === 'get_lyrics_providers') return PROVIDERS;
+            if (cmd === 'get_lyrics_config') return CONFIG;
+            return null;
+        });
+
+        const wrapper = mount(LyricsView);
         await flushPromises();
+
+        const startBatch = async () => {
+            await wrapper.find('input[type="checkbox"]').trigger('click');
+            await flushPromises();
+            await wrapper.findAll('button').find(b => b.text().includes('Fetch Lyrics'))!.trigger('click');
+            await wrapper.findAll('button').find(b => b.text().trim() === 'Prefer synced')!.trigger('click');
+            await flushPromises();
+        };
+
+        await startBatch();
+        (document.querySelector('[data-testid="batch-cancel"]') as HTMLButtonElement).click();
+        await flushPromises();
+        emitMockEvent('lyrics-fetch-progress', {
+            status: 'cancelled', current: 1, total: 2, track: 'Batch Song', message: '',
+        });
+        deferred[0]({ fetched: 1, failed: 0, skipped: 0 });
+        await flushPromises();
+        expect(document.body.textContent).not.toContain('Fetching Lyrics');
+        expect(cancelCalls).toBe(1);
+
+        // Second run: the previous cancellation must not leak into it.
+        await startBatch();
+        expect(document.body.textContent).toContain('Fetching Lyrics');
+        expect(document.body.textContent).not.toContain('Cancelling');
+        emitMockEvent('lyrics-fetch-progress', {
+            status: 'completed', current: 2, total: 2, track: 'Batch Song', message: '',
+        });
+        deferred[1]({ fetched: 2, failed: 0, skipped: 0 });
+        await flushPromises();
+        expect(cancelCalls).toBe(1);
+        expect(document.body.textContent).not.toContain('Fetching Lyrics');
     });
 
     it('"Synced only" fetch mode persists min_sync_level and enforces it after the batch', async () => {
