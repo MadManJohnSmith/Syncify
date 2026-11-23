@@ -52,6 +52,12 @@ Medido el 2026-11-21 sobre git y GitHub; decidido por el dueño el
   del consolidado (`193d329`), el consolidado `e43ea3a` llevó los docs a
   `main` y `dev` avanzó por fast-forward. Se adopta ese patrón: merge de
   `dev` en la wave antes del consolidado.)*
+- **Coste de CI en wave vs main** (2026-11-23): la pata `windows-latest` del
+  job Rust solo corre en push a `main` y en PRs con base `main`; los PRs a
+  `wave/*` pagan solo Ubuntu. Los jobs de Docs y Python miden el **head** del
+  PR, no el merge, para que los recuentos de `AGENTS.md` no choquen entre
+  carriles. `main` conserva los 6 contextos con `strict=true`. Fuente: #368,
+  PR #380; helper de recuentos de #368.
 - **Protección de `main`** (cambiada el 2026-11-21, comprobada el
   2026-11-22 con
   `gh api repos/MadManJohnSmith/Syncify/branches/main/protection/required_status_checks`):
