@@ -9,6 +9,8 @@ pub mod breaker;
 pub mod entitlements;
 pub mod http_client;
 pub mod identity;
+// D16 (#128): escritor ID3v2 compartido para entregas MP3.
+pub mod id3_writer;
 pub mod job;
 pub mod job_events;
 pub mod jobs;

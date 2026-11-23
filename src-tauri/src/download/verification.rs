@@ -18,10 +18,11 @@
 //! la biblioteca.
 //!
 //! Alcance honesto de los formatos: FLAC se verifica completo (metaflac).
-//! M4A/AAC se verifica con `mp4ameta`. MP3 se entrega sin lector de tags
-//! mientras no exista el escritor ID3 (D16): su duración y bitrate no son
-//! legibles aquí, así que sus checks se saltan por falta de evidencia, nunca
-//! se inventa un fallo.
+//! M4A/AAC se verifica con `mp4ameta`. MP3 se lee con el escritor ID3v2
+//! compartido (`download/id3_writer.rs`, D16): sus tags y portada son
+//! evidencia desde que existe lector, y un MP3 sin tags falla los checks que
+//! el catálogo declara. La duración MP3 sigue sin lector aquí (`audio_inspector`
+//! no la calcula), así que ese check se salta por falta de evidencia.
 //!
 //! #338: «falta de lector» y «lectura fallida» dejan de confundirse. Para un
 //! formato con lector (FLAC/M4A) un fichero no vacío que el lector no puede
@@ -78,8 +79,9 @@ pub struct DeliveredTags {
 pub enum TagReadOutcome {
     /// El formato tiene lector y la lectura funcionó.
     Readable(DeliveredTags),
-    /// El formato no tiene lector en este árbol (MP3 hasta D16): falta de
-    /// evidencia, no fallo.
+    /// El formato no tiene lector en este árbol: falta de evidencia, no fallo.
+    /// Con D16 ya solo aplica a extensiones sin lector (p. ej. WAV): MP3 tiene
+    /// lector ID3.
     NoReader,
     /// El formato declara lector y la lectura falló (fichero ilegible): el
     /// gate falla cerrado.
@@ -232,9 +234,13 @@ fn match_tag(
 }
 
 /// Relee los tags del fichero entregado distinguiendo lector ausente de
-/// lectura fallida (#338). `NoReader` es falta de evidencia (MP3 hasta que
-/// aterrice el escritor ID3 de D16); `Unreadable` es un fichero de un formato
-/// con lector que no se deja parsear, y el gate lo trata como fallo.
+/// lectura fallida (#338). `NoReader` es falta de evidencia; `Unreadable` es
+/// un fichero de un formato con lector que no se deja parsear, y el gate lo
+/// trata como fallo.
+///
+/// D16: MP3 pasa a tener lector (ID3v2). Un MP3 sin tag es `Readable` con
+/// campos ausentes —no `NoReader`—, para que el gate exija los tags que el
+/// catálogo declara en vez de saltárselos.
 pub fn read_delivered_tags(path: &Path) -> TagReadOutcome {
     let ext = path
         .extension()
@@ -250,6 +256,12 @@ pub fn read_delivered_tags(path: &Path) -> TagReadOutcome {
     }
     if ext == "m4a" || ext == "aac" || ext == "mp4" {
         return match read_mp4_tags(path) {
+            Ok(tags) => TagReadOutcome::Readable(tags),
+            Err(reason) => TagReadOutcome::Unreadable(reason),
+        };
+    }
+    if ext == "mp3" || crate::download::id3_writer::is_mp3_file(path) {
+        return match read_mp3_tags(path) {
             Ok(tags) => TagReadOutcome::Readable(tags),
             Err(reason) => TagReadOutcome::Unreadable(reason),
         };
@@ -319,6 +331,25 @@ fn read_mp4_tags(path: &Path) -> Result<DeliveredTags, String> {
         track_number: tag.track_number().map(|v| v as i64),
         disc_number: tag.disc_number().map(|v| v as i64),
         has_valid_cover: cover,
+    })
+}
+
+/// D16: lee el ID3v2 de un MP3 entregado. `id3_writer::read_mp3_tags` distingue
+/// «sin tag» (`Ok` vacío) de «tag ilegible» (`Err`): aquí el segundo es
+/// `Unreadable` y falla cerrado, como FLAC/M4A.
+fn read_mp3_tags(path: &Path) -> Result<DeliveredTags, String> {
+    let tags = crate::download::id3_writer::read_mp3_tags(path)
+        .map_err(|e| format!("id3 cannot parse '{}': {e}", path.display()))?;
+    Ok(DeliveredTags {
+        title: tags.title,
+        artist: tags.artist,
+        album: tags.album,
+        track_number: tags.track_number.map(i64::from),
+        disc_number: tags.disc_number.map(i64::from),
+        has_valid_cover: tags
+            .cover
+            .as_ref()
+            .is_some_and(|cover| is_valid_image_payload(&cover.data)),
     })
 }
 
@@ -578,14 +609,44 @@ mod tests {
     }
 
     #[test]
-    fn mp3_without_id3_reader_skips_tag_checks_but_verifies_preconditions() {
+    fn mp3_tags_are_read_and_verified_with_the_shared_id3_writer() {
+        use crate::download::id3_writer::{Mp3Cover, Mp3Tags};
+
+        // Frame MPEG mínimo: basta para que el detector lo reconozca como MP3.
+        const MINIMAL_MP3: &[u8] = &[0xFF, 0xFB, 0x90, 0x64, 0, 0, 0, 0];
+        const PNG_COVER: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+            b'D', b'R',
+        ];
+
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("soundcloud.mp3");
-        std::fs::write(&path, b"ID3 fakemp3data").unwrap();
-        // Sin lector de tags ni duración (MP3): falta de evidencia no es fallo.
-        verify_delivery(&path, &expected(200_000), true, 0.0)
-            .expect("MP3 sin lector ID3 no falla el gate");
-        assert_eq!(read_delivered_tags(&path), TagReadOutcome::NoReader);
+        std::fs::write(&path, MINIMAL_MP3).unwrap();
+
+        // D16: MP3 ya tiene lector. Un MP3 sin tag no se salta: los tags que
+        // el catálogo declara son exigibles.
+        assert!(matches!(
+            read_delivered_tags(&path),
+            TagReadOutcome::Readable(_)
+        ));
+        let failures = verify_delivery(&path, &expected(0), false, 0.0).unwrap_err();
+        assert!(failures.iter().any(|f| f.contains("tag 'title' missing")));
+        assert!(failures.iter().any(|f| f.contains("tag 'artist' missing")));
+        assert!(failures.iter().any(|f| f.contains("tag 'album' missing")));
+
+        // Con el escritor compartido, el gate verifica los tags y el APIC.
+        let tags = Mp3Tags {
+            title: Some("Verified Track".to_string()),
+            artist: Some("Verified Artist".to_string()),
+            album: Some("Verified Album".to_string()),
+            track_number: Some(3),
+            disc_number: Some(1),
+            cover: Some(Mp3Cover::from_bytes(PNG_COVER.to_vec()).unwrap()),
+            ..Mp3Tags::default()
+        };
+        crate::download::id3_writer::apply_and_verify_mp3_tags(&path, &tags).unwrap();
+        verify_delivery(&path, &expected(0), true, 0.0)
+            .expect("MP3 con ID3 y portada pasa el gate");
     }
 
     /// #338: un FLAC no vacío que metaflac no puede parsear ya no pasa el
