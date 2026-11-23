@@ -30,9 +30,12 @@ wiki (desde su creación el 2026-11-13):
   la Ola 0 (medido 2026-11-21, decidido 2026-11-22): PR de carril →
   `wave/ola-N-batch-M` → consolidado a `main` con merge commit →
   fast-forward de `dev`; docs directos a `dev`; protección de `main` (6
-  contextos con matriz, strict). Abiertas para el dueño: regla de cierre de
-  issues y retorno a `main` de los docs directos a `dev`. El flujo
-  2026-11-13 (PR con base `dev`, squash) queda como historia.
+  contextos con matriz, strict). Desde 2026-11-22 (#368): cifras del
+  AGENTS.md con `tools/update-agents-claims.sh` antes del push final, Docs
+  sobre el árbol del head y pata Windows de Rust solo en `main`. Abiertas
+  para el dueño: regla de cierre de issues y retorno a `main` de los docs
+  directos a `dev`. El flujo 2026-11-13 (PR con base `dev`, squash) queda
+  como historia.
 
 ## Entorno y herramientas
 
