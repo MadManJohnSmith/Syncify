@@ -482,7 +482,35 @@ impl DownloadOrchestrator {
         if !crate::download::id3_writer::is_mp3_file(&path) {
             return Ok(res);
         }
-        let tags = crate::download::id3_writer::Mp3Tags::from_download_request(request);
+        let mut tags = crate::download::id3_writer::Mp3Tags::from_download_request(request);
+        // La portada no viaja en `DownloadRequest`, solo su URL: se descarga
+        // aquí, en el único enganche de entrega MP3. Un fallo de red no tumba
+        // la entrega; solo deja el APIC sin escribir.
+        if let Some(url) = request
+            .cover_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        {
+            match reqwest::get(url).await {
+                Ok(response) => match response.bytes().await {
+                    Ok(bytes) => {
+                        match crate::download::id3_writer::Mp3Cover::from_bytes(bytes.to_vec()) {
+                            Ok(cover) => tags = tags.with_cover(cover),
+                            Err(error) => {
+                                warn!(url, %error, "[D16] portada no válida; se omite el APIC")
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        warn!(url, %error, "[D16] no se pudo leer la portada; se omite el APIC")
+                    }
+                },
+                Err(error) => {
+                    warn!(url, %error, "[D16] no se pudo descargar la portada; se omite el APIC")
+                }
+            }
+        }
         let tagged_path = path.clone();
         tokio::task::spawn_blocking(move || {
             crate::download::id3_writer::apply_and_verify_mp3_tags(&tagged_path, &tags)

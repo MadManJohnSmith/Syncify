@@ -25,7 +25,7 @@
 //! no la calcula), así que ese check se salta por falta de evidencia.
 //!
 //! #338: «falta de lector» y «lectura fallida» dejan de confundirse. Para un
-//! formato con lector (FLAC/M4A) un fichero no vacío que el lector no puede
+//! formato con lector (FLAC/M4A/MP3) un fichero no vacío que el lector no puede
 //! parsear es un fallo cerrado del gate, no un check saltado.
 //!
 //! Límite conocido de la duración: sale de la cabecera (STREAMINFO / mvhd), así
@@ -120,7 +120,7 @@ pub fn verify_delivery(
     let physical = crate::download::audio_inspector::inspect_physical_audio_file(path);
 
     // #338: un formato con lector que no se deja leer es un fallo cerrado, no
-    // falta de evidencia. Solo MP3 (y una extensión sin lector) se saltan.
+    // falta de evidencia. Solo una extensión sin lector se salta.
     let delivered = match read_delivered_tags(path) {
         TagReadOutcome::Readable(delivered) => {
             verify_tags(&delivered, expected, &mut failures);

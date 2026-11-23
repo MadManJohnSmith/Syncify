@@ -316,10 +316,14 @@ engancha en el orquestador, no en cada adaptador:
   salga del orquestador. Para FLAC/M4A es un no-op. Deezer/SoundCloud (D11,
   D12) **aún no tienen adaptador nativo**: cuando lo tengan, cualquier `.mp3`
   que produzcan pasa por este mismo paso sin una segunda implementación. La
-  portada no viaja en `DownloadRequest`; el adaptador que descargue los bytes
-  debe llamar a `apply_and_verify_mp3_tags` con
-  `Mp3Tags::from_download_request(...).with_cover(...)` o dejar que su entrega
-  incluya el APIC antes del paso genérico.
+  portada viaja como `cover_url`, no como bytes: el hook la descarga y la
+  añade con `Mp3Tags::with_cover`. Si la URL falta o la descarga falla, se omite
+  el APIC y no se tumba la entrega; el gate **no exige** portada en MP3 hasta
+  que un adaptador (D11/D12) aporte la URL. FLAC/M4A conservan su gate de
+  portada sin cambios.
+- **Relectura de parche**: la comparación solo exige los campos pedidos
+  (`Some`). Un `None` conserva el frame existente y no se compara, para que un
+  MP3 ya etiquetado no se rechace por no repetir todos los campos.
 - **Verificación**: el gate de D05 lee el ID3 con el mismo módulo. Un MP3 sin
   tag es `Readable` con campos ausentes (falla los tags que el catálogo
   declara), y un tag corrupto es `Unreadable` (falla cerrado), igual que

@@ -69,8 +69,6 @@ impl Mp3Cover {
     /// Portada con tipo MIME deducido de la magia del payload. Un payload que
     /// no es JPEG/PNG se rechaza: la misma regla que el gate de D05, para no
     /// escribir una portada que la verificación rechazaría después.
-    /// Solo la usan los tests: la portada no viaja en `DownloadRequest`.
-    #[cfg(test)]
     pub fn from_bytes(data: Vec<u8>) -> Result<Self, Mp3TagError> {
         let mime_type = image_mime_type(&data)
             .ok_or_else(|| Mp3TagError::InvalidCover("payload is not JPEG or PNG".to_string()))?;
@@ -125,6 +123,12 @@ impl Mp3Tags {
             isrc: request.isrc.as_deref().and_then(non_empty),
             cover: None,
         }
+    }
+
+    /// Añade o reemplaza la portada frontal.
+    pub fn with_cover(mut self, cover: Mp3Cover) -> Self {
+        self.cover = Some(cover);
+        self
     }
 }
 
@@ -423,10 +427,14 @@ fn compare_text(
     expected: &Option<String>,
     actual: &Option<String>,
 ) {
-    let expected = expected.as_deref().and_then(non_empty);
+    // Semántica de parche: `None` deja el frame existente intacto, así que no
+    // hay nada que exigir en la relectura. Solo se verifica lo pedido.
+    let Some(expected) = expected.as_deref().and_then(non_empty) else {
+        return;
+    };
     let actual = actual.as_deref().and_then(non_empty);
-    if expected != actual {
-        mismatches.push(format!("{field} {:?} != {:?}", expected, actual));
+    if actual.as_deref() != Some(expected.as_str()) {
+        mismatches.push(format!("{field} {expected:?} != {actual:?}"));
     }
 }
 
@@ -436,8 +444,12 @@ fn compare_value<T: PartialEq + std::fmt::Debug>(
     expected: Option<T>,
     actual: Option<T>,
 ) {
-    if expected != actual {
-        mismatches.push(format!("{field} {:?} != {:?}", expected, actual));
+    // Igual que compare_text: `None` no pide nada al fichero existente.
+    let Some(expected) = expected else {
+        return;
+    };
+    if actual.as_ref() != Some(&expected) {
+        mismatches.push(format!("{field} {expected:?} != {actual:?}"));
     }
 }
 
@@ -883,5 +895,49 @@ mod tests {
         let error = apply_and_verify_mp3_tags(&path, &tags).unwrap_err();
         assert!(matches!(error, Mp3TagError::InvalidCover(_)), "{error}");
         assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn partial_patch_preserves_unrequested_frames() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = write_temp(&dir, "track.mp3", &real_mp3());
+        apply_and_verify_mp3_tags(&path, &full_tags()).unwrap();
+
+        let partial = Mp3Tags {
+            title: Some("Título Nuevo".to_string()),
+            artist: Some("Otro Artista".to_string()),
+            ..Mp3Tags::default()
+        };
+        let readback = apply_and_verify_mp3_tags(&path, &partial).unwrap();
+        assert_eq!(readback.title.as_deref(), Some("Título Nuevo"));
+        assert_eq!(readback.artist.as_deref(), Some("Otro Artista"));
+        assert_eq!(
+            readback.album.as_deref(),
+            Some("Álbum"),
+            "un parche no borra el álbum existente"
+        );
+        assert_eq!(readback.album_artist.as_deref(), Some("Artista del Álbum"));
+        assert_eq!(readback.year, Some(2024));
+        assert_eq!(readback.track_number, Some(3));
+        assert_eq!(readback.disc_number, Some(1));
+        assert_eq!(readback.disc_total, Some(2));
+        assert_eq!(readback.isrc.as_deref(), Some("USRC17607839"));
+        assert!(readback.cover.is_some(), "la portada existente se conserva");
+    }
+
+    #[test]
+    fn disc_total_none_preserves_an_existing_total() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = write_temp(&dir, "track.mp3", &real_mp3());
+        apply_and_verify_mp3_tags(&path, &full_tags()).unwrap();
+
+        let mut tags = full_tags();
+        tags.disc_total = None;
+        let readback = apply_and_verify_mp3_tags(&path, &tags).unwrap();
+        assert_eq!(
+            readback.disc_total,
+            Some(2),
+            "None es parche: no borra el total existente"
+        );
     }
 }
