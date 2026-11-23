@@ -1393,78 +1393,72 @@ pub async fn fetch_missing_lyrics(
     batch_fetch_lyrics(state, track_ids).await
 }
 
-/// Batch fetch lyrics with real-time progress events
-#[tauri::command]
-pub async fn batch_fetch_lyrics_with_progress(
-    window: tauri::Window,
-    state: State<'_, AppState>,
-    track_ids: Vec<i64>,
-) -> Result<BatchLyricsResult, String> {
-    let total = track_ids.len() as u64;
-    tracing::info!("batch_fetch_lyrics_with_progress: {} tracks", total);
+/// One track as the batch queue sees it: the label shown in progress plus the
+/// per-track fetch outcome.
+pub(crate) struct BatchTrackStep {
+    pub label: String,
+    pub outcome: Result<BatchTrackOutcome, String>,
+}
 
-    emit_lyrics_progress(&window, "started", 0, total, "Starting...");
+/// Runs the batch fetch loop. Extracted from the IPC command so the queue
+/// semantics (per-track progress, counters and rate limiting) are testable
+/// without providers, a window or a real database.
+///
+/// The loop is the only place that decides what a run means, so any later
+/// cancellation contract belongs here and not in the caller.
+pub(crate) async fn run_batch_fetch_queue<F, Fut, E>(
+    track_ids: &[i64],
+    pause: std::time::Duration,
+    mut fetch_track: F,
+    mut emit: E,
+) -> BatchLyricsResult
+where
+    F: FnMut(i64) -> Fut,
+    Fut: std::future::Future<Output = BatchTrackStep>,
+    E: FnMut(&str, u64, u64, &str),
+{
+    let total = track_ids.len() as u64;
+    emit("started", 0, total, "Starting...");
 
     let mut fetched = 0i64;
     let mut failed = 0i64;
     let mut skipped = 0i64;
     let mut current = 0u64;
 
-    for track_id in track_ids {
+    for &track_id in track_ids {
         current += 1;
 
-        // Get track name for progress display
-        let track_name: Option<(String,)> = sqlx::query_as("SELECT title FROM tracks WHERE id = ?")
-            .bind(track_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let track_name = track_name
-            .map(|t| t.0)
-            .unwrap_or_else(|| format!("Track {}", track_id));
-
-        // Per-track failures stay per-track: a mass fetch must not abort on
-        // one missing row or one failing provider path.
-        let outcome = batch_fetch_track(&state.db, track_id).await;
-        let presence_skip = matches!(outcome, Ok(BatchTrackOutcome::AlreadyPresent));
-        match outcome {
+        let step = fetch_track(track_id).await;
+        let presence_skip = matches!(step.outcome, Ok(BatchTrackOutcome::AlreadyPresent));
+        match step.outcome {
             Ok(BatchTrackOutcome::Saved) => {
-                emit_lyrics_progress(&window, "found", current, total, &track_name);
+                emit("found", current, total, &step.label);
                 fetched += 1;
             }
             Ok(BatchTrackOutcome::BlockedByMark) => {
-                emit_lyrics_progress(
-                    &window,
+                emit(
                     "skipped",
                     current,
                     total,
-                    &format!("{} (marked as deleted)", track_name),
+                    &format!("{} (marked as deleted)", step.label),
                 );
                 skipped += 1;
             }
             Ok(BatchTrackOutcome::AlreadyPresent) => {
-                emit_lyrics_progress(
-                    &window,
+                emit(
                     "skipped",
                     current,
                     total,
-                    &format!("{} (already has lyrics)", track_name),
+                    &format!("{} (already has lyrics)", step.label),
                 );
                 skipped += 1;
             }
             Ok(BatchTrackOutcome::NotFound) => {
-                emit_lyrics_progress(&window, "not_found", current, total, &track_name);
+                emit("not_found", current, total, &step.label);
                 failed += 1;
             }
             Err(e) => {
-                emit_lyrics_progress(
-                    &window,
-                    "error",
-                    current,
-                    total,
-                    &format!("{}: {}", track_name, e),
-                );
+                emit("error", current, total, &format!("{}: {}", step.label, e));
                 failed += 1;
             }
         }
@@ -1472,12 +1466,11 @@ pub async fn batch_fetch_lyrics_with_progress(
         // Rate limiting - be kind to upstream APIs. The presence skip
         // provably spent no provider call, so it needs no delay.
         if !presence_skip {
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(pause).await;
         }
     }
 
-    emit_lyrics_progress(
-        &window,
+    emit(
         "completed",
         total,
         total,
@@ -1487,11 +1480,166 @@ pub async fn batch_fetch_lyrics_with_progress(
         ),
     );
 
-    Ok(BatchLyricsResult {
+    BatchLyricsResult {
         fetched,
         failed,
         skipped,
-    })
+    }
+}
+
+/// Batch fetch lyrics with real-time progress events
+#[tauri::command]
+pub async fn batch_fetch_lyrics_with_progress(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    track_ids: Vec<i64>,
+) -> Result<BatchLyricsResult, String> {
+    tracing::info!(
+        "batch_fetch_lyrics_with_progress: {} tracks",
+        track_ids.len()
+    );
+
+    let db = state.db.clone();
+    Ok(run_batch_fetch_queue(
+        &track_ids,
+        std::time::Duration::from_millis(500),
+        move |track_id| {
+            let db = db.clone();
+            async move {
+                // A failed title lookup degrades to the numeric label instead
+                // of aborting the whole batch.
+                let track_name: Option<(String,)> =
+                    sqlx::query_as("SELECT title FROM tracks WHERE id = ?")
+                        .bind(track_id)
+                        .fetch_optional(&db)
+                        .await
+                        .ok()
+                        .flatten();
+                let label = track_name
+                    .map(|t| t.0)
+                    .unwrap_or_else(|| format!("Track {}", track_id));
+
+                // Per-track failures stay per-track: a mass fetch must not
+                // abort on one missing row or one failing provider path.
+                BatchTrackStep {
+                    label,
+                    outcome: batch_fetch_track(&db, track_id).await,
+                }
+            }
+        },
+        |status, current, total, label| {
+            emit_lyrics_progress(&window, status, current, total, label)
+        },
+    )
+    .await)
+}
+
+#[cfg(test)]
+mod batch_queue_tests {
+    use super::*;
+
+    type ProgressEvent = (String, u64, u64, String);
+
+    /// Characterization of the loop as it stood before LY06: every track is
+    /// visited in order and the run always ends in `completed`, even after a
+    /// `cancelled` run would be meaningful.
+    #[tokio::test]
+    async fn batch_queue_visits_every_track_and_ends_completed() {
+        let visited = std::sync::Mutex::new(Vec::new());
+        let events = std::sync::Mutex::new(Vec::<ProgressEvent>::new());
+
+        let result = run_batch_fetch_queue(
+            &[1, 2, 3],
+            std::time::Duration::ZERO,
+            |track_id| {
+                visited.lock().unwrap().push(track_id);
+                async move {
+                    BatchTrackStep {
+                        label: format!("Track {}", track_id),
+                        outcome: Ok(BatchTrackOutcome::Saved),
+                    }
+                }
+            },
+            |status, current, total, label| {
+                events.lock().unwrap().push((
+                    status.to_string(),
+                    current,
+                    total,
+                    label.to_string(),
+                ));
+            },
+        )
+        .await;
+
+        assert_eq!(*visited.lock().unwrap(), vec![1, 2, 3]);
+        assert_eq!(result.fetched, 3);
+        assert_eq!(result.failed, 0);
+        assert_eq!(result.skipped, 0);
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.first().unwrap().0, "started");
+        let last = events.last().unwrap();
+        assert_eq!(last.0, "completed");
+        assert_eq!((last.1, last.2), (3, 3));
+    }
+
+    /// Each per-track outcome keeps its own status and counter; a provider
+    /// error on one track does not abort the queue.
+    #[tokio::test]
+    async fn batch_queue_maps_every_outcome_to_its_progress_status() {
+        let events = std::sync::Mutex::new(Vec::<ProgressEvent>::new());
+        let outcomes = vec![
+            Ok(BatchTrackOutcome::Saved),
+            Ok(BatchTrackOutcome::BlockedByMark),
+            Ok(BatchTrackOutcome::AlreadyPresent),
+            Ok(BatchTrackOutcome::NotFound),
+            Err("boom".to_string()),
+        ];
+        let result = run_batch_fetch_queue(
+            &[1, 2, 3, 4, 5],
+            std::time::Duration::ZERO,
+            |track_id| {
+                let outcome = outcomes[(track_id - 1) as usize].clone();
+                async move {
+                    BatchTrackStep {
+                        label: format!("Track {}", track_id),
+                        outcome,
+                    }
+                }
+            },
+            |status, current, total, label| {
+                events.lock().unwrap().push((
+                    status.to_string(),
+                    current,
+                    total,
+                    label.to_string(),
+                ));
+            },
+        )
+        .await;
+
+        assert_eq!(result.fetched, 1);
+        assert_eq!(result.failed, 2);
+        assert_eq!(result.skipped, 2);
+
+        let events = events.lock().unwrap();
+        let statuses: Vec<&str> = events.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(
+            statuses,
+            vec![
+                "started",
+                "found",
+                "skipped",
+                "skipped",
+                "not_found",
+                "error",
+                "completed"
+            ]
+        );
+        assert_eq!(events[2].3, "Track 2 (marked as deleted)");
+        assert_eq!(events[3].3, "Track 3 (already has lyrics)");
+        assert_eq!(events[5].3, "Track 5: boom");
+    }
 }
 
 // ==============================================

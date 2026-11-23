@@ -395,6 +395,47 @@ describe('LyricsView (fully wired tab)', () => {
         expect(writes[0].contents).toContain('[00:01.00]First line');
     });
 
+    it('characterization: closing the batch dialog only hides it while the backend keeps running', async () => {
+        let resolveBatch!: (value: unknown) => void;
+        const batch = new Promise((resolve) => { resolveBatch = resolve; });
+        const invoked: string[] = [];
+        mockInvoke((cmd) => {
+            invoked.push(cmd);
+            if (cmd === 'get_library') return {
+                tracks: [createTestTrack({ id: 5, title: 'Batch Song', lyrics_type: 'none' })],
+                total: 1, offset: 0, limit: 500, has_more: false,
+            };
+            if (cmd === 'update_lyrics_config') return { ...CONFIG };
+            if (cmd === 'batch_fetch_lyrics_with_progress') return batch;
+            if (cmd === 'get_lyrics_stats') return { total_tracks: 1, with_lyrics: 0, synced_lyrics: 0, embedded_lyrics: 0 };
+            if (cmd === 'get_lyrics_providers') return PROVIDERS;
+            if (cmd === 'get_lyrics_config') return CONFIG;
+            return null;
+        });
+
+        const wrapper = mount(LyricsView);
+        await flushPromises();
+        await wrapper.find('input[type="checkbox"]').trigger('click');
+        await flushPromises();
+        const fetchBtn = wrapper.findAll('button').find(b => b.text().includes('Fetch Lyrics'))!;
+        await fetchBtn.trigger('click');
+        await wrapper.findAll('button').find(b => b.text().trim() === 'Prefer synced')!.trigger('click');
+        await flushPromises();
+
+        expect(document.body.textContent).toContain('Fetching Lyrics');
+        const close = Array.from(document.querySelectorAll('button'))
+            .find(b => b.textContent?.includes('Close'))!;
+        close.click();
+        await flushPromises();
+
+        // The dialog is gone, but the loop was never asked to stop.
+        expect(document.body.textContent).not.toContain('Fetching Lyrics');
+        expect(invoked).not.toContain('cancel_batch_fetch_lyrics');
+
+        resolveBatch({ fetched: 0, failed: 0, skipped: 1 });
+        await flushPromises();
+    });
+
     it('"Synced only" fetch mode persists min_sync_level and enforces it after the batch', async () => {
         const configUpdates: Array<Record<string, unknown>> = [];
         const deletedTracks: number[] = [];
