@@ -19,8 +19,9 @@
 --   resolved_merged   → una persona confirmó que los Tracks son el mismo
 --   resolved_separate → una persona confirmó que son grabaciones distintas
 --   dismissed         → la evidencia dejó de aplicar (p. ej. el ítem ya no está)
--- `resolved_track_id` y `resolved_at` los escribe la resolución (T08b); esta
--- migración los reserva para no volver a tocar la tabla.
+-- `resolved_track_id` y `resolved_at` los escribe la resolución (seguimiento
+-- de la mitad de UI/IPC en #383); esta migración los reserva para no volver a
+-- tocar la tabla.
 --
 -- `reason` es vocabulario del núcleo, no del proveedor: hoy
 -- 'fingerprint_multiple_candidates' es el único motivo que llega aquí. Sin
