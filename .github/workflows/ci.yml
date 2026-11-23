@@ -341,6 +341,14 @@ jobs:
     # dependencias de scripts/ sí hacen falta: la discovery cuenta imports y
     # sin ellas pierde casos, así que la cifra del AGENTS.md fallaría por el
     # entorno, no por el árbol.
+    #
+    # Desde #368 este job mide el ÁRBOL DEL HEAD DEL PR, no el merge que
+    # GitHub construye con la base. Las cifras del AGENTS.md son un punto
+    # caliente compartido: si dos carriles anaden un objetivo de test cada uno,
+    # el merge tiene +2 y el segundo PR fallaba en docs aunque su rama fuera
+    # correcta. La integración se detecta una sola vez en el consolidado a
+    # main, que es la red final (con strict=true el head ya está al día con
+    # main). En push se sigue midiendo el commit empujado.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -354,6 +362,11 @@ jobs:
     - name: Checkout del repositorio
       if: contains(fromJSON(needs.changed.outputs.areas), 'docs')
       uses: actions/checkout@v4
+      with:
+        # El HEAD del PR, no el merge con la base (#368). En push,
+        # `github.event.pull_request` no existe y se mide el commit empujado.
+        repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
     - name: Configurar Python 3.11
       if: contains(fromJSON(needs.changed.outputs.areas), 'docs')
       uses: actions/setup-python@v5
