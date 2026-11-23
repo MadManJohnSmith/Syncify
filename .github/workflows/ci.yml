@@ -151,10 +151,22 @@ jobs:
       with:
         components: clippy, rustfmt
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
-    - name: Cache de artefactos cargo (workspace src-tauri)
+    - name: Cache de artefactos cargo (workspace virtual de la raiz)
       uses: Swatinem/rust-cache@v2
       with:
-        workspaces: src-tauri
+        # El workspace es virtual en la raiz del repo (`[workspace]` en
+        # Cargo.toml); `src-tauri` es un miembro, no la raiz. Con
+        # `workspaces: src-tauri` la accion cacheaba `src-tauri/target`, que no
+        # existe: la entrada pesaba 149 MB (solo `~/.cargo/registry`, medido en
+        # la corrida 44947072166) y cada corrida compilaba las dependencias en
+        # frio. `. -> target` es el default documentado de la accion; se deja
+        # explicito para que nadie lo vuelva a estrechar a un miembro.
+        workspaces: ". -> target"
+        # Con target/ dentro, cada rama guardaria una entrada de GB; el tope
+        # del repositorio son 10 GB y las entradas de main expulsarian a las
+        # demas. Los PRs restauran de su rama base y de la rama por defecto
+        # (asi llega la cache de main): que solo main la escriba.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
         # Aislamiento explicito de las dos patas del matrix: target/debug
         # contiene artefactos MSVC en Windows y ELF en Linux; que no se
         # crucen aunque la accion ya separe por OS.
@@ -213,7 +225,23 @@ jobs:
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
     - name: batch_50_audit_test serializado (--test-threads=1)
       timeout-minutes: 10
-      run: cargo test --locked --test batch_50_audit_test -- --test-threads=1
+      shell: bash
+      # Puerta anti-regresion de #364: la suite completa acaba de compilar el
+      # crate, asi que este paso no debe recompilarlo. Antes lo hacia (1m50s en
+      # ubuntu, 2m53s en windows para 3 s de test) porque un fichero nacido
+      # durante la suite bajo `../scripts` —un `__pycache__` de los bridges—
+      # invalidaba el fingerprint que vigila el build script de tauri. El
+      # interruptor vive en `.cargo/config.toml`; si esto vuelve a dispararse,
+      # el detalle por fichero lo da
+      # `CARGO_LOG=cargo::core::compiler::fingerprint=info`.
+      run: |
+        set -o pipefail
+        log="$RUNNER_TEMP/batch_50.log"
+        cargo test --locked --test batch_50_audit_test -- --test-threads=1 2>&1 | tee "$log"
+        if grep -q "Compiling syncify-tauri" "$log"; then
+          echo "::error::El paso serializado recompilo syncify-tauri: algo que el build script vigila cambio durante la suite."
+          exit 1
+        fi
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
     - name: cargo clippy estricto
       run: cargo clippy --workspace --all-targets --locked -- -D warnings
