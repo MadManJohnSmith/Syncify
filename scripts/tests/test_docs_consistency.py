@@ -26,6 +26,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Only tokens whose last segment carries a known source extension are treated as
@@ -231,6 +233,43 @@ class CiNarrativeTests(unittest.TestCase):
             any("timeout-minutes:" in line for line in window),
             "the isolated batch_50 step must keep its own time bound",
         )
+
+    def test_rust_cache_caches_the_workspace_target(self):
+        """#364: the virtual workspace builds into `./target`, not `src-tauri/target`.
+
+        Measured on run 44947072166 (2026-11-21): `workspaces: src-tauri` made
+        the action cache `src-tauri/target`, a directory this tree never
+        creates, so each 149 MB entry held only `~/.cargo/registry` and every
+        run compiled the dependencies from scratch. The manifest at the
+        repository root is the virtual workspace, so the target to cache is
+        `./target` (also the action's documented default).
+        """
+        step = self._rust_cache_step()
+        workspaces = (step.get("with") or {}).get("workspaces")
+        if workspaces is None or not str(workspaces).strip():
+            return  # the documented default is already `. -> target`
+        cached = []
+        for entry in str(workspaces).splitlines():
+            if not entry.strip():
+                continue
+            workspace, _, target = entry.partition("->")
+            cached.append((Path(workspace.strip()).as_posix(), target.strip() or "target"))
+        self.assertIn(
+            (".", "target"),
+            cached,
+            "rust-cache must cache the workspace target at ./target: the "
+            f"repository-root Cargo.toml is the virtual workspace, not "
+            f"src-tauri; ci.yml declares {cached}",
+        )
+
+    def _rust_cache_step(self):
+        workflow = yaml.safe_load(self.ci)
+        for job in (workflow.get("jobs") or {}).values():
+            for step in job.get("steps") or []:
+                uses = step.get("uses") if isinstance(step, dict) else None
+                if isinstance(uses, str) and uses.strip().startswith("Swatinem/rust-cache@"):
+                    return step
+        self.fail("ci.yml no usa Swatinem/rust-cache: la cache de cargo desaparecio")
 
 
 class ReadmeTests(unittest.TestCase):

@@ -2556,6 +2556,7 @@ impl DownloadWorker {
                 .map(i64::from),
             catalog_duration_ms: track_meta.as_ref().and_then(|meta| meta.duration_ms),
         };
+        let mut cover_expected = false;
         let result: Result<crate::download::DownloadResult, String> = if let Some(meta) = track_meta
         {
             // Create download request with locked source identity
@@ -2591,6 +2592,8 @@ impl DownloadWorker {
                 strict_quality,
                 resolution_plan,
             };
+
+            cover_expected = request.cover_url.is_some();
 
             tracing::info!(
                 operation_id = %operation_id,
@@ -2643,6 +2646,8 @@ impl DownloadWorker {
                 // None), así que el resolutor no tenía nada que resolver.
                 resolution_plan,
             };
+
+            cover_expected = request.cover_url.is_some();
 
             tracing::info!(
                 operation_id = %operation_id,
@@ -2751,12 +2756,20 @@ impl DownloadWorker {
                 // incrustarla); la política de calidad estricta rechaza aquí
                 // la entrega por debajo de lo pedido. Si falla: fallo de
                 // verificación y el ledger de `downloads` NO se escribe.
+                let is_mp3 = std::path::Path::new(&download_result.file_path)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("mp3"));
+                // D16: el camino MP3 actual no recibe portada (`cover_url: None`
+                // en las dos ramas de este worker). Exigir APIC aquí rechazaría
+                // una entrega correcta; el escritor sí soporta APIC y el hook de
+                // entrega lo incrusta si un adaptador (D11/D12) aporta la URL.
+                let require_cover = embed_artwork && (!is_mp3 || cover_expected);
                 let delivery_gate = self
                     .verify_then_complete(
                         queue_id,
                         &download_result,
                         expected_delivery,
-                        embed_artwork,
+                        require_cover,
                         strict_quality,
                         trim_tolerance_secs,
                     )

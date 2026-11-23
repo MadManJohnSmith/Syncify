@@ -1155,6 +1155,7 @@ fn main() {
             commands::fetch_and_save_lyrics,
             commands::batch_fetch_lyrics,
             commands::batch_fetch_lyrics_with_progress,
+            commands::cancel_batch_fetch_lyrics,
             commands::fetch_missing_lyrics,
             commands::embed_lyrics,
             commands::batch_embed_lyrics,
