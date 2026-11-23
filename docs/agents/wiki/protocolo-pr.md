@@ -35,6 +35,12 @@ Medido el 2026-11-21 sobre git y GitHub; decidido por el dueño el
     `wave/ola-0-batch-2` por squash (`5e42af3`, `0ca49a9`, `74d6735`,
     `c742093`, `e88c356`, `5e84538`); el consolidado #369 entró en `main`
     con merge commit `e43ea3a`, y `dev` avanzó por fast-forward después.
+  - Lote 3 (completado el 2026-11-23 UTC): los 5 PRs de carril entraron en
+    `wave/ola-0-batch-3` por squash (`66a0921`, `3a929c7`, `67fb67c`,
+    `0820d3e`, `7180fcf`); el consolidado #379 entró en `main` con merge
+    commit `98d83e1` y `dev` avanzó por fast-forward. La pata Windows de los
+    carriles quedó en cola; la matriz completa se corrió en el consolidado
+    (**6/6**).
   - Decidido el 2026-11-22: con 4–6 PRs verdes en el lote (o un hito
     clave) se abre el consolidado a `main` y se arranca el lote siguiente
     sin esperar al CI de Windows del consolidado.
@@ -62,9 +68,10 @@ Medido el 2026-11-21 sobre git y GitHub; decidido por el dueño el
   de `origin/main`. Opciones: cerrar al entrar en la wave, o al llegar a
   `main` citando el merge del consolidado. *(Aplicado el 2026-11-22 en el
   cierre del Lote 2: #155 y #184 se cerraron al llegar a `main` citando
-  `e43ea3a`; #69, #338, #167 y #181 siguen cerradas desde la wave. La
-  política no se decide aquí: el Lote 2 deja evidencia de las dos
-  prácticas.)*
+  `e43ea3a`; #69, #338, #167 y #181 siguen cerradas desde la wave. En el
+  Lote 3, #362/#364/#128/#186 se cerraron al llegar a `main` citando
+  `98d83e1`, y #73 sigue abierto por #374. La política no se decide aquí:
+  los dos lotes dejan evidencia de las dos prácticas.)*
 
 ## Qué viaja directo a `dev` y qué vía PR
 

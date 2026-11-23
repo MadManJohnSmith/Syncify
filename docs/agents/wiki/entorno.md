@@ -79,6 +79,25 @@ aquí solo queda lo aprendido con fecha. Relacionadas:
   Fuente: dos muertes OOM del carril A86 en la sesión del 2026-11-17;
   `free -h` y `pgrep -a cargo` medidos.
 
+## Runtime de subagentes inestable y recuperación
+
+- **2026-11-22, medido**: el servidor de OpenCode se reinició repetidamente
+  durante la sesión (servidores nuevos cada pocos minutos). Los subagentes de
+  fondo y los shells murieron sin aviso de fin; el WIP de los worktrees
+  sobrevivió. Contramedida: commit+push por micro-hito, comandos largos con
+  `setsid` y log en `/tmp/opencode/`, y retomar el worktree en vez de rehacer
+  el carril. Un push con target frío puede tardar minutos por el hook
+  pre-push; no es la red.
+
+## Poda de targets de compilación
+
+- **2026-11-22, medido**: 47 targets legados en
+  `~/.cache/syncify-target-*` ocupaban **211 GiB**. Se borraron todos salvo
+  los 5 targets de carril (`syncify-target-lane-*`) y el del checkout
+  principal (`syncify-target-Syncify`); `/tmp/syncify-target` (4,1 MiB) se
+  eliminó. Los 61 worktrees de `~/.t3/worktrees/Syncify/` quedaron intactos.
+  Fuente: encargo PC-A del 2026-11-22.
+
 ## Pines de herramientas y retención upstream
 
 - **2026-11-19, medido**: BtbN purga los autobuilds **diarios** de ffmpeg
