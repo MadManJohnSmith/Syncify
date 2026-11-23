@@ -1,11 +1,15 @@
 """Puerta de cifras del AGENTS.md.
 
-El AGENTS.md anota recuentos a mano ("347 objetivos de test", "480 tests",
-"152 ficheros de test UI", "los 13 tests #[ignore]", "~19 escrituras
+El AGENTS.md anota recuentos a mano ("362 objetivos de test", "481 tests",
+"158 ficheros de test UI", "los 13 tests #[ignore]", "~19 escrituras
 silenciosas") y eran la unica cifra del repo que ningun gate verificaba: en
 la sesion de cierres del 2026-11-11 cuatro PRs chocaron en rebase por esas
 lineas. Esta puerta mide el arbol y compara; si el arbol cambia, la cifra del
 AGENTS.md se actualiza con el numero medido, no con el recordado.
+
+La medida y los patrones viven en `scripts/agents_claims.py`, porque desde
+#368 los comparte `tools/update-agents-claims.sh`: el comando que reescribe las
+cifras de un carril y esta puerta no pueden derivar en dos copias de la logica.
 
 Cubre lo derivable de forma hermetica. Quedan fuera, a proposito:
 - El conteo de tests de la suite UI: vitest materializa `it.each` en tiempo de
@@ -14,7 +18,7 @@ Cubre lo derivable de forma hermetica. Quedan fuera, a proposito:
   que si es medible.
 - "(2 skipped)" de la suite Python: los skips son condicionales
   (skipIf/skipUnless) y dependen de la plataforma.
-- La cifra "~113" no se mide aqui: su fuente es BASELINE en
+- La cifra "~19" no se mide aqui: su fuente es BASELINE en
   `test_silent_write_ratchet.py`; esta puerta solo verifica que el AGENTS.md
   la cite igual, para que no se separen.
 
@@ -24,117 +28,91 @@ mismo arbol que el resto, no antes.
 """
 
 import importlib.util
-import json
-import re
-import subprocess
+import sys
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENTS_MD = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
-IGNORE_GLOBS = ("src-tauri/tests/**/*.rs", "crates/*/tests/**/*.rs")
 
 
-def _agents_count(pattern: str, label: str) -> int:
-    match = re.search(pattern, AGENTS_MD)
-    if match is None:
-        raise AssertionError(f"AGENTS.md ya no cifra {label}: actualiza esta puerta")
-    return int(match.group(1))
+def _claims_module():
+    spec = importlib.util.spec_from_file_location(
+        "agents_claims", REPO_ROOT / "scripts" / "agents_claims.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-def _cargo_test_targets() -> int:
-    """Objetivos de test del workspace: `cargo metadata` mas grep de unit tests.
+CLAIMS = _claims_module()
 
-    Cada paquete aporta sus targets de integracion (kind "test"); lib y bins
-    aportan un objetivo unitario solo si algun `.rs` bajo `src/` lleva
-    atributo de test. Esta derivacion reproduce el recuento original de 318.
-    """
-    out = subprocess.run(
-        ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
-        capture_output=True,
-        text=True,
-        check=True,
-        cwd=REPO_ROOT,
-    ).stdout
-    unit_attr = re.compile(r"#\[(?:tokio::test|test|sqlx::test)\b")
-    total = 0
-    for pkg in json.loads(out)["packages"]:
-        kinds = [t.get("kind") or [] for t in pkg["targets"]]
-        total += sum(1 for kind in kinds if "test" in kind)
-        pkg_dir = Path(pkg["manifest_path"]).parent
-        if any(
-            unit_attr.search(p.read_text(encoding="utf-8", errors="ignore"))
-            for p in (pkg_dir / "src").rglob("*.rs")
-        ):
-            total += sum(1 for kind in kinds if "lib" in kind or "bin" in kind)
-    return total
+
+def _claimed(key: str) -> int:
+    spec = CLAIMS.SPEC_BY_KEY[key]
+    value = CLAIMS.claimed(AGENTS_MD, spec)
+    if value is None:
+        raise AssertionError(
+            f"AGENTS.md ya no cifra {spec.label}: actualiza esta puerta y el helper"
+        )
+    return value
 
 
 class AgentsCountTests(unittest.TestCase):
     """Cada cifra del AGENTS.md, medida contra el arbol."""
 
     def test_python_suite_count_matches_discovery(self):
-        claimed = _agents_count(r"(\d+) tests \(\d+ skipped\)", "la suite Python")
-        suite = unittest.defaultTestLoader.discover(str(REPO_ROOT / "scripts" / "tests"))
-        loaded = suite.countTestCases()
+        claimed = _claimed("python_tests")
+        loaded = CLAIMS.measure_python_tests(REPO_ROOT)
         self.assertEqual(
             claimed,
             loaded,
             f"AGENTS.md cifra {claimed} tests de Python; la discovery carga {loaded}. "
-            "Actualiza el AGENTS.md con el numero medido",
+            "Corre tools/update-agents-claims.sh o explica por que el arbol cambio",
         )
 
     def test_cargo_objectives_match_the_tree(self):
-        claimed = _agents_count(r"(\d+) objetivos de test", "los objetivos de cargo")
+        claimed = _claimed("cargo_targets")
         try:
-            measured = _cargo_test_targets()
-        except FileNotFoundError:
+            measured = CLAIMS.measure_cargo_targets(REPO_ROOT)
+        except CLAIMS.CargoUnavailable:
             self.skipTest("cargo no esta en PATH: la cifra de objetivos no se puede medir aqui")
-        except subprocess.CalledProcessError as error:
-            self.fail(f"cargo metadata fallo: {error.stderr.strip()}")
         self.assertEqual(
             claimed,
             measured,
-            f"AGENTS.md cifra {claimed} objetivos de test; el arbol tiene {measured}",
+            f"AGENTS.md cifra {claimed} objetivos de test; el arbol tiene {measured}. "
+            "Corre tools/update-agents-claims.sh o explica por que el arbol cambio",
         )
 
     def test_ignore_count_matches_the_tree(self):
-        claimed = _agents_count(r"los (\d+) tests `#\[ignore\]`", "los tests ignorados")
-        ignore_sites = sum(
-            path.read_text(encoding="utf-8").count("#[ignore")
-            for pattern in IGNORE_GLOBS
-            for path in REPO_ROOT.glob(pattern)
-        )
-        self.assertGreater(ignore_sites, 0, "no hay sitios #[ignore]: el conteo seria vacuo")
-        self.assertEqual(
-            claimed,
-            ignore_sites,
-            f"AGENTS.md cifra {claimed} tests #[ignore]; el arbol tiene {ignore_sites}",
-        )
-
-    def test_ui_file_count_matches_the_tree(self):
-        claimed = _agents_count(r"(\d+) ficheros de test UI", "los ficheros de la UI")
-        ui_src = REPO_ROOT / "ui" / "src"
-        measured = len(list(ui_src.rglob("*.spec.ts"))) + len(list(ui_src.rglob("*.test.ts")))
+        claimed = _claimed("ignore_tests")
+        measured = CLAIMS.measure_ignore_sites(REPO_ROOT)
         self.assertEqual(
             claimed,
             measured,
-            f"AGENTS.md cifra {claimed} ficheros de test de UI; el arbol tiene {measured}",
+            f"AGENTS.md cifra {claimed} tests #[ignore]; el arbol tiene {measured}. "
+            "Corre tools/update-agents-claims.sh o explica por que el arbol cambio",
+        )
+
+    def test_ui_file_count_matches_the_tree(self):
+        claimed = _claimed("ui_files")
+        measured = CLAIMS.measure_ui_files(REPO_ROOT)
+        self.assertEqual(
+            claimed,
+            measured,
+            f"AGENTS.md cifra {claimed} ficheros de test de UI; el arbol tiene {measured}. "
+            "Corre tools/update-agents-claims.sh o explica por que el arbol cambio",
         )
 
     def test_silent_write_figure_matches_the_ratchet_baseline(self):
-        claimed = _agents_count(r"~(\d+) `let _ = sqlx::query", "las escrituras silenciosas")
-        spec = importlib.util.spec_from_file_location(
-            "test_silent_write_ratchet",
-            Path(__file__).with_name("test_silent_write_ratchet.py"),
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        claimed = _claimed("silent_writes")
+        measured = CLAIMS.measure_silent_writes(REPO_ROOT)
         self.assertEqual(
             claimed,
-            module.BASELINE,
+            measured,
             "la cifra de escrituras silenciosas del AGENTS.md se separo del "
-            f"BASELINE del ratchet ({module.BASELINE}); una sola fuente de verdad",
+            f"BASELINE del ratchet ({measured}); una sola fuente de verdad",
         )
 
 
