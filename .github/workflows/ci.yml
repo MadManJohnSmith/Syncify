@@ -26,6 +26,9 @@ jobs:
     # fail-safe del fallback (correr todo antes que no correr nada).
     outputs:
       areas: ${{ steps.areas.outputs.areas }}
+      # Patas del job Rust: Windows solo en los eventos donde su contexto es
+      # requerido por la proteccion de main (#368). test: test_rust_matrix.py.
+      rust_os: ${{ steps.rust_matrix.outputs.rust_os }}
     steps:
     - uses: actions/checkout@v4
     - id: filter
@@ -42,18 +45,29 @@ jobs:
         FILTER_PYTHON: ${{ steps.filter.outputs.python }}
         FILTER_DOCS: ${{ steps.filter.outputs.docs }}
       run: python3 scripts/ci/resolve_areas.py
+    - id: rust_matrix
+      name: Resolver patas del job Rust (Windows solo en main)
+      # La regla y su test viven en scripts/ci/rust_matrix.py: una expresion
+      # inline del workflow no se puede probar y una errata dejaria main sin
+      # los 6 contextos requeridos.
+      run: python3 scripts/ci/rust_matrix.py
   rust:
     name: Rust (src-tauri · check · test · clippy · fmt)
     needs: changed
     # La familia de verificacion corre en las dos patas (#268): la de Linux es
     # la hermana historica; la de Windows consume solo lo versionado (WebView2
     # en vez de webkit2gtk, herramientas de test desde el proveedor pineado).
+    # Desde #368 Windows solo se ejecuta donde su contexto es un check
+    # requerido: push a main y PR consolidado a main. En PRs de carril a
+    # `wave/*` basta Ubuntu (la decision esta en scripts/ci/rust_matrix.py y
+    # sus tests). Los nombres de contexto no cambian: el sufijo `(os)` sigue
+    # saliendo del matrix y la proteccion de main sigue exigiendo las dos.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: ${{ fromJSON(needs.changed.outputs.rust_os) }}
     defaults:
       run:
         working-directory: src-tauri
