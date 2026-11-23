@@ -1,0 +1,18 @@
+# Configuración de cargo común al árbol (local y CI). Cargo la descubre desde
+# cualquier subdirectorio, así que también aplica a los `cargo` que corre CI con
+# `working-directory: src-tauri`.
+
+[env]
+# Los tests de integración ejecutan los bridges de `scripts/` con el python del
+# sistema (`python3 scripts/...`): CPython escribe entonces
+# `scripts/services/__pycache__/`. El build script de tauri vigila `../scripts`
+# y `../scripts/services` completos —son los globs de `bundle.resources` en
+# `src-tauri/tauri.conf.json`— y un fichero nuevo ahí invalida el fingerprint de
+# `syncify-tauri`, así que la invocación siguiente de cargo recompila el crate
+# entero. En CI eso se pagaba en el paso serializado de `batch_50` (1m50s en
+# ubuntu y 2m53s en windows para 3 s de test; corrida 44947072166, #364).
+#
+# `[env]` llega también a los binarios que lanza `cargo test`, comprobado con un
+# crate desechable: un solo interruptor cubre la suite sin que cada test tenga
+# que acordarse de pasar `-B`.
+PYTHONDONTWRITEBYTECODE = "1"
