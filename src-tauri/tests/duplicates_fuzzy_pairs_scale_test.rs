@@ -127,6 +127,13 @@ async fn track_count(db: &DbPool) -> i64 {
 #[tokio::test]
 async fn test_fuzzy_scan_does_not_pairwise_scan_one_large_artist() {
     let pool = setup_test_db().await;
+    // #73 añadió `idx_tracks_duration_identity` (0115). El self-join legacy
+    // medía la forma artista↔track_artists, no la duración: se retira en este
+    // fixture para que el control siga ejerciendo la forma cuadrática original.
+    sqlx::query("DROP INDEX IF EXISTS idx_tracks_duration_identity")
+        .execute(&pool)
+        .await
+        .expect("drop 0115 duration index for the control");
     const TRACKS: i64 = 400;
     const VOCAB: i64 = 50;
 
