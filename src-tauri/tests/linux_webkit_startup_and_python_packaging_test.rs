@@ -112,6 +112,68 @@ fn linux_startup_does_not_force_software_rendering_on_every_machine() {
     );
 }
 
+#[test]
+fn linux_startup_preserves_explicit_webkit_overrides() {
+    let src = read_src("src/main.rs");
+    let webkit_block_end = src
+        .find("tauri::Builder::default()")
+        .expect("main.rs debe seguir montando el Builder de Tauri");
+    let webkit_block = &src[..webkit_block_end];
+
+    assert!(
+        webkit_block.contains("std::env::var_os(var).is_none()"),
+        "Un override explícito de WEBKIT_DISABLE_* debe prevalecer sobre el default de arranque"
+    );
+    assert!(
+        webkit_block.contains("std::env::set_var(var, \"1\")"),
+        "El default solo se fija cuando la variable no estaba definida"
+    );
+}
+
+#[test]
+fn wk01_characterization_separates_web_frames_from_presentation() {
+    let src_tauri = src_tauri_dir();
+    let repo_root = src_tauri.parent().unwrap();
+    let probe = fs::read_to_string(repo_root.join("tools/wk01/webkit_probe.py"))
+        .expect("WK-01 deja una sonda aislada reutilizable");
+    let fixture = fs::read_to_string(repo_root.join("tools/wk01/fixture.html"))
+        .expect("WK-01 deja una fixture fija");
+
+    assert!(
+        probe.contains("clock.connect(\"after-paint\""),
+        "La presentación se observa con after-paint de GTK, no con requestAnimationFrame"
+    );
+    assert!(
+        probe.contains("Gdk.pixbuf_get_from_window("),
+        "X11 aporta además evidencia de píxeles de la ventana"
+    );
+    assert!(
+        fixture.contains("requestAnimationFrame(frame)"),
+        "requestAnimationFrame se conserva como señal del proceso web, separada de la presentación"
+    );
+    assert!(
+        probe.contains("hard_deadline_ms"),
+        "La sonda tiene un deadline propio además del timeout del supervisor"
+    );
+}
+
+#[test]
+fn wk01_characterization_flushes_partial_evidence_before_a_kill() {
+    let src_tauri = src_tauri_dir();
+    let repo_root = src_tauri.parent().unwrap();
+    let probe = fs::read_to_string(repo_root.join("tools/wk01/webkit_probe.py"))
+        .expect("WK-01 deja una sonda aislada reutilizable");
+
+    assert!(
+        probe.contains("self.handle.flush()"),
+        "Un abort o kill no debe llevarse la evidencia ya emitida"
+    );
+    assert!(
+        probe.contains("json.dumps(payload, sort_keys=True)"),
+        "Cada evento es JSON autónomo para poder leer evidencia parcial"
+    );
+}
+
 // ═══════════════════════════════════════════════════════
 // 3. PLUGINS DE GSTREAMER DENTRO DEL APPIMAGE (auditoría 34)
 // ═══════════════════════════════════════════════════════
