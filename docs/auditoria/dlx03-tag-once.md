@@ -1,7 +1,9 @@
 # DLX-03 — Etiquetado y verificación sin trabajo repetido
 
-**Issue:** [#44](https://github.com/MadManJohnSmith/Syncify/issues/44)  
-**Rama de evidencia:** `feat/ola1-44-dlx03-tag-once`  
+**Issue:** [#44](https://github.com/MadManJohnSmith/Syncify/issues/44)
+
+**Rama de evidencia:** `feat/ola1-44-dlx03-tag-once`
+
 **Medición:** 2026-11-24, offline, sin cuentas ni red reales.
 
 ## Método
