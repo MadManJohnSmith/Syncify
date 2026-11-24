@@ -19,6 +19,9 @@ Covered:
   measured on the revision it claims and which command produces it.
 * SYNC-AUD-077 — the conditioned scope (D-01 to D-04) must be declared as such
   instead of being read as pending work.
+* #393 — the Rust job's commands are read from its parsed `run:` steps, so a
+  `--skip` inside a `|`/`>` block and a Windows prebuild without `--workspace`
+  both fail the gate.
 """
 
 import re
@@ -116,6 +119,60 @@ def _resolve(token: str, relative_to: Path = None):
 
 def _doc_text(relative: str) -> str:
     return (REPO_ROOT / relative).read_text(encoding="utf-8")
+
+
+#: Comandos del job Rust que la puerta fija: nombre del paso -> `run` exacto.
+#: Un `run: |` o `run: >` llega aquí como el texto que YAML despliega, así que
+#: el bloque serializado de batch_50 y cualquier bloque futuro se comparan
+#: como el comando que ejecuta el runner, no como una línea que empieza por
+#: `run:`.
+RUST_REQUIRED_RUNS = {
+    "cargo check --workspace --all-targets --locked": (
+        "cargo check --workspace --all-targets --locked"
+    ),
+    "Compilar binarios de test sin ejecutar (base del manifiesto comctl32)": (
+        "cargo test --workspace --locked --no-run"
+    ),
+    "Suite de tests completa": "cargo test --workspace --locked --no-fail-fast",
+}
+
+#: `--skip` como token de cargo, no como fragmento de otra bandera o de un texto.
+SKIP_TOKEN = re.compile(r"(?:^|\s)--skip(?:=|\s|$)")
+
+
+def _rust_run_steps(workflow_text: str) -> dict[str, str]:
+    """Los `run` del job Rust, ya desplegados por YAML.
+
+    Leer el YAML y no las líneas es lo que ve un `run: |`: sus comandos no
+    empiezan por `run:` ni viven en la misma línea que la clave.
+    """
+    workflow = yaml.safe_load(workflow_text)
+    job = (workflow.get("jobs") or {}).get("rust") or {}
+    runs = {}
+    for index, step in enumerate(job.get("steps") or []):
+        if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+            continue
+        runs[step.get("name") or f"steps[{index}]"] = step["run"]
+    return runs
+
+
+def _skipped_rust_steps(workflow_text: str) -> dict[str, str]:
+    """Pasos del job Rust cuyo `run` lleva `--skip`, con el texto que lo lleva."""
+    return {
+        name: run
+        for name, run in _rust_run_steps(workflow_text).items()
+        if SKIP_TOKEN.search(run)
+    }
+
+
+def _missing_required_rust_runs(workflow_text: str) -> dict[str, tuple[str, str | None]]:
+    """Pasos del job Rust que no ejecutan el comando canónico que la puerta fija."""
+    runs = _rust_run_steps(workflow_text)
+    return {
+        name: (expected, runs.get(name))
+        for name, expected in RUST_REQUIRED_RUNS.items()
+        if runs.get(name) != expected
+    }
 
 
 class DocumentationReferenceTests(unittest.TestCase):
@@ -221,32 +278,83 @@ class CiNarrativeTests(unittest.TestCase):
                 f"the CI header still carries the pre-b9559da claim {stale_claim!r}",
             )
 
-    def test_general_suite_step_does_not_skip_batch_50(self):
-        for line in self.ci.splitlines():
-            if line.strip().startswith("run: cargo test"):
-                self.assertNotIn("--skip", line, "the general suite must not skip batch_50 anymore")
+    def _mutated_workflow(self, old: str, new: str) -> str:
+        """El workflow real con un fragmento sustituido, para probar la puerta."""
+        mutated = self.ci.replace(old, new, 1)
+        self.assertNotEqual(mutated, self.ci, f"el fixture no encontró {old!r}")
+        return mutated
 
-    def test_rust_check_and_suite_cover_the_whole_workspace(self):
-        """#251: el job corre desde `src-tauri`; sin `--workspace` solo cubría ese paquete.
+    def test_no_rust_step_passes_skip_to_the_suite(self):
+        """#393: el escaneo cubre todos los `run` parseados, no solo `run: cargo test`.
 
-        El workspace es virtual en la raíz y `src-tauri` es un miembro, así que
-        el cargo del job resolvía el paquete actual: los otros ocho crates solo
-        entraban como dependencias y sus tests nunca se ejecutaban en CI.
+        El paso serializado de batch_50 ya es un bloque `|`; un `--skip` dentro
+        de él no empieza por `run:` y antes pasaba inadvertido.
         """
-        run_lines = [
-            line.strip()
-            for line in self.ci.splitlines()
-            if line.strip().startswith("run: cargo ")
-        ]
-        self.assertIn(
-            "run: cargo check --workspace --all-targets --locked",
-            run_lines,
-            "el check de CI debe cubrir el workspace entero (#251)",
+        self.assertEqual(
+            _skipped_rust_steps(self.ci),
+            {},
+            "ningún paso del job Rust puede saltarse tests con --skip",
+        )
+
+    def test_skip_gate_catches_a_skip_inside_a_multiline_run_block(self):
+        """El fixture reescribe la suite como bloque `|`/`>` y la puerta lo ve."""
+        for indicator in ("|", ">"):
+            with self.subTest(indicator=indicator):
+                mutated = self._mutated_workflow(
+                    "      run: cargo test --workspace --locked --no-fail-fast\n",
+                    f"      run: {indicator}\n"
+                    "        cargo test --workspace --locked --no-fail-fast"
+                    " -- --skip batch_50_audit_test\n",
+                )
+                skipped = _skipped_rust_steps(mutated)
+                self.assertIn(
+                    "Suite de tests completa",
+                    skipped,
+                    f"la puerta debe ver el --skip de un bloque run: {indicator}",
+                )
+
+    def test_skip_gate_catches_a_skip_inside_the_serialized_block(self):
+        """El bloque ya multilínea de batch_50 tampoco puede llevar `--skip`."""
+        mutated = self._mutated_workflow(
+            "cargo test --locked --test batch_50_audit_test -- --test-threads=1",
+            "cargo test --locked --test batch_50_audit_test -- --test-threads=1"
+            " --skip some_other_test",
         )
         self.assertIn(
-            "run: cargo test --workspace --locked --no-fail-fast",
-            run_lines,
-            "la suite de CI debe cubrir el workspace entero (#251)",
+            "batch_50_audit_test serializado (--test-threads=1)",
+            _skipped_rust_steps(mutated),
+        )
+
+    def test_rust_check_suite_and_windows_prebuild_use_the_canonical_command(self):
+        """#251/#393: check, suite y prebuild de Windows cubren el workspace entero.
+
+        El job corre desde `src-tauri`, un miembro del workspace virtual de la
+        raíz: sin `--workspace` solo se compilaba ese paquete. El prebuild es el
+        paso que prepara los `.exe` para el manifiesto comctl32; perder la
+        bandera ahí deja los tests de crates/ sin precompilar.
+        """
+        self.assertEqual(
+            _missing_required_rust_runs(self.ci),
+            {},
+            "el job Rust perdió un comando canónico (#251/#393)",
+        )
+
+    def test_prebuild_gate_catches_a_missing_workspace(self):
+        """Quitar `--workspace` del prebuild Windows debe romper la puerta."""
+        mutated = self._mutated_workflow(
+            "run: cargo test --workspace --locked --no-run",
+            "run: cargo test --locked --no-run",
+        )
+        violations = _missing_required_rust_runs(mutated)
+        self.assertIn(
+            "Compilar binarios de test sin ejecutar (base del manifiesto comctl32)",
+            violations,
+            "la puerta debe detectar que el prebuild dejó de cubrir el workspace",
+        )
+        self.assertNotIn(
+            "Suite de tests completa",
+            violations,
+            "quitar --workspace del prebuild no debe culpar a la suite",
         )
 
     def test_serialized_batch_50_step_keeps_its_own_command(self):
@@ -353,6 +461,33 @@ class ReadmeTests(unittest.TestCase):
                     "no existe",
                     line,
                     f"README points at a gitignored path: {line!r}",
+                )
+
+
+class ContributingGuideTests(unittest.TestCase):
+    """#393: el comando de suite es el mismo en CI, AGENTS.md y las dos secciones."""
+
+    SUITE = RUST_REQUIRED_RUNS["Suite de tests completa"]
+
+    def test_both_languages_publish_the_canonical_suite_command(self):
+        english, _, spanish = _doc_text("CONTRIBUTING.md").partition("## Español")
+        self.assertTrue(english and spanish, "CONTRIBUTING.md perdió una de sus dos secciones")
+        self.assertIn(
+            self.SUITE,
+            _doc_text("AGENTS.md"),
+            "AGENTS.md y CONTRIBUTING.md deben citar el mismo comando de suite",
+        )
+        for language, section in (("EN", english), ("ES", spanish)):
+            with self.subTest(language=language):
+                self.assertIn(
+                    self.SUITE,
+                    section,
+                    f"la sección {language} debe citar el comando canónico de suite",
+                )
+                self.assertNotIn(
+                    "`cargo test --workspace --locked`",
+                    section,
+                    f"la sección {language} conserva la forma corta sin --no-fail-fast",
                 )
 
 
