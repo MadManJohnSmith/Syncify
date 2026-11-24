@@ -22,7 +22,7 @@ ilustrativa, no una promesa de rendimiento ni una medición p50/p95.
 | Camino | Antes | Después | Lecturas eliminadas |
 |---|---:|---:|---:|
 | Tags de Tidal tras escribir | 3: `apply_and_verify`, verificación duplicada y auditoría de portada | 2: `apply_and_verify` y auditoría | 1 |
-| Resultado final | 8: post-promoción (1), proveedor (1), gateway (1), orquestador (1), gate tags+duración (2), calidad estricta (1), ledger (1) | 2: proveedor (1) y tags del gate (1) | 6 |
+| Resultado final (verificación/métricas) | 8: post-promoción (1), proveedor (1), gateway (1), orquestador (1), gate tags+duración (2), calidad estricta (1), ledger (1) | 2: proveedor (1) y tags del gate (1) | 6 |
 
 Ejemplo de unión de intervalos en la corrida del 2026-11-24:
 
@@ -54,6 +54,6 @@ comprueba que gateway, orquestador y gate de calidad siguen usando la instantán
 ## Límites
 
 La medición es offline y no ejercita proveedores reales, GUI, Windows ni
-rendimiento de red. Las llamadas de auditoría/integridad ajenas a esta
-redundancia —por ejemplo, reparación de portada o manifiestos de lote— no se
-eliminan.
+rendimiento de red. Las llamadas ajenas a esta redundancia —reparación de
+portada, sincronización MusicBrainz posterior al ledger o manifiestos de lote—
+no se eliminan.
