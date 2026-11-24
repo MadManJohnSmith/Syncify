@@ -123,6 +123,11 @@ pub use tags::*;
 pub mod tempo;
 pub use tempo::*;
 
+/// T08b (#383): cola de revisión de identidad de pista. Los comandos leen y
+/// cierran `track_identity_reviews` (0115); el merge no pierde filas.
+pub mod track_identity_reviews;
+pub use track_identity_reviews::*;
+
 pub mod tools;
 pub use tools::*;
 

@@ -38,6 +38,12 @@ use crate::services::track_matcher::is_explicit_compatible;
 /// el mismo máster, pero dos ediciones distintas se separan mucho más.
 pub const DURATION_TOLERANCE_MS: i64 = 2_000;
 
+/// Motivo del único caso que hoy llega a la cola de revisión: la huella
+/// encontró más de un Track local. Es vocabulario del núcleo, no del
+/// proveedor; la cola (0115) no tiene CHECK para que un motivo nuevo sea un
+/// cambio de código y no otra migración.
+pub const REASON_FINGERPRINT_MULTIPLE_CANDIDATES: &str = "fingerprint_multiple_candidates";
+
 /// El lado del proveedor que llega al sync.
 pub struct IdentityRequest<'a> {
     pub service_id: i64,
@@ -255,14 +261,13 @@ pub async fn record_review(
     request: &IdentityRequest<'_>,
     candidates: &[IdentityCandidate],
 ) -> Result<i64, String> {
-    const REASON: &str = "fingerprint_multiple_candidates";
     let existing: Option<i64> = sqlx::query_scalar(
         "SELECT id FROM track_identity_reviews
          WHERE service_id = ? AND service_track_id = ? AND reason = ? AND status = 'pending'",
     )
     .bind(request.service_id)
     .bind(request.service_track_id)
-    .bind(REASON)
+    .bind(REASON_FINGERPRINT_MULTIPLE_CANDIDATES)
     .fetch_optional(&mut *conn)
     .await
     .map_err(|e| format!("identity review lookup failed: {e}"))?;
@@ -303,7 +308,7 @@ pub async fn record_review(
         .bind(request.service_id)
         .bind(request.service_track_id)
         .bind(request.account_id)
-        .bind(REASON)
+        .bind(REASON_FINGERPRINT_MULTIPLE_CANDIDATES)
         .bind(request.title)
         .bind(request.artist)
         .bind(request.album)

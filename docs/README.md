@@ -25,7 +25,7 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
 ## Especificaciones de Módulos y Arquitectura Vigente
 
 - **`features/`**: especificaciones funcionales de los subsistemas principales
-  (9 ficheros). Cada una abre con un sello `**Estado de revisión:**` que dice
+  (11 ficheros). Cada una abre con un sello `**Estado de revisión:**` que dice
   cuándo se contrastó contra el árbol:
   - `auth-flow.md`: flujos de autenticación OAuth, PKCE y scraping de sesión,
     reconciliación multi-cuenta.
@@ -37,6 +37,9 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
     virtual y composable de biblioteca (ADR-0025).
   - `library-import.md`: algoritmos de importación, deduplicación e identidad
     canónica.
+  - `track-identity-review.md`: la cola humana de identidades ambiguas
+    (`track_identity_reviews`, 0115), sus comandos IPC, la vista `/reviews` y
+    el merge que conserva fuentes, pertenencias, favoritos y playlists (#383).
   - `metadata-enrichment.md`: enriquecimiento con MusicBrainz, Last.fm y
     AcoustID, y el worker de fondo.
   - `playlist-system.md`: sincronización y persistencia de listas de
