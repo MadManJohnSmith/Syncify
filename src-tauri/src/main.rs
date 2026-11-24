@@ -4,40 +4,16 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod bridges;
-mod cmd_utils;
-mod commands;
-mod crypto;
-mod db;
-mod download;
-pub mod enrichment_worker;
-mod events;
-mod import_cache;
-mod logs_history;
-mod models;
-mod services;
-mod settings_defaults;
-mod sync;
-mod sync_scheduler;
-mod system_conditions;
-mod tray;
-mod worker;
-
-use db::DbPool;
-pub use enrichment_worker::{EnrichmentWorker, EnrichmentWorkerState};
-use std::sync::Arc;
+pub use syncify_tauri_lib::enrichment_worker::{EnrichmentWorker, EnrichmentWorkerState};
+pub use syncify_tauri_lib::{
+    bridges, cmd_utils, commands, crypto, db, download, enrichment_worker, events, import_cache,
+    logs_history, models, services, settings_defaults, sync, sync_scheduler, system_conditions,
+    tray, worker, AppState,
+};
 use tauri::Manager;
 use worker::DownloadWorkerState;
 
 pub use crate::commands::ImportLock;
-
-/// Application state shared across commands
-pub struct AppState {
-    pub db: DbPool,
-    pub worker_state: DownloadWorkerState,
-    pub enrichment_state: EnrichmentWorkerState,
-    pub concurrency_manager: Arc<services::ConcurrencyManager>,
-}
 
 fn main() {
     // Endurecimiento de seguridad TASK-112: umask estricto en sistemas Unix
