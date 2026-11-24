@@ -163,3 +163,87 @@ igual carga y un smoke en el Latitude con fallback. Hasta entonces se mantiene
 `WEBKIT_DISABLE_COMPOSITING_MODE=1` de manera predeterminada. Para cerrar la
 causalidad harán falta trazas sincronizadas con interacciones reales, no otro
 conteo de callbacks de una sonda aislada.
+
+## WK-02 · sonda de arranque supervisada (2026-11-24)
+
+La implementación vive en `src-tauri/src/webkit_probe/` y se invoca desde
+`src-tauri/src/main.rs` antes de construir Tauri; el reporte se registra cuando
+el subscriber de logging ya está instalado. **Todavía no cambia la política de
+render:** la app principal conserva
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` y `WEBKIT_DISABLE_COMPOSITING_MODE=1` por
+defecto y respeta overrides explícitos; la selección Automático/Compatible y la
+recuperación pertenecen a #54.
+
+### Ejecución y evidencia
+
+- El padre recopila el fingerprint sin inicializar GL y lanza el propio binario
+  con `--syncify-webkit-probe-child`. El hijo usa GTK 3 + WebKitGTK 4.1, un
+  perfil XDG temporal con permisos `0700` en `XDG_RUNTIME_DIR` (o `/tmp`, nunca
+  un `TMPDIR` potencialmente remoto), `GSETTINGS_BACKEND=memory` y un grupo de
+  procesos propio. Su entorno se reconstruye con una allowlist de sesión,
+  locale y librerías gráficas: no hereda credenciales de Syncify ni variables de
+  `.env`, y `HOME` apunta al perfil temporal.
+- El hijo quita las variables compatibles y fuerza la política WebKit
+  `HardwareAccelerationPolicy::Always`. Carga una fixture local de 480×360 con
+  bandas de color y un bloque rojo en movimiento; no carga recursos de red.
+- El supervisor concede 8 s, envía TERM al grupo y espera 1 s antes de KILL.
+  La espera del reap tras KILL está acotada a 500 ms y, si hace falta, un hilo
+  propio espera al hijo sin depender del runtime de Tauri. El grupo se barre al
+  salir. El hijo tiene un deadline propio de 6 s. Un timeout, señal, aborto,
+  error de escritura o pánico se clasifica sin propagar el fallo a la app
+  principal.
+- `requestAnimationFrame` cuenta producción del web process y `after-paint`
+  cuenta pintado de GTK. Ninguno basta por sí solo:
+  - **X11:** solo una captura de la ventana con al menos 300 píxeles rojos de la
+    fixture **en ambas capturas** y al menos 300 píxeles cambiados produce
+    `supported/content_observed`.
+  - **Wayland:** `after-paint` y el snapshot se registran, pero cualquier
+    resultado de presentación —incluidos no-ready, sin paints o sin frames— es
+    `inconclusive`: no hay prueba de píxeles visibles.
+  - Si no hay paints y el snapshot sí contiene el marcador, se registra
+    `unsupported/rendered_not_presented`, reproduciendo la señal medida en
+    X11/acelerada por WK-01.
+
+### Fingerprint y privacidad
+
+La clave versionada (`probe_contract_version = 1`, fixture
+`wk02-red-marker-v1`) cubre backend efectivo, sesión y escritorio, endpoints de
+display, GPU/PCI y versión de driver por dispositivo, nodos DRM, kernel,
+WebKitGTK, Mesa y overrides de render. Los overrides de Mesa/GLX/EGL, selección
+`DRI_PRIME`, `LD_LIBRARY_PATH` y `LD_PRELOAD` se incorporan mediante hash, sin
+registrar rutas o valores sensibles. WebKitGTK se lee de la biblioteca enlazada;
+Mesa procede del gestor de paquetes y la clave incluye su procedencia (`dpkg`,
+`pacman` o `rpm`), que no garantiza que sea la biblioteca cargada por un
+AppImage. Un cambio material invalida la clave y un fingerprint incompleto no
+permite un positivo. Las trazas incluyen la clave y un resumen de esos campos;
+no incluyen nombre de host, usuario, PID, carga ni rutas temporales.
+
+### Límite de la detección de negro
+
+El umbral (`max_channel <= 8`, sin píxeles coloreados) es un **prototipo atado a
+la fixture**, no un detector universal de pantalla negra. Una captura X11 negra
+se marca `inconclusive/suspected-black` salvo que la ausencia de paints y un
+snapshot con contenido permitan afirmar `rendered_not_presented`. La sonda no
+distingue oclusión por otra ventana, pantalla apagada, política del compositor,
+captura remota ni ambigüedad de Wayland. Tampoco prueba que el render use una GPU
+física: la política WebKit y la presentación visible son señales distintas. Por
+eso un resultado positivo no autoriza por sí solo activar aceleración.
+
+### Verificación realizada y pendiente
+
+Las pruebas automatizadas cubren selección de backend/sesión, invalidación del
+fingerprint, clasificación de evidencia, parsing de píxeles y timeout/TERM/KILL.
+Smoke del 2026-11-24:
+
+- **X11 bajo Xvfb:** `ready=true`, 145 frames y 145 paints en el intervalo;
+  3600 píxeles rojos en ambas capturas y 7515 cambiados. La evidencia cumple el
+  umbral positivo. Con `GDK_SCALE=2`, ventana y snapshot midieron 960×720 con
+  14400 píxeles rojos y 31293 cambiados. Mesa advirtió que Xvfb no ofrece DRI3:
+  no se interpreta como prueba de aceleración GPU.
+- **Wayland real (`wayland-1`):** `ready=true`, 144 frames y 144 paints; snapshot
+  con 3600 píxeles rojos y captura de ventana no disponible. El verdicto permanece
+  inconcluso por falta de prueba de píxel.
+- El servidor XWayland `:0` de la sesión exigió autorización que el harness no
+  tenía; no se extrajo ni compartió su cookie. La cobertura X11 viene de Xvfb.
+- **Pendiente:** repetir el smoke en el Dell Latitude 5420 y en una sesión X11
+  autorizada; CI sin GPU no sustituye esa evidencia.
