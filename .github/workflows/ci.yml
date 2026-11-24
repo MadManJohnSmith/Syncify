@@ -197,8 +197,13 @@ jobs:
       working-directory: ui
       run: npm ci && npm run build
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
-    - name: cargo check --all-targets --locked
-      run: cargo check --all-targets --locked
+    # --workspace: el job corre desde `src-tauri`, que es un miembro del
+    # workspace virtual de la raiz; sin la bandera solo se compilaba ese
+    # paquete y los crates/ solo entraban como dependencias. Con ella se
+    # compilan y se ejecutan sus targets propios (lib y tests) sin cambiar
+    # el directorio de trabajo ni el target cacheado (`./target`).
+    - name: cargo check --workspace --all-targets --locked
+      run: cargo check --workspace --all-targets --locked
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
     # Los exe de test no llevan el manifiesto que tauri-build embebe en el
     # binario de la app: el loader de Windows resuelve comctl32 v5 y mueren al
@@ -208,7 +213,7 @@ jobs:
     # embeber el manifiesto v6 con mt.exe en cada exe de deps/ y correr.
     - name: Compilar binarios de test sin ejecutar (base del manifiesto comctl32)
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Windows'
-      run: cargo test --locked --no-run
+      run: cargo test --workspace --locked --no-run
     - name: Embeber manifiesto comctl32 v6 en los exe de test
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Windows'
       shell: pwsh
@@ -232,10 +237,12 @@ jobs:
         }
         Write-Host "Manifiesto embebido en $patched exe de test"
     - name: Suite de tests completa
-      # --no-fail-fast (el comando canonico del AGENTS.md): un binario de test
-      # que falle no tapa el resultado de los demas, la evidencia es completa
-      # por corrida en las dos patas del matrix.
-      run: cargo test --locked --no-fail-fast
+      # --workspace (el comando canonico del AGENTS.md): desde `src-tauri` el
+      # `cargo test` sin bandera solo ejecutaba ese paquete; los tests de los
+      # crates/ del workspace nunca llegaban a CI. --no-fail-fast: un binario
+      # de test que falle no tapa el resultado de los demas, la evidencia es
+      # completa por corrida en las dos patas del matrix.
+      run: cargo test --workspace --locked --no-fail-fast
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
     - name: batch_50_audit_test serializado (--test-threads=1)
       timeout-minutes: 10

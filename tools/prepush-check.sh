@@ -95,8 +95,8 @@ echo "==> cargo clippy --workspace --all-targets --locked -- -D warnings"
 cargo clippy --workspace --all-targets --locked -- -D warnings
 
 if [ "$run_tests" -eq 1 ]; then
-    echo "==> cargo test --locked --no-fail-fast"
-    cargo test --locked --no-fail-fast
+    echo "==> cargo test --workspace --locked --no-fail-fast"
+    cargo test --workspace --locked --no-fail-fast
 fi
 
 echo "Puerta pre-push en verde."
