@@ -357,6 +357,14 @@ pub async fn is_account_participating(
 /// La unidad es la cuenta, no el servicio: con dos cuentas activas en el mismo
 /// servicio, el motor resolvería una sola por su cuenta y podría elegir la
 /// pausada. El par (cuenta, servicio) deja que el llamador fije la cuenta.
+///
+/// #87 (ADR-0007 decisión 12): una cuenta con la credencial marcada inválida
+/// (401/403) queda fuera de ese universo hasta reautenticar. Sin este filtro
+/// cada tick del auto-sync volvería a intentarla, fallaría en el gate de sync
+/// y publicaría un aviso de error por tick: un bucle de avisos contra una
+/// credencial rechazada. La marca la limpia el re-login, así que la cuenta
+/// vuelve sola. Una cuenta «sin sesión» (cerrada por el usuario) ya queda
+/// fuera por `is_active = 0`.
 pub async fn active_participating_accounts(
     db: &sqlx::SqlitePool,
 ) -> Result<Vec<(i64, String)>, String> {
@@ -365,6 +373,7 @@ pub async fn active_participating_accounts(
            FROM accounts a
            JOIN services s ON s.id = a.service_id
            WHERE a.is_active = 1
+             AND IFNULL(a.credentials_invalid, 0) = 0
            ORDER BY 2, 1"#,
     )
     .fetch_all(db)

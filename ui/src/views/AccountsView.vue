@@ -1497,12 +1497,35 @@ function getServiceIconForName(serviceName: string): string {
   return SERVICE_ICON_SYMBOLS[String(serviceName || '').toLowerCase()] || 'cloud'
 }
 
-/** Reconnect a single account (re-authenticate) instead of the whole service. */
+/**
+ * Reconnect a single account (re-authenticate) instead of the whole service.
+ *
+ * #87 (ADR-0007 decisión 4): el login en webview de ESTA cuenta restaura su
+ * perfil cifrado, así que el mismo webview repara la sesión sin repetir el
+ * alta ni tocar su biblioteca.
+ */
 async function reconnectAccount(account: any) {
   if (!account) return
-  // Same auth flow as connecting: re-do the provider login for this service.
   const serviceId = findServiceIdForAccount(account)
-  if (serviceId) await connectServiceFromCard(serviceId)
+  if (!serviceId) return
+  authLoading.value = serviceId
+  try {
+    const accountId = typeof account.id === 'number' ? account.id : undefined
+    const started = await accountsApi.startAccountLogin(serviceId, accountId)
+    const { outcome, payload } = await awaitLoginOutcome(started.profile_key)
+    if (outcome === 'completed') {
+      await fetchData()
+      highlightedAccountId.value = typeof payload.account_id === 'number' ? payload.account_id : (accountId ?? null)
+      showToast(`Re-authenticated ${serviceId} successfully!`, 'success')
+    } else if (outcome === 'failed') {
+      showToast(`Re-authentication failed: ${safeAuthError(payload.error ?? 'Unknown error')}`, 'error')
+    }
+    // `cancelled`: el usuario cerró la ventana; sin aviso y sin perfil a medias.
+  } catch (e) {
+    showToast(`Re-authentication error: ${safeAuthError(e)}`, 'error')
+  } finally {
+    authLoading.value = null
+  }
 }
 
 /** Resolve the service id (string) for an account row coming from either view. */

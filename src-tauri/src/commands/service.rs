@@ -7761,13 +7761,34 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
     let effective_account =
         resolve_effective_account_id(db, &service_normalized, account_id_opt).await?;
 
+    let emit = |event: SyncProgressEvent| {
+        if let Some(e) = emitter {
+            e.emit_sync_progress(&event);
+        }
+    };
+
     // #85 ciclo de vida (ADR-0007 decisión 3): una cuenta desactivada o
     // archivada no sincroniza. Gate explícito sobre la cuenta pedida (el camino
     // legacy ya la excluye vía `is_active = 0` que aplica
     // perform_set_account_state) para que el sync por cuenta concreta falle con
     // un motivo legible y no con un "not connected" ambiguo.
     if account_id_opt.is_some() {
-        crate::commands::accounts::ensure_account_can_sync(db, effective_account).await?;
+        if let Err(error) =
+            crate::commands::accounts::ensure_account_can_sync(db, effective_account).await
+        {
+            // #87: una credencial marcada inválida cierra el sync por sesión,
+            // no por fallo opaco — mismo evento terminal `requires_auth` que
+            // el corte por auth-status de abajo, para que la UI ofrezca
+            // reconectar en vez de un error genérico.
+            if error.starts_with("RequiresAuth:") {
+                emit(SyncProgressEvent::requires_auth(
+                    &service_normalized,
+                    Some(effective_account),
+                    &error,
+                ));
+            }
+            return Err(error);
+        }
     }
 
     let _sync_writer_guard =
@@ -7781,12 +7802,6 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
                     error
                 }
             })?;
-
-    let emit = |event: SyncProgressEvent| {
-        if let Some(e) = emitter {
-            e.emit_sync_progress(&event);
-        }
-    };
 
     // 0. Emit started event immediately
     emit(SyncProgressEvent {

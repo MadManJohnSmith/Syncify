@@ -246,7 +246,7 @@ async fn tray_sync_all_without_active_services_is_a_noop() {
         .await
         .unwrap();
     sqlx::query(
-        "CREATE TABLE accounts (id INTEGER PRIMARY KEY, service_id INTEGER NOT NULL, is_active INTEGER DEFAULT 1)",
+        "CREATE TABLE accounts (id INTEGER PRIMARY KEY, service_id INTEGER NOT NULL, is_active INTEGER DEFAULT 1, credentials_invalid INTEGER DEFAULT 0)",
     )
     .execute(&db)
     .await
@@ -270,7 +270,7 @@ async fn tray_sync_all_only_targets_active_accounts() {
         .await
         .unwrap();
     sqlx::query(
-        "CREATE TABLE accounts (id INTEGER PRIMARY KEY, service_id INTEGER NOT NULL, is_active INTEGER DEFAULT 1)",
+        "CREATE TABLE accounts (id INTEGER PRIMARY KEY, service_id INTEGER NOT NULL, is_active INTEGER DEFAULT 1, credentials_invalid INTEGER DEFAULT 0)",
     )
     .execute(&db)
     .await

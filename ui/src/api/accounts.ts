@@ -323,9 +323,14 @@ export interface AccountLoginStart {
  * `profile_key` per attempt and captures ONLY the provider artifact (cookie or
  * storage key). The result arrives through the `account-login-*` events; the
  * saved account itself is announced via `auth-state-updated`.
+ *
+ * With `accountId` (re-authentication from the account card, issue #87) the
+ * attempt restores that account's encrypted webview profile before the window
+ * opens: the SAME webview, without re-adding the account or touching its
+ * library. The account must exist and belong to `service`.
  */
-export async function startAccountLogin(service: string): Promise<AccountLoginStart> {
-    return invokeCommand<AccountLoginStart>('start_account_login', { service });
+export async function startAccountLogin(service: string, accountId?: number): Promise<AccountLoginStart> {
+    return invokeCommand<AccountLoginStart>('start_account_login', { service, accountId });
 }
 
 /**
