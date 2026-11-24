@@ -27,7 +27,7 @@ use crate::services::repair_guardrail::{
 };
 pub use syncify_core_domain::metadata::TidalTrack;
 pub use syncify_flac_writer::{
-    apply_and_verify_flac_tags_with_options, audit_flac_stage, verify_flac_tags, FlacMetadata,
+    apply_and_verify_flac_tags_with_options, audit_flac_stage, FlacMetadata,
 };
 pub use syncify_tidal_downloader::{PipelineError, TidalDownloader, TidalGuiCredentials};
 
@@ -1746,6 +1746,15 @@ where
         ));
     }
 
+    // DLX-03: STREAMINFO ya está en los bytes validados. Etiquetado y rename no
+    // lo modifican, así que las métricas post-promoción no necesitan otra lectura.
+    let validated_streaminfo = if stream_res.codec == "FLAC" {
+        AudioByteValidator::parse_flac_streaminfo(&payload_bytes)
+            .map(|s| (s.bits_per_sample as i32, s.sample_rate as f64))
+    } else {
+        None
+    };
+
     // 6. Tagging (FLAC VorbisComments & Picture Preservation)
     on_prog_arc(
         PipelineProgressEvent::new(target, "tidal", PipelineStepStatus::Tagging)
@@ -2259,9 +2268,15 @@ where
         crate::services::tag_writer::apply_tag_policy(&mut flac_meta, &tag_prefs);
         let tag_opts = crate::services::tag_writer::tag_write_options(&tag_prefs);
         match apply_and_verify_flac_tags_with_options(&staged_file_path, &flac_meta, &tag_opts) {
-            Ok(_) => {
+            Ok(verified) => {
                 tagging_result_str = "Success (metaflac Verified)".to_string();
-                info!("[Pipeline §6] FLAC tagging completed (base + cover + lyrics + enrichment)");
+                info!(
+                    tags_match = verified.tags_match,
+                    cover_present = verified.cover_present,
+                    lyrics_present = verified.lyrics_present,
+                    mismatches = ?verified.mismatches,
+                    "[Pipeline §6] FLAC tagging completed and verified once"
+                );
 
                 // If plain lyrics resolved (no LRC timestamp), embed UNSYNCEDLYRICS & SYNCIFY_LYRICS_SOURCE
                 if let Some(ref res) = resolved_lyrics_res {
@@ -2313,21 +2328,6 @@ where
             }
             Err(e) => {
                 warn!(error = %e, "[Pipeline §6d] FLAC picture audit failed (non-fatal)");
-            }
-        }
-
-        match verify_flac_tags(&staged_file_path, &flac_meta) {
-            Ok(v) => {
-                info!(
-                    tags_match = v.tags_match,
-                    cover_present = v.cover_present,
-                    lyrics_present = v.lyrics_present,
-                    mismatches = ?v.mismatches,
-                    "[Pipeline §6d] FLAC tag verification completed"
-                );
-            }
-            Err(e) => {
-                warn!(error = %e, "[Pipeline §6d] FLAC tag verification failed (non-fatal)");
             }
         }
     } else {
@@ -3483,25 +3483,16 @@ where
         new_track_id
     };
 
-    // F3.4: Inspect physical FLAC STREAMINFO header to guarantee real bit_depth and sample_rate
+    // DLX-03: reutiliza STREAMINFO de los bytes ya validados. El etiquetado y la
+    // promoción preservan ese bloque; releer el fichero final no añade evidencia.
     if db_file_format == "FLAC" {
-        let streaminfo_opt = if let Ok(tag) = metaflac::Tag::read_from_path(&final_path) {
-            tag.get_streaminfo()
-                .map(|s| (s.bits_per_sample as i32, s.sample_rate as f64))
-        } else if let Ok(bytes) = tokio::fs::read(&final_path).await {
-            syncify_core_domain::byte_validators::AudioByteValidator::parse_flac_streaminfo(&bytes)
-                .map(|s| (s.bits_per_sample as i32, s.sample_rate as f64))
-        } else {
-            None
-        };
-
-        if let Some((real_bd, real_sr)) = streaminfo_opt {
+        if let Some((real_bd, real_sr)) = validated_streaminfo {
             info!(
                 promised_bd = stream_res.bit_depth,
                 promised_sr = stream_res.sample_rate,
                 real_bd = real_bd,
                 real_sr = real_sr,
-                "[Pipeline §9] Physical STREAMINFO extracted from FLAC"
+                "[Pipeline §9] Physical STREAMINFO reutilizado desde la validación"
             );
             stream_res.bit_depth = real_bd;
             stream_res.sample_rate = real_sr;

@@ -777,17 +777,19 @@ impl DownloadWorker {
         require_cover: bool,
         strict_quality: bool,
         extra_tolerance_secs: f64,
-    ) -> Result<(), String> {
+    ) -> Result<crate::download::verification::VerifiedDelivery, String> {
         let file_path = std::path::PathBuf::from(&res.file_path);
         let gate = {
             let file_path = file_path.clone();
             let expected = expected.clone();
+            let known_physical = res.physical_audio.clone();
             tokio::task::spawn_blocking(move || {
-                crate::download::verification::verify_delivery(
+                crate::download::verification::verify_delivery_snapshot(
                     &file_path,
                     &expected,
                     require_cover,
                     extra_tolerance_secs,
+                    known_physical,
                 )
             })
             .await
@@ -796,9 +798,7 @@ impl DownloadWorker {
                 Err(vec!["delivery verification task was cancelled".to_string()])
             })
         };
-        if let Err(failures) = gate {
-            return Err(failures.join("; "));
-        }
+        let gate = gate.map_err(|failures| failures.join("; "))?;
 
         // La calidad física entregada manda (issue #111: «la calidad entregada
         // manda sobre la anunciada»). Bajo política estricta, por debajo de lo
@@ -810,18 +810,10 @@ impl DownloadWorker {
             }
         }
         if strict_quality {
-            let phys = tokio::task::spawn_blocking(move || {
-                crate::download::audio_inspector::inspect_physical_audio_file(&file_path)
-            })
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("D05: inspección física cancelada en el gate: {e}");
-                None
-            });
-            // #338: bajo política estricta, una reinspección fallida NO cae a
-            // los valores anunciados por el proveedor (no son evidencia). Antes
-            // de este cierre, un FLAC/M4A ilegible se evaluaba con lo declarado.
-            let Some(phys) = phys else {
+            // DLX-03: la calidad estricta consume la misma instantánea que el
+            // gate de tags/duración; no hay segunda inspección física.
+            // #338: sin evidencia física no se cae a valores anunciados.
+            let Some(phys) = gate.physical.as_ref() else {
                 return Err(format!(
                     "RejectedQuality: physical re-inspection failed for '{}'; \
                      strict quality policy does not trust declared values",
@@ -852,7 +844,7 @@ impl DownloadWorker {
                 ));
             }
         }
-        Ok(())
+        Ok(gate)
     }
 
     /// D05/#338: costura observable del orden gate → `mark_complete`.
@@ -870,7 +862,7 @@ impl DownloadWorker {
         require_cover: bool,
         strict_quality: bool,
         extra_tolerance_secs: f64,
-    ) -> Result<(), String> {
+    ) -> Result<crate::download::verification::VerifiedDelivery, String> {
         match self
             .verify_delivery_before_complete(
                 queue_id,
@@ -882,9 +874,10 @@ impl DownloadWorker {
             )
             .await
         {
-            Ok(()) => {
-                self.mark_complete(queue_id, res).await;
-                Ok(())
+            Ok(verified) => {
+                self.mark_complete_with_physical(queue_id, res, verified.physical.clone())
+                    .await;
+                Ok(verified)
             }
             Err(reason) => {
                 let quarantined = self
@@ -1093,29 +1086,27 @@ impl DownloadWorker {
 
     /// Mark item as complete
     pub async fn mark_complete(&self, queue_id: i64, res: &crate::download::DownloadResult) {
-        // Q4: una entrega es la respuesta definitiva del proveedor; cierra el
-        // circuito abierto (si lo estaba) del servicio que entregó la descarga.
-        let delivered_service = res.effective_service.as_deref().unwrap_or(&res.service);
-        self.breaker.record_success(delivered_service);
-
-        // Inspect physical audio file on disk to get ground-truth audio metrics
-        // S222-fix: la inspección es IO sync (metaflac / parsers en proceso);
-        // corre en el pool de blocking para no ocupar un hilo del runtime async
-        // mientras la cola está en plena actividad.
-        let inspect_path = std::path::PathBuf::from(&res.file_path);
+        // DLX-03: una llamada directa también reutiliza la instantánea del
+        // resultado. Solo el camino sin snapshot necesita inspección física.
         let inspect_start = std::time::Instant::now();
-        let phys_info = tokio::task::spawn_blocking(move || {
-            crate::download::audio_inspector::inspect_physical_audio_file(&inspect_path)
-        })
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!("S222: inspección física cancelada en mark_complete: {e}");
-            None
-        });
+        let phys_info = if let Some(cached) = &res.physical_audio {
+            Some(cached.clone())
+        } else {
+            let inspect_path = std::path::PathBuf::from(&res.file_path);
+            tokio::task::spawn_blocking(move || {
+                crate::download::audio_inspector::inspect_physical_audio_file(&inspect_path)
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("S222: inspección física cancelada en mark_complete: {e}");
+                None
+            })
+        };
         let inspect_elapsed_ms = inspect_start.elapsed().as_millis() as u64;
         tracing::debug!(
             elapsed_ms = inspect_elapsed_ms,
-            "S222: inspect_physical_audio_file (mark_complete)"
+            reused = res.physical_audio.is_some(),
+            "S222: inspección física de mark_complete"
         );
         if inspect_elapsed_ms >= SLOW_INSPECT_WARN_MS {
             tracing::warn!(
@@ -1123,6 +1114,20 @@ impl DownloadWorker {
                 "S222: inspección física lenta (mark_complete)"
             );
         }
+        self.mark_complete_with_physical(queue_id, res, phys_info)
+            .await;
+    }
+
+    async fn mark_complete_with_physical(
+        &self,
+        queue_id: i64,
+        res: &crate::download::DownloadResult,
+        phys_info: Option<crate::download::audio_inspector::PhysicalAudioMetadata>,
+    ) {
+        // Q4: una entrega es la respuesta definitiva del proveedor; cierra el
+        // circuito abierto (si lo estaba) del servicio que entregó la descarga.
+        let delivered_service = res.effective_service.as_deref().unwrap_or(&res.service);
+        self.breaker.record_success(delivered_service);
 
         let real_bit_depth = phys_info
             .as_ref()
@@ -2691,6 +2696,12 @@ impl DownloadWorker {
                         &mut download_result,
                     )
                     .await;
+                if trim_report.as_ref().is_some_and(|report| report.trimmed) {
+                    // El trim cambia bytes y duración: la instantánea previa
+                    // ya no describe el fichero final. El gate hará una única
+                    // inspección nueva y worker/ledger la reutilizarán.
+                    download_result.physical_audio = None;
+                }
                 // D05: el silencio recortado es una diferencia legítima frente
                 // a la duración del catálogo; el gate lo absorbe en su
                 // tolerancia en vez de fallar un fichero correcto.

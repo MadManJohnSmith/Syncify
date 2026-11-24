@@ -15,7 +15,14 @@ use crate::download::progress::{DownloadRequest, DownloadResult};
 /// and performs canonical quality policy evaluation against the physical reality.
 pub fn reconcile_physical_audio_quality(res: &mut DownloadResult, request: &DownloadRequest) {
     let path = std::path::Path::new(&res.file_path);
-    let phys_info = crate::download::audio_inspector::inspect_physical_audio_file(path);
+    // DLX-03: una entrega solo se inspecciona una vez. Las capas posteriores
+    // (gateway, orquestador y worker) consumen esta instantánea; si el fichero
+    // cambia después, el responsable de la mutación debe invalidarla.
+    let phys_info = res
+        .physical_audio
+        .clone()
+        .or_else(|| crate::download::audio_inspector::inspect_physical_audio_file(path));
+    res.physical_audio = phys_info.clone();
 
     // D05/#338: el piso lossy es por proveedor (el servicio que ENTREGA decide),
     // no el 320 global en duro; una sola matriz, sin literales por adaptador.

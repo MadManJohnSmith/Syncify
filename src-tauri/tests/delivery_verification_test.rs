@@ -673,6 +673,41 @@ async fn gate_runs_before_mark_complete_and_cleans_rejected_promotion() {
     );
 }
 
+/// DLX-03: el gate devuelve la instantánea física y worker la reutiliza para
+/// calidad estricta y ledger. El resultado anunciado es 24/96, pero el fichero
+/// real es 16/44.1 y debe mandar en la persistencia.
+#[tokio::test]
+async fn verified_snapshot_is_reused_for_strict_quality_and_ledger() {
+    let dir = TempDir::new().unwrap();
+    let pool = migrated_pool(&dir, "snapshot-reuse.db").await;
+    let (queue_id, track_id) = seed_downloading_row(&pool, &dir, 1, "lossless").await;
+    let worker = DownloadWorker::new(pool.clone(), DownloadWorkerState::new(1));
+    let file = dir.path().join("snapshot.flac");
+    write_verified_flac(&file, 200 * 44_100);
+    let mut result = delivered_result(&file);
+    result.physical_audio = Some(
+        syncify_tauri_lib::download::audio_inspector::inspect_physical_audio_file(&file)
+            .expect("instantánea física previa"),
+    );
+
+    let verified = worker
+        .verify_then_complete(
+            queue_id,
+            &result,
+            expected_delivery(200_000),
+            true,
+            true,
+            0.0,
+        )
+        .await
+        .expect("entrega válida bajo política lossless");
+    assert_eq!(verified.parser_reads, 1, "solo se releen los tags");
+    assert_eq!(queue_status(&pool, queue_id).await, "complete");
+    let ledger = ledger_row(&pool, track_id).await.expect("ledger escrito");
+    assert_eq!(ledger.1, 16, "bit depth físico");
+    assert_eq!(ledger.2, 44_100, "sample rate físico");
+}
+
 /// #338 AC: un FLAC o M4A no vacío que el lector no puede parsear no se marca
 /// `complete` (antes el gate lo trataba como «formato sin lector»).
 #[tokio::test]

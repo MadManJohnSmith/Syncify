@@ -74,6 +74,18 @@ pub struct DeliveredTags {
     pub has_valid_cover: bool,
 }
 
+/// Evidencia de una sola verificación de entrega. El worker reutiliza la
+/// instantánea física para calidad estricta y persistencia sin releer el FLAC.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VerifiedDelivery {
+    pub delivered: DeliveredTags,
+    pub physical: Option<crate::download::audio_inspector::PhysicalAudioMetadata>,
+    /// Número de lecturas de parser realizadas para obtener tags y métricas.
+    /// FLAC/M4A/MP3 con lector hacen una sola; un formato sin lector puede hacer
+    /// cero o una inspección física de fallback.
+    pub parser_reads: u8,
+}
+
 /// #338: resultado de releer los tags, con la distinción que el gate necesita.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TagReadOutcome {
@@ -103,11 +115,28 @@ pub fn verify_delivery(
     require_cover: bool,
     extra_tolerance_secs: f64,
 ) -> Result<DeliveredTags, Vec<String>> {
+    verify_delivery_snapshot(path, expected, require_cover, extra_tolerance_secs, None)
+        .map(|verified| verified.delivered)
+}
+
+/// DLX-03: verifica una entrega y devuelve toda la evidencia para no repetir
+/// inspecciones en calidad estricta o al escribir el ledger.
+///
+/// `known_physical` es la instantánea que dejó la reconciliación del resultado.
+/// Si existe, esta función solo relee los tags; si no, obtiene tags y métricas
+/// de una única lectura del parser para FLAC/M4A/MP3.
+pub fn verify_delivery_snapshot(
+    path: &Path,
+    expected: &ExpectedDelivery,
+    require_cover: bool,
+    extra_tolerance_secs: f64,
+    known_physical: Option<crate::download::audio_inspector::PhysicalAudioMetadata>,
+) -> Result<VerifiedDelivery, Vec<String>> {
     let mut failures: Vec<String> = Vec::new();
 
     // Precondition re-verificada: existe, es regular y no está vacío.
-    match std::fs::metadata(path) {
-        Ok(m) if m.is_file() && m.len() > 0 => {}
+    let metadata = match std::fs::metadata(path) {
+        Ok(m) if m.is_file() && m.len() > 0 => m,
         _ => {
             failures.push(format!(
                 "file is missing, not a regular file, or empty at '{}'",
@@ -115,13 +144,20 @@ pub fn verify_delivery(
             ));
             return Err(failures);
         }
-    }
+    };
 
-    let physical = crate::download::audio_inspector::inspect_physical_audio_file(path);
+    let (outcome, physical, parser_reads) = if let Some(physical) = known_physical {
+        let outcome = read_delivered_tags(path);
+        let parser_reads = u8::from(!matches!(outcome, TagReadOutcome::NoReader));
+        (outcome, Some(physical), parser_reads)
+    } else {
+        read_delivery_snapshot(path, metadata.len())
+    };
+    let physical_ref = physical.as_ref();
 
     // #338: un formato con lector que no se deja leer es un fallo cerrado, no
     // falta de evidencia. Solo una extensión sin lector se salta.
-    let delivered = match read_delivered_tags(path) {
+    let delivered = match outcome {
         TagReadOutcome::Readable(delivered) => {
             verify_tags(&delivered, expected, &mut failures);
             if require_cover && !delivered.has_valid_cover {
@@ -140,7 +176,7 @@ pub fn verify_delivery(
 
     // Duración física dentro de tolerancia frente al catálogo.
     if let (Some(phys), Some(catalog_ms)) = (
-        physical.as_ref().and_then(|p| p.duration_secs),
+        physical_ref.and_then(|p| p.duration_secs),
         non_zero_catalog_duration(expected),
     ) {
         let catalog_secs = catalog_ms as f64 / 1000.0;
@@ -155,10 +191,77 @@ pub fn verify_delivery(
     }
 
     if failures.is_empty() {
-        Ok(delivered)
+        Ok(VerifiedDelivery {
+            delivered,
+            physical,
+            parser_reads,
+        })
     } else {
         Err(failures)
     }
+}
+
+/// Una sola lectura del parser produce los tags y las métricas físicas. El
+/// camino normal de FLAC/M4A/MP3 no vuelve a llamar al inspector genérico.
+fn read_delivery_snapshot(
+    path: &Path,
+    file_size: u64,
+) -> (
+    TagReadOutcome,
+    Option<crate::download::audio_inspector::PhysicalAudioMetadata>,
+    u8,
+) {
+    use crate::download::audio_inspector::{
+        physical_metadata_for_mp3, physical_metadata_from_flac_tag, physical_metadata_from_mp4_tag,
+    };
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if ext == "flac" || looks_like_flac(path) {
+        return match read_flac_tag(path) {
+            Ok(tag) => (
+                TagReadOutcome::Readable(delivered_tags_from_flac_tag(&tag)),
+                physical_metadata_from_flac_tag(&tag, file_size),
+                1,
+            ),
+            Err(reason) => (TagReadOutcome::Unreadable(reason), None, 1),
+        };
+    }
+    if ext == "m4a" || ext == "aac" || ext == "mp4" {
+        return match mp4ameta::Tag::read_from_path(path) {
+            Ok(tag) => (
+                TagReadOutcome::Readable(delivered_tags_from_mp4_tag(&tag)),
+                Some(physical_metadata_from_mp4_tag(&tag, file_size)),
+                1,
+            ),
+            Err(reason) => (
+                TagReadOutcome::Unreadable(format!(
+                    "mp4ameta cannot parse '{}': {reason}",
+                    path.display()
+                )),
+                None,
+                1,
+            ),
+        };
+    }
+    if ext == "mp3" || crate::download::id3_writer::is_mp3_file(path) {
+        return match read_mp3_tags(path) {
+            Ok(tags) => (
+                TagReadOutcome::Readable(tags),
+                Some(physical_metadata_for_mp3()),
+                1,
+            ),
+            Err(reason) => (TagReadOutcome::Unreadable(reason), None, 1),
+        };
+    }
+
+    let physical = crate::download::audio_inspector::inspect_physical_audio_file(path);
+    let parser_reads = u8::from(physical.is_some());
+    (TagReadOutcome::NoReader, physical, parser_reads)
 }
 
 /// Solo una duración de catálogo positiva es evidencia. Un `duration_ms = 0`
@@ -294,16 +397,27 @@ fn parse_number_prefix(raw: &str) -> Option<i64> {
     digits.parse::<i64>().ok()
 }
 
+fn read_flac_tag(path: &Path) -> Result<metaflac::Tag, String> {
+    // metaflac puede hacer panic con una cadena de metadata cortada. El gate
+    // debe fallar cerrado, no derribar el proceso; la lectura sigue siendo una.
+    std::panic::catch_unwind(|| metaflac::Tag::read_from_path(path))
+        .map_err(|_| format!("metaflac panicked while parsing '{}'", path.display()))?
+        .map_err(|e| format!("metaflac cannot parse '{}': {e}", path.display()))
+}
+
 fn read_flac_tags(path: &Path) -> Result<DeliveredTags, String> {
-    let tag = metaflac::Tag::read_from_path(path)
-        .map_err(|e| format!("metaflac cannot parse '{}': {e}", path.display()))?;
+    let tag = read_flac_tag(path)?;
+    Ok(delivered_tags_from_flac_tag(&tag))
+}
+
+fn delivered_tags_from_flac_tag(tag: &metaflac::Tag) -> DeliveredTags {
     let vorbis = tag.vorbis_comments();
     let cover = tag
         .pictures()
         .find(|pic| pic.picture_type == metaflac::block::PictureType::CoverFront)
         .map(|pic| is_valid_image_payload(&pic.data))
         .unwrap_or(false);
-    Ok(DeliveredTags {
+    DeliveredTags {
         title: vorbis.and_then(|v| vorbis_first(v, "TITLE")),
         artist: vorbis.and_then(|v| vorbis_first(v, "ARTIST")),
         album: vorbis.and_then(|v| vorbis_first(v, "ALBUM")),
@@ -314,24 +428,28 @@ fn read_flac_tags(path: &Path) -> Result<DeliveredTags, String> {
             .and_then(|v| vorbis_first(v, "DISCNUMBER"))
             .and_then(|raw| parse_number_prefix(&raw)),
         has_valid_cover: cover,
-    })
+    }
 }
 
 fn read_mp4_tags(path: &Path) -> Result<DeliveredTags, String> {
     let tag = mp4ameta::Tag::read_from_path(path)
         .map_err(|e| format!("mp4ameta cannot parse '{}': {e}", path.display()))?;
+    Ok(delivered_tags_from_mp4_tag(&tag))
+}
+
+fn delivered_tags_from_mp4_tag(tag: &mp4ameta::Tag) -> DeliveredTags {
     let cover = tag
         .artwork()
         .map(|img| is_valid_image_payload(img.data))
         .unwrap_or(false);
-    Ok(DeliveredTags {
+    DeliveredTags {
         title: tag.title().map(|v| v.trim().to_string()),
         artist: tag.artist().map(|v| v.trim().to_string()),
         album: tag.album().map(|v| v.trim().to_string()),
         track_number: tag.track_number().map(|v| v as i64),
         disc_number: tag.disc_number().map(|v| v as i64),
         has_valid_cover: cover,
-    })
+    }
 }
 
 /// D16: lee el ID3v2 de un MP3 entregado. `id3_writer::read_mp3_tags` distingue
@@ -487,6 +605,36 @@ mod tests {
         tag.write_to_path(&path).unwrap();
         verify_delivery(&path, &expected(200_000), false, 0.0)
             .expect("tags correctos y portada no exigida");
+    }
+
+    #[test]
+    fn snapshot_obtiene_tags_y_metricas_con_una_lectura() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("snapshot.flac");
+        write_flac_with_duration(&path, 200 * 44_100);
+        let mut tag = metaflac::Tag::read_from_path(&path).unwrap();
+        let vc = tag.vorbis_comments_mut();
+        vc.set("TITLE", vec!["Verified Track"]);
+        vc.set("ARTIST", vec!["Verified Artist"]);
+        vc.set("ALBUM", vec!["Verified Album"]);
+        vc.set("TRACKNUMBER", vec!["3"]);
+        vc.set("DISCNUMBER", vec!["1"]);
+        tag.write_to_path(&path).unwrap();
+
+        let verified =
+            verify_delivery_snapshot(&path, &expected(200_000), false, 0.0, None).unwrap();
+        assert_eq!(verified.parser_reads, 1, "un parser para tags y STREAMINFO");
+        assert_eq!(verified.delivered.title.as_deref(), Some("Verified Track"));
+        let physical = verified.physical.clone().expect("métricas físicas");
+        assert_eq!((physical.bit_depth, physical.sample_rate), (16, 44_100));
+        assert_eq!(physical.duration_secs, Some(200.0));
+
+        let reused =
+            verify_delivery_snapshot(&path, &expected(200_000), false, 0.0, Some(physical))
+                .unwrap();
+        assert_eq!(reused.parser_reads, 1, "solo queda la lectura de tags");
+        assert_eq!(reused.delivered, verified.delivered);
+        assert_eq!(reused.physical, verified.physical);
     }
 
     #[test]
