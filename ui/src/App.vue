@@ -226,6 +226,19 @@
           <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Library</span>
         </router-link>
 
+        <!-- T08b (#383): cola de identidades ambiguas del sync. -->
+        <router-link
+          to="/reviews"
+          data-testid="nav-sidebar-reviews"
+          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-text-secondary hover:bg-surface-dark hover:text-white transition-colors group"
+          active-class="bg-elevated !text-white"
+          :class="sidebarCollapsed ? 'justify-center w-10' : ''"
+          :title="sidebarCollapsed ? 'Reviews' : undefined"
+        >
+          <span class="material-symbols-outlined group-hover:text-primary transition-colors shrink-0" :class="{ 'fill-1 text-primary': routePath === '/reviews' }">fact_check</span>
+          <span v-if="!sidebarCollapsed" class="text-sm font-medium whitespace-nowrap">Reviews</span>
+        </router-link>
+
         <!-- P16 (#147): Favoritos como hub propio, pegado a Library. -->
         <router-link
           to="/favorites"

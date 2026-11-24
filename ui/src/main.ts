@@ -16,6 +16,8 @@ export const routes: RouteRecordRaw[] = [
     { path: '/', redirect: '/dashboard' },
     { path: '/dashboard', name: 'Dashboard', component: () => import('./views/DashboardView.vue') },
     { path: '/library', name: 'Library', component: () => import('./views/LibraryView.vue') },
+    // T08b (#383): cola humana de identidades ambiguas que el sync no fusionó.
+    { path: '/reviews', name: 'IdentityReviews', component: () => import('./views/IdentityReviewsView.vue') },
     // L03 (#100): armazón de pestañas de la biblioteca (spec #96). L07 (#104)
     // completa álbumes y L08 (#105) artistas con sus listas de servidor;
     // duplicados (L10) sigue en el placeholder con su motivo.

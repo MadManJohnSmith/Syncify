@@ -22,6 +22,7 @@ export * from './notifications';
 export * from './logs';
 export * from './tempo';
 export * from './tray';
+export * from './trackIdentityReviews';
 
 // Playlists has collisions with library: getPlaylists, createPlaylist
 // We export everything else from playlists, and the colliding ones with aliases

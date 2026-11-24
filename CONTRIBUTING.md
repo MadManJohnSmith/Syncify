@@ -26,15 +26,15 @@ CI runs all of these; running them locally saves a round trip.
 
 | Area | Command |
 |---|---|
-| Rust types and build | `cargo check --all-targets --locked` |
-| Rust tests | `cargo test --locked` |
+| Rust types and build | `cargo check --workspace --all-targets --locked` |
+| Rust tests | `cargo test --workspace --locked --no-fail-fast` |
 | Rust lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` |
 | Rust format | `cargo fmt --all -- --check` |
 | Frontend types | `cd ui && npx vue-tsc --noEmit` |
 | Frontend tests | `cd ui && npm run test:run` |
 | Python bridges | `python -m unittest discover -s scripts/tests -p 'test_*.py'` |
 
-`cargo test --locked` also runs `batch_50_audit_test`, which CI executes
+`cargo test --workspace --locked --no-fail-fast` also runs `batch_50_audit_test`, which CI executes
 serialized on its own with `--test-threads=1`. If it only fails under
 parallel load, reproduce it with
 `cargo test --locked --test batch_50_audit_test -- --test-threads=1`.
@@ -91,15 +91,15 @@ CI corre todos; correrlos en local ahorra una vuelta.
 
 | Área | Comando |
 |---|---|
-| Tipos y build de Rust | `cargo check --all-targets --locked` |
-| Tests de Rust | `cargo test --locked` |
+| Tipos y build de Rust | `cargo check --workspace --all-targets --locked` |
+| Tests de Rust | `cargo test --workspace --locked --no-fail-fast` |
 | Lint de Rust | `cargo clippy --workspace --all-targets --locked -- -D warnings` |
 | Formato de Rust | `cargo fmt --all -- --check` |
 | Tipos del frontend | `cd ui && npx vue-tsc --noEmit` |
 | Tests del frontend | `cd ui && npm run test:run` |
 | Puentes Python | `python -m unittest discover -s scripts/tests -p 'test_*.py'` |
 
-`cargo test --locked` también corre `batch_50_audit_test`, que CI ejecuta
+`cargo test --workspace --locked --no-fail-fast` también corre `batch_50_audit_test`, que CI ejecuta
 serializado por separado con `--test-threads=1`. Si solo falla bajo carga
 paralela, reprodúcelo con
 `cargo test --locked --test batch_50_audit_test -- --test-threads=1`.

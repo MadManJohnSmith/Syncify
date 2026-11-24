@@ -30,9 +30,10 @@
  *     componente, así que navegando de un álbum a otro les serviría la
  *     instancia del anterior sin remontar (los params cambian y la vista
  *     mostraría el álbum equivocado). No deben entrar nunca en el include.
- *   - MetadataView, LyricsView, MigrationView, AccountsView: visitas menos
- *     frecuentes; se excluyen para mantener pequeño el límite de retención
- *     (más instances = más DOM y estado retenidos).
+ *   - MetadataView, LyricsView, MigrationView, AccountsView,
+ *     IdentityReviewsView: visitas menos frecuentes; se excluyen para mantener
+ *     pequeño el límite de retención (más instances = más DOM y estado
+ *     retenidos).
  */
 // El array no es `readonly` porque la prop `include` de KeepAlive tipa
 // `MatchPattern` como `(string | RegExp)[]` mutable; el módulo es la única
