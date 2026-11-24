@@ -78,6 +78,18 @@ aquí solo queda lo aprendido con fecha. Relacionadas:
   quede ningún cargo en la máquina (máx ~50 min), además del flock.
   Fuente: dos muertes OOM del carril A86 en la sesión del 2026-11-17;
   `free -h` y `pgrep -a cargo` medidos.
+- **2026-11-24, medido**: el lock del gate no es exclusivo de esta sesión.
+  Tras los reinicios del servidor, el daemon `opencode-pty` reejecutó
+  comandos de carriles ya fusionados (worktrees de #186, #373, #375 y L05)
+  y llegaron a acumularse ~20 procesos esperando el `flock` del gate; uno
+  clippeaba contra `/tmp/syncify-target`. Horas después reaparecieron
+  `cargo check --workspace` de 14–29 min en esos mismos worktrees, sin que
+  esta sesión los hubiera lanzado. Consecuencias: usar `-w` holgado
+  (≥3600 s), no asumir que el lock se libera al terminar el turno, y no
+  matar procesos de worktrees desconocidos sin comprobar antes rama, issue
+  y limpieza del árbol: puede haber otros hilos T3 activos en la misma
+  máquina. Fuente: `ps`, `/proc/*/cwd` y `fuser` medidos en la sesión del
+  2026-11-24 (02:00–03:00 UTC).
 
 ## Runtime de subagentes inestable y recuperación
 
