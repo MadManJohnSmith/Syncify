@@ -93,7 +93,7 @@ async fn create_test_db() -> sqlx::Pool<sqlx::Sqlite> {
             playlist_id INTEGER REFERENCES playlists(id),
             track_id INTEGER REFERENCES tracks(id),
             position INTEGER NOT NULL,
-            UNIQUE(playlist_id, track_id)
+            UNIQUE(playlist_id, position)
         );
         CREATE TABLE downloads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -512,6 +512,77 @@ async fn export_m3u_refuses_to_write_file_when_nothing_verified() {
     // Sin path (dry-run) sí es válido y reporta los conteos.
     let dry = export_playlist_m3u_core(&db, 6, None).await.unwrap();
     assert_eq!((dry.total_tracks, dry.verified_count), (1, 0));
+}
+
+/// PL03: el export no hereda el tope de 500 de la vista. Lee las 501
+/// ocurrencias (incluida una repetición que cruza el límite de página) en el
+/// orden de posición y verifica todas contra el mismo archivo real.
+#[tokio::test]
+async fn export_m3u_includes_more_than_500_occurrences_in_position_order() {
+    let db = create_test_db().await;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let file = tmp.path().join("real.flac");
+    std::fs::write(&file, b"audio").unwrap();
+    let path = file.to_str().unwrap();
+
+    sqlx::query("INSERT INTO playlists (id, name) VALUES (42, 'Large Playlist')")
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let mut repeated_track_id = 0;
+    for position in 0..500 {
+        let track_id = seed_playlist_track(
+            &db,
+            42,
+            position,
+            &format!("Track {position:03}"),
+            Some((position + 1) * 1000),
+            None,
+            Some(path),
+        )
+        .await;
+        if position == 499 {
+            repeated_track_id = track_id;
+        }
+    }
+    sqlx::query(
+        "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (42, ?, 500)",
+    )
+    .bind(repeated_track_id)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let page_one = fetch_local_playlist_tracks_page(&db, 42, 0, 500)
+        .await
+        .expect("first page");
+    let page_two = fetch_local_playlist_tracks_page(&db, 42, 500, 500)
+        .await
+        .expect("second page");
+    assert_eq!(page_one.len(), 500);
+    assert_eq!(page_two.len(), 1);
+    assert_eq!(page_one[499].id, repeated_track_id);
+    assert_eq!(page_two[0].id, repeated_track_id);
+    assert_eq!(page_two[0].position, Some(500));
+
+    let result = export_playlist_m3u_core(&db, 42, None)
+        .await
+        .expect("large export must succeed");
+    assert_eq!(result.total_tracks, 501);
+    assert_eq!(result.verified_count, 501);
+    assert_eq!(result.missing_count, 0);
+
+    let mut expected = String::from("#EXTM3U\n");
+    for position in 0..501 {
+        let source_position = position.min(499);
+        expected.push_str(&format!(
+            "#EXTINF:{},Unknown - Track {source_position:03}\n{}\n",
+            source_position + 1,
+            file.display()
+        ));
+    }
+    assert_eq!(result.m3u_content, expected);
 }
 
 /// Playlist inexistente -> error explícito.

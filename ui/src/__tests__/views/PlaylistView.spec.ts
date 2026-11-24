@@ -379,6 +379,154 @@ describe('PlaylistView', () => {
         expect(invokeCalls).toContainEqual({ cmd: 'delete_playlist', args: { id: 99 } });
     });
 
+    it('PL03: loads only the first 100-track page and virtualizes rendered rows', async () => {
+        const tracks = Array.from({ length: 1200 }, (_, index) => ({
+            id: index + 1,
+            position: index + 1,
+            title: `Track ${index + 1}`,
+            artist_name: 'Artist',
+            album_name: 'Album',
+            duration_ms: 180_000,
+        }));
+        const calls: { cmd: string; args: any }[] = [];
+        mockInvoke((cmd, args) => {
+            calls.push({ cmd, args });
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'get_local_playlist_tracks') {
+                const offset = Number(args?.offset ?? 0);
+                const limit = Number(args?.limit ?? 0);
+                const pageTracks = tracks.slice(offset, offset + limit);
+                return {
+                    tracks: pageTracks,
+                    total: tracks.length,
+                    offset,
+                    limit,
+                    has_more: offset + pageTracks.length < tracks.length,
+                };
+            }
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.playlist-item').find((el: any) => el.text().includes('Chill Vibes'))!.trigger('click');
+        await flushPromises();
+
+        expect(calls.filter(c => c.cmd === 'get_local_playlist_tracks')).toEqual([
+            { cmd: 'get_local_playlist_tracks', args: { playlistId: 1, offset: 0, limit: 100 } },
+        ]);
+        expect(wrapper.findAll('.track-row').length).toBeGreaterThan(0);
+        expect(wrapper.findAll('.track-row').length).toBeLessThan(100);
+        expect(wrapper.text()).toContain('Track 1');
+        expect(wrapper.find('[data-testid="playlist-tracks-truncated"]').exists()).toBe(false);
+    });
+
+    it('PL03: appends pages on scroll and can reach the final track beyond 500', async () => {
+        const tracks = Array.from({ length: 250 }, (_, index) => ({
+            id: index === 99 ? 7 : index + 1,
+            position: index + 1,
+            title: `Track ${index + 1}`,
+            artist_name: 'Artist',
+            album_name: 'Album',
+            duration_ms: 180_000,
+        }));
+        const offsets: number[] = [];
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'get_local_playlist_tracks') {
+                const offset = Number(args?.offset ?? 0);
+                const limit = Number(args?.limit ?? 0);
+                offsets.push(offset);
+                const pageTracks = tracks.slice(offset, offset + limit);
+                return {
+                    tracks: pageTracks,
+                    total: tracks.length,
+                    offset,
+                    limit,
+                    has_more: offset + pageTracks.length < tracks.length,
+                };
+            }
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.playlist-item').find((el: any) => el.text().includes('Chill Vibes'))!.trigger('click');
+        await flushPromises();
+        expect(offsets).toEqual([0]);
+
+        for (const loadedCount of [100, 200, 250]) {
+            const scroller = wrapper.get('[data-testid="playlist-tracks-scroller"]');
+            const element = scroller.element as HTMLElement;
+            Object.defineProperty(element, 'clientHeight', { value: 600, configurable: true });
+            Object.defineProperty(element, 'scrollHeight', { value: loadedCount * 56 + 600, configurable: true });
+            Object.defineProperty(element, 'scrollTop', { value: loadedCount * 56, writable: true, configurable: true });
+            await scroller.trigger('scroll');
+            await flushPromises();
+        }
+
+        expect(offsets).toEqual([0, 100, 200]);
+        expect((wrapper.vm as any).$.setupState.playlistTracks).toHaveLength(250);
+        expect(wrapper.findAll('.track-row').length).toBeLessThan(250);
+        expect(wrapper.text()).toContain('Track 250');
+        expect(wrapper.text()).toContain('Showing all 250 tracks');
+    });
+
+    it('PL03: keeps loaded rows and offers retry when a later page fails', async () => {
+        let failSecondPage = true;
+        const offsets: number[] = [];
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'get_local_playlist_tracks') {
+                const offset = Number(args?.offset ?? 0);
+                offsets.push(offset);
+                if (offset === 100 && failSecondPage) throw new Error('page two is unavailable');
+                const pageTracks = Array.from({ length: offset === 0 ? 100 : 100 }, (_, index) => ({
+                    id: offset + index + 1,
+                    position: offset + index + 1,
+                    title: `Track ${offset + index + 1}`,
+                    artist_name: 'Artist',
+                    album_name: 'Album',
+                    duration_ms: 180_000,
+                }));
+                return {
+                    tracks: pageTracks,
+                    total: 200,
+                    offset,
+                    limit: 100,
+                    has_more: offset === 0,
+                };
+            }
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.playlist-item').find((el: any) => el.text().includes('Chill Vibes'))!.trigger('click');
+        await flushPromises();
+
+        const scroller = wrapper.get('[data-testid="playlist-tracks-scroller"]');
+        const element = scroller.element as HTMLElement;
+        Object.defineProperty(element, 'clientHeight', { value: 600, configurable: true });
+        Object.defineProperty(element, 'scrollHeight', { value: 6200, configurable: true });
+        Object.defineProperty(element, 'scrollTop', { value: 5600, writable: true, configurable: true });
+        await scroller.trigger('scroll');
+        await flushPromises();
+
+        expect(wrapper.find('[data-testid="playlist-tracks-load-more-error"]').text()).toContain('page two is unavailable');
+        expect(wrapper.find('[data-testid="playlist-tracks-error"]').exists()).toBe(false);
+        expect((wrapper.vm as any).$.setupState.playlistTracks).toHaveLength(100);
+
+        failSecondPage = false;
+        await wrapper.find('[data-testid="playlist-tracks-load-more-error"] button').trigger('click');
+        await flushPromises();
+
+        expect(offsets).toEqual([0, 100, 100]);
+        expect((wrapper.vm as any).$.setupState.playlistTracks).toHaveLength(200);
+        expect(wrapper.find('[data-testid="playlist-tracks-load-more-error"]').exists()).toBe(false);
+        expect(wrapper.text()).toContain('Showing all 200 tracks');
+    });
+
     it('does not delete when the confirmation is cancelled', async () => {
         const invokeCalls: { cmd: string; args: any }[] = [];
         mockInvoke((cmd, args) => {
