@@ -223,8 +223,41 @@ class CiNarrativeTests(unittest.TestCase):
 
     def test_general_suite_step_does_not_skip_batch_50(self):
         for line in self.ci.splitlines():
-            if line.strip().startswith("run: cargo test --locked"):
+            if line.strip().startswith("run: cargo test"):
                 self.assertNotIn("--skip", line, "the general suite must not skip batch_50 anymore")
+
+    def test_rust_check_and_suite_cover_the_whole_workspace(self):
+        """#251: el job corre desde `src-tauri`; sin `--workspace` solo cubría ese paquete.
+
+        El workspace es virtual en la raíz y `src-tauri` es un miembro, así que
+        el cargo del job resolvía el paquete actual: los otros ocho crates solo
+        entraban como dependencias y sus tests nunca se ejecutaban en CI.
+        """
+        run_lines = [
+            line.strip()
+            for line in self.ci.splitlines()
+            if line.strip().startswith("run: cargo ")
+        ]
+        self.assertIn(
+            "run: cargo check --workspace --all-targets --locked",
+            run_lines,
+            "el check de CI debe cubrir el workspace entero (#251)",
+        )
+        self.assertIn(
+            "run: cargo test --workspace --locked --no-fail-fast",
+            run_lines,
+            "la suite de CI debe cubrir el workspace entero (#251)",
+        )
+
+    def test_serialized_batch_50_step_keeps_its_own_command(self):
+        """El paso serializado no hereda `--workspace`: conserva comando y timeout propios."""
+        batch = self.ci.split("batch_50_audit_test serializado", 1)[1].split("- name:", 1)[0]
+        self.assertIn("cargo test --locked --test batch_50_audit_test -- --test-threads=1", batch)
+        self.assertNotIn(
+            "--workspace",
+            batch,
+            "el paso serializado de batch_50 conserva su comando propio",
+        )
 
     def test_serialized_batch_50_step_has_its_own_timeout(self):
         self.assertIn("batch_50_audit_test serializado", self.ci)
