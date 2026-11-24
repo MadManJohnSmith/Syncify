@@ -287,12 +287,6 @@ impl PlaylistWriteErrorKind {
             Self::Permanent => "permanent",
         }
     }
-
-    /// Pista para PL07, no una orden de reintento. Crear y añadir pueden haber
-    /// tenido efecto aunque la respuesta se perdiera.
-    pub const fn is_retryable(self) -> bool {
-        matches!(self, Self::RateLimited | Self::Timeout | Self::Transient)
-    }
 }
 
 /// Error con contexto suficiente para decidir reautenticación, espera o reparación.
@@ -415,7 +409,10 @@ fn classify_provider_message(message: &str) -> (PlaylistWriteErrorKind, Option<u
         PlaylistWriteErrorKind::Validation
     } else if lower.contains("not found") {
         PlaylistWriteErrorKind::NotFound
-    } else if lower.contains("failed to parse") || lower.contains("no playlist id") {
+    } else if lower.contains("failed to parse")
+        || lower.contains("no playlist id")
+        || lower.contains("user id not set")
+    {
         PlaylistWriteErrorKind::Permanent
     } else {
         PlaylistWriteErrorKind::Transient
@@ -719,7 +716,8 @@ impl PlaylistWriteProvider for TidalPlaylistWriter<'_> {
         name: String,
         description: String,
     ) -> Result<String, PlaylistWriteError> {
-        self.client
+        let playlist_id = self
+            .client
             .create_playlist(&name, &description)
             .await
             .map_err(|message| {
@@ -728,7 +726,8 @@ impl PlaylistWriteProvider for TidalPlaylistWriter<'_> {
                     PlaylistWriteOperation::Create,
                     &message,
                 )
-            })
+            })?;
+        validate_tidal_playlist_id(playlist_id)
     }
 
     async fn add_tracks(
@@ -748,6 +747,22 @@ impl PlaylistWriteProvider for TidalPlaylistWriter<'_> {
             })
     }
 }
+
+fn validate_tidal_playlist_id(playlist_id: String) -> Result<String, PlaylistWriteError> {
+    if playlist_id.trim().is_empty() {
+        return Err(PlaylistWriteError::new(
+            "tidal",
+            PlaylistWriteOperation::Create,
+            PlaylistWriteErrorKind::Permanent,
+            "Tidal returned an empty playlist id",
+        ));
+    }
+    Ok(playlist_id)
+}
+
+#[path = "playlist_write_fake.rs"]
+mod fake;
+pub use fake::{FakePlaylistItem, FakePlaylistSnapshot, FakePlaylistWriteProvider};
 
 #[cfg(test)]
 mod tests {
@@ -797,6 +812,17 @@ mod tests {
                 Some(400),
             ),
             (
+                "Qobuz API error (422): track 401 is invalid",
+                PlaylistWriteErrorKind::Validation,
+                Some(422),
+            ),
+            (
+                "Tidal API error 408: request timeout",
+                PlaylistWriteErrorKind::Timeout,
+                Some(408),
+            ),
+            ("User ID not set", PlaylistWriteErrorKind::Permanent, None),
+            (
                 "Tidal API error 404: missing",
                 PlaylistWriteErrorKind::NotFound,
                 Some(404),
@@ -817,6 +843,14 @@ mod tests {
             assert_eq!(error.kind, expected_kind, "{message}");
             assert_eq!(error.http_status, expected_status, "{message}");
         }
+    }
+
+    #[test]
+    fn tidal_create_rejects_an_empty_remote_id() {
+        let error = validate_tidal_playlist_id("   ".into())
+            .expect_err("an empty Tidal id is a malformed provider response");
+        assert_eq!(error.kind, PlaylistWriteErrorKind::Permanent);
+        assert_eq!(error.operation, PlaylistWriteOperation::Create);
     }
 
     async fn assert_only_create_and_add<P: PlaylistWriteProvider>(provider: &P) {
@@ -860,8 +894,8 @@ mod tests {
 
     #[tokio::test]
     async fn gateway_validates_before_checking_capabilities_or_opening_http() {
-        let qobuz = QobuzClient::new("app".into(), "secret".into())
-            .with_base_url("http://127.0.0.1:9".into());
+        let qobuz =
+            QobuzClient::new("app".into(), "secret".into()).with_base_url("not-a-url".into());
         let writer = QobuzPlaylistWriter::new(&qobuz);
         let gateway = PlaylistWriteGateway::new(&writer);
 
@@ -883,5 +917,303 @@ mod tests {
             .await
             .expect_err("invalid Qobuz id must fail before HTTP");
         assert_eq!(error.kind, PlaylistWriteErrorKind::Validation);
+    }
+
+    #[tokio::test]
+    async fn gateway_executes_all_five_operations_against_the_fake() {
+        let provider = FakePlaylistWriteProvider::new();
+        let gateway = PlaylistWriteGateway::new(&provider);
+
+        let created = gateway
+            .execute(PlaylistWriteRequest::Create {
+                name: "Mix".into(),
+                description: "Original".into(),
+            })
+            .await
+            .expect("create");
+        let playlist_id = match created {
+            PlaylistWriteOutcome::Created { playlist_id } => playlist_id,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+
+        assert_eq!(
+            gateway
+                .execute(PlaylistWriteRequest::AddTracks {
+                    playlist_id: playlist_id.clone(),
+                    track_ids: vec!["10".into(), "11".into(), "12".into()],
+                })
+                .await
+                .expect("add"),
+            PlaylistWriteOutcome::TracksAdded { count: 3 }
+        );
+        let initial = provider.playlist(&playlist_id).expect("fake playlist");
+        let first = initial.items[0].id.clone();
+        let middle = initial.items[1].id.clone();
+        let last = initial.items[2].id.clone();
+
+        assert_eq!(
+            gateway
+                .execute(PlaylistWriteRequest::Update {
+                    playlist_id: playlist_id.clone(),
+                    name: Some("Renamed".into()),
+                    description: Some(String::new()),
+                })
+                .await
+                .expect("update"),
+            PlaylistWriteOutcome::Updated
+        );
+        assert_eq!(
+            gateway
+                .execute(PlaylistWriteRequest::RemoveItems {
+                    playlist_id: playlist_id.clone(),
+                    item_ids: vec![middle],
+                })
+                .await
+                .expect("remove"),
+            PlaylistWriteOutcome::ItemsRemoved { count: 1 }
+        );
+        assert_eq!(
+            gateway
+                .execute(PlaylistWriteRequest::ReorderItems {
+                    playlist_id: playlist_id.clone(),
+                    item_ids: vec![last.clone(), first.clone()],
+                })
+                .await
+                .expect("reorder"),
+            PlaylistWriteOutcome::ItemsReordered { count: 2 }
+        );
+
+        let snapshot = provider.playlist(&playlist_id).expect("fake playlist");
+        assert_eq!(snapshot.name, "Renamed");
+        assert_eq!(snapshot.description, "");
+        assert_eq!(
+            snapshot
+                .items
+                .iter()
+                .map(|item| (item.id.as_str(), item.track_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(last.as_str(), "12"), (first.as_str(), "10")]
+        );
+        assert_eq!(
+            provider
+                .calls()
+                .iter()
+                .map(PlaylistWriteRequest::operation)
+                .collect::<Vec<_>>(),
+            vec![
+                PlaylistWriteOperation::Create,
+                PlaylistWriteOperation::AddTracks,
+                PlaylistWriteOperation::Update,
+                PlaylistWriteOperation::RemoveItems,
+                PlaylistWriteOperation::ReorderItems,
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_absent_capability_is_reported_without_mutating_the_fake() {
+        let provider =
+            FakePlaylistWriteProvider::new().with_capabilities(PlaylistWriteCapabilities {
+                update: false,
+                ..PlaylistWriteCapabilities::ALL
+            });
+        let gateway = PlaylistWriteGateway::new(&provider);
+
+        let error = gateway
+            .execute(PlaylistWriteRequest::Update {
+                playlist_id: "playlist".into(),
+                name: Some("Renamed".into()),
+                description: None,
+            })
+            .await
+            .expect_err("missing capability");
+        assert_eq!(error.kind, PlaylistWriteErrorKind::Unsupported);
+        assert_eq!(error.operation, PlaylistWriteOperation::Update);
+        assert!(provider.calls().is_empty());
+        assert_eq!(provider.playlist_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn invalid_requests_never_reach_the_fake() {
+        let provider = FakePlaylistWriteProvider::new();
+        let gateway = PlaylistWriteGateway::new(&provider);
+        let requests = [
+            PlaylistWriteRequest::Create {
+                name: "   ".into(),
+                description: String::new(),
+            },
+            PlaylistWriteRequest::AddTracks {
+                playlist_id: "playlist".into(),
+                track_ids: Vec::new(),
+            },
+            PlaylistWriteRequest::RemoveItems {
+                playlist_id: "playlist".into(),
+                item_ids: vec!["item".into(), "item".into()],
+            },
+            PlaylistWriteRequest::ReorderItems {
+                playlist_id: "playlist".into(),
+                item_ids: Vec::new(),
+            },
+        ];
+
+        for request in requests {
+            let error = gateway.execute(request).await.expect_err("invalid request");
+            assert_eq!(error.kind, PlaylistWriteErrorKind::Validation);
+        }
+        assert!(provider.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_failure_is_classified_and_consumed_once() {
+        let provider = FakePlaylistWriteProvider::new().with_failure(
+            PlaylistWriteOperation::AddTracks,
+            PlaylistWriteErrorKind::RateLimited,
+        );
+        let gateway = PlaylistWriteGateway::new(&provider);
+        let playlist_id = match gateway
+            .execute(PlaylistWriteRequest::Create {
+                name: "Mix".into(),
+                description: String::new(),
+            })
+            .await
+            .expect("create")
+        {
+            PlaylistWriteOutcome::Created { playlist_id } => playlist_id,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        let request = PlaylistWriteRequest::AddTracks {
+            playlist_id: playlist_id.clone(),
+            track_ids: vec!["10".into()],
+        };
+
+        let error = gateway
+            .execute(request.clone())
+            .await
+            .expect_err("scheduled rate limit");
+        assert_eq!(error.kind, PlaylistWriteErrorKind::RateLimited);
+        assert_eq!(error.http_status, Some(429));
+        assert_eq!(error.operation, PlaylistWriteOperation::AddTracks);
+        assert!(provider
+            .playlist(&playlist_id)
+            .expect("fake playlist")
+            .items
+            .is_empty());
+
+        gateway
+            .execute(request)
+            .await
+            .expect("failure was one-shot");
+        assert_eq!(
+            provider
+                .playlist(&playlist_id)
+                .expect("fake playlist")
+                .items
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_timeout_can_mask_an_already_committed_fake_write() {
+        let provider = FakePlaylistWriteProvider::new().with_delay(Duration::from_millis(50));
+        let gateway = PlaylistWriteGateway::new(&provider).with_timeout(Duration::from_millis(1));
+
+        let error = gateway
+            .execute(PlaylistWriteRequest::Create {
+                name: "Slow".into(),
+                description: String::new(),
+            })
+            .await
+            .expect_err("gateway timeout");
+        assert_eq!(error.kind, PlaylistWriteErrorKind::Timeout);
+        assert_eq!(error.operation, PlaylistWriteOperation::Create);
+        assert_eq!(error.service, "fake");
+        assert_eq!(provider.calls().len(), 1);
+        assert_eq!(provider.playlist_count(), 1);
+        let committed = provider
+            .playlist("fake-playlist-1")
+            .expect("the fake committed before losing the response");
+        assert_eq!(committed.name, "Slow");
+    }
+
+    #[tokio::test]
+    async fn fake_preserves_repeated_tracks_as_distinct_occurrences() {
+        let provider = FakePlaylistWriteProvider::new();
+        let gateway = PlaylistWriteGateway::new(&provider);
+        let playlist_id = match gateway
+            .execute(PlaylistWriteRequest::Create {
+                name: "Repeated".into(),
+                description: String::new(),
+            })
+            .await
+            .expect("create")
+        {
+            PlaylistWriteOutcome::Created { playlist_id } => playlist_id,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        gateway
+            .execute(PlaylistWriteRequest::AddTracks {
+                playlist_id: playlist_id.clone(),
+                track_ids: vec!["10".into(), "10".into()],
+            })
+            .await
+            .expect("add repeated track");
+
+        let snapshot = provider.playlist(&playlist_id).expect("fake playlist");
+        assert_eq!(snapshot.items.len(), 2);
+        assert_ne!(snapshot.items[0].id, snapshot.items[1].id);
+        assert_eq!(snapshot.items[0].track_id, "10");
+        assert_eq!(snapshot.items[1].track_id, "10");
+    }
+
+    #[tokio::test]
+    async fn fake_rejects_an_incomplete_reorder_without_changing_order() {
+        let provider = FakePlaylistWriteProvider::new();
+        let gateway = PlaylistWriteGateway::new(&provider);
+        let playlist_id = match gateway
+            .execute(PlaylistWriteRequest::Create {
+                name: "Ordered".into(),
+                description: String::new(),
+            })
+            .await
+            .expect("create")
+        {
+            PlaylistWriteOutcome::Created { playlist_id } => playlist_id,
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+        gateway
+            .execute(PlaylistWriteRequest::AddTracks {
+                playlist_id: playlist_id.clone(),
+                track_ids: vec!["10".into(), "11".into()],
+            })
+            .await
+            .expect("add");
+        let before = provider.playlist(&playlist_id).expect("fake playlist");
+
+        let error = gateway
+            .execute(PlaylistWriteRequest::ReorderItems {
+                playlist_id: playlist_id.clone(),
+                item_ids: vec![before.items[1].id.clone()],
+            })
+            .await
+            .expect_err("incomplete permutation");
+        assert_eq!(error.kind, PlaylistWriteErrorKind::Validation);
+        assert_eq!(
+            provider.playlist(&playlist_id).expect("fake playlist"),
+            before
+        );
+    }
+
+    #[test]
+    fn write_requests_round_trip_through_json_for_the_future_queue() {
+        let request = PlaylistWriteRequest::AddTracks {
+            playlist_id: "playlist".into(),
+            track_ids: vec!["10".into(), "11".into()],
+        };
+        let json = serde_json::to_string(&request).expect("serialize request");
+        assert_eq!(
+            serde_json::from_str::<PlaylistWriteRequest>(&json).expect("deserialize request"),
+            request
+        );
     }
 }
