@@ -270,12 +270,15 @@ impl StreamSession {
         }
     }
 
-    /// Sólo pruebas: envejece el reloj de estancamiento sin tocar los bytes,
-    /// como si la ventana completa hubiera pasado sin progreso.
+    /// Sólo pruebas: fija la base de bytes actual y envejece el reloj de
+    /// estancamiento, como si la ventana completa hubiera pasado sin progreso.
+    /// Sincronizar `bytes` evita que una escritura tardía de la descarga
+    /// reinicie la ventana y convierta el test en un flake de timing.
     #[cfg(test)]
     pub(crate) fn age_stall_watch(&self, by: Duration) {
         if let Ok(mut watch) = self.stall_watch.lock() {
             if let Some(w) = watch.as_mut() {
+                w.bytes = self.downloaded_bytes.load(Ordering::SeqCst);
                 w.since -= by;
             }
         }
