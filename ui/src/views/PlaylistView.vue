@@ -374,45 +374,9 @@
       </div>
       
       <!-- Track List -->
-      <div v-if="selectedPlaylist" class="flex-1 overflow-y-auto custom-scrollbar">
-        <!-- Loading: until tracks arrive we cannot claim the list is empty -->
-        <div v-if="isLoading" class="flex-1 flex items-center justify-center py-16" data-testid="playlist-tracks-loading">
-          <div class="text-center">
-            <span class="material-symbols-outlined text-3xl text-gray-400 animate-spin block mb-4">progress_activity</span>
-            <p class="text-gray-500 text-sm">Loading tracks…</p>
-          </div>
-        </div>
-
-        <!-- Error: a load failure is not an empty playlist -->
-        <div v-else-if="tracksError" class="flex-1 flex items-center justify-center py-16 px-6" data-testid="playlist-tracks-error">
-          <div class="text-center">
-            <div class="w-16 h-16 mx-auto rounded-full bg-red-50 dark:bg-surface-highlight flex items-center justify-center mb-4">
-              <span class="material-symbols-outlined text-3xl text-error">error</span>
-            </div>
-            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Could not load tracks</h3>
-            <p class="text-gray-500 text-sm mb-4">{{ tracksError }}</p>
-            <button @click="loadPlaylistTracks" class="px-4 py-2 bg-primary text-on-accent rounded-lg text-sm">
-              Try Again
-            </button>
-          </div>
-        </div>
-
-        <!-- Empty Playlist -->
-        <div v-else-if="!playlistTracks.length" class="flex-1 flex items-center justify-center py-16" data-testid="playlist-tracks-empty">
-          <div class="text-center">
-            <div class="w-16 h-16 mx-auto rounded-full bg-gray-100 dark:bg-surface-highlight flex items-center justify-center mb-4">
-              <span class="material-symbols-outlined text-3xl text-gray-400">music_note</span>
-            </div>
-            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">This playlist is empty</h3>
-            <p class="text-gray-500 text-sm mb-4">Drag tracks here or click Add Tracks</p>
-            <button v-if="canMutateSelectedPlaylist" @click="addTracksById" class="px-4 py-2 bg-primary text-on-accent rounded-lg text-sm">
-              Add Tracks
-            </button>
-          </div>
-        </div>
-        
+      <div v-if="selectedPlaylist" class="flex-1 min-h-0 flex flex-col">
         <!-- Track Table Header -->
-        <div v-else class="sticky top-0 bg-white dark:bg-surface-light border-b border-gray-200 dark:border-border-dark px-4 py-2 flex items-center text-xs font-semibold text-gray-500 uppercase">
+        <div class="shrink-0 bg-white dark:bg-surface-light border-b border-gray-200 dark:border-border-dark px-4 py-2 flex items-center text-xs font-semibold text-gray-500 uppercase">
           <div class="w-10">#</div>
           <div class="w-12"></div>
           <div class="flex-1">Title</div>
@@ -423,63 +387,126 @@
         </div>
 
         <div
-          v-if="tracksTruncated && !isLoading && !tracksError"
-          class="mx-4 mt-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-600 dark:text-amber-400"
-          data-testid="playlist-tracks-truncated"
+          ref="playlistTracksContainer"
+          data-testid="playlist-tracks-scroller"
+          class="flex-1 min-h-0 overflow-y-auto custom-scrollbar relative"
+          style="contain: strict;"
+          @scroll="handlePlaylistTracksScroll"
         >
-          Showing the first {{ playlistTracks.length }} tracks of this list.
-        </div>
-        
-        <!-- Track Rows -->
-        <div 
-          v-for="(track, index) in playlistTracks" 
-          :key="track.rowKey"
-          class="track-row px-4 py-2 flex items-center hover:bg-gray-50 dark:hover:bg-surface-highlight group cursor-pointer"
-          :class="{ 'bg-primary/5': selectedTracks.includes(track.id) }"
-          draggable="true"
-          @dragstart="onTrackDragStart($event, track, index)"
-          @dragover.prevent
-          @drop="onTrackDrop($event, index)"
-        >
-          <!-- Index / Play -->
-          <div class="w-10 text-sm text-gray-500 group-hover:hidden">{{ index + 1 }}</div>
-          <div class="w-10 hidden group-hover:block">
-            <button @click.stop="playTrack(track)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
-              <span class="material-symbols-outlined text-primary">play_arrow</span>
-            </button>
+          <!-- Loading: until tracks arrive we cannot claim the list is empty -->
+          <div v-if="isLoading" class="min-h-full flex items-center justify-center py-16" data-testid="playlist-tracks-loading">
+            <div class="text-center">
+              <span class="material-symbols-outlined text-3xl text-gray-400 animate-spin block mb-4">progress_activity</span>
+              <p class="text-gray-500 text-sm">Loading tracks…</p>
+            </div>
           </div>
-          
-          <!-- Album Art -->
-          <div class="w-12 pr-3">
-            <TrackCover
-              :src="track.albumArt"
-              :item-id="track.id"
-              :alt="track.album || track.title"
-              size-class="w-10 h-10"
-            />
+
+          <!-- Error: a load failure is not an empty playlist -->
+          <div v-else-if="tracksError" class="min-h-full flex items-center justify-center py-16 px-6" data-testid="playlist-tracks-error">
+            <div class="text-center">
+              <div class="w-16 h-16 mx-auto rounded-full bg-red-50 dark:bg-surface-highlight flex items-center justify-center mb-4">
+                <span class="material-symbols-outlined text-3xl text-error">error</span>
+              </div>
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Could not load tracks</h3>
+              <p class="text-gray-500 text-sm mb-4">{{ tracksError }}</p>
+              <button @click="loadPlaylistTracks" class="px-4 py-2 bg-primary text-on-accent rounded-lg text-sm">
+                Try Again
+              </button>
+            </div>
           </div>
-          
-          <!-- Title & Artist -->
-          <div class="flex-1 min-w-0">
-            <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
-            <p class="text-xs text-gray-500 truncate">{{ track.artist }}</p>
+
+          <!-- Empty Playlist -->
+          <div v-else-if="!playlistTracks.length" class="min-h-full flex items-center justify-center py-16" data-testid="playlist-tracks-empty">
+            <div class="text-center">
+              <div class="w-16 h-16 mx-auto rounded-full bg-gray-100 dark:bg-surface-highlight flex items-center justify-center mb-4">
+                <span class="material-symbols-outlined text-3xl text-gray-400">music_note</span>
+              </div>
+              <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">This playlist is empty</h3>
+              <p class="text-gray-500 text-sm mb-4">Drag tracks here or click Add Tracks</p>
+              <button v-if="canMutateSelectedPlaylist" @click="addTracksById" class="px-4 py-2 bg-primary text-on-accent rounded-lg text-sm">
+                Add Tracks
+              </button>
+            </div>
           </div>
-          
-          <!-- Album -->
-          <div class="w-40 text-sm text-gray-500 truncate">{{ track.album }}</div>
-          
-          <!-- Added Date -->
-          <div class="w-32 text-sm text-gray-500">{{ track.addedDate }}</div>
-          
-          <!-- Duration -->
-          <div class="w-20 text-right text-sm text-gray-500">{{ track.duration }}</div>
-          
-          <!-- Actions (S194: fixed, always visible) -->
-          <div class="w-10 flex justify-end">
-            <button v-if="canMutateSelectedPlaylist" @click.stop="removeTrack(track)" class="p-1 hover:bg-red-50 dark:hover:bg-red-500/10 rounded" :aria-label="`Remove ${track.title} from playlist`" title="Remove from playlist">
-              <span class="material-symbols-outlined text-red-400 text-lg">remove_circle</span>
-            </button>
-          </div>
+
+          <template v-else>
+            <div :style="{ height: totalPlaylistTracksHeight + 'px', position: 'relative', width: '100%' }">
+              <div :style="{ transform: `translateY(${virtualOffsetY}px)`, position: 'absolute', top: 0, left: 0, right: 0 }">
+                <div
+                  v-for="(track, index) in visiblePlaylistTracks"
+                  :key="track.rowKey"
+                  :data-track-id="track.id"
+                  :style="{ height: PLAYLIST_ROW_HEIGHT + 'px' }"
+                  class="track-row px-4 py-2 flex items-center hover:bg-gray-50 dark:hover:bg-surface-highlight group cursor-pointer box-border"
+                  :class="{ 'bg-primary/5': selectedTracks.includes(track.id) }"
+                  draggable="true"
+                  @dragstart="onTrackDragStart($event, track, virtualStartIndex + index)"
+                  @dragover.prevent
+                  @drop="onTrackDrop($event, virtualStartIndex + index)"
+                >
+                  <!-- Index / Play -->
+                  <div class="w-10 text-sm text-gray-500 group-hover:hidden">{{ virtualStartIndex + index + 1 }}</div>
+                  <div class="w-10 hidden group-hover:block">
+                    <button @click.stop="playTrack(track)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
+                      <span class="material-symbols-outlined text-primary">play_arrow</span>
+                    </button>
+                  </div>
+
+                  <!-- Album Art -->
+                  <div class="w-12 pr-3">
+                    <TrackCover
+                      :src="track.albumArt"
+                      :item-id="track.id"
+                      :alt="track.album || track.title"
+                      size-class="w-10 h-10"
+                    />
+                  </div>
+
+                  <!-- Title & Artist -->
+                  <div class="flex-1 min-w-0">
+                    <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ track.title }}</p>
+                    <p class="text-xs text-gray-500 truncate">{{ track.artist }}</p>
+                  </div>
+
+                  <!-- Album -->
+                  <div class="w-40 text-sm text-gray-500 truncate">{{ track.album }}</div>
+
+                  <!-- Added Date -->
+                  <div class="w-32 text-sm text-gray-500">{{ track.addedDate }}</div>
+
+                  <!-- Duration -->
+                  <div class="w-20 text-right text-sm text-gray-500">{{ track.duration }}</div>
+
+                  <!-- Actions (S194: fixed, always visible) -->
+                  <div class="w-10 flex justify-end">
+                    <button v-if="canMutateSelectedPlaylist" @click.stop="removeTrack(track)" class="p-1 hover:bg-red-50 dark:hover:bg-red-500/10 rounded" :aria-label="`Remove ${track.title} from playlist`" title="Remove from playlist">
+                      <span class="material-symbols-outlined text-red-400 text-lg">remove_circle</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                v-if="playlistFooterHeight > 0"
+                class="absolute left-0 right-0 flex items-center justify-center gap-2 px-4 text-sm text-gray-500"
+                :style="{ top: playlistTracks.length * PLAYLIST_ROW_HEIGHT + 'px', height: PLAYLIST_FOOTER_HEIGHT + 'px' }"
+              >
+                <div v-if="isLoadingMore" class="flex items-center gap-2" data-testid="playlist-tracks-loading-more">
+                  <span class="material-symbols-outlined text-lg animate-spin">progress_activity</span>
+                  Loading more tracks…
+                </div>
+                <div v-else-if="tracksLoadMoreError" class="flex items-center gap-2 min-w-0" data-testid="playlist-tracks-load-more-error">
+                  <span class="truncate">{{ tracksLoadMoreError }}</span>
+                  <button @click="loadMorePlaylistTracks" class="shrink-0 px-3 py-1 rounded-lg bg-primary/10 text-primary hover:bg-primary/20">
+                    Retry
+                  </button>
+                </div>
+                <div v-else-if="!hasMoreTracks">
+                  Showing all {{ playlistTotal.toLocaleString() }} tracks
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
       </div>
     </div>
@@ -740,11 +767,12 @@ import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '@/api/library'
 import { playlistsApi, exportPlaylistM3u, importPlaylists, type MissingPlaylistFile } from '@/api/playlists'
 import { addToQueue, addBatchToQueue } from '@/api/queue'
-import type { Playlist, LibraryTrack } from '@/api/types'
+import type { Playlist, LibraryTrack, LibraryPage } from '@/api/types'
 // R13: unified `confirm`/`prompt` (in-app dialog) instead of
 // `window.confirm`/`window.prompt`, which open outside the window.
 import { useToast, confirm, prompt } from '@/composables/useToast'
 import { usePlayer } from '@/composables/usePlayer'
+import { useVirtualWindow } from '@/composables/useVirtualWindow'
 import TrackCover from '@/components/TrackCover.vue'
 
 /** Synthetic Favorites entry ID: it does not exist in the `playlists` table. */
@@ -821,13 +849,27 @@ const myPlaylists = ref<Playlist[]>([])
 const importedServices = ref<any[]>([])
 const smartPlaylists = ref<any[]>([])
 const playlistTracks = ref<any[]>([])
+const playlistTotal = ref(0)
+const nextPlaylistOffset = ref(0)
+const hasMoreTracks = ref(false)
 const isLoading = ref(false)
+const isLoadingMore = ref(false)
 /** Last track load failure; distinguishes "empty" from "could not read". */
 const tracksError = ref<string | null>(null)
-/** The page exceeded the per-page cap: what is shown is not all the content. */
-const tracksTruncated = ref(false)
-/** Backend per-page cap (`limit` is clamped to 500 in get_playlist_tracks). */
-const PLAYLIST_PAGE_SIZE = 500
+/** A later-page failure keeps the rows already loaded and can be retried. */
+const tracksLoadMoreError = ref<string | null>(null)
+const PLAYLIST_PAGE_SIZE = 100
+const PLAYLIST_ROW_HEIGHT = 56
+const PLAYLIST_OVERSCAN = 6
+const PLAYLIST_LOAD_MORE_THRESHOLD_PX = 280
+const PLAYLIST_FOOTER_HEIGHT = 56
+let playlistLoadSeq = 0
+
+const playlistFooterHeight = computed(() =>
+  playlistTracks.value.length > 0 && (isLoadingMore.value || tracksLoadMoreError.value || !hasMoreTracks.value)
+    ? PLAYLIST_FOOTER_HEIGHT
+    : 0
+)
 
 const canMutateSelectedPlaylist = computed(() => {
   const playlist = selectedPlaylist.value
@@ -861,6 +903,25 @@ function mapToTrack(item: LibraryTrack, index: number) {
     albumArt: item.cover_art_url || '',
   };
 }
+
+const {
+  containerRef: playlistTracksContainer,
+  totalHeight: totalPlaylistTracksHeight,
+  startIndex: virtualStartIndex,
+  offsetY: virtualOffsetY,
+  visibleItems: visiblePlaylistTracks,
+  handleScroll: handlePlaylistTracksScroll,
+  reset: resetPlaylistVirtualScroll,
+} = useVirtualWindow(playlistTracks, {
+  rowHeight: PLAYLIST_ROW_HEIGHT,
+  overscan: PLAYLIST_OVERSCAN,
+  footerHeight: playlistFooterHeight,
+  onScrollMeasured: (scrollBottom) => {
+    if (scrollBottom <= PLAYLIST_LOAD_MORE_THRESHOLD_PX) {
+      void loadMorePlaylistTracks()
+    }
+  },
+})
 
 // Computed
 const totalPlaylists = computed(() => {
@@ -921,6 +982,7 @@ watch(
 )
 
 onUnmounted(() => {
+  playlistLoadSeq += 1
   if (previewDebounceTimer) {
     clearTimeout(previewDebounceTimer)
     previewDebounceTimer = null
@@ -939,34 +1001,49 @@ watch(
 )
 
 // Methods
+async function fetchPlaylistPage(playlistId: number, offset: number, limit: number): Promise<LibraryPage> {
+  if (playlistId === FAVORITES_PLAYLIST_ID) {
+    return libraryApi.getFavoriteTracks(offset, limit)
+  }
+  return libraryApi.getPlaylistTracks(playlistId, offset, limit)
+}
+
 async function selectPlaylist(playlist: any) {
+  const seq = ++playlistLoadSeq
   selectedPlaylist.value = playlist
   selectedTracks.value = []
+  playlistTracks.value = []
+  playlistTotal.value = 0
+  nextPlaylistOffset.value = 0
+  hasMoreTracks.value = false
   tracksError.value = null
+  tracksLoadMoreError.value = null
   isLoading.value = true
+  isLoadingMore.value = false
+  resetPlaylistVirtualScroll()
 
   try {
-    if (playlist.id === FAVORITES_PLAYLIST_ID) {
-      // Favorites is not a row in `playlists`: `get_playlist_tracks(-1)`
-      // would count zero, so tracks are read directly from the library.
-      const page = await libraryApi.getFavoriteTracks(0, PLAYLIST_PAGE_SIZE)
-      playlistTracks.value = page.tracks.map((t, i) => mapToTrack(t, i))
-      favoritesPlaylist.value.track_count = page.total
-      tracksTruncated.value = page.has_more
-      return
-    }
+    const page = await fetchPlaylistPage(playlist.id, 0, PLAYLIST_PAGE_SIZE)
+    if (seq !== playlistLoadSeq) return
 
-    const page = await libraryApi.getPlaylistTracks(playlist.id, 0, PLAYLIST_PAGE_SIZE)
-    playlistTracks.value = page.tracks.map((t, i) => mapToTrack(t, i))
+    playlistTracks.value = page.tracks.map((track, index) => mapToTrack(track, page.offset + index))
+    playlistTotal.value = page.total
+    nextPlaylistOffset.value = page.offset + page.tracks.length
+    hasMoreTracks.value = page.has_more && page.tracks.length > 0
+
     // PL02 (#155): `total` cuenta ocurrencias, no pistas distintas.
-    playlist.track_count = page.total
-    tracksTruncated.value = page.has_more
+    if (playlist.id === FAVORITES_PLAYLIST_ID) {
+      favoritesPlaylist.value.track_count = page.total
+    } else {
+      playlist.track_count = page.total
+    }
   } catch (error) {
+    if (seq !== playlistLoadSeq) return
     playlistTracks.value = []
     tracksError.value = String(error)
     toast.error('Failed to load playlist tracks', String(error))
   } finally {
-    isLoading.value = false
+    if (seq === playlistLoadSeq) isLoading.value = false
   }
 }
 
@@ -974,6 +1051,34 @@ async function selectPlaylist(playlist: any) {
 async function loadPlaylistTracks() {
   if (!selectedPlaylist.value) return
   await selectPlaylist(selectedPlaylist.value)
+}
+
+async function loadMorePlaylistTracks() {
+  const playlist = selectedPlaylist.value
+  if (!playlist || isLoading.value || isLoadingMore.value || tracksError.value || !hasMoreTracks.value) return
+
+  const seq = playlistLoadSeq
+  const offset = nextPlaylistOffset.value
+  isLoadingMore.value = true
+  tracksLoadMoreError.value = null
+  try {
+    const page = await fetchPlaylistPage(playlist.id, offset, PLAYLIST_PAGE_SIZE)
+    if (seq !== playlistLoadSeq) return
+    if (page.tracks.length === 0) {
+      throw new Error('Playlist returned an empty page before the end')
+    }
+
+    playlistTracks.value.push(...page.tracks.map((track, index) => mapToTrack(track, offset + index)))
+    playlistTotal.value = page.total
+    nextPlaylistOffset.value = offset + page.tracks.length
+    hasMoreTracks.value = page.has_more
+  } catch (error) {
+    if (seq !== playlistLoadSeq) return
+    tracksLoadMoreError.value = String(error)
+    toast.error('Failed to load more playlist tracks', String(error))
+  } finally {
+    if (seq === playlistLoadSeq) isLoadingMore.value = false
+  }
 }
 
 async function loadPlaylists() {
@@ -1341,6 +1446,14 @@ function toPlayerTrack(track: any) {
   }
 }
 
+async function selectedPlaylistRows(): Promise<any[]> {
+  if (!hasMoreTracks.value) return playlistTracks.value
+  const playlistId = selectedPlaylist.value?.id
+  if (typeof playlistId !== 'number') return playlistTracks.value
+  const tracks = await fetchAllPlaylistTracks(playlistId)
+  return tracks.map((track, index) => mapToTrack(track, index))
+}
+
 async function playAll() {
   if (!playlistTracks.value.length) return
 
@@ -1349,7 +1462,8 @@ async function playAll() {
   // replaceQueueAndPlay plays the first track and queues the rest in the
   // list's real order.
   try {
-    await player.replaceQueueAndPlay(playlistTracks.value.map(toPlayerTrack))
+    const tracks = await selectedPlaylistRows()
+    await player.replaceQueueAndPlay(tracks.map(toPlayerTrack))
   } catch (err) {
     toast.error('Could not play playlist', String(err))
   }
@@ -1416,15 +1530,18 @@ async function downloadExistingAsM3u() {
   }
 }
 
-/** Fetches ALL pages of the playlist (offset/limit/has_more). */
+/** Fetches every page in playlist order, preserving repeated occurrences. */
 async function fetchAllPlaylistTracks(playlistId: number): Promise<LibraryTrack[]> {
-  const PAGE_SIZE = 500
   const all: LibraryTrack[] = []
   let offset = 0
-  for (let guard = 0; guard < 1000; guard++) {
-    const page = await libraryApi.getPlaylistTracks(playlistId, offset, PAGE_SIZE)
+  while (true) {
+    const page = await fetchPlaylistPage(playlistId, offset, PLAYLIST_PAGE_SIZE)
+    if (page.tracks.length === 0) {
+      if (page.has_more) throw new Error('Playlist returned an empty page before the end')
+      break
+    }
     all.push(...page.tracks)
-    if (!page.has_more || page.tracks.length === 0) break
+    if (!page.has_more) break
     offset += page.tracks.length
   }
   return all
@@ -1524,9 +1641,14 @@ async function downloadTrack(track: any) {
 }
 
 async function shufflePlay() {
-  if (playlistTracks.value.length > 0) {
-    const randomIndex = Math.floor(Math.random() * playlistTracks.value.length)
-    await playTrack(playlistTracks.value[randomIndex])
+  if (!playlistTracks.value.length) return
+  try {
+    const tracks = await selectedPlaylistRows()
+    if (!tracks.length) return
+    const randomIndex = Math.floor(Math.random() * tracks.length)
+    await playTrack(tracks[randomIndex])
+  } catch (err) {
+    toast.error('Could not shuffle playlist', String(err))
   }
 }
 
