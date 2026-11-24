@@ -15,7 +15,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use sqlx::SqlitePool;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 
 use super::jobs::{self, DownloadJobProgressEvent, JobError};
 
@@ -183,6 +183,79 @@ pub fn terminal_notification(event: &DownloadJobProgressEvent) -> Option<(String
     Some((title, body))
 }
 
+/// Último estado terminal notificado por job. `running` borra la entrada: un
+/// reintento que reabre el job arma una transición nueva, mientras que dos
+/// sondeos del mismo estado terminal no repiten el aviso.
+static NOTIFIED_TERMINAL: OnceLock<Mutex<HashMap<i64, String>>> = OnceLock::new();
+
+fn notified_terminal() -> &'static Mutex<HashMap<i64, String>> {
+    NOTIFIED_TERMINAL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock_notified_terminal() -> std::sync::MutexGuard<'static, HashMap<i64, String>> {
+    notified_terminal()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Notificación terminal que toca emitir, si aún no se notificó ese estado.
+///
+/// Devuelve `None` para `running` (y reinicia la ventana del job) y para un
+/// estado terminal ya notificado. Es la parte testable sin Tauri.
+pub fn take_terminal_notification(event: &DownloadJobProgressEvent) -> Option<(String, String)> {
+    let Some(notification) = terminal_notification(event) else {
+        forget_terminal_notification(event.job_id);
+        return None;
+    };
+
+    let mut notified = lock_notified_terminal();
+    if notified.get(&event.job_id).map(String::as_str) == Some(event.status.as_str()) {
+        return None;
+    }
+    notified.insert(event.job_id, event.status.clone());
+    Some(notification)
+}
+
+/// Olvida el último estado terminal notificado de un job (al limpiarlo o en
+/// tests). No toca el registro queue→job.
+pub fn forget_terminal_notification(job_id: i64) {
+    lock_notified_terminal().remove(&job_id);
+}
+
+/// Entrega la notificación terminal fuera del ciclo de sondeo: el estado ya
+/// está persistido y `show_notification` respeta las preferencias del usuario.
+pub fn spawn_terminal_notification<R: Runtime>(
+    app: &AppHandle<R>,
+    event: &DownloadJobProgressEvent,
+) {
+    let Some((title, body)) = take_terminal_notification(event) else {
+        return;
+    };
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = crate::tray::show_notification(app, title, body).await {
+            tracing::warn!(%error, "[job_events] job notification failed");
+        }
+    });
+}
+
+/// Notifica desde los caminos que no reciben `AppHandle` (fallo de preflight o
+/// de encolado). Sin app no hace nada.
+pub async fn notify_terminal_if_available(db: &SqlitePool, job_id: i64) {
+    let Some(app) = crate::commands::get_global_app_handle() else {
+        return;
+    };
+    match jobs::progress_snapshot(db, job_id).await {
+        Ok(Some(event)) => spawn_terminal_notification(app, &event),
+        Ok(None) => {}
+        Err(error) => tracing::warn!(
+            job_id = job_id,
+            %error,
+            "[job_events] terminal notification snapshot failed"
+        ),
+    }
+}
+
 /// Un sondeo del watcher: refresca, emite si toca y devuelve `Some(true)` en
 /// la transición terminal, `Some(false)` mientras queda trabajo y `None` si el
 /// job ya no existe (limpiado mientras miraba).
@@ -198,18 +271,11 @@ pub async fn poll_job(
     if should_emit(job_id, &event) {
         let _ = app.emit("syncify:download_job_progress", &event);
     }
+    // #122: una notificación por transición terminal; `running` reinicia la
+    // ventana de deduplicación. El spawn no bloquea al watcher ni al worker.
+    spawn_terminal_notification(app, &event);
     if event.terminal {
         forget_job_queues(job_id);
-        // #122: la notificación de fin no bloquea al watcher ni al worker; el
-        // spawn la entrega fuera del ciclo de sondeo.
-        if let Some((title, body)) = terminal_notification(&event) {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(error) = crate::tray::show_notification(app, title, body).await {
-                    tracing::warn!(%error, "[job_events] job notification failed");
-                }
-            });
-        }
     }
     Ok(Some(event.terminal))
 }
@@ -226,7 +292,24 @@ pub async fn emit_job_progress(
     };
     force_state(job_id, &event);
     let _ = app.emit("syncify:download_job_progress", &event);
+    // Las acciones de ciclo (cancelar, reintentar, crear) también cierran el
+    // job fuera del sondeo: la transición terminal se notifica desde aquí.
+    spawn_terminal_notification(app, &event);
     Ok(Some(event))
+}
+
+/// Arranca el watcher cuando la app ya está disponible. Los jobs creados por
+/// los caminos de encolado de pistas (single, selección, URL) no reciben el
+/// `AppHandle` como argumento; sin esto su transición terminal no se derivaría
+/// ni notificaría.
+pub fn watch_job_if_available(db: &SqlitePool, job_id: i64) {
+    match crate::commands::get_global_app_handle() {
+        Some(app) => spawn_job_watch(app.clone(), db.clone(), job_id),
+        None => tracing::debug!(
+            job_id = job_id,
+            "[job_events] job watcher skipped: no app handle"
+        ),
+    }
 }
 
 /// Vigila un job hasta su transición terminal (o hasta que alguien lo borre).

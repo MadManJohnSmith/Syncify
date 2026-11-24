@@ -5978,6 +5978,7 @@ pub async fn perform_enqueue_tracks(
     .execute(db)
     .await
     .map_err(|e| e.to_string())?;
+    crate::download::job_events::watch_job_if_available(db, job_id);
 
     summary.enqueued = enqueued_count;
     summary.deduplicated = deduplicated_count;

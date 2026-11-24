@@ -787,6 +787,8 @@ pub async fn mark_job_failed(db: &SqlitePool, job_id: i64, error: &str) -> Resul
     .bind(job_id)
     .execute(db)
     .await?;
+    // D10: el fallo de encolado/preflight también es una transición terminal.
+    super::job_events::notify_terminal_if_available(db, job_id).await;
     Ok(())
 }
 
@@ -1070,25 +1072,39 @@ pub async fn retry_job_failed(
     refresh_job_status(db, job_id, None).await
 }
 
-/// Borra los jobs terminales del historial y devuelve cuántos cayeron y los
-/// ids borrados (para que la capa de comandos pode el registro queue→job).
+/// Borra los jobs terminales del historial junto con sus filas de la cola y
+/// devuelve cuántos cayeron y los ids borrados (para que la capa de comandos
+/// pode el registro queue→job y la deduplicación de notificaciones).
+///
+/// El ledger `downloads` y el `operation_journal` no se tocan: son el
+/// historial de ficheros y la auditoría de operaciones del usuario. Las filas
+/// de la cola de jobs `running` tampoco se tocan.
 pub async fn clear_terminal_jobs(db: &SqlitePool) -> Result<(u64, Vec<i64>), JobError> {
+    let mut tx = db.begin().await?;
     let ids: Vec<i64> = sqlx::query_scalar(
         "SELECT id FROM download_jobs \
          WHERE status IN ('completed', 'partial', 'cancelled', 'failed')",
     )
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await?;
     if ids.is_empty() {
         return Ok((0, Vec::new()));
     }
+    sqlx::query(
+        "DELETE FROM download_queue WHERE job_id IN ( \
+           SELECT id FROM download_jobs \
+           WHERE status IN ('completed', 'partial', 'cancelled', 'failed'))",
+    )
+    .execute(&mut *tx)
+    .await?;
     let deleted = sqlx::query(
         "DELETE FROM download_jobs \
          WHERE status IN ('completed', 'partial', 'cancelled', 'failed')",
     )
-    .execute(db)
+    .execute(&mut *tx)
     .await?
     .rows_affected();
+    tx.commit().await?;
     Ok((deleted, ids))
 }
 
