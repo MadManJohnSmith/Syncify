@@ -30,12 +30,33 @@ cargo fmt --all -- --check
 cargo test --locked --no-fail-fast   # 362 objetivos de test: recuento real
 cargo test --locked --test batch_50_audit_test -- --test-threads=1
 npm --prefix ui run build && npm --prefix ui run test:run                  # 158 ficheros de test UI
-.venv/bin/python -m unittest discover -s scripts/tests                    # 481 tests (2 skipped)
+.venv/bin/python -m unittest discover -s scripts/tests                    # 501 tests (2 skipped)
 
 ```
 
 Todo corre sin red salvo los 13 tests `#[ignore]`, que necesitan servicios reales.
 No los des-ignores en CI ni añadas `--skip`.
+
+### Cifras del AGENTS.md
+
+Los recuentos de arriba los mide la puerta, no la memoria: tras mergear la
+rama del lote y antes del push final, `tools/update-agents-claims.sh` los deja
+en lo medido. Mide las cinco cifras antes de escribir; si no puede medir, sale
+2 sin tocar el fichero. `--check` no escribe y sale 1 si alguna está obsoleta.
+La medida y los patrones viven en `scripts/agents_claims.py`, que comparte con
+`scripts/tests/test_agents_claims.py`: no hay dos copias que se separen. No
+edites esas líneas a mano.
+
+### CI por rama
+
+Un PR de carril a `wave/*` ejecuta Rust solo en Ubuntu; Frontend y Python
+mantienen sus dos patas y Docs corre sus tres puertas. La pata
+`windows-latest` de Rust se reserva para `push` a `main` y PRs con base
+`main`, donde su contexto es un check requerido con `strict=true` (regla y
+tests en `scripts/ci/rust_matrix.py`). El job Docs mide el árbol del head del
+PR, no el merge con la base, para que una base que avanza no invalide los
+recuentos de un carril (#368). El consolidado a `main` es la red final: corre
+la matriz completa sobre el árbol fusionado.
 
 ### Puerta previa al push
 
@@ -76,7 +97,7 @@ El repo se vigila a sí mismo; si una falla, el fallo es el mensaje:
 | `ui/src/__tests__/api/tauri_events_symmetry.spec.ts` | Simetría de eventos emitidos y escuchados |
 | `scripts/tests/test_docs_consistency.py` | Que las docs no citen ficheros o ramas inexistentes |
 | `scripts/tests/test_readme_claims.py` | Cifras del README contra el árbol real |
-| `scripts/tests/test_agents_claims.py` | Cifras del AGENTS.md contra el árbol real (objetivos cargo, ficheros de test UI, tests Python, `#[ignore]`) |
+| `scripts/tests/test_agents_claims.py` | Cifras del AGENTS.md contra el árbol real (objetivos cargo, ficheros de test UI, tests Python, `#[ignore]`); `tools/update-agents-claims.sh` reescribe lo medido |
 | `scripts/tests/test_dead_code_allow_ratchet.py` | `#![allow(dead_code)]` de módulos de producción contra el suelo 0 (adopción de `account_refresh` aterrizada en #342) |
 | `scripts/tests/test_tracked_artifact_hygiene.py` | Artefactos generados que no deben estar versionados |
 

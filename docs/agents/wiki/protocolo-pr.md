@@ -79,6 +79,42 @@ Medido el 2026-11-21 sobre git y GitHub; decidido por el dueño el
   `98d83e1`, y #73 sigue abierto por #374. La política no se decide aquí:
   los dos lotes dejan evidencia de las dos prácticas.)*
 
+## Cifras del AGENTS.md y alcance de CI (#368)
+
+Medido el 2026-11-22 sobre el Lote 2: #361 y #360 añadieron un objetivo de
+test cada uno; el job Docs de #360 sobre `41135bb` falló con `360 != 361`
+(run [45068016557](https://github.com/MadManJohnSmith/Syncify/actions/runs/45068016557))
+aunque su rama era correcta, porque la puerta medía el merge con la base. El
+arreglo no es contar mejor: es medir el árbol del head y dejar la cifra en un
+comando. Detalle y criterios en el issue #368.
+
+- **Antes del push final de un carril**, y solo después de
+  `git merge origin/wave/ola-0-batch-N`: corre
+  `tools/update-agents-claims.sh`. Reescribe únicamente las líneas medidas
+  (objetivos de cargo, tests Python, ficheros de test UI, `#[ignore]` y el
+  suelo de escrituras silenciosas), mide las cinco antes de escribir y sale 2
+  sin tocar el fichero si no puede medir. `--check` no escribe y sale 1 si
+  alguna cifra está obsoleta. La lógica es `scripts/agents_claims.py`, la
+  misma que importa `scripts/tests/test_agents_claims.py`; no se editan esas
+  líneas a mano.
+- **Qué corre en un PR de carril a `wave/*`.** Rust solo en Ubuntu;
+  Frontend y Python mantienen sus dos patas; Docs corre sus tres puertas
+  sobre el árbol del head del PR (`github.event.pull_request.head.sha`). En
+  `push` se sigue midiendo el commit empujado.
+- **Qué corre en `main`.** El PR consolidado tiene base `main`: produce la
+  pata `windows-latest` de Rust además de la de Ubuntu, más Frontend y Python
+  × dos patas. La protección de `main` no se tocó: sigue exigiendo los **6
+  contextos con sufijo de matriz** y `strict=true` (comprobado el 2026-11-22
+  con `gh api repos/MadManJohnSmith/Syncify/branches/main/protection/required_status_checks`).
+- **Cómo se mide el cambio de matriz.** No se puede ejercitar el caso «PR a
+  `main`» desde el PR del carril: GitHub usa el workflow del merge del propio
+  PR, así que la pata Windows reaparece en el siguiente consolidado. Medición
+  prevista: (1) el PR del carril no debe listar el contexto de Rust con
+  sufijo `windows-latest`; (2) el consolidado a `main` sí debe producirlo, y
+  los 6 contextos deben quedar verdes antes del merge; (3) la regla local se
+  comprueba con `scripts/tests/test_rust_matrix.py`, que simula
+  `GITHUB_EVENT_NAME` y `GITHUB_BASE_REF` sin red.
+
 ## Qué viaja directo a `dev` y qué vía PR
 
 - **Directo** (precedente del 2026-11-13: `ca6bf67`, `db8d0be`, `dff789a`,
