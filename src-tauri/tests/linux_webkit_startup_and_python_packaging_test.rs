@@ -174,6 +174,65 @@ fn wk01_characterization_flushes_partial_evidence_before_a_kill() {
     );
 }
 
+#[test]
+fn linux_probe_child_bypasses_app_initialization_and_compatibility_defaults() {
+    let src = read_src("src/main.rs");
+    let dispatch_at = src
+        .find("webkit_probe::child_request_from_args")
+        .expect("main.rs debe despachar el modo hijo de la sonda");
+    let dotenv_at = src
+        .find("dotenvy::dotenv()")
+        .expect("main.rs sigue cargando .env en desarrollo");
+    let hardening_at = src
+        .find("WEBKIT HARDENING")
+        .expect("main.rs sigue configurando la ruta compatible");
+
+    assert!(
+        dispatch_at < dotenv_at && dispatch_at < hardening_at,
+        "El hijo debe salir antes de cargar ajustes o fijar WEBKIT_DISABLE_*: debe probar la ruta acelerada aislada"
+    );
+    assert!(
+        src[dispatch_at..hardening_at].contains("webkit_probe::run_probe_child"),
+        "El modo hijo ejecuta GTK/WebKit sin entrar en el arranque de Tauri"
+    );
+    assert!(
+        src[dispatch_at..hardening_at].contains("std::process::exit"),
+        "El hijo devuelve su código sin continuar con la app principal"
+    );
+}
+
+#[test]
+fn linux_startup_finishes_the_probe_before_building_tauri_and_logs_it() {
+    let src = read_src("src/main.rs");
+    let probe_at = src
+        .find("webkit_probe::probe_startup")
+        .expect("El arranque de Linux ejecuta la sonda supervisada");
+    let hardening_at = src
+        .find("WEBKIT HARDENING")
+        .expect("El arranque sigue configurando la ruta compatible");
+    let builder_at = src
+        .find("tauri::Builder::default()")
+        .expect("main.rs debe seguir montando el Builder de Tauri");
+    let log_at = src
+        .find("webkit_probe::log_report")
+        .expect("El veredicto y el fingerprint se registran");
+    let db_at = src
+        .find("db::init_db(&init_handle)")
+        .expect("El arranque sigue inicializando la base de datos");
+
+    assert!(
+        probe_at < hardening_at && hardening_at < builder_at && builder_at < log_at && log_at < db_at,
+        "La sonda termina antes de crear Tauri (no congela una ventana ya creada); los defaults compatibles siguen antes del Builder y el reporte se registra antes de abrir la base"
+    );
+    let probe_block_on = src[..probe_at]
+        .rfind("rt.block_on")
+        .expect("La sonda se ejecuta con el runtime existente, sin crear otro");
+    assert!(
+        probe_block_on < probe_at && probe_at - probe_block_on < 100,
+        "La sonda se ejecuta con el runtime existente, sin crear otro"
+    );
+}
+
 // ═══════════════════════════════════════════════════════
 // 3. PLUGINS DE GSTREAMER DENTRO DEL APPIMAGE (auditoría 34)
 // ═══════════════════════════════════════════════════════
