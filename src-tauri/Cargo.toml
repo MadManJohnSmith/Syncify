@@ -7,7 +7,7 @@ default-run = "syncify-tauri"
 
 [lib]
 name = "syncify_tauri_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
