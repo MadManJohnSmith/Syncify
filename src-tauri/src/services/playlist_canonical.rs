@@ -67,6 +67,91 @@ enum CandidateLoadError {
     Database(String),
 }
 
+/// Marca la expansión de una fuente como completa solo si el total declarado
+/// por el proveedor coincide con las ocurrencias locales. Es la costura que
+/// debe llamarse DESPUÉS de recorrer todas las páginas; un fallo de expansión
+/// usa [`mark_playlist_source_expansion_incomplete`].
+pub async fn record_playlist_source_expansion(
+    db: &SqlitePool,
+    playlist_id: i64,
+) -> Result<bool, String> {
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to start playlist expansion update: {e}"))?;
+    let complete = record_playlist_source_expansion_in_conn(&mut tx, playlist_id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit playlist expansion update: {e}"))?;
+    Ok(complete)
+}
+
+/// Variante transaccional de [`record_playlist_source_expansion`].
+pub async fn record_playlist_source_expansion_in_conn(
+    conn: &mut SqliteConnection,
+    playlist_id: i64,
+) -> Result<bool, String> {
+    let sources: Vec<(i64, Option<i64>)> = sqlx::query_as(
+        "SELECT id, reported_track_count FROM playlist_sources
+         WHERE playlist_id = ? ORDER BY id",
+    )
+    .bind(playlist_id)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|e| format!("Failed to read playlist expansion sources: {e}"))?;
+    let occurrences: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?")
+            .bind(playlist_id)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| format!("Failed to count playlist expansion tracks: {e}"))?;
+    let complete = occurrences > 0
+        && !sources.is_empty()
+        && sources
+            .iter()
+            .all(|(_, reported)| *reported == Some(occurrences));
+
+    sqlx::query("UPDATE playlist_sources SET expansion_complete = ? WHERE playlist_id = ?")
+        .bind(complete)
+        .bind(playlist_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| format!("Failed to record playlist expansion state: {e}"))?;
+
+    Ok(complete)
+}
+
+/// Invalidación explícita para rutas que saben que una página o una playlist
+/// falló. Retira la membresía canónica en la misma transacción.
+pub async fn mark_playlist_source_expansion_incomplete(
+    db: &SqlitePool,
+    playlist_id: i64,
+) -> Result<(), String> {
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to start playlist expansion invalidation: {e}"))?;
+    mark_playlist_source_expansion_incomplete_in_conn(&mut tx, playlist_id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit playlist expansion invalidation: {e}"))?;
+    Ok(())
+}
+
+/// Variante transaccional de [`mark_playlist_source_expansion_incomplete`].
+pub async fn mark_playlist_source_expansion_incomplete_in_conn(
+    conn: &mut SqliteConnection,
+    playlist_id: i64,
+) -> Result<(), String> {
+    sqlx::query("UPDATE playlist_sources SET expansion_complete = 0 WHERE playlist_id = ?")
+        .bind(playlist_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| format!("Failed to invalidate playlist expansion: {e}"))?;
+    canonicalize_playlist_in_conn(conn, playlist_id).await?;
+    Ok(())
+}
+
 /// Recalcula todas las canónicas en una transacción propia.
 pub async fn canonicalize_playlists(db: &SqlitePool) -> Result<CanonicalizationSummary, String> {
     let mut tx = db
@@ -115,8 +200,8 @@ pub async fn canonicalize_playlist_in_conn(
     .await
     .map_err(|e| format!("Failed to read previous playlist canonical: {e}"))?;
 
-    let playlist: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT name, created_at FROM playlists
+    let playlist: Option<(String,)> = sqlx::query_as(
+        "SELECT name FROM playlists
          WHERE id = ? AND deleted_at IS NULL AND COALESCE(is_smart, 0) = 0 AND local_uuid IS NULL",
     )
     .bind(playlist_id)
@@ -126,7 +211,7 @@ pub async fn canonicalize_playlist_in_conn(
 
     let normalized_name = playlist
         .as_ref()
-        .map(|(name, _)| normalize_playlist_name(name))
+        .map(|(name,)| normalize_playlist_name(name))
         .or(old_normalized_name);
 
     // Si la playlist cambió de nombre, de contenido o de elegibilidad, su
@@ -232,6 +317,23 @@ pub async fn get_playlist_canonical_membership(
     db: &SqlitePool,
     playlist_id: i64,
 ) -> Result<Option<PlaylistCanonicalMembership>, String> {
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to start playlist canonical read: {e}"))?;
+    let membership = get_playlist_canonical_membership_in_conn(&mut tx, playlist_id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit playlist canonical read: {e}"))?;
+    Ok(membership)
+}
+
+/// Membership read inside the caller's transaction, so playlist fields and
+/// canonical sources come from the same SQLite snapshot.
+pub async fn get_playlist_canonical_membership_in_conn(
+    conn: &mut SqliteConnection,
+    playlist_id: i64,
+) -> Result<Option<PlaylistCanonicalMembership>, String> {
     // Una sola sentencia: la pertenencia, la primaria derivada y las fuentes
     // salen del mismo snapshot de SQLite, incluso si otra conexión recanonicalza.
     let rows: Vec<(
@@ -307,7 +409,7 @@ pub async fn get_playlist_canonical_membership(
         "#,
     )
     .bind(playlist_id)
-    .fetch_all(db)
+    .fetch_all(&mut *conn)
     .await
     .map_err(|e| format!("Failed to list playlist canonical sources: {e}"))?;
 
@@ -388,6 +490,8 @@ const COPY_SUFFIXES: &[&str] = &[
     "— copy",
     "(copia)",
     "[copia]",
+    " copy",
+    " copia",
     "- copia",
     "– copia",
     "— copia",
@@ -411,29 +515,26 @@ fn fold_latin_accent(character: char) -> char {
     match character {
         'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' | 'ǎ' | 'ǟ' | 'ǡ' | 'ǻ' | 'ȁ' | 'ȃ'
         | 'ȧ' => 'a',
-        'ƀ' | 'ƃ' | 'ƅ' => 'b',
         'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
-        'ď' | 'đ' => 'd',
+        'ď' => 'd',
         'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' | 'ȅ' | 'ȇ' | 'ȩ' => 'e',
-        'ƒ' => 'f',
-        'ĝ' | 'ğ' | 'ġ' | 'ģ' | 'ǥ' | 'ǵ' => 'g',
-        'ĥ' | 'ħ' => 'h',
-        'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' | 'ǐ' | 'ȉ' | 'ȋ' => 'i',
+        'ĝ' | 'ğ' | 'ġ' | 'ģ' | 'ǵ' => 'g',
+        'ĥ' => 'h',
+        'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ǐ' | 'ȉ' | 'ȋ' => 'i',
         'ĵ' | 'ǰ' => 'j',
-        'ķ' | 'ĸ' | 'ǩ' => 'k',
-        'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' | 'ƚ' | 'ȴ' => 'l',
-        'ñ' | 'ń' | 'ņ' | 'ň' | 'ŉ' | 'ŋ' | 'ƞ' | 'ǹ' => 'n',
-        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' | 'ơ' | 'ǒ' | 'ǫ' | 'ǭ' | 'ǿ' | 'ȍ'
-        | 'ȏ' | 'ȫ' | 'ȭ' | 'ȯ' | 'ȱ' => 'o',
+        'ķ' | 'ǩ' => 'k',
+        'ĺ' | 'ļ' | 'ľ' | 'ȴ' => 'l',
+        'ñ' | 'ń' | 'ņ' | 'ň' | 'ǹ' => 'n',
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ō' | 'ŏ' | 'ő' | 'ơ' | 'ǒ' | 'ǫ' | 'ǭ' | 'ǿ' | 'ȍ' | 'ȏ'
+        | 'ȫ' | 'ȭ' | 'ȯ' | 'ȱ' => 'o',
         'ŕ' | 'ŗ' | 'ř' => 'r',
-        'ś' | 'ŝ' | 'ş' | 'š' | 'ș' | 'ȿ' => 's',
-        'ţ' | 'ť' | 'ŧ' => 't',
+        'ś' | 'ŝ' | 'ş' | 'š' | 'ș' => 's',
+        'ţ' | 'ť' => 't',
         'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' | 'ư' | 'ǔ' | 'ǖ' | 'ǘ' | 'ǚ'
         | 'ǜ' | 'ȕ' | 'ȗ' => 'u',
-        'ƴ' => 'y',
         'ŵ' => 'w',
         'ý' | 'ÿ' | 'ŷ' => 'y',
-        'ź' | 'ż' | 'ž' | 'ƶ' | 'ȥ' | 'ɀ' => 'z',
+        'ź' | 'ż' | 'ž' => 'z',
         other => other,
     }
 }
@@ -442,8 +543,8 @@ async fn load_candidate(
     conn: &mut SqliteConnection,
     playlist_id: i64,
 ) -> Result<Candidate, CandidateLoadError> {
-    let sources: Vec<(i64, Option<i64>)> = sqlx::query_as(
-        "SELECT id, reported_track_count FROM playlist_sources
+    let sources: Vec<(i64, Option<i64>, Option<i64>)> = sqlx::query_as(
+        "SELECT id, reported_track_count, expansion_complete FROM playlist_sources
          WHERE playlist_id = ? ORDER BY id",
     )
     .bind(playlist_id)
@@ -478,7 +579,7 @@ async fn load_candidate(
     let occurrences = track_rows.len() as i64;
     if sources
         .iter()
-        .any(|(_, reported)| *reported != Some(occurrences))
+        .any(|(_, reported, complete)| *reported != Some(occurrences) || *complete != Some(1))
     {
         return Err(CandidateLoadError::Skip(CandidateSkip::Incomplete));
     }
@@ -604,6 +705,7 @@ mod tests {
 
     use crate::services::playlist_canonical::{
         canonicalize_playlist, canonicalize_playlists, get_playlist_canonical_membership,
+        record_playlist_source_expansion,
     };
 
     async fn migrated_pool() -> Pool<Sqlite> {
@@ -697,6 +799,19 @@ mod tests {
             .execute(pool)
             .await
             .expect("pista enlazada");
+        }
+
+        let has_expansion_state: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('playlist_sources')
+             WHERE name = 'expansion_complete'",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("esquema de expansión consultado");
+        if has_expansion_state > 0 {
+            record_playlist_source_expansion(pool, playlist_id)
+                .await
+                .expect("estado de expansión registrado");
         }
 
         playlist_id
@@ -1034,6 +1149,9 @@ mod tests {
         .execute(&pool)
         .await
         .expect("fuente reexpandida");
+        record_playlist_source_expansion(&pool, second)
+            .await
+            .expect("expansión reexpandida completa");
 
         canonicalize_playlist(&pool, second)
             .await
@@ -1081,7 +1199,7 @@ mod tests {
             &pool,
             account,
             "norm-b",
-            "CAFE ROAD",
+            "CAFE ROAD Copia",
             2,
             &[tracks[1], tracks[0]],
             "2024-01-02 00:00:00",
@@ -1126,6 +1244,40 @@ mod tests {
                 .unwrap()
                 .canonical_id
         );
+    }
+
+    #[tokio::test]
+    async fn distinct_latin_letters_are_not_folded_as_accents() {
+        let pool = migrated_pool().await;
+        let account = seed_account(&pool, "spotify", "Distinct letters").await;
+        let tracks = seed_tracks(&pool, 2).await;
+        seed_remote_playlist(
+            &pool,
+            account,
+            "letter-i",
+            "I",
+            2,
+            &tracks,
+            "2024-01-01 00:00:00",
+        )
+        .await;
+        seed_remote_playlist(
+            &pool,
+            account,
+            "letter-dotless-i",
+            "ı",
+            2,
+            &tracks,
+            "2024-01-02 00:00:00",
+        )
+        .await;
+
+        let summary = canonicalize_playlists(&pool)
+            .await
+            .expect("letras distintas");
+
+        assert_eq!(summary.canonicals, 2);
+        assert_eq!(summary.merged_canonicals, 0);
     }
 
     #[tokio::test]
@@ -1237,6 +1389,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reencounter_and_content_mutation_invalidate_membership_until_completed() {
+        let pool = migrated_pool().await;
+        let account = seed_account(&pool, "spotify", "Invalidation").await;
+        let tracks = seed_tracks(&pool, 3).await;
+        let first = seed_remote_playlist(
+            &pool,
+            account,
+            "invalidate-a",
+            "Invalidate",
+            2,
+            &tracks[..2],
+            "2024-01-01 00:00:00",
+        )
+        .await;
+        let second = seed_remote_playlist(
+            &pool,
+            account,
+            "invalidate-b",
+            "invalidate",
+            2,
+            &tracks[..2],
+            "2024-01-02 00:00:00",
+        )
+        .await;
+        canonicalize_playlists(&pool).await.expect("fusión inicial");
+
+        sqlx::query(
+            "UPDATE playlist_sources SET synced_at = CURRENT_TIMESTAMP WHERE playlist_id = ?",
+        )
+        .bind(second)
+        .execute(&pool)
+        .await
+        .expect("fuente reencontrada");
+        assert!(get_playlist_canonical_membership(&pool, second)
+            .await
+            .unwrap()
+            .is_none());
+        let states: Vec<(i64, Option<i64>)> = sqlx::query_as(
+            "SELECT ps.playlist_id, ps.expansion_complete
+             FROM playlist_sources ps ORDER BY ps.playlist_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(states, vec![(first, Some(1)), (second, None)]);
+        let during_expansion = canonicalize_playlists(&pool)
+            .await
+            .expect("durante la expansión");
+        assert_eq!(during_expansion.incomplete_playlists, 1);
+        assert!(get_playlist_canonical_membership(&pool, second)
+            .await
+            .unwrap()
+            .is_none());
+
+        assert!(record_playlist_source_expansion(&pool, second)
+            .await
+            .expect("recorrido completo"));
+        canonicalize_playlist(&pool, second)
+            .await
+            .expect("recuperar fusión");
+        assert_eq!(
+            get_playlist_canonical_membership(&pool, second)
+                .await
+                .unwrap()
+                .unwrap()
+                .sources
+                .len(),
+            2
+        );
+
+        sqlx::query(
+            "UPDATE playlist_tracks SET track_id = ? WHERE playlist_id = ? AND position = 1",
+        )
+        .bind(tracks[2])
+        .bind(second)
+        .execute(&pool)
+        .await
+        .expect("reidentificación de pista");
+        assert!(get_playlist_canonical_membership(&pool, second)
+            .await
+            .unwrap()
+            .is_none());
+
+        sqlx::query(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position)
+             VALUES (?, ?, 3)",
+        )
+        .bind(second)
+        .bind(tracks[0])
+        .execute(&pool)
+        .await
+        .expect("mutación local");
+        assert!(get_playlist_canonical_membership(&pool, second)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(get_playlist_canonical_membership(&pool, first)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
     async fn unknown_historical_totals_are_not_treated_as_complete() {
         let pool = migrated_pool().await;
         let account = seed_account(&pool, "tidal", "Unknown totals").await;
@@ -1261,10 +1516,12 @@ mod tests {
             "2024-01-02 00:00:00",
         )
         .await;
-        sqlx::query("UPDATE playlist_sources SET reported_track_count = NULL")
-            .execute(&pool)
-            .await
-            .expect("total histórico desconocido");
+        sqlx::query(
+            "UPDATE playlist_sources SET reported_track_count = NULL, expansion_complete = 0",
+        )
+        .execute(&pool)
+        .await
+        .expect("total histórico desconocido");
 
         let summary = canonicalize_playlists(&pool).await.expect("sin evidencia");
 
@@ -1281,7 +1538,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_0117_preserves_groups_but_drops_fabricated_totals() {
+    async fn migrations_0117_0118_drop_fabricated_evidence_and_recover_after_reexpansion() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -1379,17 +1636,36 @@ mod tests {
         .unwrap();
         assert_eq!(unknown_totals, 2);
 
-        let summary = canonicalize_playlists(&pool)
+        let migration_0118 = migrator
+            .iter()
+            .find(|migration| migration.version == 118)
+            .expect("0118 embebida");
+        sqlx::raw_sql(&migration_0118.sql)
+            .execute(&pool)
             .await
-            .expect("sin evidencia histórica");
-        assert_eq!(summary.incomplete_playlists, 2);
-        assert_eq!(summary.canonicals, 0);
+            .expect("0118 aplica");
+        assert!(get_playlist_canonical_membership(&pool, first)
+            .await
+            .unwrap()
+            .is_none());
+        let incomplete_states: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM playlist_sources WHERE expansion_complete = 0",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(incomplete_states, 2);
 
         // Una re-expansión real vuelve a capturar la declaración del proveedor.
         sqlx::query("UPDATE playlist_sources SET synced_at = CURRENT_TIMESTAMP")
             .execute(&pool)
             .await
             .expect("fuentes reexpandidas");
+        for playlist_id in [first, second] {
+            assert!(record_playlist_source_expansion(&pool, playlist_id)
+                .await
+                .expect("expansión completa"));
+        }
         let recovered = canonicalize_playlists(&pool).await.expect("recuperación");
         assert_eq!(recovered.merged_canonicals, 1);
         assert_eq!(

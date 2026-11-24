@@ -28,7 +28,6 @@ pub mod notification;
 pub mod operation_recovery;
 pub mod playback_advance;
 pub mod playback_session;
-// #74: agrupación persistente de copias exactas de playlists y sus fuentes.
 pub mod playlist_canonical;
 // El unico consumidor es MPRIS, que solo existe en Linux: fuera de Linux sus
 // funciones quedarian sin uso y `-D warnings` rompe el binario.
