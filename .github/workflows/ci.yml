@@ -213,7 +213,7 @@ jobs:
     # embeber el manifiesto v6 con mt.exe en cada exe de deps/ y correr.
     - name: Compilar binarios de test sin ejecutar (base del manifiesto comctl32)
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Windows'
-      run: cargo test --locked --no-run
+      run: cargo test --workspace --locked --no-run
     - name: Embeber manifiesto comctl32 v6 en los exe de test
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Windows'
       shell: pwsh
