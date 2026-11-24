@@ -53,6 +53,17 @@ EXPECTED_PACKAGES = (
 
 SCRIPT_HASH = "hashFiles('scripts/install_native_deps.sh')"
 
+# Cada workflow guarda su propia entrada: `runner.os` es `Linux` tanto en
+# ubuntu-latest (ci) como en ubuntu-22.04 (build), y una clave de actions/cache
+# solo se guarda una vez. El prefijo evita que un job herede los .deb del otro.
+EXPECTED_CACHE_KEYS = {
+    "ci.yml": f"apt-v1-ci-${{{{ runner.os }}}}-${{{{ {SCRIPT_HASH} }}}}",
+    "build-linux.yml": f"apt-v1-build-${{{{ runner.os }}}}-${{{{ {SCRIPT_HASH} }}}}",
+}
+
+# actions/cache corre como `runner`; apt deja `partial` y `lock` de root.
+CHOWN_APT_ARCHIVES = 'sudo chown -R "$(id -u):$(id -g)" /var/cache/apt/archives'
+
 # sudo de verdad ejecutaria el comando; el fake registra la invocacion y delega
 # en el apt-get falso que tambien esta primero en PATH.
 FAKE_SUDO = r"""#!/usr/bin/env bash
@@ -216,12 +227,13 @@ class InstallNativeDepsBehaviorTests(unittest.TestCase):
                         f"{label} duplica la lista de paquetes: {leaked}",
                     )
 
-    def test_both_apt_caches_key_on_the_script_hash(self):
+    def test_both_apt_caches_key_on_the_script_hash_and_fix_permissions(self):
         for label, path in (("ci.yml", CI_WORKFLOW), ("build-linux.yml", BUILD_WORKFLOW)):
             with self.subTest(workflow=label):
+                steps = list(_steps(path))
                 cache_steps = [
                     step
-                    for step in _steps(path)
+                    for step in steps
                     if str(step.get("uses", "")).startswith("actions/cache")
                     and (step.get("with") or {}).get("path") == "/var/cache/apt/archives"
                 ]
@@ -231,15 +243,52 @@ class InstallNativeDepsBehaviorTests(unittest.TestCase):
                     f"{label} debe cachear /var/cache/apt/archives una sola vez",
                 )
                 key = cache_steps[0]["with"].get("key", "")
+                self.assertEqual(
+                    key,
+                    EXPECTED_CACHE_KEYS[label],
+                    f"{label} no declara la clave esperada con prefijo propio y hash del script: {key!r}",
+                )
                 self.assertIn(
                     SCRIPT_HASH,
                     key,
                     f"{label} no invalida la caché apt con el hash del script: {key!r}",
                 )
-                self.assertNotIn(
-                    "ci.yml",
-                    key,
-                    f"{label} sigue usando el hash del workflow entero: {key!r}",
+
+                # El post-save de actions/cache corre como `runner` y no puede
+                # tar un arbol de root: hacen falta dos cesiones de propiedad,
+                # una antes de restaurar y otra despues de todo uso de apt.
+                chown_steps = [
+                    (index, step)
+                    for index, step in enumerate(steps)
+                    if CHOWN_APT_ARCHIVES in str(step.get("run") or "")
+                ]
+                self.assertEqual(
+                    len(chown_steps),
+                    2,
+                    f"{label} necesita chown antes del restore y antes del post-save: "
+                    f"{[step.get('name') for _, step in chown_steps]}",
+                )
+                cache_index = steps.index(cache_steps[0])
+                consumer_index = next(
+                    index
+                    for index, step in enumerate(steps)
+                    if isinstance(step.get("run"), str) and SCRIPT_REF in step["run"]
+                )
+                self.assertLess(
+                    chown_steps[0][0],
+                    cache_index,
+                    f"{label}: el chown de restore debe ir antes de actions/cache",
+                )
+                apt_indices = [
+                    index
+                    for index, step in enumerate(steps)
+                    if isinstance(step.get("run"), str) and "apt-get" in step["run"]
+                ]
+                last_apt_index = max(apt_indices + [consumer_index])
+                self.assertGreater(
+                    chown_steps[1][0],
+                    last_apt_index,
+                    f"{label}: el chown de post-save debe ir después del último apt",
                 )
 
 

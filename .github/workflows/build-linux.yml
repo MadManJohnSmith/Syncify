@@ -64,12 +64,21 @@ jobs:
       # La lista de paquetes es la union del build de release y del job Rust
       # de CI; vive en scripts/install_native_deps.sh (reintentos incluidos),
       # que tambien consume ci.yml. La cache se invalida con el hash del
-      # script, no con el del workflow entero.
+      # script y el prefijo la separa de la de CI (runner.os no distingue
+      # ubuntu-latest de ubuntu-22.04). actions/cache corre como `runner`:
+      # los pasos de permisos ceden el arbol antes de restaurar y antes del
+      # post-save, o el tar de guardado falla con Permission denied.
+      - name: Preparar permisos de la caché apt (restore)
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /var/cache/apt/archives
+          sudo chown -R "$(id -u):$(id -g)" /var/cache/apt/archives
+
       - name: Cache de paquetes apt descargados
         uses: actions/cache@v4
         with:
           path: /var/cache/apt/archives
-          key: apt-v1-${{ runner.os }}-${{ hashFiles('scripts/install_native_deps.sh') }}
+          key: apt-v1-build-${{ runner.os }}-${{ hashFiles('scripts/install_native_deps.sh') }}
 
       - name: Instalar dependencias del sistema (GTK, WebKit2GTK, dev tools)
         run: bash scripts/install_native_deps.sh
@@ -242,3 +251,10 @@ jobs:
             dist/linux/Syncify-Linux-x86_64.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Después de todos los pasos que usan apt: el post-save de actions/cache
+      # corre como `runner` y necesita leer (y poder tar) los .deb y el lock.
+      - name: Preparar permisos de la caché apt (post-save)
+        run: |
+          set -euo pipefail
+          sudo chown -R "$(id -u):$(id -g)" /var/cache/apt/archives

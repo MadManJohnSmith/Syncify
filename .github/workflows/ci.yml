@@ -93,12 +93,25 @@ jobs:
     #    reutilizan en la siguiente corrida y apt los verifica contra el
     #    indice (uno alterado o desfasado se vuelve a descargar). La clave
     #    es el hash del script, dueno unico de la lista: editar la lista
-    #    invalida la cache; editar el resto del workflow no.
+    #    invalida la cache; el prefijo separa esta cache de la del build.
+    #    actions/cache corre como `runner` y apt deja `partial`/`lock` de
+    #    root: los dos pasos de permisos ceden el arbol al runner antes de
+    #    restaurar y antes del post-save, o el tar de guardado falla con
+    #    Permission denied (run 45340212715).
+    # Coste medido el 2026-11-24: el paso apt tardo 33m11s en un job de
+    # 54m28s con timeout de 120m (~65m de margen); un mirror ~2x mas lento
+    # cabe, uno ~3,6x agota el presupuesto.
+    - name: Preparar permisos de la caché apt (restore)
+      run: |
+        set -euo pipefail
+        sudo mkdir -p /var/cache/apt/archives
+        sudo chown -R "$(id -u):$(id -g)" /var/cache/apt/archives
+      if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Linux'
     - name: Cache de paquetes apt descargados
       uses: actions/cache@v4
       with:
         path: /var/cache/apt/archives
-        key: apt-v1-${{ runner.os }}-${{ hashFiles('scripts/install_native_deps.sh') }}
+        key: apt-v1-ci-${{ runner.os }}-${{ hashFiles('scripts/install_native_deps.sh') }}
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Linux'
     - name: Instalar dependencias nativas de Tauri (GTK y WebKit2GTK)
       working-directory: ${{ github.workspace }}
@@ -268,6 +281,11 @@ jobs:
     - name: cargo fmt --all -- --check
       run: cargo fmt --all -- --check
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust')
+    - name: Preparar permisos de la caché apt (post-save)
+      run: |
+        set -euo pipefail
+        sudo chown -R "$(id -u):$(id -g)" /var/cache/apt/archives
+      if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Linux'
   frontend:
     needs: changed
     name: Frontend (ui · vue-tsc · vitest)
