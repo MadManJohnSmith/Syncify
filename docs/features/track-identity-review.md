@@ -82,6 +82,15 @@ La ruta es `/reviews` y el enlace del sidebar es «Reviews»
     dependientes con clave única: se insertan o se repuntan, y luego se borra
     la fila del Track importado; si ambas pistas tienen la misma clave (p. ej.
     la misma letra en el mismo formato), gana la fila del Track elegido.
+  - Metadatos: el elegido hereda los identificadores que solo tenía el
+    importado (`isrc`, `spotify_id`, `qobuz_id`, `musicbrainz_id`) y los campos
+    de enriquecimiento que le falten (`subgenre`, `bpm`, `musical_key`,
+    `release_year`, `record_label`). El orden importa: los identificadores se
+    leen antes de liberar sus columnas únicas, para que el borrado posterior no
+    se lleve el único valor existente. `explicit` se OR-ea y `audio_quality`
+    conserva el tier más alto de ambos Tracks y sus fuentes, igual que la
+    deduplicación de `commands/library.rs`; un valor no canónico del elegido no
+    se pisa.
   - `tracks.library_added_at` se recalcula con
     `services::library_membership::refresh_track_library_added_at`.
   - Después, la pista importada se borra **solo si** ninguna tabla con FK a
@@ -116,8 +125,10 @@ decidir qué hace el merge con sus filas antes de que la suite vuelva a verde.
   `:memory:` migrada de verdad con `sqlx::migrate!("./migrations")`; cubre
   listado con evidencia, `separate`/`dismissed` sin efectos, no reapertura,
   nueva revisión `pending` tras cerrar, merge con fuentes/pertenencias/
-  favoritos/playlists, candidato no congelado, ítem ausente, conflicto de
-  descargas y la lista de FKs.
+  favoritos/playlists, herencia de identificadores y metadatos sin pisar los
+  del elegido, enlaces de edición preexistentes en ambos Tracks, reversión
+  completa al abortar por un conflicto de descargas, candidato no congelado,
+  ítem ausente y la lista de FKs.
 - `ui/src/__tests__/api/trackIdentityReviews.spec.ts`: nombres de comando,
   normalización y argumentos camelCase.
 - `ui/src/__tests__/views/IdentityReviewsView.spec.ts`: estados de carga, error

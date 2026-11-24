@@ -29,6 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use sqlx::{Sqlite, Transaction};
+use syncify_core_domain::quality::{classify_audio_tier, AudioTier};
 
 use crate::db::DbPool;
 use crate::services::library_membership::refresh_track_library_added_at;
@@ -37,6 +38,11 @@ use crate::services::library_membership::refresh_track_library_added_at;
 /// poder borrar la pista plegada. La lista es un contrato verificado por test
 /// contra `pragma_foreign_key_list`: una migración futura que añada otra FK a
 /// `tracks` obliga a decidir aquí qué hacer con sus filas.
+///
+/// `edition_legacy_collisions` no entra a propósito: no tiene FK a `tracks`,
+/// es una foto histórica de las colisiones del ledger legacy y
+/// `download/resolver.rs` solo lee `service_id`/`service_track_id`. Repuntarla
+/// reescribiría la auditoría sin arreglar ninguna referencia operativa.
 pub const TRACK_REFERENCE_TABLES: &[(&str, &str)] = &[
     ("download_entitlements", "track_id"),
     ("download_queue", "track_id"),
@@ -197,6 +203,33 @@ struct SourceRow {
     sample_rate: Option<i32>,
     bitrate: Option<i32>,
     quality_score: Option<i32>,
+}
+
+/// Campos del Track importado que el merge puede heredar. Se leen completos
+/// antes de liberar sus columnas únicas, para no perder los identificadores
+/// que solo él tenía.
+#[derive(sqlx::FromRow)]
+struct SourceTrackMetadata {
+    album_id: Option<i64>,
+    duration_ms: Option<i64>,
+    track_number: Option<i32>,
+    disc_number: Option<i32>,
+    isrc: Option<String>,
+    musicbrainz_id: Option<String>,
+    spotify_id: Option<String>,
+    qobuz_id: Option<String>,
+    genre: Option<String>,
+    subgenre: Option<String>,
+    release_year: Option<i32>,
+    record_label: Option<String>,
+    bpm: Option<f64>,
+    musical_key: Option<String>,
+    audio_quality: Option<String>,
+    explicit: Option<i32>,
+    is_favorite: Option<i32>,
+    favorite_at: Option<String>,
+    play_count: Option<i64>,
+    last_played: Option<String>,
 }
 
 /// Lista las revisiones `pending`, de la más reciente a la más antigua, con
@@ -516,15 +549,72 @@ async fn merge_provider_item_into(
 
 /// Rellena huecos del Track elegido con lo que el importado sí tenía. Nunca
 /// pisa un valor existente: la identidad elegida manda.
+///
+/// Los identificadores únicos se leen ANTES de liberar las columnas del
+/// importado: si se limpiaran primero, la copia leería NULL y el Track
+/// importado se borraría con sus ISRC/Spotify/Qobuz/MusicBrainz perdidos.
+/// Entre leer y escribir solo media la transacción; si el UPDATE del elegido
+/// falla, el ROLLBACK devuelve las columnas al importado.
 async fn backfill_target_metadata(
     tx: &mut Transaction<'_, Sqlite>,
     source_track_id: i64,
     target_track_id: i64,
 ) -> Result<(), String> {
-    // Las columnas únicas del Track importado se liberan antes de copiarlas:
-    // si el elegido las tiene a NULL, copiarlas con el importado aún vivo
-    // chocaría contra tracks.isrc (UNIQUE). Es el mismo orden que usa la
-    // deduplicación de 0064.
+    let source: SourceTrackMetadata = sqlx::query_as(
+        "SELECT album_id, duration_ms, track_number, disc_number,
+                isrc, musicbrainz_id, spotify_id, qobuz_id,
+                genre, subgenre, release_year, record_label, bpm, musical_key,
+                audio_quality, explicit, is_favorite, favorite_at, play_count, last_played
+         FROM tracks WHERE id = ?",
+    )
+    .bind(source_track_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| format!("identity review source metadata lookup failed: {e}"))?;
+
+    // `audio_quality` sigue la regla de la deduplicación: el tier más alto de
+    // los dos Tracks y de sus fuentes, nunca el peor. Un valor del elegido que
+    // no se puede interpretar no se pisa.
+    let target_audio_quality: Option<String> =
+        sqlx::query_scalar("SELECT audio_quality FROM tracks WHERE id = ?")
+            .bind(target_track_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|e| format!("identity review target quality lookup failed: {e}"))?;
+    let target_tier = target_audio_quality
+        .as_deref()
+        .map(|raw| raw.parse::<AudioTier>().ok());
+    let mut best_tier = [
+        source.audio_quality.as_deref(),
+        target_audio_quality.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|raw| raw.parse::<AudioTier>().ok())
+    .max();
+    let source_slots: Vec<(Option<i32>, Option<i32>, Option<i32>, Option<String>)> =
+        sqlx::query_as(
+            "SELECT bit_depth, sample_rate, bitrate, format FROM track_sources
+             WHERE track_id IN (?, ?)",
+        )
+        .bind(source_track_id)
+        .bind(target_track_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| format!("identity review quality slots lookup failed: {e}"))?;
+    for (bit_depth, sample_rate, bitrate, format) in source_slots {
+        let tier = classify_audio_tier(bit_depth, sample_rate, bitrate, format.as_deref());
+        best_tier = Some(best_tier.map_or(tier, |current| current.max(tier)));
+    }
+    let upgrade_quality = match target_tier {
+        None => best_tier,
+        Some(Some(current)) => best_tier.filter(|best| *best > current),
+        // Valor no canónico del elegido: se respeta tal cual.
+        Some(None) => None,
+    };
+
+    // El importado se va a borrar: liberar sus columnas únicas permite que el
+    // elegido las herede sin chocar contra `tracks.isrc` (UNIQUE).
     sqlx::query(
         "UPDATE tracks SET isrc = NULL, spotify_id = NULL, qobuz_id = NULL, musicbrainz_id = NULL
          WHERE id = ?",
@@ -538,32 +628,62 @@ async fn backfill_target_metadata(
         r#"
         UPDATE tracks
         SET
-            album_id = COALESCE(album_id, (SELECT album_id FROM tracks WHERE id = ?1)),
-            duration_ms = COALESCE(duration_ms, (SELECT duration_ms FROM tracks WHERE id = ?1)),
-            track_number = COALESCE(track_number, (SELECT track_number FROM tracks WHERE id = ?1)),
-            disc_number = COALESCE(disc_number, (SELECT disc_number FROM tracks WHERE id = ?1)),
-            isrc = COALESCE(isrc, (SELECT isrc FROM tracks WHERE id = ?1)),
-            musicbrainz_id = COALESCE(musicbrainz_id, (SELECT musicbrainz_id FROM tracks WHERE id = ?1)),
-            spotify_id = COALESCE(spotify_id, (SELECT spotify_id FROM tracks WHERE id = ?1)),
-            qobuz_id = COALESCE(qobuz_id, (SELECT qobuz_id FROM tracks WHERE id = ?1)),
-            genre = COALESCE(genre, (SELECT genre FROM tracks WHERE id = ?1)),
-            release_year = COALESCE(release_year, (SELECT release_year FROM tracks WHERE id = ?1)),
-            record_label = COALESCE(record_label, (SELECT record_label FROM tracks WHERE id = ?1)),
-            is_favorite = MAX(is_favorite, COALESCE((SELECT is_favorite FROM tracks WHERE id = ?1), 0)),
-            favorite_at = COALESCE(favorite_at, (SELECT favorite_at FROM tracks WHERE id = ?1)),
-            play_count = COALESCE(play_count, 0) + COALESCE((SELECT play_count FROM tracks WHERE id = ?1), 0),
-            last_played = COALESCE(
-                last_played,
-                (SELECT last_played FROM tracks WHERE id = ?1)
-            )
-        WHERE id = ?2
+            album_id = COALESCE(album_id, ?1),
+            duration_ms = COALESCE(duration_ms, ?2),
+            track_number = COALESCE(track_number, ?3),
+            disc_number = COALESCE(disc_number, ?4),
+            isrc = COALESCE(isrc, ?5),
+            musicbrainz_id = COALESCE(musicbrainz_id, ?6),
+            spotify_id = COALESCE(spotify_id, ?7),
+            qobuz_id = COALESCE(qobuz_id, ?8),
+            genre = COALESCE(genre, ?9),
+            subgenre = COALESCE(subgenre, ?10),
+            release_year = COALESCE(release_year, ?11),
+            record_label = COALESCE(record_label, ?12),
+            bpm = COALESCE(bpm, ?13),
+            musical_key = COALESCE(musical_key, ?14),
+            audio_quality = COALESCE(audio_quality, ?15),
+            explicit = MAX(COALESCE(explicit, 0), COALESCE(?16, 0)),
+            is_favorite = MAX(COALESCE(is_favorite, 0), COALESCE(?17, 0)),
+            favorite_at = COALESCE(favorite_at, ?18),
+            play_count = COALESCE(play_count, 0) + COALESCE(?19, 0),
+            last_played = COALESCE(last_played, ?20)
+        WHERE id = ?21
         "#,
     )
-    .bind(source_track_id)
+    .bind(source.album_id)
+    .bind(source.duration_ms)
+    .bind(source.track_number)
+    .bind(source.disc_number)
+    .bind(&source.isrc)
+    .bind(&source.musicbrainz_id)
+    .bind(&source.spotify_id)
+    .bind(&source.qobuz_id)
+    .bind(&source.genre)
+    .bind(&source.subgenre)
+    .bind(source.release_year)
+    .bind(&source.record_label)
+    .bind(source.bpm)
+    .bind(&source.musical_key)
+    .bind(&source.audio_quality)
+    .bind(source.explicit)
+    .bind(source.is_favorite)
+    .bind(&source.favorite_at)
+    .bind(source.play_count)
+    .bind(&source.last_played)
     .bind(target_track_id)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("identity review metadata backfill failed: {e}"))?;
+
+    if let Some(tier) = upgrade_quality {
+        sqlx::query("UPDATE tracks SET audio_quality = ? WHERE id = ?")
+            .bind(tier.as_str())
+            .bind(target_track_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| format!("identity review quality upgrade failed: {e}"))?;
+    }
     Ok(())
 }
 
@@ -738,7 +858,8 @@ async fn merge_edition_links(
 
 /// Mueve las entradas de biblioteca/favorito. Cuando ambos lados tienen fila
 /// para la misma cuenta, se conserva lo favorable de cada una: `is_liked` e
-/// `is_purchased` se OR-ean y `added_at` conserva la fecha más antigua.
+/// `is_purchased` se OR-ean y `added_at` conserva el del elegido; solo se
+/// rellena con el del importado cuando falta.
 async fn merge_library_entries(
     tx: &mut Transaction<'_, Sqlite>,
     source_track_id: i64,
@@ -1633,6 +1754,242 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fusionar_hereda_identificadores_y_metadatos_del_importado() {
+        let pool = pool().await;
+        let (service_id, account_id) = account(&pool, "qobuz").await;
+        let target = track(&pool, "Twice", "Same Song", 200_000, None).await;
+        let other = track(&pool, "Twice", "Same Song", 200_900, None).await;
+        let imported = track(&pool, "Twice", "Same Song", 200_400, None).await;
+        sqlx::query(
+            "UPDATE tracks SET
+                isrc = 'USAAA0000001',
+                spotify_id = 'spotify-source',
+                qobuz_id = 'qobuz-source',
+                musicbrainz_id = 'mbid-source',
+                genre = 'source-genre',
+                subgenre = 'source-subgenre',
+                release_year = 1999,
+                record_label = 'source-label',
+                bpm = 123.5,
+                musical_key = '8A',
+                audio_quality = 'hires',
+                explicit = 1
+             WHERE id = ?",
+        )
+        .bind(imported)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE tracks SET genre = 'target-genre', audio_quality = 'lossy', explicit = 0
+             WHERE id = ?",
+        )
+        .bind(target)
+        .execute(&pool)
+        .await
+        .unwrap();
+        source(&pool, imported, service_id, "item-1", None).await;
+        let review_id = review(&pool, service_id, account_id, "item-1", &[target, other]).await;
+
+        resolve(
+            &pool,
+            review_id,
+            IdentityReviewResolution::Merged,
+            Some(target),
+        )
+        .await
+        .unwrap();
+
+        let inherited: (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i32>,
+            Option<String>,
+            Option<f64>,
+            Option<String>,
+            Option<String>,
+            Option<i32>,
+        ) = sqlx::query_as(
+            "SELECT isrc, spotify_id, qobuz_id, musicbrainz_id,
+                    genre, subgenre, release_year, record_label, bpm, musical_key,
+                    audio_quality, explicit
+             FROM tracks WHERE id = ?",
+        )
+        .bind(target)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(inherited.0.as_deref(), Some("USAAA0000001"));
+        assert_eq!(inherited.1.as_deref(), Some("spotify-source"));
+        assert_eq!(inherited.2.as_deref(), Some("qobuz-source"));
+        assert_eq!(inherited.3.as_deref(), Some("mbid-source"));
+        assert_eq!(
+            inherited.4.as_deref(),
+            Some("target-genre"),
+            "un campo que el elegido ya tenía no retrocede"
+        );
+        assert_eq!(inherited.5.as_deref(), Some("source-subgenre"));
+        assert_eq!(inherited.6, Some(1999));
+        assert_eq!(inherited.7.as_deref(), Some("source-label"));
+        assert_eq!(inherited.8, Some(123.5));
+        assert_eq!(inherited.9.as_deref(), Some("8A"));
+        assert_eq!(inherited.10.as_deref(), Some("hires"));
+        assert_eq!(inherited.11, Some(1), "explicit tampoco retrocede");
+
+        let target_duration: Option<i64> =
+            sqlx::query_scalar("SELECT duration_ms FROM tracks WHERE id = ?")
+                .bind(target)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            target_duration,
+            Some(200_000),
+            "la duración existente del elegido se conserva"
+        );
+    }
+
+    #[tokio::test]
+    async fn fusionar_no_pisa_los_identificadores_del_elegido() {
+        let pool = pool().await;
+        let (service_id, account_id) = account(&pool, "qobuz").await;
+        let target = track(&pool, "Twice", "Same Song", 200_000, Some("USAAA0000002")).await;
+        let other = track(&pool, "Twice", "Same Song", 200_900, None).await;
+        let imported = track(&pool, "Twice", "Same Song", 200_400, Some("USAAA0000001")).await;
+        sqlx::query(
+            "UPDATE tracks SET
+                spotify_id = 'target-spotify',
+                qobuz_id = 'target-qobuz',
+                musicbrainz_id = 'target-mbid'
+             WHERE id = ?",
+        )
+        .bind(target)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE tracks SET
+                spotify_id = 'source-spotify',
+                qobuz_id = 'source-qobuz',
+                musicbrainz_id = 'source-mbid'
+             WHERE id = ?",
+        )
+        .bind(imported)
+        .execute(&pool)
+        .await
+        .unwrap();
+        source(&pool, imported, service_id, "item-1", None).await;
+        let review_id = review(&pool, service_id, account_id, "item-1", &[target, other]).await;
+
+        resolve(
+            &pool,
+            review_id,
+            IdentityReviewResolution::Merged,
+            Some(target),
+        )
+        .await
+        .unwrap();
+
+        let kept: (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT isrc, spotify_id, qobuz_id, musicbrainz_id FROM tracks WHERE id = ?",
+        )
+        .bind(target)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(kept.0.as_deref(), Some("USAAA0000002"));
+        assert_eq!(kept.1.as_deref(), Some("target-spotify"));
+        assert_eq!(kept.2.as_deref(), Some("target-qobuz"));
+        assert_eq!(kept.3.as_deref(), Some("target-mbid"));
+    }
+
+    #[tokio::test]
+    async fn fusionar_mueve_los_enlaces_de_edicion_preexistentes() {
+        let pool = pool().await;
+        let (service_id, account_id) = account(&pool, "qobuz").await;
+        let target = track(&pool, "Twice", "Same Song", 200_000, None).await;
+        let other = track(&pool, "Twice", "Same Song", 200_900, None).await;
+        let imported = track(&pool, "Twice", "Same Song", 200_400, None).await;
+        source(&pool, imported, service_id, "item-1", None).await;
+        let source_item: i64 = sqlx::query_scalar(
+            "INSERT INTO edition_provider_items(service_id, service_track_id, evidence_status, provenance)
+             VALUES (?, 'edition-source', 'observed', 'sync') RETURNING id",
+        )
+        .bind(service_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let target_item: i64 = sqlx::query_scalar(
+            "INSERT INTO edition_provider_items(service_id, service_track_id, evidence_status, provenance)
+             VALUES (?, 'edition-target', 'observed', 'sync') RETURNING id",
+        )
+        .bind(service_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO edition_item_tracks(item_id, track_id, validation_status, provenance)
+             VALUES (?, ?, 'observed', 'sync'), (?, ?, 'verified', 'sync')",
+        )
+        .bind(source_item)
+        .bind(imported)
+        .bind(target_item)
+        .bind(target)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let review_id = review(&pool, service_id, account_id, "item-1", &[target, other]).await;
+
+        let result = resolve(
+            &pool,
+            review_id,
+            IdentityReviewResolution::Merged,
+            Some(target),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.merge.unwrap().edition_links_moved, 1);
+        let moved: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT item_id, validation_status FROM edition_item_tracks
+             WHERE track_id = ? AND item_id IN (?, ?) ORDER BY item_id",
+        )
+        .bind(target)
+        .bind(source_item)
+        .bind(target_item)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            moved,
+            vec![
+                (source_item, "observed".to_string()),
+                (target_item, "verified".to_string()),
+            ],
+            "los dos enlaces preexistentes acaban en el elegido con su estado"
+        );
+        let source_links: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM edition_item_tracks WHERE track_id = ?")
+                .bind(imported)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            source_links, 0,
+            "el importado se borra sin enlaces colgando"
+        );
+    }
+
+    #[tokio::test]
     async fn fusionar_exige_un_candidato_congelado() {
         let pool = pool().await;
         let (service_id, account_id) = account(&pool, "qobuz").await;
@@ -1688,7 +2045,9 @@ mod tests {
         let (service_id, account_id) = account(&pool, "qobuz").await;
         let target = track(&pool, "Twice", "Same Song", 200_000, None).await;
         let other = track(&pool, "Twice", "Same Song", 200_900, None).await;
-        let imported = track(&pool, "Twice", "Same Song", 200_400, None).await;
+        // Artista distinto para poder demostrar que el movimiento de
+        // `track_artists` también se revierte.
+        let imported = track(&pool, "Rollback Artist", "Same Song", 200_400, None).await;
         source(&pool, imported, service_id, "item-1", None).await;
         for (track_id, path) in [
             (target, "/tmp/target.flac"),
@@ -1730,5 +2089,55 @@ mod tests {
             .await
             .unwrap();
         assert!(exists, "la pista importada sigue ahí");
+
+        // Los movimientos anteriores al fallo también se revierten: la fuente
+        // del ítem sigue en el importado y el artista importado no se coló en
+        // el elegido.
+        let source_owner: i64 = sqlx::query_scalar(
+            "SELECT track_id FROM track_sources WHERE service_track_id = 'item-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(source_owner, imported);
+        let target_has_item: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM track_sources WHERE track_id = ? AND service_track_id = 'item-1')",
+        )
+        .bind(target)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(!target_has_item);
+        let target_artists: Vec<String> = sqlx::query_scalar(
+            "SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id
+             WHERE ta.track_id = ? ORDER BY a.name",
+        )
+        .bind(target)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(target_artists, vec!["Twice".to_string()]);
+        let imported_artists: Vec<String> = sqlx::query_scalar(
+            "SELECT a.name FROM track_artists ta JOIN artists a ON a.id = ta.artist_id
+             WHERE ta.track_id = ? ORDER BY a.name",
+        )
+        .bind(imported)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(imported_artists, vec!["Rollback Artist".to_string()]);
+        let edition_links_to_target: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM edition_item_tracks link
+             JOIN edition_provider_items item ON item.id = link.item_id
+             WHERE link.track_id = ? AND item.service_track_id = 'item-1'",
+        )
+        .bind(target)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            edition_links_to_target, 0,
+            "el enlace de edición creado antes del fallo también se revierte"
+        );
     }
 }
