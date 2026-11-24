@@ -29,7 +29,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 cargo test --locked --no-fail-fast   # 362 objetivos de test: recuento real
 cargo test --locked --test batch_50_audit_test -- --test-threads=1
-npm --prefix ui run build && npm --prefix ui run test:run                  # 158 ficheros de test UI
+npm --prefix ui run build && npm --prefix ui run test:run                  # 160 ficheros de test UI
 .venv/bin/python -m unittest discover -s scripts/tests                    # 501 tests (2 skipped)
 
 ```

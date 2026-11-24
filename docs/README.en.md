@@ -30,7 +30,7 @@ relaxed, and the landmines. Start there.
 |---|---|
 | `README.en.md` (this file) | English |
 | `APP_FLOW.en.md` | English |
-| `features/` design specs (8 files) | Spanish only |
+| `features/` design specs (11 files) | Spanish only |
 | `adr/0001-identidad-de-tracks.md` | Spanish only |
 | `PLAN_UNIFICACION_IMPORTACION.md` | Spanish only |
 | `MATRIZ_PARIDAD_IMPORTACION.md` | Spanish only |
@@ -56,6 +56,10 @@ against the code.
   the native per-provider delivery pipelines.
 - `features/track-browser.md`: the track-list machinery — the virtual-window
   kernel and the library composable (ADR-0025).
+- `features/track-identity-review.md`: the human queue for ambiguous track
+  identities (`track_identity_reviews`, 0115), its IPC commands, the `/reviews`
+  view and the merge that preserves sources, memberships, favorites and
+  playlists (#383).
 - `features/library-import.md`: import algorithms, deduplication and canonical
   identity.
 - `features/metadata-enrichment.md`: enrichment from MusicBrainz, Last.fm and
