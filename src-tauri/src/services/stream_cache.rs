@@ -16,6 +16,7 @@
 //! La URL y la sesión viven sólo en backend; al webview le llega una etiqueta
 //! honesta de calidad (`StreamSourceInfo`) y eventos de estado.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -475,7 +476,9 @@ struct PartialMarker {
 }
 
 /// Escribe el marcador `.done` al completar una descarga (con la info real de
-/// calidad obtenida, para que la reutilización no mienta).
+/// calidad obtenida, para que la reutilización no mienta). La escritura es
+/// atómica para los lectores: se escribe un temporal en el mismo directorio y
+/// se renombra; `read_complete_cache` nunca observa un JSON truncado.
 pub fn write_done_marker(session: &StreamSession) -> Result<(), String> {
     let marker = CacheMarker {
         bytes: session.downloaded_bytes.load(Ordering::SeqCst),
@@ -483,8 +486,31 @@ pub fn write_done_marker(session: &StreamSession) -> Result<(), String> {
     };
     let json = serde_json::to_vec(&marker)
         .map_err(|e| format!("No se pudo serializar el marcador de caché: {}", e))?;
-    std::fs::write(marker_path(&session.path), json)
-        .map_err(|e| format!("No se pudo escribir el marcador de caché: {}", e))
+    let dest = marker_path(&session.path);
+    let tmp = with_suffix(&session.path, &format!(".done.tmp-{}", std::process::id()));
+
+    let write = || -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(&json)?;
+        file.sync_all()?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("No se pudo escribir el marcador de caché: {}", e));
+    }
+
+    #[cfg(windows)]
+    {
+        // `rename` no reemplaza en Windows; se retira el anterior. El lector
+        // puede ver `None`, pero nunca un marcador a medias.
+        let _ = std::fs::remove_file(&dest);
+    }
+    if let Err(e) = std::fs::rename(&tmp, &dest) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("No se pudo publicar el marcador de caché: {}", e));
+    }
+    Ok(())
 }
 
 /// Comprueba si el fichero cacheado está completo (marcador + tamaño real).

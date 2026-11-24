@@ -793,6 +793,29 @@ async fn complete_cache_marker_semantics() {
     assert!(stream_cache::read_complete_cache(&other).is_none());
 }
 
+#[tokio::test]
+async fn done_marker_is_published_atomically_for_readers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("track-2-qobuz-24bit-192000hz.flac");
+    std::fs::write(&path, vec![0u8; 1024]).unwrap();
+    let session = StreamSession::new(1, 2, sample_info(), path.clone());
+    session.downloaded_bytes.store(1024, Ordering::SeqCst);
+
+    // La ventana exists()/lectura del test de descarga no puede observar un
+    // marcador truncado: cada publicación se lee entera justo después.
+    for _ in 0..100 {
+        stream_cache::write_done_marker(&session).expect("marcador");
+        assert!(stream_cache::read_complete_cache(&path).is_some());
+    }
+
+    let leftovers = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".done.tmp-"))
+        .count();
+    assert_eq!(leftovers, 0, "no deben quedar temporales del marcador");
+}
+
 #[test]
 fn prime_and_frontier_constants_stay_frozen() {
     // Ventana de prime: 45 s (no se acorta: es la paciencia del buffer inicial).
