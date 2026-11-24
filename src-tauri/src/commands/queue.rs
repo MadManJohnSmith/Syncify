@@ -886,6 +886,7 @@ pub async fn add_to_queue(
     .execute(&state.db)
     .await
     .map_err(|e| format!("Failed to update download job {job_id} counters: {e}"))?;
+    crate::download::job_events::watch_job_if_available(&state.db, job_id);
     Ok(job_id)
 }
 
@@ -2210,6 +2211,7 @@ pub async fn enqueue_eligible_batch(
     if added > 0 {
         state.worker_state.notify_available();
     }
+    crate::download::job_events::watch_job_if_available(&state.db, job_id);
 
     Ok(BatchEnqueueResult {
         submitted: track_ids.len() as i64,
@@ -2826,6 +2828,7 @@ pub async fn perform_force_redownload_tracks(
     .execute(&state.db)
     .await
     .map_err(|e| e.to_string())?;
+    crate::download::job_events::watch_job_if_available(&state.db, job_id);
 
     Ok(job_id)
 }

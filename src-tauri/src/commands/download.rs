@@ -73,6 +73,7 @@ pub async fn queue_downloads(
         queued,
         requested
     );
+    crate::download::job_events::watch_job_if_available(&state.db, job_id);
     Ok(job_id)
 }
 

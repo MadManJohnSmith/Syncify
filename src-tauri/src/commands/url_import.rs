@@ -388,6 +388,9 @@ pub async fn perform_import_from_url_with_quality(
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit URL import: {e}"))?;
+    if let Some(job_id) = job_id {
+        crate::download::job_events::watch_job_if_available(db, job_id);
+    }
 
     Ok(ParsedUrl {
         service: parsed.service,

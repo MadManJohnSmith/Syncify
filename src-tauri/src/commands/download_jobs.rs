@@ -164,6 +164,9 @@ pub async fn retry_download_job_failed(
     );
     state.worker_state.notify_available();
     emit_job_event(&app, &state.db, job_id).await;
+    // El watcher anterior terminó en la transición terminal; el job reabierto
+    // necesita uno nuevo para derivar y notificar su próximo estado terminal.
+    job_events::spawn_job_watch(app.clone(), state.db.clone(), job_id);
     Ok(job)
 }
 
@@ -176,6 +179,7 @@ pub async fn clear_download_jobs(state: State<'_, AppState>) -> Result<i64, Stri
         .map_err(|e| e.to_string())?;
     for job_id in pruned {
         job_events::forget_job_queues(job_id);
+        job_events::forget_terminal_notification(job_id);
     }
     tracing::info!("[clear_download_jobs] removed {} terminal jobs", deleted);
     Ok(deleted as i64)
