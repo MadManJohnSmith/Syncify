@@ -291,9 +291,10 @@ this list.
 ## Building from source
 
 Requirements: **Rust** (stable), **Node.js 20+**, **Python 3.11+**, and
-`ffmpeg`, `flac` and `fpcalc` on your `PATH`. On Linux you also need the
-WebKit2GTK/GTK dev packages (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
-`libayatana-appindicator3-dev`, `librsvg2-dev`).
+`ffmpeg`, `flac` and `fpcalc` on your `PATH`. On Linux you also need the native
+packages listed in `scripts/install_native_deps.sh` (WebKit2GTK/GTK dev headers,
+ffmpeg and the rest of the build/test tooling); CI installs them with
+`sudo bash scripts/install_native_deps.sh`.
 
 ```bash
 git clone https://github.com/MadManJohnSmith/Syncify.git
