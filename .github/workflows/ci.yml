@@ -23,7 +23,8 @@ jobs:
     # JSON que los tres jobs consultan por pertenencia exacta.
     # El workflow que ejecuta la familia es parte de cada area: tocar ci.yml
     # re-ejecuta la familia en las dos patas del matrix, la misma filosofia
-    # fail-safe del fallback (correr todo antes que no correr nada).
+    # fail-safe del fallback (correr todo antes que no correr nada). El script
+    # de dependencias nativas tambien es input del job Rust.
     outputs:
       areas: ${{ steps.areas.outputs.areas }}
       # Patas del job Rust: Windows solo en los eventos donde su contexto es
@@ -36,7 +37,7 @@ jobs:
       with:
         base: ${{ github.event.pull_request.base.sha || github.event.before }}
         ref: ${{ github.sha }}
-        filters: "rust:\n  - 'src-tauri/**'\n  - 'crates/**'\n  - '.github/workflows/ci.yml'\nfrontend:\n  - 'ui/**'\n  - '.github/workflows/ci.yml'\npython:\n  - 'scripts/**'\n  - 'tools/**'\n  - '.github/workflows/ci.yml'\ndocs:\n  - 'docs/**'\n  - '**.md'\n  - 'AGENTS.md'\n  - 'GLOSSARY.md'\n  - '.github/workflows/ci.yml'\n  - '.github/workflows/docs-check.yml'\n"
+        filters: "rust:\n  - 'src-tauri/**'\n  - 'crates/**'\n  - 'scripts/install_native_deps.sh'\n  - '.github/workflows/ci.yml'\nfrontend:\n  - 'ui/**'\n  - '.github/workflows/ci.yml'\npython:\n  - 'scripts/**'\n  - 'tools/**'\n  - '.github/workflows/ci.yml'\ndocs:\n  - 'docs/**'\n  - '**.md'\n  - 'AGENTS.md'\n  - 'GLOSSARY.md'\n  - '.github/workflows/ci.yml'\n  - '.github/workflows/docs-check.yml'\n"
     - id: areas
       name: Resolver areas afectadas (fallback incluido)
       env:
@@ -85,26 +86,23 @@ jobs:
       uses: actions/checkout@v4
     # El incidente del 2026-11-07 (corrida 42216381025) murio a los 60
     # minutos descargando .deb de un mirror lento. Dos defensas baratas:
-    # 1) Acquire::Retries: apt reintenta ante cortes transitorios del
-    #    mirror en vez de abortar la corrida con el primer fallo de red.
+    # 1) Acquire::Retries: viaja en cada invocacion de apt-get del script
+    #    (scripts/install_native_deps.sh), asi que no depende de un
+    #    apt.conf.d que solo prepara este workflow.
     # 2) cache de /var/cache/apt/archives: los .deb ya descargados se
     #    reutilizan en la siguiente corrida y apt los verifica contra el
-    #    indice (uno alterado o desfasado se vuelve a descargar). La
-    #    lista de paquetes vive en el paso de instalacion de este mismo
-    #    fichero, asi que el hash de ci.yml es su proxy: editar la lista
-    #    invalida la cache; editar cualquier otra parte del workflow
-    #    tambien (conservador, a cambio de una clave unica y sin estado).
-    - name: Reintentos de apt ante un mirror lento (Acquire::Retries)
-      run: 'echo "Acquire::Retries \"5\";" | sudo tee /etc/apt/apt.conf.d/80-retries'
-      if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Linux'
+    #    indice (uno alterado o desfasado se vuelve a descargar). La clave
+    #    es el hash del script, dueno unico de la lista: editar la lista
+    #    invalida la cache; editar el resto del workflow no.
     - name: Cache de paquetes apt descargados
       uses: actions/cache@v4
       with:
         path: /var/cache/apt/archives
-        key: apt-v1-${{ runner.os }}-${{ hashFiles('**/ci.yml') }}
+        key: apt-v1-${{ runner.os }}-${{ hashFiles('scripts/install_native_deps.sh') }}
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Linux'
     - name: Instalar dependencias nativas de Tauri (GTK y WebKit2GTK)
-      run: "sudo apt-get update\nsudo apt-get install -y \\\n  ffmpeg \\\n  flac \\\n  libasound2-dev \\\n  libwebkit2gtk-4.1-dev \\\n  libgtk-3-dev \\\n  libayatana-appindicator3-dev \\\n  librsvg2-dev\n"
+      working-directory: ${{ github.workspace }}
+      run: bash scripts/install_native_deps.sh
       if: contains(fromJSON(needs.changed.outputs.areas), 'rust') && runner.os == 'Linux'
     # En Windows Tauri usa WebView2 (no webkit2gtk): check/clippy/test no
     # necesitan dependencias GTK. Las herramientas de test (ffmpeg/ffprobe/
