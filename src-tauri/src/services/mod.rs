@@ -46,6 +46,7 @@ pub mod tempo_analyzer;
 pub mod tidal;
 pub mod tidal_pipeline;
 pub mod track_identity;
+pub mod track_identity_review;
 pub mod track_matcher;
 pub mod user_reports;
 

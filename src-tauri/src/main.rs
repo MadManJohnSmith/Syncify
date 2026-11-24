@@ -1346,6 +1346,9 @@ fn main() {
             commands::import_playlist_from_file,
             commands::get_audio_quality_distribution,
             commands::auto_resolve_duplicates,
+            // T08b (#383): revisión y resolución de identidad ambigua.
+            commands::list_track_identity_reviews,
+            commands::resolve_track_identity_review,
             // Service Settings (Sprint 12)
             commands::get_app_settings,
             commands::service_save_settings,
