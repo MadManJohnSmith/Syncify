@@ -51,7 +51,6 @@ pub struct PlaylistCanonicalMembership {
 #[derive(Debug, Clone)]
 struct Candidate {
     playlist_id: i64,
-    created_at: Option<String>,
     content_hash: String,
     track_count: i64,
 }
@@ -233,22 +232,11 @@ pub async fn get_playlist_canonical_membership(
     db: &SqlitePool,
     playlist_id: i64,
 ) -> Result<Option<PlaylistCanonicalMembership>, String> {
-    let canonical: Option<(i64, i64)> = sqlx::query_as(
-        "SELECT c.id, c.primary_playlist_id
-         FROM playlist_canonical_members m
-         JOIN playlist_canonicals c ON c.id = m.canonical_id
-         WHERE m.playlist_id = ?",
-    )
-    .bind(playlist_id)
-    .fetch_optional(db)
-    .await
-    .map_err(|e| format!("Failed to read playlist canonical membership: {e}"))?;
-
-    let Some((canonical_id, primary_playlist_id)) = canonical else {
-        return Ok(None);
-    };
-
+    // Una sola sentencia: la pertenencia, la primaria derivada y las fuentes
+    // salen del mismo snapshot de SQLite, incluso si otra conexión recanonicalza.
     let rows: Vec<(
+        i64,
+        i64,
         i64,
         i64,
         i64,
@@ -262,7 +250,29 @@ pub async fn get_playlist_canonical_membership(
         i64,
     )> = sqlx::query_as(
         r#"
-        SELECT ps.id,
+        WITH requested AS (
+            SELECT canonical_id
+            FROM playlist_canonical_members
+            WHERE playlist_id = ?
+        ),
+        canonical AS (
+            SELECT c.id,
+                   (
+                       SELECT primary_member.playlist_id
+                       FROM playlist_canonical_members primary_member
+                       JOIN playlists primary_playlist
+                           ON primary_playlist.id = primary_member.playlist_id
+                       WHERE primary_member.canonical_id = c.id
+                       ORDER BY COALESCE(primary_playlist.created_at, '9999-12-31 23:59:59'),
+                                primary_playlist.id
+                       LIMIT 1
+                   ) AS primary_playlist_id
+            FROM playlist_canonicals c
+            JOIN requested r ON r.canonical_id = c.id
+        )
+        SELECT c.id,
+               c.primary_playlist_id,
+               ps.id,
                ps.playlist_id,
                ps.account_id,
                COALESCE(NULLIF(TRIM(a.display_name), ''), a.email),
@@ -279,13 +289,12 @@ pub async fn get_playlist_canonical_membership(
                          WHERE primary_source.playlist_id = c.primary_playlist_id
                      )
                     THEN 1 ELSE 0 END
-        FROM playlist_canonical_members m
-        JOIN playlist_canonicals c ON c.id = m.canonical_id
+        FROM canonical c
+        JOIN playlist_canonical_members m ON m.canonical_id = c.id
         JOIN playlist_sources ps ON ps.playlist_id = m.playlist_id
         JOIN playlists p ON p.id = ps.playlist_id
         JOIN accounts a ON a.id = ps.account_id
         JOIN services s ON s.id = ps.service_id
-        WHERE m.canonical_id = ?
         ORDER BY CASE WHEN ps.playlist_id = c.primary_playlist_id
                            AND ps.id = (
                                SELECT MIN(primary_source.id)
@@ -297,15 +306,23 @@ pub async fn get_playlist_canonical_membership(
                  ps.id ASC
         "#,
     )
-    .bind(canonical_id)
+    .bind(playlist_id)
     .fetch_all(db)
     .await
     .map_err(|e| format!("Failed to list playlist canonical sources: {e}"))?;
+
+    let Some(first) = rows.first() else {
+        return Ok(None);
+    };
+    let canonical_id = first.0;
+    let primary_playlist_id = first.1;
 
     let sources = rows
         .into_iter()
         .map(
             |(
+                _canonical_id,
+                _primary_playlist_id,
                 source_id,
                 source_playlist_id,
                 account_id,
@@ -341,7 +358,84 @@ pub async fn get_playlist_canonical_membership(
 }
 
 fn normalize_playlist_name(name: &str) -> String {
-    name.trim().to_lowercase()
+    let lowered = name.to_lowercase();
+    let folded: String = lowered
+        .chars()
+        .filter(|character| !is_combining_mark(*character))
+        .map(fold_latin_accent)
+        .collect();
+    let mut normalized = folded.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    loop {
+        let without_suffix = COPY_SUFFIXES.iter().find_map(|suffix| {
+            normalized
+                .strip_suffix(suffix)
+                .map(str::trim_end)
+                .filter(|base| !base.is_empty())
+        });
+        match without_suffix {
+            Some(base) => normalized = base.to_string(),
+            None => return normalized,
+        }
+    }
+}
+
+const COPY_SUFFIXES: &[&str] = &[
+    "(copy)",
+    "[copy]",
+    "- copy",
+    "– copy",
+    "— copy",
+    "(copia)",
+    "[copia]",
+    "- copia",
+    "– copia",
+    "— copia",
+];
+
+fn is_combining_mark(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0300}'..='\u{036f}'
+            | '\u{1ab0}'..='\u{1aff}'
+            | '\u{1dc0}'..='\u{1dff}'
+            | '\u{20d0}'..='\u{20ff}'
+            | '\u{fe20}'..='\u{fe2f}'
+    )
+}
+
+/// Pliegue de los acentes latinos precompuestos más comunes. Los nombres de
+/// playlist llegan en UTF-8 y no conviene añadir una dependencia de Unicode
+/// completa para esta normalización acotada.
+fn fold_latin_accent(character: char) -> char {
+    match character {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' | 'ǎ' | 'ǟ' | 'ǡ' | 'ǻ' | 'ȁ' | 'ȃ'
+        | 'ȧ' => 'a',
+        'ƀ' | 'ƃ' | 'ƅ' => 'b',
+        'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
+        'ď' | 'đ' => 'd',
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' | 'ȅ' | 'ȇ' | 'ȩ' => 'e',
+        'ƒ' => 'f',
+        'ĝ' | 'ğ' | 'ġ' | 'ģ' | 'ǥ' | 'ǵ' => 'g',
+        'ĥ' | 'ħ' => 'h',
+        'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' | 'ǐ' | 'ȉ' | 'ȋ' => 'i',
+        'ĵ' | 'ǰ' => 'j',
+        'ķ' | 'ĸ' | 'ǩ' => 'k',
+        'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' | 'ƚ' | 'ȴ' => 'l',
+        'ñ' | 'ń' | 'ņ' | 'ň' | 'ŉ' | 'ŋ' | 'ƞ' | 'ǹ' => 'n',
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' | 'ơ' | 'ǒ' | 'ǫ' | 'ǭ' | 'ǿ' | 'ȍ'
+        | 'ȏ' | 'ȫ' | 'ȭ' | 'ȯ' | 'ȱ' => 'o',
+        'ŕ' | 'ŗ' | 'ř' => 'r',
+        'ś' | 'ŝ' | 'ş' | 'š' | 'ș' | 'ȿ' => 's',
+        'ţ' | 'ť' | 'ŧ' => 't',
+        'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' | 'ư' | 'ǔ' | 'ǖ' | 'ǘ' | 'ǚ'
+        | 'ǜ' | 'ȕ' | 'ȗ' => 'u',
+        'ƴ' => 'y',
+        'ŵ' => 'w',
+        'ý' | 'ÿ' | 'ŷ' => 'y',
+        'ź' | 'ż' | 'ž' | 'ƶ' | 'ȥ' | 'ɀ' => 'z',
+        other => other,
+    }
 }
 
 async fn load_candidate(
@@ -396,18 +490,8 @@ async fn load_candidate(
         hasher.update(track_id.to_be_bytes());
     }
 
-    let created_at: Option<(Option<String>,)> =
-        sqlx::query_as("SELECT created_at FROM playlists WHERE id = ?")
-            .bind(playlist_id)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(|e| {
-                CandidateLoadError::Database(format!("Failed to read playlist creation date: {e}"))
-            })?;
-
     Ok(Candidate {
         playlist_id,
-        created_at: created_at.and_then(|(created_at,)| created_at),
         content_hash: format!("{:x}", hasher.finalize()),
         track_count: track_ids.len() as i64,
     })
@@ -416,36 +500,21 @@ async fn load_candidate(
 async fn persist_group(
     conn: &mut SqliteConnection,
     normalized_name: &str,
-    mut candidates: Vec<Candidate>,
+    candidates: Vec<Candidate>,
 ) -> Result<(), String> {
-    candidates.sort_by(|left, right| {
-        let left_key = (
-            left.created_at.is_none(),
-            left.created_at.as_deref().unwrap_or_default(),
-            left.playlist_id,
-        );
-        let right_key = (
-            right.created_at.is_none(),
-            right.created_at.as_deref().unwrap_or_default(),
-            right.playlist_id,
-        );
-        left_key.cmp(&right_key)
-    });
-    let primary = candidates
+    let representative = candidates
         .first()
         .ok_or_else(|| "Cannot persist an empty playlist canonical group".to_string())?;
 
     let canonical_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO playlist_canonicals
-            (normalized_name, content_hash, track_count, primary_playlist_id)
-        VALUES (?, ?, ?, ?)
+            (normalized_name, content_hash, track_count)
+        VALUES (?, ?, ?)
         ON CONFLICT(normalized_name, content_hash) DO UPDATE SET
-            primary_playlist_id = excluded.primary_playlist_id,
             track_count = excluded.track_count,
             updated_at = CASE
-                WHEN playlist_canonicals.primary_playlist_id != excluded.primary_playlist_id
-                  OR playlist_canonicals.track_count != excluded.track_count
+                WHEN playlist_canonicals.track_count != excluded.track_count
                 THEN CURRENT_TIMESTAMP
                 ELSE playlist_canonicals.updated_at
             END
@@ -453,9 +522,8 @@ async fn persist_group(
         "#,
     )
     .bind(normalized_name)
-    .bind(&primary.content_hash)
-    .bind(primary.track_count)
-    .bind(primary.playlist_id)
+    .bind(&representative.content_hash)
+    .bind(representative.track_count)
     .fetch_one(&mut *conn)
     .await
     .map_err(|e| format!("Failed to upsert playlist canonical: {e}"))?;
@@ -992,5 +1060,346 @@ mod tests {
         assert_eq!(once.canonicals, twice.canonicals);
         assert_eq!(once.playlists_linked, twice.playlists_linked);
         assert_eq!(once.merged_canonicals, twice.merged_canonicals);
+    }
+
+    #[tokio::test]
+    async fn normalization_folds_accents_whitespace_and_explicit_copy_suffixes() {
+        let pool = migrated_pool().await;
+        let account = seed_account(&pool, "spotify", "Normalization").await;
+        let tracks = seed_tracks(&pool, 2).await;
+        let first = seed_remote_playlist(
+            &pool,
+            account,
+            "norm-a",
+            "  Café   Road (Copy) ",
+            2,
+            &tracks,
+            "2024-01-01 00:00:00",
+        )
+        .await;
+        let second = seed_remote_playlist(
+            &pool,
+            account,
+            "norm-b",
+            "CAFE ROAD",
+            2,
+            &[tracks[1], tracks[0]],
+            "2024-01-02 00:00:00",
+        )
+        .await;
+        let numbered = seed_remote_playlist(
+            &pool,
+            account,
+            "norm-numbered",
+            "Cafe Road (2)",
+            2,
+            &tracks,
+            "2024-01-03 00:00:00",
+        )
+        .await;
+
+        let summary = canonicalize_playlists(&pool).await.expect("normalización");
+
+        assert_eq!(summary.canonicals, 2);
+        assert_eq!(summary.merged_canonicals, 1);
+        assert_eq!(
+            get_playlist_canonical_membership(&pool, first)
+                .await
+                .unwrap()
+                .unwrap()
+                .canonical_id,
+            get_playlist_canonical_membership(&pool, second)
+                .await
+                .unwrap()
+                .unwrap()
+                .canonical_id
+        );
+        assert_ne!(
+            get_playlist_canonical_membership(&pool, first)
+                .await
+                .unwrap()
+                .unwrap()
+                .canonical_id,
+            get_playlist_canonical_membership(&pool, numbered)
+                .await
+                .unwrap()
+                .unwrap()
+                .canonical_id
+        );
+    }
+
+    #[tokio::test]
+    async fn renaming_primary_keeps_the_surviving_group_consistent() {
+        let pool = migrated_pool().await;
+        let account = seed_account(&pool, "qobuz", "Rename").await;
+        let tracks = seed_tracks(&pool, 2).await;
+        let primary = seed_remote_playlist(
+            &pool,
+            account,
+            "rename-primary",
+            "Original",
+            2,
+            &tracks,
+            "2024-01-01 00:00:00",
+        )
+        .await;
+        let copy = seed_remote_playlist(
+            &pool,
+            account,
+            "rename-copy",
+            "original",
+            2,
+            &tracks,
+            "2024-01-02 00:00:00",
+        )
+        .await;
+        canonicalize_playlists(&pool).await.expect("fusión inicial");
+        let original_id = get_playlist_canonical_membership(&pool, copy)
+            .await
+            .unwrap()
+            .unwrap()
+            .canonical_id;
+
+        sqlx::query("UPDATE playlists SET name = 'Renamed' WHERE id = ?")
+            .bind(primary)
+            .execute(&pool)
+            .await
+            .unwrap();
+        canonicalize_playlist(&pool, primary)
+            .await
+            .expect("rename recanonicalizado");
+
+        let surviving = get_playlist_canonical_membership(&pool, copy)
+            .await
+            .expect("copia superviviente")
+            .expect("la copia sigue participando");
+        assert_eq!(surviving.canonical_id, original_id);
+        assert!(surviving.is_primary);
+        assert_eq!(surviving.sources.len(), 1);
+        assert!(surviving.sources[0].is_primary);
+        assert_ne!(
+            get_playlist_canonical_membership(&pool, primary)
+                .await
+                .unwrap()
+                .unwrap()
+                .canonical_id,
+            original_id
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_primary_keeps_copies_from_other_accounts() {
+        let pool = migrated_pool().await;
+        let spotify = seed_account(&pool, "spotify", "Delete Spotify").await;
+        let qobuz = seed_account(&pool, "qobuz", "Delete Qobuz").await;
+        let tracks = seed_tracks(&pool, 2).await;
+        let primary = seed_remote_playlist(
+            &pool,
+            spotify,
+            "delete-primary",
+            "Survivors",
+            2,
+            &tracks,
+            "2024-01-01 00:00:00",
+        )
+        .await;
+        let copy = seed_remote_playlist(
+            &pool,
+            qobuz,
+            "delete-copy",
+            "survivors",
+            2,
+            &tracks,
+            "2024-01-02 00:00:00",
+        )
+        .await;
+        canonicalize_playlists(&pool).await.expect("fusión inicial");
+        let canonical_id = get_playlist_canonical_membership(&pool, copy)
+            .await
+            .unwrap()
+            .unwrap()
+            .canonical_id;
+
+        sqlx::query("DELETE FROM playlists WHERE id = ?")
+            .bind(primary)
+            .execute(&pool)
+            .await
+            .expect("primaria borrada");
+
+        let surviving = get_playlist_canonical_membership(&pool, copy)
+            .await
+            .expect("copia superviviente")
+            .expect("el grupo no desaparece");
+        assert_eq!(surviving.canonical_id, canonical_id);
+        assert!(surviving.is_primary);
+        assert_eq!(surviving.sources.len(), 1);
+        assert_eq!(surviving.sources[0].account_id, qobuz);
+    }
+
+    #[tokio::test]
+    async fn unknown_historical_totals_are_not_treated_as_complete() {
+        let pool = migrated_pool().await;
+        let account = seed_account(&pool, "tidal", "Unknown totals").await;
+        let tracks = seed_tracks(&pool, 2).await;
+        let first = seed_remote_playlist(
+            &pool,
+            account,
+            "unknown-a",
+            "Unknown",
+            2,
+            &tracks,
+            "2024-01-01 00:00:00",
+        )
+        .await;
+        let second = seed_remote_playlist(
+            &pool,
+            account,
+            "unknown-b",
+            "unknown",
+            2,
+            &tracks,
+            "2024-01-02 00:00:00",
+        )
+        .await;
+        sqlx::query("UPDATE playlist_sources SET reported_track_count = NULL")
+            .execute(&pool)
+            .await
+            .expect("total histórico desconocido");
+
+        let summary = canonicalize_playlists(&pool).await.expect("sin evidencia");
+
+        assert_eq!(summary.incomplete_playlists, 2);
+        assert_eq!(summary.canonicals, 0);
+        assert!(get_playlist_canonical_membership(&pool, first)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(get_playlist_canonical_membership(&pool, second)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn migration_0117_preserves_groups_but_drops_fabricated_totals() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool :memory:");
+        let migrator = sqlx::migrate!("./migrations");
+        let through_0116 = sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(
+                migrator
+                    .iter()
+                    .filter(|migration| migration.version <= 116)
+                    .map(|migration| (*migration).clone())
+                    .collect(),
+            ),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+        };
+        through_0116.run(&pool).await.expect("migración hasta 0116");
+
+        let account = seed_account(&pool, "spotify", "Upgrade").await;
+        let tracks = seed_tracks(&pool, 2).await;
+        let first = seed_remote_playlist(
+            &pool,
+            account,
+            "upgrade-a",
+            "Upgrade",
+            2,
+            &tracks,
+            "2024-01-01 00:00:00",
+        )
+        .await;
+        let second = seed_remote_playlist(
+            &pool,
+            account,
+            "upgrade-b",
+            "upgrade",
+            2,
+            &tracks,
+            "2024-01-02 00:00:00",
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO playlist_canonicals
+                (normalized_name, content_hash, track_count, primary_playlist_id)
+             VALUES ('upgrade', ?, 2, ?)",
+        )
+        .bind("0".repeat(64))
+        .bind(first)
+        .execute(&pool)
+        .await
+        .expect("canónica sembrada bajo 0116");
+        let canonical_id: i64 = sqlx::query_scalar(
+            "INSERT INTO playlist_canonical_members (canonical_id, playlist_id)
+             SELECT id, ? FROM playlist_canonicals
+             RETURNING canonical_id",
+        )
+        .bind(first)
+        .fetch_one(&pool)
+        .await
+        .expect("primera membresía");
+        sqlx::query(
+            "INSERT INTO playlist_canonical_members (canonical_id, playlist_id) VALUES (?, ?)",
+        )
+        .bind(canonical_id)
+        .bind(second)
+        .execute(&pool)
+        .await
+        .expect("segunda membresía");
+        let before = get_playlist_canonical_membership(&pool, first)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let migration_0117 = migrator
+            .iter()
+            .find(|migration| migration.version == 117)
+            .expect("0117 embebida");
+        sqlx::raw_sql(&migration_0117.sql)
+            .execute(&pool)
+            .await
+            .expect("0117 aplica");
+
+        let after = get_playlist_canonical_membership(&pool, first)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.canonical_id, before.canonical_id);
+        assert_eq!(after.sources.len(), 2);
+        let unknown_totals: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM playlist_sources WHERE reported_track_count IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(unknown_totals, 2);
+
+        let summary = canonicalize_playlists(&pool)
+            .await
+            .expect("sin evidencia histórica");
+        assert_eq!(summary.incomplete_playlists, 2);
+        assert_eq!(summary.canonicals, 0);
+
+        // Una re-expansión real vuelve a capturar la declaración del proveedor.
+        sqlx::query("UPDATE playlist_sources SET synced_at = CURRENT_TIMESTAMP")
+            .execute(&pool)
+            .await
+            .expect("fuentes reexpandidas");
+        let recovered = canonicalize_playlists(&pool).await.expect("recuperación");
+        assert_eq!(recovered.merged_canonicals, 1);
+        assert_eq!(
+            get_playlist_canonical_membership(&pool, second)
+                .await
+                .unwrap()
+                .unwrap()
+                .sources
+                .len(),
+            2
+        );
     }
 }
