@@ -306,9 +306,10 @@ lista.
 ## Compilar desde fuente
 
 Requisitos: **Rust** (estable), **Node.js 20+**, **Python 3.11+** y `ffmpeg`,
-`flac` y `fpcalc` en tu `PATH`. En Linux además necesitas los paquetes de
-desarrollo de WebKit2GTK/GTK (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`,
-`libayatana-appindicator3-dev`, `librsvg2-dev`).
+`flac` y `fpcalc` en tu `PATH`. En Linux además necesitas los paquetes nativos
+que lista `scripts/install_native_deps.sh` (cabeceras de desarrollo de
+WebKit2GTK/GTK, ffmpeg y el resto de herramientas de build/test); la CI los
+instala con `sudo bash scripts/install_native_deps.sh`.
 
 ```bash
 git clone https://github.com/MadManJohnSmith/Syncify.git
