@@ -43,14 +43,41 @@ fn generate_fixture(dir: &Path, name: &str) -> PathBuf {
     path
 }
 
-fn decoded_pcm_len(path: &Path) -> u64 {
+fn decoded_pcm(path: &Path) -> Vec<u8> {
     let out = Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(path)
         .args(["-f", "s16le", "-"])
         .output()
         .expect("decode pcm");
-    out.stdout.len() as u64
+    out.stdout
+}
+
+fn decoded_pcm_len(path: &Path) -> u64 {
+    decoded_pcm(path).len() as u64
+}
+
+/// True si `needle` aparece como slice contiguo de `haystack`.
+///
+/// La sonda corta evita comparar el needle entero en cada ventana: el
+/// stream copy tiene que producir un slice bit a bit del PCM original.
+fn contains_contiguous_slice(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    let probe = &needle[..needle.len().min(64)];
+    let mut search_from = 0;
+    while let Some(offset) = haystack[search_from..]
+        .windows(probe.len())
+        .position(|window| window == probe)
+    {
+        let start = search_from + offset;
+        if haystack[start..].starts_with(needle) {
+            return true;
+        }
+        search_from = start + 1;
+    }
+    false
 }
 
 #[test]
@@ -88,18 +115,36 @@ fn test_trim_restore_finalize_pipeline_repairs_streaminfo() {
     tag.add_picture("image/png", metaflac::block::PictureType::CoverFront, png);
     tag.write_to_path(&fixture).unwrap();
 
-    let original_pcm = decoded_pcm_len(&fixture); // 12 s * 44100 * 4
-    assert!((original_pcm as f64 / (44100.0 * 4.0) - 12.0).abs() < 0.05);
+    let original_pcm = decoded_pcm(&fixture); // 12 s * 44100 * 4
+    assert!((original_pcm.len() as f64 / (44100.0 * 4.0) - 12.0).abs() < 0.05);
 
     // 1. Lossless stream-copy trim to [3.35, 8.65].
     let trimmed = trim_flac_stream_copy(&fixture, Some(3.35), Some(8.65)).expect("trim");
-    let trimmed_pcm = decoded_pcm_len(&trimmed);
+    let trimmed_pcm = decoded_pcm(&trimmed);
     let expected = (8.65 - 3.35) * 44100.0 * 4.0;
+    // El stream copy corta en frontera de frame FLAC: no puede partir una
+    // muestra por dentro, así que el peor caso pierde un frame en cada extremo.
+    // El tamaño máximo lo declara el STREAMINFO del propio fichero (4608
+    // muestras es el tope del subset FLAC); los ffmpeg de CI y local eligen
+    // frames distintos y un margen de 50 ms era menor que un frame.
+    let max_block = metaflac::Tag::read_from_path(&trimmed)
+        .unwrap()
+        .get_streaminfo()
+        .unwrap()
+        .max_block_size as f64;
+    let tolerance_bytes = 2.0 * max_block * 4.0; // 2 canales, 16 bits
     assert!(
-        (trimmed_pcm as f64 - expected).abs() < 44100.0 * 4.0 * 0.05,
-        "trimmed PCM {} not ~= {} bytes",
-        trimmed_pcm,
-        expected
+        (trimmed_pcm.len() as f64 - expected).abs() <= tolerance_bytes,
+        "trimmed PCM {} not within 2 FLAC frames of {} bytes (block={} muestras)",
+        trimmed_pcm.len(),
+        expected,
+        max_block
+    );
+    // Y lo que sí es exacto en un stream copy: el PCM trimado es un slice
+    // contiguo bit a bit del original, sin recodificación.
+    assert!(
+        contains_contiguous_slice(&original_pcm, &trimmed_pcm),
+        "trimmed PCM is not a contiguous, bit-identical slice of the source"
     );
 
     // The remuxed file carries the stale source STREAMINFO (12 s total samples).
@@ -137,9 +182,10 @@ fn test_trim_restore_finalize_pipeline_repairs_streaminfo() {
 
     // 3. Finalize STREAMINFO: total_samples + MD5 recomputed from a decode pass.
     let fin = finalize_flac_streaminfo_after_remux(&trimmed).expect("finalize");
+    let tolerance_seconds = 2.0 * max_block / 44100.0;
     assert!(
-        (fin.total_samples as f64 / 44100.0 - 5.3).abs() < 0.05,
-        "finalized total_samples {} not ~= 5.3 s",
+        (fin.total_samples as f64 / 44100.0 - 5.3).abs() <= tolerance_seconds,
+        "finalized total_samples {} not within 2 FLAC frames of 5.3 s",
         fin.total_samples
     );
 
@@ -154,7 +200,8 @@ fn test_trim_restore_finalize_pipeline_repairs_streaminfo() {
 
     let final_pcm = decoded_pcm_len(&trimmed);
     assert_eq!(
-        final_pcm, trimmed_pcm,
+        final_pcm,
+        trimmed_pcm.len() as u64,
         "finalize must not alter decoded audio"
     );
 }
