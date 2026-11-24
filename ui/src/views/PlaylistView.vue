@@ -305,15 +305,15 @@
             
             <!-- Actions -->
             <div class="flex items-center gap-3">
-              <button @click="playAll" class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent font-medium rounded-full flex items-center gap-2">
-                <span class="material-symbols-outlined">play_arrow</span>
-                Play All
+              <button @click="playAll" :disabled="isPlaylistPlaybackBusy" class="px-5 py-2 bg-primary hover:bg-primary-hover text-on-accent font-medium rounded-full flex items-center gap-2 disabled:opacity-50">
+                <span class="material-symbols-outlined">{{ isPlaylistPlaybackBusy ? 'progress_activity' : 'play_arrow' }}</span>
+                {{ isPlaylistPlaybackBusy ? 'Loading…' : 'Play All' }}
               </button>
               <button @click="openDownloadModal" class="px-5 py-2 border border-gray-300 dark:border-border-dark text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-surface-highlight rounded-full flex items-center gap-2">
                 <span class="material-symbols-outlined">download</span>
                 Download Playlist
               </button>
-              <button @click="shufflePlay" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-full">
+              <button @click="shufflePlay" :disabled="isPlaylistPlaybackBusy" class="p-2 hover:bg-gray-100 dark:hover:bg-surface-highlight rounded-full disabled:opacity-50">
                 <span class="material-symbols-outlined">shuffle</span>
               </button>
               <button v-if="canDeleteSelectedPlaylist" @click="deleteSelectedPlaylist" class="p-2 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-full text-red-500" aria-label="Delete playlist" title="Delete playlist">
@@ -447,7 +447,7 @@
                   <!-- Index / Play -->
                   <div class="w-10 text-sm text-gray-500 group-hover:hidden">{{ virtualStartIndex + index + 1 }}</div>
                   <div class="w-10 hidden group-hover:block">
-                    <button @click.stop="playTrack(track)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
+                    <button @click.stop="playTrack(track)" :disabled="isPlaylistPlaybackBusy" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded disabled:opacity-50">
                       <span class="material-symbols-outlined text-primary">play_arrow</span>
                     </button>
                   </div>
@@ -854,6 +854,7 @@ const nextPlaylistOffset = ref(0)
 const hasMoreTracks = ref(false)
 const isLoading = ref(false)
 const isLoadingMore = ref(false)
+const isPlaylistPlaybackBusy = ref(false)
 /** Last track load failure; distinguishes "empty" from "could not read". */
 const tracksError = ref<string | null>(null)
 /** A later-page failure keeps the rows already loaded and can be retried. */
@@ -864,6 +865,12 @@ const PLAYLIST_OVERSCAN = 6
 const PLAYLIST_LOAD_MORE_THRESHOLD_PX = 280
 const PLAYLIST_FOOTER_HEIGHT = 56
 let playlistLoadSeq = 0
+let playlistPlaybackSeq = 0
+
+function cancelPendingPlaylistPlayback() {
+  playlistPlaybackSeq += 1
+  isPlaylistPlaybackBusy.value = false
+}
 
 const playlistFooterHeight = computed(() =>
   playlistTracks.value.length > 0 && (isLoadingMore.value || tracksLoadMoreError.value || !hasMoreTracks.value)
@@ -983,6 +990,7 @@ watch(
 
 onUnmounted(() => {
   playlistLoadSeq += 1
+  cancelPendingPlaylistPlayback()
   if (previewDebounceTimer) {
     clearTimeout(previewDebounceTimer)
     previewDebounceTimer = null
@@ -1010,6 +1018,7 @@ async function fetchPlaylistPage(playlistId: number, offset: number, limit: numb
 
 async function selectPlaylist(playlist: any) {
   const seq = ++playlistLoadSeq
+  cancelPendingPlaylistPlayback()
   selectedPlaylist.value = playlist
   selectedTracks.value = []
   playlistTracks.value = []
@@ -1274,6 +1283,10 @@ async function deleteSelectedPlaylist() {
   if (!confirmed) return
   try {
     await playlistsApi.deletePlaylist(playlist.id)
+    playlistLoadSeq += 1
+    isLoading.value = false
+    isLoadingMore.value = false
+    cancelPendingPlaylistPlayback()
     myPlaylists.value = myPlaylists.value.filter(p => p.id !== playlist.id)
     smartPlaylists.value = smartPlaylists.value.filter(p => p.id !== playlist.id)
     for (const group of importedServices.value) {
@@ -1422,7 +1435,7 @@ async function importPlaylist() {
   }
 }
 
-async function playTrack(track: any) {
+async function playTrackNow(track: any) {
   try {
     await player.play({
       id: track.id,
@@ -1434,6 +1447,11 @@ async function playTrack(track: any) {
   } catch (err) {
     toast.error('Could not play track', String(err))
   }
+}
+
+async function playTrack(track: any) {
+  if (isPlaylistPlaybackBusy.value) return
+  await playTrackNow(track)
 }
 
 function toPlayerTrack(track: any) {
@@ -1454,19 +1472,34 @@ async function selectedPlaylistRows(): Promise<any[]> {
   return tracks.map((track, index) => mapToTrack(track, index))
 }
 
-async function playAll() {
-  if (!playlistTracks.value.length) return
+async function runWithAllPlaylistTracks(
+  action: (tracks: any[]) => Promise<void>,
+  errorMessage: string,
+) {
+  if (isPlaylistPlaybackBusy.value || !playlistTracks.value.length) return
 
+  const seq = ++playlistPlaybackSeq
+  isPlaylistPlaybackBusy.value = true
+  try {
+    const tracks = await selectedPlaylistRows()
+    if (seq !== playlistPlaybackSeq || !tracks.length) return
+    await action(tracks)
+  } catch (err) {
+    if (seq === playlistPlaybackSeq) toast.error(errorMessage, String(err))
+  } finally {
+    if (seq === playlistPlaybackSeq) isPlaylistPlaybackBusy.value = false
+  }
+}
+
+async function playAll() {
   // Phase 1 fix: the previous comment was wrong — playNext inserts at the
   // front, so chaining slice(1)+playNext reversed the playlist order.
   // replaceQueueAndPlay plays the first track and queues the rest in the
   // list's real order.
-  try {
-    const tracks = await selectedPlaylistRows()
-    await player.replaceQueueAndPlay(tracks.map(toPlayerTrack))
-  } catch (err) {
-    toast.error('Could not play playlist', String(err))
-  }
+  await runWithAllPlaylistTracks(
+    tracks => player.replaceQueueAndPlay(tracks.map(toPlayerTrack)),
+    'Could not play playlist',
+  )
 }
 
 // ==============================================
@@ -1641,15 +1674,10 @@ async function downloadTrack(track: any) {
 }
 
 async function shufflePlay() {
-  if (!playlistTracks.value.length) return
-  try {
-    const tracks = await selectedPlaylistRows()
-    if (!tracks.length) return
+  await runWithAllPlaylistTracks(async (tracks) => {
     const randomIndex = Math.floor(Math.random() * tracks.length)
-    await playTrack(tracks[randomIndex])
-  } catch (err) {
-    toast.error('Could not shuffle playlist', String(err))
-  }
+    await playTrackNow(tracks[randomIndex])
+  }, 'Could not shuffle playlist')
 }
 
 async function playPlaylist(playlist: any) {

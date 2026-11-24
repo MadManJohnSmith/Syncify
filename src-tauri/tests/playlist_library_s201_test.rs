@@ -516,7 +516,8 @@ async fn export_m3u_refuses_to_write_file_when_nothing_verified() {
 
 /// PL03: el export no hereda el tope de 500 de la vista. Lee las 501
 /// ocurrencias (incluida una repetición que cruza el límite de página) en el
-/// orden de posición y verifica todas contra el mismo archivo real.
+/// orden de posición y verifica todas contra el mismo archivo real. Los
+/// títulos no son monótonos: un ORDER BY title accidental no puede pasar.
 #[tokio::test]
 async fn export_m3u_includes_more_than_500_occurrences_in_position_order() {
     let db = create_test_db().await;
@@ -536,7 +537,7 @@ async fn export_m3u_includes_more_than_500_occurrences_in_position_order() {
             &db,
             42,
             position,
-            &format!("Track {position:03}"),
+            &format!("Track {:03}", (position * 37) % 500),
             Some((position + 1) * 1000),
             None,
             Some(path),
@@ -576,8 +577,9 @@ async fn export_m3u_includes_more_than_500_occurrences_in_position_order() {
     let mut expected = String::from("#EXTM3U\n");
     for position in 0..501 {
         let source_position = position.min(499);
+        let title_index = (source_position * 37) % 500;
         expected.push_str(&format!(
-            "#EXTINF:{},Unknown - Track {source_position:03}\n{}\n",
+            "#EXTINF:{},Unknown - Track {title_index:03}\n{}\n",
             source_position + 1,
             file.display()
         ));
