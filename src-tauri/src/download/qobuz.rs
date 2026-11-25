@@ -3285,28 +3285,17 @@ impl QobuzDownloader {
                 }
             }
 
-            // F3.4: Inspect STREAMINFO header from promoted physical FLAC to ensure exact ground-truth audio metrics
-            let (final_bit_depth, final_sample_rate) = if is_flac {
-                if let Ok(tag) = metaflac::Tag::read_from_path(&final_path) {
-                    if let Some(info) = tag.get_streaminfo() {
-                        (info.bits_per_sample as i32, info.sample_rate as f64)
-                    } else {
-                        (real_bit_depth, real_sample_rate)
-                    }
-                } else {
-                    (real_bit_depth, real_sample_rate)
-                }
-            } else {
-                (real_bit_depth, real_sample_rate)
-            };
+            // DLX-03: las métricas ya salen del STREAMINFO validado antes del
+            // etiquetado. Rename/copy comprueba identidad byte a byte, así que
+            // no hace falta releer el FLAC promovido para recuperarlas.
 
             phase_tracker.set_cache_hits(has_lyrics_cached, has_cover_cached, has_mb_cached);
             let phase_timings = phase_tracker.finish_completed();
 
             Ok(DownloadResult {
                 file_path: final_path.to_string_lossy().to_string(),
-                bit_depth: final_bit_depth,
-                sample_rate: final_sample_rate as i32,
+                bit_depth: real_bit_depth,
+                sample_rate: real_sample_rate as i32,
                 title: track.title.clone(),
                 artist: artist_name,
                 album: album_title,

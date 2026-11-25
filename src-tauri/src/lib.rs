@@ -32,6 +32,8 @@ pub mod sync;
 pub mod sync_scheduler;
 pub mod system_conditions;
 pub mod tray;
+#[cfg(target_os = "linux")]
+pub mod webkit_probe;
 pub mod worker;
 
 use db::DbPool;

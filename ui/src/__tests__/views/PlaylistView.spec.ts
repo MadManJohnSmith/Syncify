@@ -117,19 +117,21 @@ describe('PlaylistView', () => {
         expect(wrapper.exists()).toBe(true);
     });
 
-    it('Modo A exports verified-only M3U through save dialog and lists missing tracks', async () => {
+    it('Modo A exports the complete M3U even when only the first page is loaded', async () => {
         vi.mocked(save).mockResolvedValue('/Users/tardis/Music/Chill Vibes.m3u');
         const invokeCalls: { cmd: string; args: any }[] = [];
         mockInvoke((cmd, args) => {
             invokeCalls.push({ cmd, args });
             if (cmd === 'get_playlists') return mockPlaylists;
-            if (cmd === 'get_local_playlist_tracks') return mockPlaylistTracks;
+            if (cmd === 'get_local_playlist_tracks') {
+                return { ...mockPlaylistTracks, total: 501, has_more: true };
+            }
             if (cmd === 'export_playlist_m3u') {
                 return {
                     playlist_id: 1,
                     playlist_name: 'Chill Vibes',
-                    total_tracks: 3,
-                    verified_count: 2,
+                    total_tracks: 501,
+                    verified_count: 500,
                     missing_count: 1,
                     missing_tracks: [
                         { track_id: 404, title: 'Ghost Song', artist_name: 'Artist X', reason: 'archivo_no_encontrado' }
@@ -156,9 +158,10 @@ describe('PlaylistView', () => {
         expect(exportCall).toBeDefined();
         expect(exportCall?.args).toEqual({ playlistId: 1, filePath: '/Users/tardis/Music/Chill Vibes.m3u' });
         expect(invokeCalls.find(c => c.cmd === 'add_batch_to_queue')).toBeUndefined();
+        expect(invokeCalls.filter(c => c.cmd === 'get_local_playlist_tracks')).toHaveLength(1);
 
         // Honest counts banner + collapsible missing list
-        expect(wrapper.text()).toContain('M3U exported · 2/3 tracks verified');
+        expect(wrapper.text()).toContain('M3U exported · 500/501 tracks verified');
         const missingToggle = wrapper.findAll('button').find((b: any) => b.text().includes('Missing (1)'));
         expect(missingToggle).toBeDefined();
         await missingToggle!.trigger('click');
@@ -377,6 +380,260 @@ describe('PlaylistView', () => {
         await flushPromises();
 
         expect(invokeCalls).toContainEqual({ cmd: 'delete_playlist', args: { id: 99 } });
+    });
+
+    it('PL03: loads only the first 100-track page and virtualizes rendered rows', async () => {
+        const tracks = Array.from({ length: 1200 }, (_, index) => ({
+            id: index + 1,
+            position: index + 1,
+            title: `Track ${index + 1}`,
+            artist_name: 'Artist',
+            album_name: 'Album',
+            duration_ms: 180_000,
+        }));
+        const calls: { cmd: string; args: any }[] = [];
+        mockInvoke((cmd, args) => {
+            calls.push({ cmd, args });
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'get_local_playlist_tracks') {
+                const offset = Number(args?.offset ?? 0);
+                const limit = Number(args?.limit ?? 0);
+                const pageTracks = tracks.slice(offset, offset + limit);
+                return {
+                    tracks: pageTracks,
+                    total: tracks.length,
+                    offset,
+                    limit,
+                    has_more: offset + pageTracks.length < tracks.length,
+                };
+            }
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.playlist-item').find((el: any) => el.text().includes('Chill Vibes'))!.trigger('click');
+        await flushPromises();
+
+        expect(calls.filter(c => c.cmd === 'get_local_playlist_tracks')).toEqual([
+            { cmd: 'get_local_playlist_tracks', args: { playlistId: 1, offset: 0, limit: 100 } },
+        ]);
+        expect(wrapper.findAll('.track-row').length).toBeGreaterThan(0);
+        expect(wrapper.findAll('.track-row').length).toBeLessThan(100);
+        expect(wrapper.text()).toContain('Track 1');
+        expect(wrapper.find('[data-testid="playlist-tracks-truncated"]').exists()).toBe(false);
+    });
+
+    it('PL03: appends pages on scroll and can reach the final track beyond 500', async () => {
+        const tracks = Array.from({ length: 750 }, (_, index) => ({
+            id: index === 99 ? 7 : index + 1,
+            position: index + 1,
+            title: `Track ${index + 1}`,
+            artist_name: 'Artist',
+            album_name: 'Album',
+            duration_ms: 180_000,
+        }));
+        const offsets: number[] = [];
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'get_local_playlist_tracks') {
+                const offset = Number(args?.offset ?? 0);
+                const limit = Number(args?.limit ?? 0);
+                offsets.push(offset);
+                const pageTracks = tracks.slice(offset, offset + limit);
+                return {
+                    tracks: pageTracks,
+                    total: tracks.length,
+                    offset,
+                    limit,
+                    has_more: offset + pageTracks.length < tracks.length,
+                };
+            }
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.playlist-item').find((el: any) => el.text().includes('Chill Vibes'))!.trigger('click');
+        await flushPromises();
+        expect(offsets).toEqual([0]);
+
+        for (const loadedCount of [100, 200, 300, 400, 500, 600, 750]) {
+            const scroller = wrapper.get('[data-testid="playlist-tracks-scroller"]');
+            const element = scroller.element as HTMLElement;
+            Object.defineProperty(element, 'clientHeight', { value: 600, configurable: true });
+            Object.defineProperty(element, 'scrollHeight', { value: loadedCount * 56 + 600, configurable: true });
+            Object.defineProperty(element, 'scrollTop', { value: loadedCount * 56, writable: true, configurable: true });
+            await scroller.trigger('scroll');
+            await flushPromises();
+        }
+
+        expect(offsets).toEqual([0, 100, 200, 300, 400, 500, 600, 700]);
+        expect((wrapper.vm as any).$.setupState.playlistTracks).toHaveLength(750);
+        expect(wrapper.findAll('.track-row').length).toBeLessThan(750);
+        expect(wrapper.text()).toContain('Track 750');
+        expect(wrapper.text()).toContain('Showing all 750 tracks');
+    });
+
+    it('PL03: keeps loaded rows and offers retry when a later page fails', async () => {
+        let failSecondPage = true;
+        const offsets: number[] = [];
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'get_local_playlist_tracks') {
+                const offset = Number(args?.offset ?? 0);
+                offsets.push(offset);
+                if (offset === 100 && failSecondPage) throw new Error('page two is unavailable');
+                const pageTracks = Array.from({ length: 100 }, (_, index) => ({
+                    id: offset + index + 1,
+                    position: offset + index + 1,
+                    title: `Track ${offset + index + 1}`,
+                    artist_name: 'Artist',
+                    album_name: 'Album',
+                    duration_ms: 180_000,
+                }));
+                return {
+                    tracks: pageTracks,
+                    total: 200,
+                    offset,
+                    limit: 100,
+                    has_more: offset === 0,
+                };
+            }
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.playlist-item').find((el: any) => el.text().includes('Chill Vibes'))!.trigger('click');
+        await flushPromises();
+
+        const scroller = wrapper.get('[data-testid="playlist-tracks-scroller"]');
+        const element = scroller.element as HTMLElement;
+        Object.defineProperty(element, 'clientHeight', { value: 600, configurable: true });
+        Object.defineProperty(element, 'scrollHeight', { value: 6200, configurable: true });
+        Object.defineProperty(element, 'scrollTop', { value: 5600, writable: true, configurable: true });
+        await scroller.trigger('scroll');
+        await flushPromises();
+
+        expect(wrapper.find('[data-testid="playlist-tracks-load-more-error"]').text()).toContain('page two is unavailable');
+        expect(wrapper.find('[data-testid="playlist-tracks-error"]').exists()).toBe(false);
+        expect((wrapper.vm as any).$.setupState.playlistTracks).toHaveLength(100);
+
+        failSecondPage = false;
+        await wrapper.find('[data-testid="playlist-tracks-load-more-error"] button').trigger('click');
+        await flushPromises();
+
+        expect(offsets).toEqual([0, 100, 100]);
+        expect((wrapper.vm as any).$.setupState.playlistTracks).toHaveLength(200);
+        expect(wrapper.find('[data-testid="playlist-tracks-load-more-error"]').exists()).toBe(false);
+        expect(wrapper.text()).toContain('Showing all 200 tracks');
+    });
+
+    it('PL03: discards a late page from the previous playlist and keeps the new one loadable', async () => {
+        let resolveOldPage!: (value: any) => void;
+        const calls: { cmd: string; args: any }[] = [];
+        const playlists = [
+            { id: 1, name: 'First Playlist', track_count: 200 },
+            { id: 2, name: 'Second Playlist', track_count: 200 },
+        ];
+        mockInvoke((cmd, args) => {
+            calls.push({ cmd, args });
+            if (cmd === 'get_playlists') return playlists;
+            if (cmd === 'get_local_playlist_tracks') {
+                const playlistId = Number(args?.playlistId);
+                const offset = Number(args?.offset ?? 0);
+                if (playlistId === 1 && offset === 100) {
+                    return new Promise(resolve => { resolveOldPage = resolve; });
+                }
+                const baseId = playlistId === 1 ? 1000 : 2000;
+                const tracks = Array.from({ length: 100 }, (_, index) => ({
+                    id: baseId + offset + index + 1,
+                    position: offset + index + 1,
+                    title: `Playlist ${playlistId} Track ${offset + index + 1}`,
+                    artist_name: 'Artist',
+                    album_name: 'Album',
+                    duration_ms: 180_000,
+                }));
+                return { tracks, total: 200, offset, limit: 100, has_more: offset === 0 };
+            }
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.playlist-item').find((el: any) => el.text().includes('First Playlist'))!.trigger('click');
+        await flushPromises();
+
+        const scrollToEnd = async (loadedCount: number) => {
+            const scroller = wrapper.get('[data-testid="playlist-tracks-scroller"]');
+            const element = scroller.element as HTMLElement;
+            Object.defineProperty(element, 'clientHeight', { value: 600, configurable: true });
+            Object.defineProperty(element, 'scrollHeight', { value: loadedCount * 56 + 600, configurable: true });
+            Object.defineProperty(element, 'scrollTop', { value: loadedCount * 56, writable: true, configurable: true });
+            await scroller.trigger('scroll');
+            await flushPromises();
+        };
+
+        await scrollToEnd(100);
+        await wrapper.findAll('.playlist-item').find((el: any) => el.text().includes('Second Playlist'))!.trigger('click');
+        await flushPromises();
+
+        resolveOldPage({
+            tracks: [{ id: 1101, position: 101, title: 'Stale Track', duration_ms: 1000 }],
+            total: 200,
+            offset: 100,
+            limit: 100,
+            has_more: false,
+        });
+        await flushPromises();
+
+        const state = (wrapper.vm as any).$.setupState;
+        expect(state.playlistTracks).toHaveLength(100);
+        expect(state.playlistTracks[0].title).toBe('Playlist 2 Track 1');
+        expect(state.isLoadingMore).toBe(false);
+
+        await scrollToEnd(100);
+        expect(calls).toContainEqual({ cmd: 'get_local_playlist_tracks', args: { playlistId: 2, offset: 100, limit: 100 } });
+        expect(state.playlistTracks).toHaveLength(200);
+    });
+
+    it('PL03: deleting a playlist invalidates its pending track response', async () => {
+        let resolvePage!: (value: any) => void;
+        mockInvoke((cmd) => {
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'get_local_playlist_tracks') {
+                return new Promise(resolve => { resolvePage = resolve; });
+            }
+            if (cmd === 'delete_playlist') return null;
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.playlist-item').find((el: any) => el.text().includes('Chill Vibes'))!.trigger('click');
+        await flushPromises();
+        expect(wrapper.find('[data-testid="playlist-tracks-loading"]').exists()).toBe(true);
+
+        await wrapper.find('button[aria-label="Delete playlist"]').trigger('click');
+        await flushPromises();
+        const { resolveDialog } = useDialog();
+        resolveDialog('confirm');
+        await flushPromises();
+
+        resolvePage({
+            tracks: [{ id: 301, position: 1, title: 'Deleted playlist track', duration_ms: 1000 }],
+            total: 1,
+            offset: 0,
+            limit: 100,
+            has_more: false,
+        });
+        await flushPromises();
+
+        const state = (wrapper.vm as any).$.setupState;
+        expect(state.selectedPlaylist).toBeNull();
+        expect(state.playlistTracks).toHaveLength(0);
+        expect(state.isLoading).toBe(false);
     });
 
     it('does not delete when the confirmation is cancelled', async () => {

@@ -112,7 +112,8 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
   resto abierto: ver su cabecera).
 - **`COLA_WEBKIT_COMPOSICION_ACELERADA.md`**: hipótesis abierta de
   composición WebKitGTK con sus invariantes de compatibilidad (WK-01
-  ejecutado el 2026-11-21 en la máquina de carriles; ver su cabecera).
+  ejecutado el 2026-11-21 en la máquina de carriles; WK-02 añade la sonda
+  supervisada de arranque y su límite de detección de negro).
 - **`HANDOFF.md`**: puntero sin estado (desde el 2026-11-22): cómo re-derivar
   el estado vigente (tracker, `git log origin/main..origin/dev`, ramas
   `wave/*`, matriz) y dónde está el último relevo fechado
