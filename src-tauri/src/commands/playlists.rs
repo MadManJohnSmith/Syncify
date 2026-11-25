@@ -11,6 +11,20 @@ pub struct PlaylistTrackPosition {
     pub new_position: i64,
 }
 
+/// Ficha de playlist con su pertenencia canónica. `flatten` mantiene el
+/// contrato histórico de `Playlist`; los campos nuevos son aditivos para la UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistDetail {
+    #[serde(flatten)]
+    pub playlist: Playlist,
+    #[serde(default)]
+    pub canonical_id: Option<i64>,
+    #[serde(default)]
+    pub is_primary: bool,
+    #[serde(default)]
+    pub sources: Vec<crate::services::playlist_canonical::PlaylistCanonicalSource>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncPlaylistsResult {
     pub playlists_synced: i64,
@@ -31,9 +45,24 @@ pub struct PlaylistServiceSummary {
     pub last_synced: Option<String>,
 }
 
-/// Get detailed playlist information by ID
+/// Get detailed playlist information by ID, including every canonical source.
 #[tauri::command]
-pub async fn get_playlist(state: State<'_, AppState>, id: i64) -> Result<Option<Playlist>, String> {
+pub async fn get_playlist(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<Option<PlaylistDetail>, String> {
+    get_playlist_detail_core(&state.db, id).await
+}
+
+/// Testable read seam for the playlist detail contract.
+pub async fn get_playlist_detail_core(
+    db: &sqlx::SqlitePool,
+    id: i64,
+) -> Result<Option<PlaylistDetail>, String> {
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to start playlist detail read: {}", e))?;
     let playlist = sqlx::query_as::<_, Playlist>(
         r#"
         SELECT
@@ -51,11 +80,35 @@ pub async fn get_playlist(state: State<'_, AppState>, id: i64) -> Result<Option<
         "#,
     )
     .bind(id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(|e| format!("Failed to get playlist: {}", e))?;
 
-    Ok(playlist)
+    let Some(playlist) = playlist else {
+        return Ok(None);
+    };
+    let membership =
+        crate::services::playlist_canonical::get_playlist_canonical_membership_in_conn(&mut tx, id)
+            .await?;
+    let (canonical_id, is_primary, sources) = match membership {
+        Some(membership) => (
+            Some(membership.canonical_id),
+            membership.is_primary,
+            membership.sources,
+        ),
+        None => (None, false, Vec::new()),
+    };
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit playlist detail read: {}", e))?;
+
+    Ok(Some(PlaylistDetail {
+        playlist,
+        canonical_id,
+        is_primary,
+        sources,
+    }))
 }
 
 /// Update a playlist's name or description
@@ -112,6 +165,8 @@ pub async fn update_playlist_core(
     }
 
     let _ = is_public; // Preserved for forward-compatibility
+
+    crate::services::playlist_canonical::canonicalize_playlist_in_conn(&mut tx, id).await?;
 
     tx.commit()
         .await
@@ -214,6 +269,8 @@ pub async fn delete_playlist_core(db: &sqlx::SqlitePool, id: i64) -> Result<(), 
         }
     }
 
+    crate::services::playlist_canonical::canonicalize_playlist_in_conn(&mut tx, id).await?;
+
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit delete: {}", e))?;
@@ -276,6 +333,11 @@ pub async fn remove_from_playlist_core(
     }
 
     recompact_playlist_tracks_in_conn(&mut tx, playlist_id).await?;
+    crate::services::playlist_canonical::mark_playlist_source_expansion_incomplete_in_conn(
+        &mut tx,
+        playlist_id,
+    )
+    .await?;
 
     tx.commit()
         .await
@@ -318,6 +380,8 @@ pub async fn sanitize_single_playlist(
     })?;
 
     let remaining = recompact_playlist_tracks_in_conn(&mut tx, playlist_id).await?;
+    crate::services::playlist_canonical::canonicalize_playlist_in_conn(&mut tx, playlist_id)
+        .await?;
 
     tx.commit()
         .await
@@ -522,9 +586,21 @@ pub async fn sanitize_playlists_in_pool(
 
     let track_counts_updated = count_res.rows_affected() as usize;
 
-    // 3. Desambiguar colisiones de nombres de playlists bajo la misma cuenta (account_id, LOWER(TRIM(name)))
-    // PL01 (#154): los tombstones ya no participan — una importada borrada no
-    // debe provocar renombres en playlists vivas.
+    // 3. Recalcular canónicas SIN certificar expansiones: solo una ruta que
+    // recorrió todas las páginas del proveedor puede marcar `expansion_complete`.
+    // La sanitización local debe conservar NULL/0 y no fusionar datos a medias.
+    let canonicalization =
+        crate::services::playlist_canonical::canonicalize_playlists_in_conn(&mut tx).await?;
+    tracing::info!(
+        canonicals = canonicalization.canonicals,
+        merged = canonicalization.merged_canonicals,
+        incomplete = canonicalization.incomplete_playlists,
+        "playlist canonicalization completed"
+    );
+
+    // 4. Desambiguar nombres bajo la misma cuenta, pero NO separar dos copias
+    // que ya comparten canónica. El contenido distinto sí recibe sufijo.
+    // PL01 (#154): los tombstones no participan.
     let dup_name_groups: Vec<(i64, String, i64)> = sqlx::query_as(
         r#"
         SELECT account_id, LOWER(TRIM(name)) as norm_name, COUNT(*) as cnt
@@ -542,12 +618,13 @@ pub async fn sanitize_playlists_in_pool(
     let mut playlist_names_disambiguated = 0usize;
 
     for (acc_id, norm_name, _) in dup_name_groups {
-        let pls: Vec<(i64, String)> = sqlx::query_as(
+        let pls: Vec<(i64, String, Option<i64>)> = sqlx::query_as(
             r#"
-            SELECT id, name
-            FROM playlists
-            WHERE account_id = ? AND LOWER(TRIM(name)) = ? AND deleted_at IS NULL
-            ORDER BY id ASC
+            SELECT p.id, p.name, m.canonical_id
+            FROM playlists p
+            LEFT JOIN playlist_canonical_members m ON m.playlist_id = p.id
+            WHERE p.account_id = ? AND LOWER(TRIM(p.name)) = ? AND p.deleted_at IS NULL
+            ORDER BY p.id ASC
             "#,
         )
         .bind(acc_id)
@@ -571,32 +648,60 @@ pub async fn sanitize_playlists_in_pool(
 
         let mut existing_set: std::collections::HashSet<String> =
             existing_names.into_iter().map(|(n,)| n).collect();
+        let mut group_indexes: std::collections::HashMap<i64, usize> =
+            std::collections::HashMap::new();
+        let mut groups: Vec<Vec<(i64, String)>> = Vec::new();
+        for (pid, orig_name, canonical_id) in pls {
+            // Sin canónica, cada playlist es su propia identidad: conserva el
+            // comportamiento histórico de desambiguar por fila.
+            let identity = canonical_id.unwrap_or(-pid);
+            let group_index = match group_indexes.get(&identity) {
+                Some(index) => *index,
+                None => {
+                    let index = groups.len();
+                    groups.push(Vec::new());
+                    group_indexes.insert(identity, index);
+                    index
+                }
+            };
+            groups[group_index].push((pid, orig_name));
+        }
 
-        // La primera conserva su nombre original (pls[0]). Las siguientes reciben sufijo (2), (3)...
-        for (idx, (pid, orig_name)) in pls.into_iter().enumerate().skip(1) {
-            let mut cand_idx = idx + 1;
-            let mut new_name = format!("{} ({})", orig_name.trim(), cand_idx);
-            while existing_set.contains(&new_name.trim().to_lowercase()) {
-                cand_idx += 1;
-                new_name = format!("{} ({})", orig_name.trim(), cand_idx);
+        let mut suffix = 2i64;
+        for (group_index, members) in groups.into_iter().enumerate() {
+            if group_index == 0 {
+                continue;
             }
+            let new_name = loop {
+                let candidate = format!("{} ({})", members[0].1.trim(), suffix);
+                suffix += 1;
+                if !existing_set.contains(&candidate.trim().to_lowercase()) {
+                    break candidate;
+                }
+            };
             existing_set.insert(new_name.trim().to_lowercase());
 
-            sqlx::query(
-                "UPDATE playlists SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            )
-            .bind(&new_name)
-            .bind(pid)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| {
-                format!(
-                    "Failed to update disambiguated playlist name for id {}: {}",
-                    pid, e
+            // Todas las copias exactas reciben el mismo nombre; renombrar solo
+            // una las separaría de su grupo canónico al recalcular la huella.
+            for (pid, _) in members {
+                sqlx::query(
+                    "UPDATE playlists SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 )
-            })?;
+                .bind(&new_name)
+                .bind(pid)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Failed to update disambiguated playlist name for id {}: {}",
+                        pid, e
+                    )
+                })?;
 
-            playlist_names_disambiguated += 1;
+                crate::services::playlist_canonical::canonicalize_playlist_in_conn(&mut tx, pid)
+                    .await?;
+                playlist_names_disambiguated += 1;
+            }
         }
     }
 
@@ -2465,5 +2570,320 @@ mod playlist_import_parser_tests {
         assert_eq!(default_playlist_name("noext"), "noext");
         // Nombre vacío/espacios: fallback.
         assert_eq!(default_playlist_name("   "), "Imported Playlist");
+    }
+}
+
+#[cfg(test)]
+mod playlist_canonical_command_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::{Pool, Sqlite};
+
+    async fn migrated_pool() -> Pool<Sqlite> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool :memory:");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migraciones reales");
+        pool
+    }
+
+    async fn seed_account(pool: &Pool<Sqlite>, service: &str, label: &str) -> i64 {
+        sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, display_name, email)
+             SELECT id, ?, ? FROM services WHERE name = ? RETURNING id",
+        )
+        .bind(label)
+        .bind(format!("{label}@example.test"))
+        .bind(service)
+        .fetch_one(pool)
+        .await
+        .expect("cuenta")
+    }
+
+    async fn seed_remote(
+        pool: &Pool<Sqlite>,
+        account_id: i64,
+        remote_id: &str,
+        name: &str,
+        track_ids: &[i64],
+    ) -> i64 {
+        let playlist_id = sqlx::query_scalar(
+            "INSERT INTO playlists
+                (account_id, service_playlist_id, name, track_count, created_at)
+             VALUES (?, ?, ?, ?, datetime('now', '-' || ? || ' seconds')) RETURNING id",
+        )
+        .bind(account_id)
+        .bind(remote_id)
+        .bind(name)
+        .bind(track_ids.len() as i64)
+        .bind(1000 - remote_id.len() as i64)
+        .fetch_one(pool)
+        .await
+        .expect("playlist");
+        sqlx::query(
+            "INSERT INTO playlist_sources (playlist_id, account_id, service_id, service_playlist_id)
+             SELECT ?, ?, service_id, ? FROM accounts WHERE id = ?",
+        )
+        .bind(playlist_id)
+        .bind(account_id)
+        .bind(remote_id)
+        .bind(account_id)
+        .execute(pool)
+        .await
+        .expect("fuente");
+        for (position, track_id) in track_ids.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
+            )
+            .bind(playlist_id)
+            .bind(track_id)
+            .bind(position as i64 + 1)
+            .execute(pool)
+            .await
+            .expect("pista");
+        }
+        playlist_id
+    }
+
+    async fn seed_tracks(pool: &Pool<Sqlite>) -> [i64; 3] {
+        let mut ids = [0; 3];
+        for (index, slot) in ids.iter_mut().enumerate() {
+            *slot =
+                sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id")
+                    .bind(format!("Command track {index}"))
+                    .bind(format!("CMD-{}-{index}", uuid::Uuid::new_v4()))
+                    .fetch_one(pool)
+                    .await
+                    .expect("track");
+        }
+        ids
+    }
+
+    #[tokio::test]
+    async fn detail_lists_every_canonical_source_and_local_has_none() {
+        let pool = migrated_pool().await;
+        let spotify = seed_account(&pool, "spotify", "Detail Spotify").await;
+        let qobuz = seed_account(&pool, "qobuz", "Detail Qobuz").await;
+        let tracks = seed_tracks(&pool).await;
+        let primary = seed_remote(
+            &pool,
+            spotify,
+            "detail-sp",
+            "Detail",
+            &[tracks[0], tracks[1]],
+        )
+        .await;
+        let copy = seed_remote(&pool, qobuz, "detail-qb", "detail", &tracks[..2]).await;
+        for playlist_id in [primary, copy] {
+            crate::services::playlist_canonical::record_playlist_source_expansion(
+                &pool,
+                playlist_id,
+            )
+            .await
+            .expect("expansión completa");
+        }
+        crate::services::playlist_canonical::canonicalize_playlists(&pool)
+            .await
+            .expect("canonicalización");
+
+        let detail = get_playlist_detail_core(&pool, copy)
+            .await
+            .expect("detalle")
+            .expect("playlist existe");
+        assert_eq!(detail.playlist.id, copy);
+        assert_eq!(detail.playlist.name, "detail");
+        assert!(!detail.is_primary);
+        assert_eq!(detail.sources.len(), 2);
+        assert_eq!(detail.sources[0].playlist_id, primary);
+        assert!(detail.sources[0].is_primary);
+        assert!(detail
+            .sources
+            .iter()
+            .any(|source| source.account_id == spotify && source.service_name == "spotify"));
+        assert!(detail
+            .sources
+            .iter()
+            .any(|source| source.account_id == qobuz && source.service_name == "qobuz"));
+
+        let local = create_playlist_core(&pool, "Local detail".into(), None)
+            .await
+            .expect("local");
+        let local_detail = get_playlist_detail_core(&pool, local)
+            .await
+            .expect("detalle local")
+            .expect("local existe");
+        assert!(local_detail.canonical_id.is_none());
+        assert!(local_detail.sources.is_empty());
+        assert!(get_playlist_detail_core(&pool, -1)
+            .await
+            .expect("inexistente")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn explicit_expansion_rename_and_remove_keep_membership_in_sync() {
+        let pool = migrated_pool().await;
+        let account = seed_account(&pool, "qobuz", "Mutation").await;
+        let tracks = seed_tracks(&pool).await;
+        let first = seed_remote(&pool, account, "mutation-a", "Mutation", &tracks[..2]).await;
+        let second = seed_remote(&pool, account, "mutation-b", "mutation", &tracks[..2]).await;
+
+        recompact_playlist_positions(&pool, first)
+            .await
+            .expect("recompactar primera");
+        recompact_playlist_positions(&pool, second)
+            .await
+            .expect("recompactar segunda");
+        for playlist_id in [first, second] {
+            assert!(
+                crate::services::playlist_canonical::record_playlist_source_expansion(
+                    &pool,
+                    playlist_id,
+                )
+                .await
+                .expect("expansión completa")
+            );
+            crate::services::playlist_canonical::canonicalize_playlist(&pool, playlist_id)
+                .await
+                .expect("canonicalizar tras expansión");
+        }
+        let first_detail = get_playlist_detail_core(&pool, first)
+            .await
+            .unwrap()
+            .unwrap();
+        let second_detail = get_playlist_detail_core(&pool, second)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first_detail.canonical_id, second_detail.canonical_id);
+        assert_eq!(second_detail.sources.len(), 2);
+
+        update_playlist_core(&pool, second, Some("Different".into()), None, None)
+            .await
+            .expect("renombrar");
+        let renamed = get_playlist_detail_core(&pool, second)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(renamed.canonical_id, first_detail.canonical_id);
+        assert_eq!(renamed.sources.len(), 1);
+
+        update_playlist_core(&pool, second, Some("Mutation".into()), None, None)
+            .await
+            .expect("devolver nombre");
+        assert_eq!(
+            get_playlist_detail_core(&pool, second)
+                .await
+                .unwrap()
+                .unwrap()
+                .canonical_id,
+            first_detail.canonical_id
+        );
+
+        remove_from_playlist_core(&pool, second, &[tracks[0]])
+            .await
+            .expect("quitar pista");
+        let incomplete = get_playlist_detail_core(&pool, second)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(incomplete.canonical_id.is_none());
+        let surviving = get_playlist_detail_core(&pool, first)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(surviving.sources.len(), 1);
+        assert!(surviving.is_primary);
+    }
+
+    #[tokio::test]
+    async fn generic_sanitization_never_certifies_provider_expansion() {
+        let pool = migrated_pool().await;
+        let account = seed_account(&pool, "tidal", "No certification").await;
+        let tracks = seed_tracks(&pool).await;
+        let first = seed_remote(&pool, account, "uncertified-a", "Pending", &tracks[..2]).await;
+        let second = seed_remote(&pool, account, "uncertified-b", "pending", &tracks[..2]).await;
+
+        sanitize_playlists_in_pool(&pool)
+            .await
+            .expect("sanitización sin certificar");
+
+        assert!(get_playlist_detail_core(&pool, first)
+            .await
+            .unwrap()
+            .unwrap()
+            .canonical_id
+            .is_none());
+        assert!(get_playlist_detail_core(&pool, second)
+            .await
+            .unwrap()
+            .unwrap()
+            .canonical_id
+            .is_none());
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM playlist_sources WHERE expansion_complete IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending, 2);
+    }
+
+    #[tokio::test]
+    async fn sanitization_keeps_exact_copies_together_and_disambiguates_only_the_other_content() {
+        let pool = migrated_pool().await;
+        let account = seed_account(&pool, "spotify", "Sanitize").await;
+        let tracks = seed_tracks(&pool).await;
+        let first = seed_remote(&pool, account, "sanitize-a", "Mix", &tracks[..2]).await;
+        let different =
+            seed_remote(&pool, account, "sanitize-c", "MIX", &[tracks[0], tracks[2]]).await;
+        let copy = seed_remote(&pool, account, "sanitize-b", " mix ", &tracks[..2]).await;
+        let different_copy =
+            seed_remote(&pool, account, "sanitize-d", "mix", &[tracks[0], tracks[2]]).await;
+        for playlist_id in [first, different, copy, different_copy] {
+            crate::services::playlist_canonical::record_playlist_source_expansion(
+                &pool,
+                playlist_id,
+            )
+            .await
+            .expect("expansión completa");
+        }
+
+        let stats = sanitize_playlists_in_pool(&pool)
+            .await
+            .expect("sanitización global");
+
+        assert_eq!(stats.playlist_names_disambiguated, 2);
+        let first_detail = get_playlist_detail_core(&pool, first)
+            .await
+            .unwrap()
+            .unwrap();
+        let copy_detail = get_playlist_detail_core(&pool, copy)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first_detail.canonical_id, copy_detail.canonical_id);
+        assert_eq!(copy_detail.sources.len(), 2);
+        assert_eq!(copy_detail.playlist.name, " mix ");
+        let different_detail = get_playlist_detail_core(&pool, different)
+            .await
+            .unwrap()
+            .unwrap();
+        let different_copy_detail = get_playlist_detail_core(&pool, different_copy)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            different_detail.canonical_id,
+            different_copy_detail.canonical_id
+        );
+        assert_eq!(different_detail.sources.len(), 2);
+        assert_eq!(different_detail.playlist.name, "MIX (2)");
+        assert_eq!(different_copy_detail.playlist.name, "MIX (2)");
     }
 }
