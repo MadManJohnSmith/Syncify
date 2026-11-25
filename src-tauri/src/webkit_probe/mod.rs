@@ -6,6 +6,7 @@
 
 mod child;
 mod environment;
+pub mod policy;
 mod report;
 mod supervisor;
 
