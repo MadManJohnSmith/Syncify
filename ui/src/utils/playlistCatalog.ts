@@ -100,11 +100,11 @@ function normalizeService(value: string | null | undefined): string | null {
     return normalized && normalized !== 'local' ? normalized : null;
 }
 
-function playlistServiceKey(playlist: Playlist): string | null {
+export function getPlaylistServiceKey(playlist: Playlist): string | null {
     return normalizeService(playlist.source_service) ?? normalizeService(playlist.service_name);
 }
 
-function serviceDisplayName(key: string): string {
+export function formatPlaylistServiceName(key: string): string {
     return SERVICE_NAMES[key] ?? key.split('_').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
 }
 
@@ -117,7 +117,7 @@ export function aggregatePlaylists(
     const services = new Map<string, PlaylistListItem[]>();
 
     for (const playlist of playlists) {
-        const serviceKey = playlist.is_smart ? null : playlistServiceKey(playlist);
+        const serviceKey = playlist.is_smart ? null : getPlaylistServiceKey(playlist);
         const category: PlaylistCategory = playlist.is_smart ? 'smart' : serviceKey ? 'service' : 'local';
         const artwork = presentation[playlist.id];
         const providerImageUrl = category === 'service' ? (artwork?.providerImageUrl?.trim() || null) : null;
@@ -144,7 +144,7 @@ export function aggregatePlaylists(
         local,
         services: Array.from(services, ([id, groupPlaylists]) => ({
             id,
-            name: serviceDisplayName(id),
+            name: formatPlaylistServiceName(id),
             playlists: groupPlaylists,
         })).sort((a, b) => a.name.localeCompare(b.name)),
         smart,

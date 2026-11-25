@@ -158,7 +158,8 @@ describe('PlaylistView', () => {
         expect(exportCall).toBeDefined();
         expect(exportCall?.args).toEqual({ playlistId: 1, filePath: '/Users/tardis/Music/Chill Vibes.m3u' });
         expect(invokeCalls.find(c => c.cmd === 'add_batch_to_queue')).toBeUndefined();
-        expect(invokeCalls.filter(c => c.cmd === 'get_local_playlist_tracks')).toHaveLength(1);
+        expect(invokeCalls.filter(c => c.cmd === 'get_local_playlist_tracks' && c.args.limit === 100)).toHaveLength(1);
+        expect(invokeCalls.filter(c => c.cmd === 'get_local_playlist_tracks' && c.args.limit === 4)).toHaveLength(1);
 
         // Honest counts banner + collapsible missing list
         expect(wrapper.text()).toContain('M3U exported · 500/501 tracks verified');
@@ -274,7 +275,7 @@ describe('PlaylistView', () => {
         // PL02 (#155): la misma pista dos veces en posiciones distintas; quitar
         // una fila no puede borrar las demás repeticiones del mismo track id.
         const invokeCalls: { cmd: string; args: any }[] = [];
-        let playlistFetches = 0;
+        let removed = false;
         const duplicatePage = makePage([
             { id: 301, position: 1, title: 'Chill Track 1', artist_name: 'Artist 1', album_name: 'Album 1', duration_ms: 180000 },
             { id: 301, position: 3, title: 'Chill Track 1', artist_name: 'Artist 1', album_name: 'Album 1', duration_ms: 180000 }
@@ -283,12 +284,15 @@ describe('PlaylistView', () => {
             invokeCalls.push({ cmd, args });
             if (cmd === 'get_playlists') return mockPlaylists;
             if (cmd === 'get_local_playlist_tracks') {
-                playlistFetches += 1;
-                return playlistFetches === 1
-                    ? duplicatePage
-                    : makePage([{ id: 301, position: 1, title: 'Chill Track 1', artist_name: 'Artist 1', album_name: 'Album 1', duration_ms: 180000 }]);
+                if (args?.limit === 4) return duplicatePage;
+                return removed
+                    ? makePage([{ id: 301, position: 1, title: 'Chill Track 1', artist_name: 'Artist 1', album_name: 'Album 1', duration_ms: 180000 }])
+                    : duplicatePage;
             }
-            if (cmd === 'remove_from_playlist') return 1;
+            if (cmd === 'remove_from_playlist') {
+                removed = true;
+                return 1;
+            }
             return null;
         });
 
@@ -416,6 +420,7 @@ describe('PlaylistView', () => {
         await flushPromises();
 
         expect(calls.filter(c => c.cmd === 'get_local_playlist_tracks')).toEqual([
+            { cmd: 'get_local_playlist_tracks', args: { playlistId: 1, offset: 0, limit: 4 } },
             { cmd: 'get_local_playlist_tracks', args: { playlistId: 1, offset: 0, limit: 100 } },
         ]);
         expect(wrapper.findAll('.track-row').length).toBeGreaterThan(0);
@@ -439,7 +444,7 @@ describe('PlaylistView', () => {
             if (cmd === 'get_local_playlist_tracks') {
                 const offset = Number(args?.offset ?? 0);
                 const limit = Number(args?.limit ?? 0);
-                offsets.push(offset);
+                if (Number(args?.limit) === 100) offsets.push(offset);
                 const pageTracks = tracks.slice(offset, offset + limit);
                 return {
                     tracks: pageTracks,
@@ -482,7 +487,7 @@ describe('PlaylistView', () => {
             if (cmd === 'get_playlists') return mockPlaylists;
             if (cmd === 'get_local_playlist_tracks') {
                 const offset = Number(args?.offset ?? 0);
-                offsets.push(offset);
+                if (Number(args?.limit) === 100) offsets.push(offset);
                 if (offset === 100 && failSecondPage) throw new Error('page two is unavailable');
                 const pageTracks = Array.from({ length: 100 }, (_, index) => ({
                     id: offset + index + 1,

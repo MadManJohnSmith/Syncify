@@ -4,7 +4,6 @@
     :style="wrapperStyle"
     data-testid="playlist-cover"
     :data-cover-kind="showProvider ? 'provider' : tiles.length ? 'mosaic' : 'fallback'"
-    :data-tile-count="tiles.length"
   >
     <img
       v-if="showProvider"
