@@ -2138,15 +2138,16 @@ impl QobuzDownloader {
                 }
             }
 
-            let (token, track, stream_res, downloaded_bytes) = if let Some((
-                _account_id,
+            let (account_id, token, track, stream_res, downloaded_bytes) = if let Some((
+                account_id,
                 token,
                 track,
                 stream_res,
                 downloaded_bytes,
-            )) = resolved_stream_context
+            )) =
+                resolved_stream_context
             {
-                (token, track, stream_res, downloaded_bytes)
+                (Some(account_id), token, track, stream_res, downloaded_bytes)
             } else if candidate_account_ids.is_empty() {
                 // Fallback for cases with no pool or no candidate accounts in SQLite
                 let token = match self.resolve_token(db_opt).await {
@@ -2233,7 +2234,7 @@ impl QobuzDownloader {
                     )
                     .await?;
 
-                (token, track, stream_res, downloaded_bytes)
+                (None, token, track, stream_res, downloaded_bytes)
             } else {
                 let err = last_error.unwrap_or_else(|| {
                 anyhow!("RequiresAuth: Tu cuenta de Qobuz está desconectada. Inicia sesión en Syncify (Ajustes > Cuentas).")
@@ -2243,6 +2244,18 @@ impl QobuzDownloader {
                 return Err(err);
             };
             let token_ref = Some(token.as_str());
+            let cover_identity = account_id.and_then(|account_id| {
+                track
+                    .album
+                    .as_ref()
+                    .and_then(|album| album.id.as_deref())
+                    .or(request.service_album_id.as_deref())
+                    .and_then(|edition_id| {
+                        crate::download::cover_art::CoverIdentity::new(
+                            "qobuz", account_id, edition_id,
+                        )
+                    })
+            });
 
             // 5. La transferencia y la validación del payload ya ocurrieron por
             // cuenta (o en la cuenta única del carril sin plan); aquí solo queda
@@ -2256,10 +2269,34 @@ impl QobuzDownloader {
                 phase_tracker,
                 token_ref,
                 db_opt,
+                cover_identity,
+                cancel_token,
                 lyrics_identity,
             )
             .await
         })
+    }
+
+    async fn fetch_static_cover_for_qobuz(
+        client: &reqwest::Client,
+        url: &str,
+        identity: Option<&crate::download::cover_art::CoverIdentity>,
+        cancel_token: Option<&CancellationToken>,
+        staging_path: &Path,
+    ) -> Result<Option<crate::download::cover_art::CoverFetch>, anyhow::Error> {
+        match crate::download::cover_art::fetch_cover(client, url, identity, cancel_token).await {
+            Ok(cover) => Ok(Some(cover)),
+            Err(crate::download::cover_art::CoverError::Cancelled) => {
+                if let Err(error) = tokio::fs::remove_file(staging_path).await {
+                    warn!(path = %staging_path.display(), %error, "[Qobuz] Failed to clean cancelled staging payload");
+                }
+                Err(anyhow!("Download cancelled by user"))
+            }
+            Err(error) => {
+                debug!(url, %error, "[Qobuz] Static cover unavailable");
+                Ok(None)
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2273,6 +2310,8 @@ impl QobuzDownloader {
         mut phase_tracker: DownloadPhaseTracker,
         token_ref: Option<&'a str>,
         db_opt: Option<&'a sqlx::SqlitePool>,
+        cover_identity: Option<crate::download::cover_art::CoverIdentity>,
+        cancel_token: Option<&'a CancellationToken>,
         lyrics_identity: LyricsTrackIdentity,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
@@ -2439,20 +2478,30 @@ impl QobuzDownloader {
 
                 let mut raw_jpeg_bytes: Option<Vec<u8>> = None;
                 if let Some(ref curl) = cover_url {
-                    match self.client.get(curl).send().await {
-                        Ok(resp) if resp.status().is_success() => {
-                            if let Ok(bytes) = resp.bytes().await {
-                                if !bytes.is_empty() {
-                                    let cover_staging = staging_dir
-                                        .join(format!("{}.cover.jpg", sanitize_filename(item_id)));
-                                    let _ = tokio::fs::write(&cover_staging, &bytes).await;
-                                    staged_cover_jpg_path = Some(cover_staging);
-                                    raw_jpeg_bytes = Some(bytes.to_vec());
-                                    has_cover_cached = true;
-                                }
-                            }
+                    if let Some(cover) = QobuzDownloader::fetch_static_cover_for_qobuz(
+                        &self.client,
+                        curl,
+                        cover_identity.as_ref(),
+                        cancel_token,
+                        staging_path,
+                    )
+                    .await?
+                    {
+                        let cover_staging =
+                            staging_dir.join(format!("{}.cover.jpg", sanitize_filename(item_id)));
+                        if let Err(error) =
+                            tokio::fs::write(&cover_staging, cover.bytes.as_ref()).await
+                        {
+                            warn!(
+                                path = %cover_staging.display(),
+                                %error,
+                                "[Qobuz] Failed to write static cover staging sidecar"
+                            );
+                        } else {
+                            staged_cover_jpg_path = Some(cover_staging);
                         }
-                        _ => {}
+                        raw_jpeg_bytes = Some(cover.bytes.to_vec());
+                        has_cover_cached = cover.cache_hit;
                     }
                 }
 
@@ -3709,6 +3758,48 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn qobuz_static_cover_cancellation_aborts_and_cleans_staging() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let staging = dir.path().join("track.part");
+        std::fs::write(&staging, b"fLaC").unwrap();
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let error = QobuzDownloader::fetch_static_cover_for_qobuz(
+            &reqwest::Client::new(),
+            "http://127.0.0.1:9/cover.jpg",
+            None,
+            Some(&token),
+            &staging,
+        )
+        .await
+        .expect_err("cancellation must abort the download");
+
+        assert!(error.to_string().contains("Download cancelled by user"));
+        assert!(!staging.exists());
+    }
+
+    #[tokio::test]
+    async fn qobuz_static_cover_ordinary_failure_remains_best_effort() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let staging = dir.path().join("track.part");
+        std::fs::write(&staging, b"fLaC").unwrap();
+
+        let cover = QobuzDownloader::fetch_static_cover_for_qobuz(
+            &reqwest::Client::new(),
+            "not-a-url",
+            None,
+            None,
+            &staging,
+        )
+        .await
+        .expect("ordinary cover failure must not abort audio");
+
+        assert!(cover.is_none());
+        assert!(staging.exists());
+    }
+
     #[test]
     fn qobuz_preview_is_not_full_flac_or_320() {
         let preview = b"ID3\x04\x00\x00\x00\x00\x00\x00\xff\xfb\x90\x00";
@@ -3844,6 +3935,8 @@ mod tests {
                 &staged,
                 1_200_588,
                 DownloadPhaseTracker::new(),
+                None,
+                None,
                 None,
                 None,
                 LyricsTrackIdentity::Direct,
