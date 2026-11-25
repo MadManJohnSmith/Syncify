@@ -8,7 +8,7 @@ use reqwest::Client;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use tokio::sync::watch;
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -180,7 +180,6 @@ struct CacheConfig {
     ttl: Duration,
     max_entries: usize,
     max_bytes: usize,
-    max_in_flight: usize,
     max_cover_bytes: usize,
 }
 
@@ -190,7 +189,6 @@ impl Default for CacheConfig {
             ttl: DEFAULT_TTL,
             max_entries: MAX_CACHE_ENTRIES,
             max_bytes: MAX_CACHE_BYTES,
-            max_in_flight: MAX_IN_FLIGHT,
             max_cover_bytes: MAX_COVER_BYTES,
         }
     }
@@ -275,6 +273,7 @@ impl CacheState {
 struct CacheInner {
     config: CacheConfig,
     state: Mutex<CacheState>,
+    request_slots: Arc<Semaphore>,
 }
 
 /// Bounded, process-local cache for immutable static cover bytes.
@@ -289,13 +288,15 @@ impl CoverCache {
             inner: Arc::new(CacheInner {
                 config: CacheConfig::default(),
                 state: Mutex::new(CacheState::new()),
+                request_slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
             }),
         }
     }
 
     /// Fetch a cover, sharing one in-flight request and then reusing its bytes
-    /// until TTL/eviction. A missing or invalid identity bypasses the cache.
-    /// Cancellation stops this caller's wait, never another caller's retrieval.
+    /// until TTL/eviction. A missing or invalid identity bypasses the cache but
+    /// still shares the global request budget. Cancellation stops this caller's
+    /// wait, never another caller's retrieval.
     pub async fn fetch(
         &self,
         client: &Client,
@@ -307,23 +308,13 @@ impl CoverCache {
             return Err(CoverError::Cancelled);
         }
         let Some(identity) = identity else {
-            return fetch_cover_uncached(client, url, cancel_token)
-                .await
-                .map(|bytes| CoverFetch {
-                    bytes,
-                    cache_hit: false,
-                });
+            return self.fetch_uncached_limited(client, url, cancel_token).await;
         };
         let Ok(key) = CoverKey::new(url, identity.clone()) else {
-            return fetch_cover_uncached(client, url, cancel_token)
-                .await
-                .map(|bytes| CoverFetch {
-                    bytes,
-                    cache_hit: false,
-                });
+            return self.fetch_uncached_limited(client, url, cancel_token).await;
         };
 
-        match self.start(key, client.clone()) {
+        match self.start(key, client.clone(), cancel_token).await? {
             Start::Hit(value) => Ok(value),
             Start::Flight {
                 receiver,
@@ -335,36 +326,74 @@ impl CoverCache {
                     value
                 })
             }
-            Start::Bypass => fetch_cover_uncached(client, url, cancel_token)
-                .await
-                .map(|bytes| CoverFetch {
-                    bytes,
-                    cache_hit: false,
-                }),
         }
     }
 
-    fn start(&self, key: CoverKey, client: Client) -> Start {
+    async fn fetch_uncached_limited(
+        &self,
+        client: &Client,
+        url: &str,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Result<CoverFetch, CoverError> {
+        let _permit = self.acquire_request_slot(cancel_token).await?;
+        fetch_cover_uncached(client, url, cancel_token)
+            .await
+            .map(|bytes| CoverFetch {
+                bytes,
+                cache_hit: false,
+            })
+    }
+
+    async fn acquire_request_slot(
+        &self,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Result<OwnedSemaphorePermit, CoverError> {
+        tokio::select! {
+            biased;
+            _ = wait_for_cancellation(cancel_token) => Err(CoverError::Cancelled),
+            permit = self.inner.request_slots.clone().acquire_owned() => {
+                permit.map_err(|_| CoverError::FlightClosed)
+            }
+        }
+    }
+
+    fn lookup_locked(state: &mut CacheState, key: &CoverKey, ttl: Duration) -> Option<Start> {
+        state.purge_expired(Instant::now(), ttl);
+        if let Some(entry) = state.ready.get(key) {
+            let bytes = entry.value.bytes.clone();
+            state.touch(key);
+            return Some(Start::Hit(CoverFetch {
+                bytes,
+                cache_hit: true,
+            }));
+        }
+        state.in_flight.get(key).map(|receiver| Start::Flight {
+            receiver: receiver.clone(),
+            cache_hit: true,
+        })
+    }
+
+    fn lookup(&self, key: &CoverKey) -> Option<Start> {
+        let mut state = self.inner.state.lock().expect("cover cache mutex poisoned");
+        Self::lookup_locked(&mut state, key, self.inner.config.ttl)
+    }
+
+    async fn start(
+        &self,
+        key: CoverKey,
+        client: Client,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Result<Start, CoverError> {
+        if let Some(start) = self.lookup(&key) {
+            return Ok(start);
+        }
+        let permit = self.acquire_request_slot(cancel_token).await?;
         let (receiver, sender) = {
             let mut state = self.inner.state.lock().expect("cover cache mutex poisoned");
-            let now = Instant::now();
-            state.purge_expired(now, self.inner.config.ttl);
-            if let Some(entry) = state.ready.get(&key) {
-                let bytes = entry.value.bytes.clone();
-                state.touch(&key);
-                return Start::Hit(CoverFetch {
-                    bytes,
-                    cache_hit: true,
-                });
-            }
-            if let Some(receiver) = state.in_flight.get(&key) {
-                return Start::Flight {
-                    receiver: receiver.clone(),
-                    cache_hit: true,
-                };
-            }
-            if state.in_flight.len() >= self.inner.config.max_in_flight {
-                return Start::Bypass;
+            // Recheck and insert under the same lock. Separate lookup/insert
+            // steps let two first callers overwrite each other's receiver.
+            if let Some(start) = Self::lookup_locked(&mut state, &key, self.inner.config.ttl) {
+                return Ok(start);
             }
             let (sender, receiver) = watch::channel(None);
             state.in_flight.insert(key.clone(), receiver.clone());
@@ -373,12 +402,12 @@ impl CoverCache {
 
         let cache = self.clone();
         tokio::spawn(async move {
-            cache.complete_flight(key, client, sender).await;
+            cache.complete_flight(key, client, sender, permit).await;
         });
-        Start::Flight {
+        Ok(Start::Flight {
             receiver,
             cache_hit: false,
-        }
+        })
     }
 
     async fn complete_flight(
@@ -386,6 +415,7 @@ impl CoverCache {
         key: CoverKey,
         client: Client,
         sender: watch::Sender<Option<Result<CoverFetch, CoverError>>>,
+        _permit: OwnedSemaphorePermit,
     ) {
         let result = download_cover(&client, &key.url, self.inner.config.max_cover_bytes, None)
             .await
@@ -418,6 +448,7 @@ impl CoverCache {
         max_entries: usize,
         max_bytes: usize,
         max_cover_bytes: usize,
+        max_in_flight: usize,
     ) -> Self {
         Self {
             inner: Arc::new(CacheInner {
@@ -425,10 +456,10 @@ impl CoverCache {
                     ttl,
                     max_entries,
                     max_bytes,
-                    max_in_flight: MAX_IN_FLIGHT,
                     max_cover_bytes,
                 },
                 state: Mutex::new(CacheState::new()),
+                request_slots: Arc::new(Semaphore::new(max_in_flight)),
             }),
         }
     }
@@ -440,7 +471,6 @@ enum Start {
         receiver: watch::Receiver<Option<Result<CoverFetch, CoverError>>>,
         cache_hit: bool,
     },
-    Bypass,
 }
 
 async fn wait_for_flight(
@@ -487,7 +517,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
-    use tokio::sync::Notify;
+    use tokio::sync::{Barrier, Notify};
     use tokio::task::JoinSet;
 
     const COVER: &[u8] = b"synthetic-cover";
@@ -810,7 +840,8 @@ mod tests {
         let server = start_server_with(4, Duration::ZERO, Vec::new()).await;
         let first_url = format!("{}/first.png", server.base);
         let second_url = format!("{}/second.png", server.base);
-        let cache = CoverCache::with_limits(Duration::from_millis(20), 1, 1024, 1024);
+        let cache =
+            CoverCache::with_limits(Duration::from_millis(20), 1, 1024, 1024, MAX_IN_FLIGHT);
         let client = Client::new();
         let identity = CoverIdentity::new("test", 7, "album-1").unwrap();
 
@@ -841,7 +872,13 @@ mod tests {
         let server = start_server_with(3, Duration::ZERO, Vec::new()).await;
         let first_url = format!("{}/first.png", server.base);
         let second_url = format!("{}/second.png", server.base);
-        let cache = CoverCache::with_limits(Duration::from_secs(60), 4, COVER.len(), COVER.len());
+        let cache = CoverCache::with_limits(
+            Duration::from_secs(60),
+            4,
+            COVER.len(),
+            COVER.len(),
+            MAX_IN_FLIGHT,
+        );
         let client = Client::new();
         let identity = CoverIdentity::new("test", 7, "album-1").unwrap();
 
@@ -861,6 +898,79 @@ mod tests {
         assert_eq!(server.requests.load(Ordering::SeqCst), 3);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn simultaneous_first_callers_share_one_flight_with_spare_capacity() {
+        let rounds = 25;
+        let callers = 16;
+        let server = start_server_with(rounds, Duration::from_millis(10), Vec::new()).await;
+        let url = format!("{}/album.png", server.base);
+        let client = Client::new();
+        let identity = CoverIdentity::new("test", 7, "album-1").unwrap();
+
+        for _ in 0..rounds {
+            let cache = CoverCache::with_limits(Duration::from_secs(60), 4, 1024, 1024, callers);
+            let barrier = Arc::new(Barrier::new(callers));
+            let mut tasks = JoinSet::new();
+            for _ in 0..callers {
+                let cache = cache.clone();
+                let client = client.clone();
+                let url = url.clone();
+                let identity = identity.clone();
+                let barrier = barrier.clone();
+                tasks.spawn(async move {
+                    barrier.wait().await;
+                    cache.fetch(&client, &url, Some(&identity), None).await
+                });
+            }
+            let mut hits = 0;
+            while let Some(result) = tasks.join_next().await {
+                let cover = result.unwrap().unwrap();
+                assert_eq!(cover.bytes.as_ref(), COVER);
+                hits += usize::from(cover.cache_hit);
+            }
+            assert_eq!(hits, callers - 1);
+        }
+        assert_eq!(server.requests.load(Ordering::SeqCst), rounds);
+    }
+
+    #[tokio::test]
+    async fn capacity_wait_preserves_single_flight_for_the_same_key() {
+        let server = start_server_with(3, Duration::from_millis(500), Vec::new()).await;
+        let first_url = format!("{}/first.png", server.base);
+        let second_url = format!("{}/second.png", server.base);
+        let cache = CoverCache::with_limits(Duration::from_secs(60), 4, 1024, 1024, 1);
+        let client = Client::new();
+        let identity = CoverIdentity::new("test", 7, "album-1").unwrap();
+        let request_started = server.started.notified();
+        let first_cache = cache.clone();
+        let first_client = client.clone();
+        let first_identity = identity.clone();
+        let first = tokio::spawn(async move {
+            first_cache
+                .fetch(&first_client, &first_url, Some(&first_identity), None)
+                .await
+        });
+        request_started.await;
+
+        let mut waiting = JoinSet::new();
+        for _ in 0..2 {
+            let cache = cache.clone();
+            let client = client.clone();
+            let url = second_url.clone();
+            let identity = identity.clone();
+            waiting.spawn(async move { cache.fetch(&client, &url, Some(&identity), None).await });
+        }
+        first.await.unwrap().unwrap();
+        let mut hits = 0;
+        while let Some(result) = waiting.join_next().await {
+            let cover = result.unwrap().unwrap();
+            assert_eq!(cover.bytes.as_ref(), COVER);
+            hits += usize::from(cover.cache_hit);
+        }
+        assert_eq!(hits, 1);
+        assert_eq!(server.requests.load(Ordering::SeqCst), 2);
+    }
+
     #[tokio::test]
     async fn oversized_payload_is_rejected_and_not_cached() {
         let server = start_server(2).await;
@@ -870,6 +980,7 @@ mod tests {
             4,
             1024,
             COVER.len().saturating_sub(1),
+            MAX_IN_FLIGHT,
         );
         let client = Client::new();
         let identity = CoverIdentity::new("test", 7, "album-1").unwrap();

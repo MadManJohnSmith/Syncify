@@ -28,9 +28,13 @@ el proveedor, la cuenta y la edición del álbum. La clave combina:
 
 Si falta identidad, la URL contiene user-info o es inválida, se hace fetch sin
 caché. Los errores y los payloads vacíos no se cachean. La caché es de proceso,
-con TTL de 10 minutos, límite de 64 entradas y 32 MiB, máximo de 64 vuelos en
-curso y máximo de 16 MiB por payload. Un vuelo compartido no pertenece a la
-cancelación de un waiter: cancelar una llamada no aborta a las demás.
+con TTL de 10 minutos, límite de 64 entradas y 32 MiB, máximo de 64 peticiones
+en curso y máximo de 16 MiB por payload. Todos los fetch —incluidos los que no
+entran en caché— esperan slot cuando el presupuesto está lleno; no hay bypass
+que pierda el single-flight o vuelva ilimitada la concurrencia. Un vuelo
+compartido no pertenece a la cancelación de un waiter: cancelar una llamada no
+aborta a las demás. En Qobuz y en la entrega MP3, una cancelación sí aborta la
+descarga; Qobuz limpia su `.part` y MP3 no se etiqueta ni se completa.
 
 Los valores son `Arc<[u8]>` inmutables. Cada adaptador conserva su propio staging
 y escribe su sidecar; no se comparte un fichero mutable entre pistas.
@@ -53,8 +57,12 @@ como garantía: el servidor local y el scheduler introducen ruido.
 - `dlx05_cover_dedupe_test`: baseline, ahorro 2/12, bytes idénticos y staging
   independiente por pista.
 - `download::cover_art::tests`: aislamiento por proveedor/cuenta/edición/URL,
-  identidad ambigua, URL canónica, fallos HTTP y vacíos, cancelación, TTL, LRU,
-  presupuesto de bytes y payload sobredimensionado.
+  identidad ambigua, URL canónica, fallos HTTP y vacíos, cancelación, espera de
+  capacidad, primeros concurrentes con cupo holgado sin perder single-flight,
+  TTL, LRU, presupuesto de bytes y payload sobredimensionado.
+- `download::qobuz::tests` y `download::orchestrator::tests`: la cancelación de
+  portada aborta y limpia Qobuz; en MP3 aborta sin reescribir el fichero. Un
+  fallo ordinario de portada sigue siendo best-effort.
 
 Reproducción local, desde la raíz y con el `GATE` del entorno:
 

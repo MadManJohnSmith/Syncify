@@ -490,7 +490,7 @@ impl DownloadOrchestrator {
         let mut tags = crate::download::id3_writer::Mp3Tags::from_download_request(request);
         // La portada no viaja en `DownloadRequest`, solo su URL: se descarga
         // aquí, en el único enganche de entrega MP3. Un fallo de red no tumba
-        // la entrega; solo deja el APIC sin escribir.
+        // la entrega; solo deja el APIC sin escribir. La cancelación sí aborta.
         if let Some(url) = request
             .cover_url
             .as_deref()
@@ -524,6 +524,9 @@ impl DownloadOrchestrator {
                             warn!(url, %error, "[D16] portada no válida; se omite el APIC")
                         }
                     }
+                }
+                Err(crate::download::cover_art::CoverError::Cancelled) => {
+                    return Err(anyhow!("Download cancelled by user"));
                 }
                 Err(error) => {
                     warn!(url, %error, "[D16] no se pudo obtener la portada; se omite el APIC")
@@ -5604,5 +5607,33 @@ mod tests {
             .await
             .expect("FLAC no se toca");
         assert_eq!(std::fs::read(&flac).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn d16_cover_cancellation_aborts_delivery_without_tagging() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mp3 = dir.path().join("cancelled.mp3");
+        let original = [0xFF, 0xFB, 0x90, 0x64, 0, 0, 0, 0];
+        std::fs::write(&mp3, original).unwrap();
+        let request = DownloadRequest {
+            track_name: "Tema".to_string(),
+            artist_name: "Artista".to_string(),
+            album_name: "Álbum".to_string(),
+            cover_url: Some("http://127.0.0.1:9/cover.jpg".to_string()),
+            ..DownloadRequest::default()
+        };
+        let delivered = DownloadResult {
+            file_path: mp3.to_string_lossy().into_owned(),
+            ..DownloadResult::default()
+        };
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let error = DownloadOrchestrator::tag_mp3_delivery(&request, delivered, Some(&token))
+            .await
+            .expect_err("cancellation must abort MP3 delivery");
+
+        assert!(error.to_string().contains("Download cancelled by user"));
+        assert_eq!(std::fs::read(&mp3).unwrap(), original);
     }
 }

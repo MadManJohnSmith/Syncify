@@ -2277,6 +2277,28 @@ impl QobuzDownloader {
         })
     }
 
+    async fn fetch_static_cover_for_qobuz(
+        client: &reqwest::Client,
+        url: &str,
+        identity: Option<&crate::download::cover_art::CoverIdentity>,
+        cancel_token: Option<&CancellationToken>,
+        staging_path: &Path,
+    ) -> Result<Option<crate::download::cover_art::CoverFetch>, anyhow::Error> {
+        match crate::download::cover_art::fetch_cover(client, url, identity, cancel_token).await {
+            Ok(cover) => Ok(Some(cover)),
+            Err(crate::download::cover_art::CoverError::Cancelled) => {
+                if let Err(error) = tokio::fs::remove_file(staging_path).await {
+                    warn!(path = %staging_path.display(), %error, "[Qobuz] Failed to clean cancelled staging payload");
+                }
+                Err(anyhow!("Download cancelled by user"))
+            }
+            Err(error) => {
+                debug!(url, %error, "[Qobuz] Static cover unavailable");
+                Ok(None)
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn process_downloaded_staging<'a>(
         &'a self,
@@ -2456,34 +2478,30 @@ impl QobuzDownloader {
 
                 let mut raw_jpeg_bytes: Option<Vec<u8>> = None;
                 if let Some(ref curl) = cover_url {
-                    match crate::download::cover_art::fetch_cover(
+                    if let Some(cover) = QobuzDownloader::fetch_static_cover_for_qobuz(
                         &self.client,
                         curl,
                         cover_identity.as_ref(),
                         cancel_token,
+                        staging_path,
                     )
-                    .await
+                    .await?
                     {
-                        Ok(cover) => {
-                            let cover_staging = staging_dir
-                                .join(format!("{}.cover.jpg", sanitize_filename(item_id)));
-                            if let Err(error) =
-                                tokio::fs::write(&cover_staging, cover.bytes.as_ref()).await
-                            {
-                                warn!(
-                                    path = %cover_staging.display(),
-                                    %error,
-                                    "[Qobuz] Failed to write static cover staging sidecar"
-                                );
-                            } else {
-                                staged_cover_jpg_path = Some(cover_staging);
-                            }
-                            raw_jpeg_bytes = Some(cover.bytes.to_vec());
-                            has_cover_cached = cover.cache_hit;
+                        let cover_staging =
+                            staging_dir.join(format!("{}.cover.jpg", sanitize_filename(item_id)));
+                        if let Err(error) =
+                            tokio::fs::write(&cover_staging, cover.bytes.as_ref()).await
+                        {
+                            warn!(
+                                path = %cover_staging.display(),
+                                %error,
+                                "[Qobuz] Failed to write static cover staging sidecar"
+                            );
+                        } else {
+                            staged_cover_jpg_path = Some(cover_staging);
                         }
-                        Err(error) => {
-                            debug!(url = %curl, %error, "[Qobuz] Static cover unavailable");
-                        }
+                        raw_jpeg_bytes = Some(cover.bytes.to_vec());
+                        has_cover_cached = cover.cache_hit;
                     }
                 }
 
@@ -3738,6 +3756,48 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn qobuz_static_cover_cancellation_aborts_and_cleans_staging() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let staging = dir.path().join("track.part");
+        std::fs::write(&staging, b"fLaC").unwrap();
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let error = QobuzDownloader::fetch_static_cover_for_qobuz(
+            &reqwest::Client::new(),
+            "http://127.0.0.1:9/cover.jpg",
+            None,
+            Some(&token),
+            &staging,
+        )
+        .await
+        .expect_err("cancellation must abort the download");
+
+        assert!(error.to_string().contains("Download cancelled by user"));
+        assert!(!staging.exists());
+    }
+
+    #[tokio::test]
+    async fn qobuz_static_cover_ordinary_failure_remains_best_effort() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let staging = dir.path().join("track.part");
+        std::fs::write(&staging, b"fLaC").unwrap();
+
+        let cover = QobuzDownloader::fetch_static_cover_for_qobuz(
+            &reqwest::Client::new(),
+            "not-a-url",
+            None,
+            None,
+            &staging,
+        )
+        .await
+        .expect("ordinary cover failure must not abort audio");
+
+        assert!(cover.is_none());
+        assert!(staging.exists());
     }
 
     #[test]
