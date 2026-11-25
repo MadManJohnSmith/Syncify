@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildPlaylistMosaic, reconcilePlaylistMosaic, type PlaylistMosaicCache } from '@/utils/playlistCatalog';
+import { buildPlaylistMosaic, reconcilePlaylistMosaic, aggregatePlaylists, type PlaylistMosaicCache } from '@/utils/playlistCatalog';
+import type { Playlist } from '@/api/types';
 
 describe('buildPlaylistMosaic', () => {
     it('toma hasta cuatro portadas distintas en orden y omite huecos y duplicados', () => {
@@ -73,5 +74,81 @@ describe('reconcilePlaylistMosaic', () => {
             { src: 'https://cdn.test/b.jpg', itemId: 2 },
             { src: 'https://cdn.test/a.jpg', itemId: 1 },
         ]);
+    });
+});
+
+describe('aggregatePlaylists', () => {
+    it('agrupa locales, servicio y smart y aplica la portada correcta a cada una', () => {
+        const playlists: Playlist[] = [
+            { id: 1, name: 'Local', description: null, track_count: 2, image_url: 'https://cdn.test/fallback.jpg' },
+            {
+                id: 2,
+                name: 'Remota',
+                description: null,
+                track_count: 3,
+                image_url: 'https://cdn.test/fallback.jpg',
+                service_name: 'Spotify',
+            },
+            {
+                id: 3,
+                name: 'Smart',
+                description: null,
+                track_count: 4,
+                image_url: 'https://cdn.test/ignored.jpg',
+                service_name: 'Qobuz',
+                is_smart: true,
+            },
+        ];
+        const localTiles = [{ src: 'https://cdn.test/local.jpg', itemId: 10 }];
+        const smartTiles = [{ src: 'https://cdn.test/smart.jpg', itemId: 30 }];
+
+        const catalog = aggregatePlaylists(playlists, {
+            1: { tiles: localTiles },
+            2: { providerImageUrl: 'https://cdn.test/provider.jpg', tiles: [] },
+            3: { tiles: smartTiles },
+        });
+
+        expect(catalog.local).toHaveLength(1);
+        expect(catalog.local[0]).toMatchObject({
+            id: 1,
+            category: 'local',
+            coverImageUrl: null,
+            mosaicTiles: localTiles,
+        });
+        expect(catalog.services).toHaveLength(1);
+        expect(catalog.services[0]).toMatchObject({ id: 'spotify', name: 'Spotify' });
+        expect(catalog.services[0].playlists[0]).toMatchObject({
+            id: 2,
+            category: 'service',
+            serviceKey: 'spotify',
+            coverImageUrl: 'https://cdn.test/provider.jpg',
+        });
+        expect(catalog.smart[0]).toMatchObject({
+            id: 3,
+            category: 'smart',
+            serviceKey: null,
+            coverImageUrl: null,
+            mosaicTiles: smartTiles,
+        });
+    });
+
+    it('usa source_service, reconoce servicios nuevos y no confunde local con un proveedor', () => {
+        const playlists: Playlist[] = [
+            { id: 1, name: 'Local', description: null, track_count: 0, service_name: 'local' },
+            {
+                id: 2,
+                name: 'Nuevo',
+                description: null,
+                track_count: 0,
+                service_name: 'spotify',
+                source_service: 'bandcamp',
+            },
+        ];
+
+        const catalog = aggregatePlaylists(playlists, {});
+
+        expect(catalog.local.map(item => item.id)).toEqual([1]);
+        expect(catalog.services.map(group => group.id)).toEqual(['bandcamp']);
+        expect(catalog.services[0].name).toBe('Bandcamp');
     });
 });

@@ -1,3 +1,5 @@
+import type { Playlist } from '@/api/types';
+
 export interface PlaylistMosaicTile {
     src: string;
     itemId: number;
@@ -55,4 +57,96 @@ export function buildPlaylistMosaic(
     }
 
     return tiles;
+}
+
+export type PlaylistCategory = 'local' | 'service' | 'smart';
+
+export interface PlaylistPresentation {
+    /** Imagen persistida del proveedor; el fallback de `get_playlists` no cuenta. */
+    providerImageUrl?: string | null;
+    tiles?: PlaylistMosaicTile[];
+}
+
+export interface PlaylistListItem extends Playlist {
+    category: PlaylistCategory;
+    serviceKey: string | null;
+    coverImageUrl: string | null;
+    mosaicTiles: PlaylistMosaicTile[];
+}
+
+export interface PlaylistServiceGroup {
+    id: string;
+    name: string;
+    playlists: PlaylistListItem[];
+}
+
+export interface PlaylistCatalog {
+    local: PlaylistListItem[];
+    services: PlaylistServiceGroup[];
+    smart: PlaylistListItem[];
+}
+
+const SERVICE_NAMES: Record<string, string> = {
+    spotify: 'Spotify',
+    qobuz: 'Qobuz',
+    tidal: 'Tidal',
+    deezer: 'Deezer',
+    apple_music: 'Apple Music',
+    soundcloud: 'SoundCloud',
+};
+
+function normalizeService(value: string | null | undefined): string | null {
+    const normalized = value?.trim().toLowerCase().replace(/[\s-]+/g, '_');
+    return normalized && normalized !== 'local' ? normalized : null;
+}
+
+function playlistServiceKey(playlist: Playlist): string | null {
+    return normalizeService(playlist.source_service) ?? normalizeService(playlist.service_name);
+}
+
+function serviceDisplayName(key: string): string {
+    return SERVICE_NAMES[key] ?? key.split('_').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
+}
+
+export function aggregatePlaylists(
+    playlists: readonly Playlist[],
+    presentation: Readonly<Record<number, PlaylistPresentation>>,
+): PlaylistCatalog {
+    const local: PlaylistListItem[] = [];
+    const smart: PlaylistListItem[] = [];
+    const services = new Map<string, PlaylistListItem[]>();
+
+    for (const playlist of playlists) {
+        const serviceKey = playlist.is_smart ? null : playlistServiceKey(playlist);
+        const category: PlaylistCategory = playlist.is_smart ? 'smart' : serviceKey ? 'service' : 'local';
+        const artwork = presentation[playlist.id];
+        const providerImageUrl = category === 'service' ? (artwork?.providerImageUrl?.trim() || null) : null;
+        const item: PlaylistListItem = {
+            ...playlist,
+            category,
+            serviceKey,
+            coverImageUrl: providerImageUrl,
+            mosaicTiles: artwork?.tiles ?? [],
+        };
+
+        if (category === 'smart') {
+            smart.push(item);
+        } else if (serviceKey) {
+            const group = services.get(serviceKey) ?? [];
+            group.push(item);
+            services.set(serviceKey, group);
+        } else {
+            local.push(item);
+        }
+    }
+
+    return {
+        local,
+        services: Array.from(services, ([id, groupPlaylists]) => ({
+            id,
+            name: serviceDisplayName(id),
+            playlists: groupPlaylists,
+        })).sort((a, b) => a.name.localeCompare(b.name)),
+        smart,
+    };
 }
