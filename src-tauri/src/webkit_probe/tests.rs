@@ -12,6 +12,9 @@ use super::environment::{
     fingerprint_display, fingerprint_wayland_display, parse_drm_uevent, parse_mesa_package_version,
     select_backend, EnvironmentFingerprint,
 };
+use super::policy::{
+    decide, AttemptLedger, CompositionMode, PolicyInput, ProbeOutcome, RenderingRoute,
+};
 use super::report::{assess, Backend, FrameAssessment, ProbeEvidence, Verdict};
 use super::supervisor::{supervise, Supervision};
 use super::{
@@ -547,4 +550,250 @@ async fn supervisor_reports_spawn_failure_without_panicking() {
     let outcome = supervise(command, Duration::from_secs(1), Duration::from_millis(10)).await;
     assert!(outcome.spawn_error.is_some());
     assert!(!outcome.timed_out);
+}
+
+fn policy_input<'a>(
+    override_mode: Option<CompositionMode>,
+    preference: CompositionMode,
+    probe: ProbeOutcome,
+    fingerprint_complete: bool,
+    fingerprint: &'a str,
+    ledger: &'a AttemptLedger,
+) -> PolicyInput<'a> {
+    PolicyInput {
+        override_mode,
+        preference,
+        probe,
+        fingerprint_complete,
+        fingerprint,
+        ledger,
+    }
+}
+
+#[test]
+fn wk04_explicit_compatible_outranks_preference_and_positive_probe() {
+    let ledger = AttemptLedger::default();
+    let preference = decide(&policy_input(
+        None,
+        CompositionMode::Compatible,
+        ProbeOutcome::Supported,
+        true,
+        "fp-a",
+        &ledger,
+    ));
+    assert_eq!(preference.route, RenderingRoute::Compatible);
+    assert_eq!(preference.reason, "preference-compatible");
+
+    let overridden = decide(&policy_input(
+        Some(CompositionMode::Compatible),
+        CompositionMode::Accelerated,
+        ProbeOutcome::Supported,
+        true,
+        "fp-a",
+        &ledger,
+    ));
+    assert_eq!(overridden.route, RenderingRoute::Compatible);
+    assert_eq!(overridden.reason, "override-compatible");
+}
+
+#[test]
+fn wk04_override_outranks_the_stored_preference_in_both_directions() {
+    let ledger = AttemptLedger::default();
+    let forced = decide(&policy_input(
+        Some(CompositionMode::Accelerated),
+        CompositionMode::Compatible,
+        ProbeOutcome::Unsupported,
+        false,
+        "fp-a",
+        &ledger,
+    ));
+    assert_eq!(forced.route, RenderingRoute::Accelerated);
+    assert_eq!(forced.reason, "override-accelerated");
+
+    // Un override a Auto es un acto explícito de este arranque: manda sobre la
+    // preferencia persistida y vuelve a consultar la sonda.
+    let auto = decide(&policy_input(
+        Some(CompositionMode::Auto),
+        CompositionMode::Compatible,
+        ProbeOutcome::Supported,
+        true,
+        "fp-a",
+        &ledger,
+    ));
+    assert_eq!(auto.route, RenderingRoute::Accelerated);
+    assert_eq!(auto.reason, "probe-supported");
+
+    let stored = decide(&policy_input(
+        None,
+        CompositionMode::Accelerated,
+        ProbeOutcome::Unsupported,
+        false,
+        "fp-a",
+        &ledger,
+    ));
+    assert_eq!(stored.route, RenderingRoute::Accelerated);
+    assert_eq!(stored.reason, "preference-accelerated");
+}
+
+#[test]
+fn wk04_negative_incomplete_or_skipped_probe_falls_back_to_compatible() {
+    let ledger = AttemptLedger::default();
+    for probe in [
+        ProbeOutcome::Unsupported,
+        ProbeOutcome::Inconclusive,
+        ProbeOutcome::Skipped,
+    ] {
+        let decision = decide(&policy_input(
+            None,
+            CompositionMode::Auto,
+            probe,
+            true,
+            "fp-a",
+            &ledger,
+        ));
+        assert_eq!(decision.mode, CompositionMode::Auto);
+        assert_eq!(
+            decision.route,
+            RenderingRoute::Compatible,
+            "sonda {probe:?}"
+        );
+    }
+
+    let incomplete = decide(&policy_input(
+        None,
+        CompositionMode::Auto,
+        ProbeOutcome::Supported,
+        false,
+        "fp-a",
+        &ledger,
+    ));
+    assert_eq!(incomplete.route, RenderingRoute::Compatible);
+    assert_eq!(incomplete.reason, "fingerprint-incomplete");
+
+    let positive = decide(&policy_input(
+        None,
+        CompositionMode::Auto,
+        ProbeOutcome::Supported,
+        true,
+        "fp-a",
+        &ledger,
+    ));
+    assert_eq!(positive.route, RenderingRoute::Accelerated);
+    assert_eq!(positive.reason, "probe-supported");
+}
+
+#[test]
+fn wk04_accelerated_failure_is_not_retried_in_a_loop() {
+    let mut ledger = AttemptLedger::default();
+    assert!(!ledger.blocks_auto_acceleration("fp-a"));
+    ledger.record_failure("fp-a");
+    ledger.record_failure("fp-a");
+    assert!(ledger.blocks_auto_acceleration("fp-a"));
+    assert!(!ledger.blocks_auto_acceleration("fp-b"));
+    assert_eq!(ledger.failed_fingerprint(), Some("fp-a"));
+
+    for attempt in 0..100 {
+        let decision = decide(&policy_input(
+            None,
+            CompositionMode::Auto,
+            ProbeOutcome::Supported,
+            true,
+            "fp-a",
+            &ledger,
+        ));
+        assert_eq!(
+            decision.route,
+            RenderingRoute::Compatible,
+            "el intento {attempt} no puede repetir el arranque acelerado"
+        );
+        assert_eq!(decision.reason, "previous-failure-fingerprint");
+    }
+
+    // Otra clave de fingerprint (driver, WebKitGTK, Mesa o sesión distintos)
+    // rearma el intento automático; la clave que falló sigue bloqueada.
+    let fresh = decide(&policy_input(
+        None,
+        CompositionMode::Auto,
+        ProbeOutcome::Supported,
+        true,
+        "fp-b",
+        &ledger,
+    ));
+    assert_eq!(fresh.route, RenderingRoute::Accelerated);
+
+    ledger.record_success();
+    let recovered = decide(&policy_input(
+        None,
+        CompositionMode::Auto,
+        ProbeOutcome::Supported,
+        true,
+        "fp-a",
+        &ledger,
+    ));
+    assert_eq!(recovered.route, RenderingRoute::Accelerated);
+}
+
+#[test]
+fn wk04_failure_ledger_only_gates_auto_not_an_explicit_opt_in() {
+    let mut ledger = AttemptLedger::default();
+    ledger.record_failure("fp-a");
+
+    // Quien ya eligió `Acelerado` (preferencia u override) mantiene su decisión
+    // aunque el arranque anterior fallara: el marcador protege a `Automático`,
+    // no convierte la preferencia en otra cosa.
+    for override_mode in [None, Some(CompositionMode::Accelerated)] {
+        let decision = decide(&policy_input(
+            override_mode,
+            CompositionMode::Accelerated,
+            ProbeOutcome::Unsupported,
+            false,
+            "fp-a",
+            &ledger,
+        ));
+        assert_eq!(decision.route, RenderingRoute::Accelerated);
+    }
+
+    // Compatible tampoco consulta el marcador para decidir: siempre es compatible.
+    let forced = decide(&policy_input(
+        Some(CompositionMode::Compatible),
+        CompositionMode::Accelerated,
+        ProbeOutcome::Supported,
+        true,
+        "fp-a",
+        &ledger,
+    ));
+    assert_eq!(forced.route, RenderingRoute::Compatible);
+}
+
+#[test]
+fn wk04_modes_parse_strictly_and_verdicts_map_without_upgrading() {
+    assert_eq!(
+        CompositionMode::parse(" Compatible "),
+        Some(CompositionMode::Compatible)
+    );
+    assert_eq!(CompositionMode::parse("AUTO"), Some(CompositionMode::Auto));
+    assert_eq!(
+        CompositionMode::parse("accelerated"),
+        Some(CompositionMode::Accelerated)
+    );
+    assert_eq!(CompositionMode::parse("acelerado"), None);
+    assert_eq!(CompositionMode::parse(""), None);
+    assert_eq!(CompositionMode::Auto.as_str(), "auto");
+
+    assert_eq!(
+        ProbeOutcome::from_verdict(Verdict::Supported),
+        ProbeOutcome::Supported
+    );
+    assert_eq!(
+        ProbeOutcome::from_verdict(Verdict::Unsupported),
+        ProbeOutcome::Unsupported
+    );
+    assert_eq!(
+        ProbeOutcome::from_verdict(Verdict::Inconclusive),
+        ProbeOutcome::Inconclusive
+    );
+    assert_eq!(
+        ProbeOutcome::from_verdict(Verdict::Skipped),
+        ProbeOutcome::Skipped
+    );
 }
