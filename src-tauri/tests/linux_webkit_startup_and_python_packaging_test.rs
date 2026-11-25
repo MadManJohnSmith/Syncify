@@ -112,6 +112,127 @@ fn linux_startup_does_not_force_software_rendering_on_every_machine() {
     );
 }
 
+#[test]
+fn linux_startup_preserves_explicit_webkit_overrides() {
+    let src = read_src("src/main.rs");
+    let webkit_block_end = src
+        .find("tauri::Builder::default()")
+        .expect("main.rs debe seguir montando el Builder de Tauri");
+    let webkit_block = &src[..webkit_block_end];
+
+    assert!(
+        webkit_block.contains("std::env::var_os(var).is_none()"),
+        "Un override explícito de WEBKIT_DISABLE_* debe prevalecer sobre el default de arranque"
+    );
+    assert!(
+        webkit_block.contains("std::env::set_var(var, \"1\")"),
+        "El default solo se fija cuando la variable no estaba definida"
+    );
+}
+
+#[test]
+fn wk01_characterization_separates_web_frames_from_presentation() {
+    let src_tauri = src_tauri_dir();
+    let repo_root = src_tauri.parent().unwrap();
+    let probe = fs::read_to_string(repo_root.join("tools/wk01/webkit_probe.py"))
+        .expect("WK-01 deja una sonda aislada reutilizable");
+    let fixture = fs::read_to_string(repo_root.join("tools/wk01/fixture.html"))
+        .expect("WK-01 deja una fixture fija");
+
+    assert!(
+        probe.contains("clock.connect(\"after-paint\""),
+        "La presentación se observa con after-paint de GTK, no con requestAnimationFrame"
+    );
+    assert!(
+        probe.contains("Gdk.pixbuf_get_from_window("),
+        "X11 aporta además evidencia de píxeles de la ventana"
+    );
+    assert!(
+        fixture.contains("requestAnimationFrame(frame)"),
+        "requestAnimationFrame se conserva como señal del proceso web, separada de la presentación"
+    );
+    assert!(
+        probe.contains("hard_deadline_ms"),
+        "La sonda tiene un deadline propio además del timeout del supervisor"
+    );
+}
+
+#[test]
+fn wk01_characterization_flushes_partial_evidence_before_a_kill() {
+    let src_tauri = src_tauri_dir();
+    let repo_root = src_tauri.parent().unwrap();
+    let probe = fs::read_to_string(repo_root.join("tools/wk01/webkit_probe.py"))
+        .expect("WK-01 deja una sonda aislada reutilizable");
+
+    assert!(
+        probe.contains("self.handle.flush()"),
+        "Un abort o kill no debe llevarse la evidencia ya emitida"
+    );
+    assert!(
+        probe.contains("json.dumps(payload, sort_keys=True)"),
+        "Cada evento es JSON autónomo para poder leer evidencia parcial"
+    );
+}
+
+#[test]
+fn linux_probe_child_bypasses_app_initialization_and_compatibility_defaults() {
+    let src = read_src("src/main.rs");
+    let dispatch_at = src
+        .find("webkit_probe::child_request_from_args")
+        .expect("main.rs debe despachar el modo hijo de la sonda");
+    let dotenv_at = src
+        .find("dotenvy::dotenv()")
+        .expect("main.rs sigue cargando .env en desarrollo");
+    let hardening_at = src
+        .find("WEBKIT HARDENING")
+        .expect("main.rs sigue configurando la ruta compatible");
+
+    assert!(
+        dispatch_at < dotenv_at && dispatch_at < hardening_at,
+        "El hijo debe salir antes de cargar ajustes o fijar WEBKIT_DISABLE_*: debe probar la ruta acelerada aislada"
+    );
+    assert!(
+        src[dispatch_at..hardening_at].contains("webkit_probe::run_probe_child"),
+        "El modo hijo ejecuta GTK/WebKit sin entrar en el arranque de Tauri"
+    );
+    assert!(
+        src[dispatch_at..hardening_at].contains("std::process::exit"),
+        "El hijo devuelve su código sin continuar con la app principal"
+    );
+}
+
+#[test]
+fn linux_startup_finishes_the_probe_before_building_tauri_and_logs_it() {
+    let src = read_src("src/main.rs");
+    let probe_at = src
+        .find("webkit_probe::probe_startup")
+        .expect("El arranque de Linux ejecuta la sonda supervisada");
+    let hardening_at = src
+        .find("WEBKIT HARDENING")
+        .expect("El arranque sigue configurando la ruta compatible");
+    let builder_at = src
+        .find("tauri::Builder::default()")
+        .expect("main.rs debe seguir montando el Builder de Tauri");
+    let log_at = src
+        .find("webkit_probe::log_report")
+        .expect("El veredicto y el fingerprint se registran");
+    let db_at = src
+        .find("db::init_db(&init_handle)")
+        .expect("El arranque sigue inicializando la base de datos");
+
+    assert!(
+        probe_at < hardening_at && hardening_at < builder_at && builder_at < log_at && log_at < db_at,
+        "La sonda termina antes de crear Tauri (no congela una ventana ya creada); los defaults compatibles siguen antes del Builder y el reporte se registra antes de abrir la base"
+    );
+    let probe_block_on = src[..probe_at]
+        .rfind("rt.block_on")
+        .expect("La sonda se ejecuta con el runtime existente, sin crear otro");
+    assert!(
+        probe_block_on < probe_at && probe_at - probe_block_on < 100,
+        "La sonda se ejecuta con el runtime existente, sin crear otro"
+    );
+}
+
 // ═══════════════════════════════════════════════════════
 // 3. PLUGINS DE GSTREAMER DENTRO DEL APPIMAGE (auditoría 34)
 // ═══════════════════════════════════════════════════════

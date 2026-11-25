@@ -5686,8 +5686,10 @@ dependencies = [
  "flate2",
  "futures",
  "futures-util",
+ "gtk",
  "hostname",
  "id3",
+ "javascriptcore-rs",
  "keyring",
  "lazy_static",
  "libc",
@@ -5725,6 +5727,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "walkdir",
+ "webkit2gtk",
  "zbus 5.12.0",
 ]
 

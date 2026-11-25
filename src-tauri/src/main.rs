@@ -5,6 +5,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub use syncify_tauri_lib::enrichment_worker::{EnrichmentWorker, EnrichmentWorkerState};
+#[cfg(target_os = "linux")]
+use syncify_tauri_lib::webkit_probe;
 pub use syncify_tauri_lib::{
     bridges, cmd_utils, commands, crypto, db, download, enrichment_worker, events, import_cache,
     logs_history, models, services, settings_defaults, sync, sync_scheduler, system_conditions,
@@ -19,6 +21,17 @@ fn main() {
     // Endurecimiento de seguridad TASK-112: umask estricto en sistemas Unix
     crate::crypto::set_secure_process_umask();
 
+    // WK-02: el modo hijo solo ejecuta GTK/WebKit y escribe su evidencia. Debe
+    // salir antes de .env, de los defaults compatibles y de crear Tauri.
+    #[cfg(target_os = "linux")]
+    if let Some(request) = webkit_probe::child_request_from_args(std::env::args_os().skip(1)) {
+        let code = match request {
+            Ok(request) => webkit_probe::run_probe_child(&request),
+            Err(code) => code,
+        };
+        std::process::exit(code);
+    }
+
     // .env solo en desarrollo (SEC-010): dotenvy buscaría el archivo en el CWD
     // y sus padres, y en release las credenciales llegan por keyring/UI o por
     // el entorno real del sistema. SYNCIFY_ENV también activa la carga de .env
@@ -30,6 +43,17 @@ fn main() {
         }
         let _ = dotenvy::dotenv();
     }
+
+    // Initialize unified logging system (rotating file in dev, console, in-memory ring buffer).
+    // El subscriber se instala en `setup`, justo antes de las primeras emisiones
+    // de logs (ver más abajo); aquí solo se crea el runtime que la lectura
+    // previa de ajustes persistidos necesita.
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+
+    // WK-02: completar la sonda antes de construir Tauri evita congelar una
+    // ventana ya creada. El hijo está aislado y el supervisor acota su espera.
+    #[cfg(target_os = "linux")]
+    let webkit_probe_report = rt.block_on(webkit_probe::probe_startup());
 
     // ═══════════════════════════════════════════════════════
     // WEBKIT HARDENING (must run BEFORE the webview is created)
@@ -59,12 +83,6 @@ fn main() {
             std::env::set_var(var, "1");
         }
     }
-
-    // Initialize unified logging system (rotating file in dev, console, in-memory ring buffer).
-    // El subscriber se instala en `setup`, justo antes de las primeras emisiones
-    // de logs (ver más abajo); aquí solo se crea el runtime que la lectura
-    // previa de ajustes persistidos necesita.
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
 
     // Create worker state (active by default for background queue execution)
     let worker_state = DownloadWorkerState::new(2); // 2 concurrent downloads
@@ -127,6 +145,11 @@ fn main() {
                     std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").as_deref() == Ok("1"),
                 "WebKit rendering: EGL-independent path configured"
             );
+
+            // WK-02: la sonda ya terminó antes de construir Tauri; aquí solo se
+            // registra su veredicto. Todavía no cambia la política Compatible (#54).
+            #[cfg(target_os = "linux")]
+            webkit_probe::log_report(&webkit_probe_report);
 
             services::logging::get_global_log_buffer().set_app_handle(init_handle.clone());
             commands::set_global_app_handle(init_handle.clone());

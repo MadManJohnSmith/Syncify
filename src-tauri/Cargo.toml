@@ -85,6 +85,11 @@ syncify-tidal-downloader = { path = "../crates/syncify-tidal-downloader" }
 syncify-player = { path = "../crates/syncify-player" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# WK-02: el hijo de la sonda enlaza la misma pila GTK 3 + WebKitGTK 4.1 que
+# Tauri. Sin inicializar GL en el padre, puede abortar sin tumbar la app.
+gtk = "=0.18.2"
+webkit2gtk = { version = "=2.0.2", features = ["v2_22"] }
+javascriptcore-rs = "=1.1.2"
 # Fase 1 del player: MPRIS nativo (el WebKit MediaSession antiguo ya no existe).
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 # Keyring por target: el backend de cada SO solo en su target (ver el comentario
