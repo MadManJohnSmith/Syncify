@@ -57,6 +57,7 @@ fn test_app(pool: SqlitePool) -> tauri::App<tauri::test::MockRuntime> {
 /// escrituras observadas y fallos de escritura programados.
 struct FakeAlbumGateway {
     matches: HashMap<String, String>,
+    existing: HashSet<String>,
     write_failures: HashSet<String>,
     written: Mutex<Vec<String>>,
 }
@@ -65,6 +66,7 @@ impl FakeAlbumGateway {
     fn with_match(source_id: &str, dest_id: &str) -> Self {
         Self {
             matches: HashMap::from([(source_id.to_string(), dest_id.to_string())]),
+            existing: HashSet::new(),
             write_failures: HashSet::new(),
             written: Mutex::new(Vec::new()),
         }
@@ -81,6 +83,10 @@ impl FakeAlbumGateway {
 }
 
 impl AlbumTransferGateway for FakeAlbumGateway {
+    async fn existing_albums(&self) -> Result<HashSet<String>, String> {
+        Ok(self.existing.clone())
+    }
+
     async fn match_album(
         &self,
         album: &MigrationSourceAlbum,
@@ -186,7 +192,8 @@ async fn test_album_phase_matches_writes_and_records_kinds() {
         albums.len() as i64,
         std::time::Instant::now(),
     )
-    .await;
+    .await
+    .unwrap();
     assert!(!cancelled);
 
     let items = job_items(&pool, &job_id).await;
@@ -277,7 +284,8 @@ async fn test_album_phase_prefers_the_local_mirror_match() {
         1,
         std::time::Instant::now(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let items = job_items(&pool, &job_id).await;
     let item = &items[0];
@@ -334,7 +342,8 @@ async fn test_album_phase_records_failed_writes() {
         1,
         std::time::Instant::now(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let items = job_items(&pool, &job_id).await;
     let item = &items[0];
@@ -395,7 +404,8 @@ async fn test_album_phase_applies_the_threshold_to_gateway_matches() {
         1,
         std::time::Instant::now(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let items = job_items(&pool, &job_id).await;
     let item = &items[0];
