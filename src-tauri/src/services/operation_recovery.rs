@@ -6,6 +6,7 @@
 //! - Cross-Provider Fallbacks
 //! - Physical File Promotions & Tagging
 //! - Catalog & Metadata Repairs
+//! - Interrupted migration job discovery (the migration runner performs the resume)
 
 use sqlx::{Row, SqlitePool};
 use std::path::{Path, PathBuf};
@@ -819,6 +820,29 @@ pub fn classify_operation_error(
         field: "unknown".to_string(),
         reason: error.to_string(),
     }
+}
+
+/// Migration jobs interrupted by a process exit.
+///
+/// The migration runner owns the actual resume because it needs the destination
+/// gateway and an app handle for progress events. Recovery only selects the
+/// durable `running` jobs; terminal and cancelled history is never replayed.
+pub async fn recover_interrupted_migrations(db: &SqlitePool) -> Result<Vec<String>, String> {
+    let table_exists: Option<(String,)> = sqlx::query_as(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_jobs'",
+    )
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Failed to inspect migration recovery schema: {}", e))?;
+    if table_exists.is_none() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_scalar(
+        "SELECT id FROM migration_jobs WHERE status = 'running' ORDER BY started_at, created_at, id",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Failed to list interrupted migration jobs: {}", e))
 }
 
 /// Perform comprehensive startup reconciliation across journal, SQLite state, and filesystem.

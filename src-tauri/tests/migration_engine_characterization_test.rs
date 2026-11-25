@@ -399,8 +399,9 @@ async fn test_local_destination_match_short_circuits_remote_search() {
         "the local match takes the isrc method"
     );
     assert_eq!(
-        local.4, None,
-        "the destination id is not recorded on failure"
+        local.4.as_deref(),
+        Some("qb-local-1"),
+        "the attempted destination id survives an ambiguous failed write"
     );
     assert!(
         local

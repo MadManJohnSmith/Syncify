@@ -798,6 +798,123 @@ pub async fn insert_migration_artist_item(
     .map_err(|e| format!("Failed to insert migration artist item: {}", e))
 }
 
+/// Materialize the complete source snapshot before the first remote write.
+///
+/// A running job must never depend on re-reading a mutable provider mirror to
+/// discover a collection that had not started yet. The per-phase runners reuse
+/// these rows by the same identity key instead of inserting them again.
+async fn preinsert_migration_items(
+    db: &sqlx::SqlitePool,
+    job_id: &str,
+    tracks: &[MigrationSourceTrack],
+    albums: &[MigrationSourceAlbum],
+    artists: &[MigrationSourceArtist],
+    total_items: i64,
+) -> Result<(), String> {
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to begin migration snapshot: {}", e))?;
+    for track in tracks {
+        sqlx::query(
+            r#"INSERT INTO migration_items (job_id, kind, source_track_id, source_track_title,
+                                          source_track_artist, source_track_album,
+                                          source_playlist_id, source_playlist_name, status)
+               SELECT ?, 'track', ?, ?, ?, ?, ?, ?, 'pending'
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM migration_items
+                   WHERE job_id = ? AND kind = 'track' AND source_track_id = ?
+                     AND source_playlist_id IS ?
+               )"#,
+        )
+        .bind(job_id)
+        .bind(&track.external_id)
+        .bind(&track.title)
+        .bind(&track.artist)
+        .bind(&track.album)
+        .bind(&track.playlist_id)
+        .bind(&track.playlist_name)
+        .bind(job_id)
+        .bind(&track.external_id)
+        .bind(&track.playlist_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to snapshot migration track: {}", e))?;
+    }
+    for album in albums {
+        sqlx::query(
+            r#"INSERT INTO migration_items (job_id, kind, source_track_id, source_track_title,
+                                          source_track_artist, status)
+               SELECT ?, 'album', ?, ?, ?, 'pending'
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM migration_items
+                   WHERE job_id = ? AND kind = 'album' AND source_track_id = ?
+                     AND source_playlist_id IS NULL
+               )"#,
+        )
+        .bind(job_id)
+        .bind(&album.external_id)
+        .bind(&album.title)
+        .bind(&album.artist)
+        .bind(job_id)
+        .bind(&album.external_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to snapshot migration album: {}", e))?;
+    }
+    for artist in artists {
+        sqlx::query(
+            r#"INSERT INTO migration_items (job_id, kind, source_track_id, source_track_title,
+                                          source_track_artist, status)
+               SELECT ?, 'artist', ?, ?, ?, 'pending'
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM migration_items
+                   WHERE job_id = ? AND kind = 'artist' AND source_track_id = ?
+                     AND source_playlist_id IS NULL
+               )"#,
+        )
+        .bind(job_id)
+        .bind(&artist.external_id)
+        .bind(&artist.name)
+        .bind(&artist.name)
+        .bind(job_id)
+        .bind(&artist.external_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to snapshot migration artist: {}", e))?;
+    }
+    let snapshot_items: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM migration_items WHERE job_id = ?")
+            .bind(job_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to verify migration snapshot: {}", e))?;
+    if snapshot_items != total_items {
+        return Err(format!(
+            "Migration snapshot has {} items, expected {}",
+            snapshot_items, total_items
+        ));
+    }
+    let running = sqlx::query(
+        r#"UPDATE migration_jobs
+           SET total_items = ?,
+               status = 'running',
+               started_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND status = 'pending'"#,
+    )
+    .bind(total_items)
+    .bind(job_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to mark migration running: {}", e))?;
+    if running.rows_affected() != 1 {
+        return Err(format!("Migration job {} is not pending", job_id));
+    }
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit migration snapshot: {}", e))
+}
+
 /// Collections the migration engine can transfer into a destination, in the
 /// order the wizard presents them. The wire names are the matrix's contract
 /// with the UI (`get_migration_capabilities`).
@@ -1767,16 +1884,24 @@ impl TrackTransferGateway for DestinationClients {
                     .await
                     .map_err(|e| format!("Failed to read Apple Music library songs: {}", e))?;
                 let fetched = page.data.as_ref().map_or(0, Vec::len);
+                let provider_total = page.meta.as_ref().and_then(|meta| meta.total);
+                let next_url = page.next.as_deref();
                 ids.extend(
                     page.data
                         .unwrap_or_default()
                         .into_iter()
                         .map(|track| track.id),
                 );
-                if fetched == 0 || page.next.is_none() {
+                let Some(next_offset) = crate::services::import_pagination::next_apple_music_offset(
+                    offset,
+                    fetched as i32,
+                    PAGE_SIZE,
+                    next_url,
+                    provider_total,
+                ) else {
                     break;
-                }
-                offset += fetched as i32;
+                };
+                offset = next_offset;
             }
         }
         Ok(ids)
@@ -2163,7 +2288,7 @@ pub async fn record_migration_item_result(
     dest_track_id: Option<&str>,
     error_message: Option<&str>,
 ) -> Result<(), String> {
-    sqlx::query(
+    let result = sqlx::query(
         r#"UPDATE migration_items
            SET status = ?, match_confidence = ?, match_method = ?,
                dest_track_id = ?, destination_track_id = ?,
@@ -2179,8 +2304,14 @@ pub async fn record_migration_item_result(
     .bind(item_id)
     .execute(db)
     .await
-    .map(|_| ())
-    .map_err(|e| format!("Failed to update migration item: {}", e))
+    .map_err(|e| format!("Failed to update migration item: {}", e))?;
+    if result.rows_affected() != 1 {
+        return Err(format!(
+            "Migration item {} disappeared while recording result",
+            item_id
+        ));
+    }
+    Ok(())
 }
 
 /// Running job counters shared by the collection phases (tracks, albums and
@@ -2199,15 +2330,59 @@ impl MigrationCounters {
     }
 }
 
-async fn migration_item_status(
+#[derive(Debug, sqlx::FromRow)]
+struct DurableMigrationItem {
+    status: String,
+    match_confidence: Option<f64>,
+    match_method: Option<String>,
+    #[sqlx(rename = "destination_track_id")]
+    destination_id: Option<String>,
+}
+
+async fn durable_migration_item(
     db: &sqlx::SqlitePool,
     item_id: i64,
-) -> Result<Option<String>, String> {
-    sqlx::query_scalar("SELECT status FROM migration_items WHERE id = ?")
-        .bind(item_id)
-        .fetch_optional(db)
-        .await
-        .map_err(|e| format!("Failed to read migration item {}: {}", item_id, e))
+) -> Result<Option<DurableMigrationItem>, String> {
+    sqlx::query_as(
+        "SELECT status, match_confidence, match_method, destination_track_id FROM migration_items WHERE id = ?",
+    )
+    .bind(item_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Failed to read migration item {}: {}", item_id, e))
+}
+
+/// Persist the exact destination identity before the remote write. A crash or
+/// ambiguous timeout after this point resumes this id instead of rematching.
+async fn record_migration_item_match(
+    db: &sqlx::SqlitePool,
+    item_id: i64,
+    match_confidence: f64,
+    match_method: &str,
+    dest_track_id: &str,
+) -> Result<(), String> {
+    let result = sqlx::query(
+        r#"UPDATE migration_items
+           SET status = 'matched', match_confidence = ?, match_method = ?,
+               dest_track_id = ?, destination_track_id = ?,
+               error_message = NULL, processed_at = NULL
+           WHERE id = ?"#,
+    )
+    .bind(match_confidence)
+    .bind(match_method)
+    .bind(dest_track_id)
+    .bind(dest_track_id)
+    .bind(item_id)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to persist migration item match: {}", e))?;
+    if result.rows_affected() != 1 {
+        return Err(format!(
+            "Migration item {} disappeared before its destination write",
+            item_id
+        ));
+    }
+    Ok(())
 }
 
 async fn persist_migration_counters(
@@ -2215,7 +2390,7 @@ async fn persist_migration_counters(
     job_id: &str,
     counters: &MigrationCounters,
 ) -> Result<(), String> {
-    sqlx::query(
+    let result = sqlx::query(
         "UPDATE migration_jobs SET completed_items = ?, failed_items = ?, skipped_items = ? WHERE id = ?",
     )
     .bind(counters.completed)
@@ -2224,8 +2399,14 @@ async fn persist_migration_counters(
     .bind(job_id)
     .execute(db)
     .await
-    .map(|_| ())
-    .map_err(|e| format!("Failed to persist migration counters: {}", e))
+    .map_err(|e| format!("Failed to persist migration counters: {}", e))?;
+    if result.rows_affected() != 1 {
+        return Err(format!(
+            "Migration job {} disappeared while persisting counters",
+            job_id
+        ));
+    }
+    Ok(())
 }
 
 fn migration_status_counters(rows: &[MigrationItem]) -> Result<MigrationCounters, String> {
@@ -2321,21 +2502,23 @@ pub async fn run_track_collection<G: TrackTransferGateway, R: tauri::Runtime>(
 
     let mut cancelled = false;
     for (i, (track, item_id)) in tracks.iter().zip(item_ids.iter()).enumerate() {
-        let job: Option<(String,)> =
-            sqlx::query_as("SELECT status FROM migration_jobs WHERE id = ?")
-                .bind(job_id)
-                .fetch_optional(db)
-                .await
-                .map_err(|e| format!("Failed to read migration job status: {}", e))?;
-        if job.as_ref().map(|j| j.0.as_str()) == Some("cancelled") {
+        let job: (String,) = sqlx::query_as("SELECT status FROM migration_jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_one(db)
+            .await
+            .map_err(|e| format!("Failed to read migration job status: {}", e))?;
+        if job.0 == "cancelled" {
             cancelled = true;
             break;
         }
-        match migration_item_status(db, *item_id).await? {
-            Some(status) if status == "pending" || status == "matched" => {}
+        let durable = match durable_migration_item(db, *item_id).await? {
+            Some(item) if item.status == "pending" || item.status == "matched" => item,
             Some(_) => continue,
             None => return Err(format!("Migration track item {} disappeared", item_id)),
-        }
+        };
+        let persisted_destination = durable.destination_id;
+        let persisted_confidence = durable.match_confidence;
+        let persisted_method = durable.match_method;
 
         let manual_dest_id = manual_matches.get(&track.external_id).cloned();
         let local_dest_id = local_dest_matches.get(&track.external_id).cloned();
@@ -2344,7 +2527,14 @@ pub async fn run_track_collection<G: TrackTransferGateway, R: tauri::Runtime>(
             &str,
             Option<String>,
             Option<String>,
-        ) = if let Some(dest_id) = manual_dest_id.as_deref() {
+        ) = if let Some(dest_id) = persisted_destination {
+            (
+                persisted_confidence.unwrap_or(1.0),
+                persisted_method.as_deref().unwrap_or("matched"),
+                Some(dest_id),
+                None,
+            )
+        } else if let Some(dest_id) = manual_dest_id.as_deref() {
             (1.0, "manual", Some(dest_id.to_string()), None)
         } else if let Some(dest_id) = local_dest_id.as_deref() {
             (1.0, "isrc", Some(dest_id.to_string()), None)
@@ -2357,6 +2547,13 @@ pub async fn run_track_collection<G: TrackTransferGateway, R: tauri::Runtime>(
                 )
                 .await
         };
+
+        if match_confidence >= options.match_threshold {
+            if let Some(dest_id) = dest_track_id.as_deref() {
+                record_migration_item_match(db, *item_id, match_confidence, match_method, dest_id)
+                    .await?;
+            }
+        }
 
         let status = if match_confidence < options.match_threshold {
             if options.skip_unmatched {
@@ -2408,18 +2605,13 @@ pub async fn run_track_collection<G: TrackTransferGateway, R: tauri::Runtime>(
         } else {
             None
         };
-        let recorded_dest_id = if status == "failed" {
-            None
-        } else {
-            dest_track_id.as_deref()
-        };
         record_migration_item_result(
             db,
             *item_id,
             status,
             match_confidence,
             match_method,
-            recorded_dest_id,
+            dest_track_id.as_deref(),
             error_message.as_deref(),
         )
         .await?;
@@ -2539,21 +2731,23 @@ pub async fn run_album_collection<G: AlbumTransferGateway, R: tauri::Runtime>(
     for (i, (album, item_id)) in albums.iter().zip(item_ids.iter()).enumerate() {
         // Same cancellation contract as the track loop: a cancelled job stops
         // early and is reported as cancelled, never completed.
-        let job: Option<(String,)> =
-            sqlx::query_as("SELECT status FROM migration_jobs WHERE id = ?")
-                .bind(job_id)
-                .fetch_optional(db)
-                .await
-                .map_err(|e| format!("Failed to read migration job status: {}", e))?;
-        if job.as_ref().map(|j| j.0.as_str()) == Some("cancelled") {
+        let job: (String,) = sqlx::query_as("SELECT status FROM migration_jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_one(db)
+            .await
+            .map_err(|e| format!("Failed to read migration job status: {}", e))?;
+        if job.0 == "cancelled" {
             cancelled = true;
             break;
         }
-        match migration_item_status(db, *item_id).await? {
-            Some(status) if status == "pending" || status == "matched" => {}
+        let durable = match durable_migration_item(db, *item_id).await? {
+            Some(item) if item.status == "pending" || item.status == "matched" => item,
             Some(_) => continue,
             None => return Err(format!("Migration album item {} disappeared", item_id)),
-        }
+        };
+        let persisted_destination = durable.destination_id;
+        let persisted_confidence = durable.match_confidence;
+        let persisted_method = durable.match_method;
 
         // Mirror match first (no network), then the gateway's own search. A
         // match is not permission to write: the threshold gates the side effect.
@@ -2562,7 +2756,14 @@ pub async fn run_album_collection<G: AlbumTransferGateway, R: tauri::Runtime>(
             &str,
             Option<String>,
             Option<String>,
-        ) = if let Some(dest_id) = mirror_matches.get(&album.external_id) {
+        ) = if let Some(dest_id) = persisted_destination {
+            (
+                persisted_confidence.unwrap_or(1.0),
+                persisted_method.as_deref().unwrap_or("matched"),
+                Some(dest_id),
+                None,
+            )
+        } else if let Some(dest_id) = mirror_matches.get(&album.external_id) {
             (1.0, "mirror", Some(dest_id.clone()), None)
         } else {
             match gateway.match_album(album).await {
@@ -2573,6 +2774,13 @@ pub async fn run_album_collection<G: AlbumTransferGateway, R: tauri::Runtime>(
                 Err(e) => (0.0, "none", None, Some(e)),
             }
         };
+
+        if match_confidence >= options.match_threshold {
+            if let Some(dest_id) = dest_album_id.as_deref() {
+                record_migration_item_match(db, *item_id, match_confidence, match_method, dest_id)
+                    .await?;
+            }
+        }
 
         let status = if match_confidence < options.match_threshold {
             if options.skip_unmatched {
@@ -2624,18 +2832,13 @@ pub async fn run_album_collection<G: AlbumTransferGateway, R: tauri::Runtime>(
             None
         };
 
-        let recorded_dest_id = if status == "failed" {
-            None
-        } else {
-            dest_album_id.as_deref()
-        };
         record_migration_item_result(
             db,
             *item_id,
             status,
             match_confidence,
             match_method,
-            recorded_dest_id,
+            dest_album_id.as_deref(),
             error_message.as_deref(),
         )
         .await?;
@@ -2760,21 +2963,23 @@ pub async fn run_artist_collection<G: ArtistTransferGateway, R: tauri::Runtime>(
     for (i, (artist, item_id)) in artists.iter().zip(item_ids.iter()).enumerate() {
         // Same cancellation contract as the other collection loops: a cancelled
         // job stops early and is reported as cancelled, never completed.
-        let job: Option<(String,)> =
-            sqlx::query_as("SELECT status FROM migration_jobs WHERE id = ?")
-                .bind(job_id)
-                .fetch_optional(db)
-                .await
-                .map_err(|e| format!("Failed to read migration job status: {}", e))?;
-        if job.as_ref().map(|j| j.0.as_str()) == Some("cancelled") {
+        let job: (String,) = sqlx::query_as("SELECT status FROM migration_jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_one(db)
+            .await
+            .map_err(|e| format!("Failed to read migration job status: {}", e))?;
+        if job.0 == "cancelled" {
             cancelled = true;
             break;
         }
-        match migration_item_status(db, *item_id).await? {
-            Some(status) if status == "pending" || status == "matched" => {}
+        let durable = match durable_migration_item(db, *item_id).await? {
+            Some(item) if item.status == "pending" || item.status == "matched" => item,
             Some(_) => continue,
             None => return Err(format!("Migration artist item {} disappeared", item_id)),
-        }
+        };
+        let persisted_destination = durable.destination_id;
+        let persisted_confidence = durable.match_confidence;
+        let persisted_method = durable.match_method;
 
         // Mirror match first (no network), then the gateway's own search. A
         // match is not permission to write: the threshold gates the side effect.
@@ -2783,7 +2988,14 @@ pub async fn run_artist_collection<G: ArtistTransferGateway, R: tauri::Runtime>(
             &str,
             Option<String>,
             Option<String>,
-        ) = if let Some(dest_id) = mirror_matches.get(&artist.external_id) {
+        ) = if let Some(dest_id) = persisted_destination {
+            (
+                persisted_confidence.unwrap_or(1.0),
+                persisted_method.as_deref().unwrap_or("matched"),
+                Some(dest_id),
+                None,
+            )
+        } else if let Some(dest_id) = mirror_matches.get(&artist.external_id) {
             (1.0, "mirror", Some(dest_id.clone()), None)
         } else {
             match gateway.match_artist(artist).await {
@@ -2794,6 +3006,13 @@ pub async fn run_artist_collection<G: ArtistTransferGateway, R: tauri::Runtime>(
                 Err(e) => (0.0, "none", None, Some(e)),
             }
         };
+
+        if match_confidence >= options.match_threshold {
+            if let Some(dest_id) = dest_artist_id.as_deref() {
+                record_migration_item_match(db, *item_id, match_confidence, match_method, dest_id)
+                    .await?;
+            }
+        }
 
         let status = if match_confidence < options.match_threshold {
             if options.skip_unmatched {
@@ -2846,18 +3065,13 @@ pub async fn run_artist_collection<G: ArtistTransferGateway, R: tauri::Runtime>(
             None
         };
 
-        let recorded_dest_id = if status == "failed" {
-            None
-        } else {
-            dest_artist_id.as_deref()
-        };
         record_migration_item_result(
             db,
             *item_id,
             status,
             match_confidence,
             match_method,
-            recorded_dest_id,
+            dest_artist_id.as_deref(),
             error_message.as_deref(),
         )
         .await?;
@@ -3125,6 +3339,10 @@ pub async fn start_migration<R: tauri::Runtime>(
     let effective_destination =
         resolve_migration_account(&state.db, &destination_service, destination_account_id).await?;
     let job_id = uuid::Uuid::new_v4().to_string();
+    // Retry and startup resume take this same per-job lock. Keep it for the
+    // whole initial run so a Re-run request cannot reset rows underneath it.
+    let runner_lock = migration_runner_lock(&job_id);
+    let _runner_guard = runner_lock.lock().await;
     let options_json = serde_json::to_string(&options).map_err(|e| e.to_string())?;
     let playlist_ids_json = playlist_ids
         .as_ref()
@@ -3252,18 +3470,19 @@ pub async fn start_migration<R: tauri::Runtime>(
 
     let total_items = (tracks.len() + albums.len() + artists.len()) as i64;
 
-    // The runner owns the item rows from this point. Persist the running state
-    // before any remote write so startup can recover an interrupted job.
-    sqlx::query("UPDATE migration_jobs SET total_items = ?, status = 'running', started_at = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(total_items)
-        .bind(&job_id)
-        .execute(&state.db)
-        .await
-        .map_err(|e| format!("Failed to mark migration running: {}", e))?;
+    // Snapshot insertion and the running transition commit together. A process
+    // exit before this commit leaves no running job with a partial snapshot;
+    // after it, startup can recover every source row without re-reading a
+    // mutable provider mirror.
+    if let Err(error) =
+        preinsert_migration_items(&state.db, &job_id, &tracks, &albums, &artists, total_items).await
+    {
+        fail_migration_job(&state.db, &job_id, &error).await;
+        return Err(error);
+    }
 
-    // Emit initial progress before the per-item rows are written: the job id
-    // reaches the UI (and becomes cancellable) as soon as the job is running,
-    // not after the whole library has been inserted.
+    // The job id reaches the UI (and becomes cancellable) only once its complete
+    // durable snapshot is visible.
     let started_at = std::time::Instant::now();
     let _ = app.emit(
         "migration-progress",
@@ -3301,7 +3520,7 @@ pub async fn start_migration<R: tauri::Runtime>(
     let cancelled = if tracks.is_empty() {
         false
     } else {
-        run_track_collection(
+        match run_track_collection(
             &state.db,
             &app,
             &job_id,
@@ -3315,17 +3534,23 @@ pub async fn start_migration<R: tauri::Runtime>(
             total_items,
             started_at,
         )
-        .await?
+        .await
+        {
+            Ok(cancelled) => cancelled,
+            Err(error) => {
+                fail_migration_job(&state.db, &job_id, &error).await;
+                return Err(error);
+            }
+        }
     };
 
     // Album collection (M01): match and write the job's favorite albums
     // after the track favorites, through the same job, counters and
-    // progress stream. A cancelled album phase leaves the job cancelled,
-    // and a job the track phase already found cancelled does not open the
-    // album phase at all: its pending rows would outlive the cancellation.
+    // progress stream. A cancelled phase is not processed; its preinserted
+    // pending rows remain in the durable snapshot for a future resume.
     let mut album_cancelled = false;
     if albums_requested && !albums.is_empty() && !cancelled {
-        album_cancelled = run_album_collection(
+        album_cancelled = match run_album_collection(
             &state.db,
             &app,
             &job_id,
@@ -3340,16 +3565,22 @@ pub async fn start_migration<R: tauri::Runtime>(
             total_items,
             started_at,
         )
-        .await?;
+        .await
+        {
+            Ok(cancelled) => cancelled,
+            Err(error) => {
+                fail_migration_job(&state.db, &job_id, &error).await;
+                return Err(error);
+            }
+        };
     }
 
     // Followed-artist collection (M02): same contract as the album phase — it
-    // folds into the same job, counters and progress stream, and a job already
-    // cancelled (by the track loop or the album phase) does not open it, so no
-    // pending artist row outlives the cancellation.
+    // folds into the same job, counters and progress stream. A cancelled job
+    // does not process it, but its durable pending rows are retained.
     let mut artist_cancelled = false;
     if artists_requested && !artists.is_empty() && !cancelled && !album_cancelled {
-        artist_cancelled = run_artist_collection(
+        artist_cancelled = match run_artist_collection(
             &state.db,
             &app,
             &job_id,
@@ -3364,7 +3595,14 @@ pub async fn start_migration<R: tauri::Runtime>(
             total_items,
             started_at,
         )
-        .await?;
+        .await
+        {
+            Ok(cancelled) => cancelled,
+            Err(error) => {
+                fail_migration_job(&state.db, &job_id, &error).await;
+                return Err(error);
+            }
+        };
     }
 
     // `create_playlists` (migration options): when it is on, the source
@@ -3459,22 +3697,14 @@ pub async fn start_migration<R: tauri::Runtime>(
     // transfer that never finished (and the UI would show it as finished).
     let cancelled = cancelled || album_cancelled || artist_cancelled;
     let processed = counters.processed();
-    let (final_status, final_message) = if cancelled {
-        ("cancelled", "Migration cancelled")
+    let requested_status = if cancelled { "cancelled" } else { "completed" };
+    let final_status =
+        close_migration_job(&state.db, &job_id, requested_status, total_items, &counters).await?;
+    let final_message = if final_status == "cancelled" {
+        "Migration cancelled"
     } else {
-        ("completed", "Migration complete")
+        "Migration complete"
     };
-    sqlx::query(
-        "UPDATE migration_jobs SET status = ?, completed_items = ?, failed_items = ?, skipped_items = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?"
-    )
-    .bind(final_status)
-    .bind(counters.completed)
-    .bind(counters.failed)
-    .bind(counters.skipped)
-    .bind(&job_id)
-    .execute(&state.db)
-    .await
-    .map_err(|e| format!("Failed to close migration job: {}", e))?;
 
     // Emit final progress
     let _ = app.emit(
@@ -3486,7 +3716,7 @@ pub async fn start_migration<R: tauri::Runtime>(
             total_items,
             final_message.to_string(),
             final_message.to_string(),
-            final_status,
+            &final_status,
             counters.completed,
             counters.failed,
             counters.skipped,
@@ -3514,13 +3744,75 @@ async fn fail_migration_job(db: &sqlx::SqlitePool, job_id: &str, error: &str) {
     let _ = crate::db::write_or_log(
         "migration_runner_mark_failed",
         sqlx::query(
-            "UPDATE migration_jobs SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'",
+            "UPDATE migration_jobs SET status = 'failed', error_message = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('pending', 'running')",
         )
         .bind(error)
         .bind(job_id)
         .execute(db),
     )
     .await;
+}
+
+/// Close a running job without overwriting a cancellation that landed after
+/// the runner's last poll. Returns the status that actually won the race.
+async fn close_migration_job(
+    db: &sqlx::SqlitePool,
+    job_id: &str,
+    requested_status: &str,
+    total_items: i64,
+    counters: &MigrationCounters,
+) -> Result<String, String> {
+    let result = sqlx::query(
+        "UPDATE migration_jobs SET status = ?, total_items = ?, completed_items = ?, failed_items = ?, skipped_items = ?, error_message = NULL, completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'",
+    )
+    .bind(requested_status)
+    .bind(total_items)
+    .bind(counters.completed)
+    .bind(counters.failed)
+    .bind(counters.skipped)
+    .bind(job_id)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to close migration job: {}", e))?;
+    if result.rows_affected() == 1 {
+        return Ok(requested_status.to_string());
+    }
+    let current: Option<(String,)> =
+        sqlx::query_as("SELECT status FROM migration_jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| format!("Failed to read migration close status: {}", e))?;
+    match current.as_ref().map(|(status,)| status.as_str()) {
+        Some("cancelled") => {
+            let cancelled = sqlx::query(
+                "UPDATE migration_jobs SET total_items = ?, completed_items = ?, failed_items = ?, skipped_items = ? WHERE id = ? AND status = 'cancelled'",
+            )
+            .bind(total_items)
+            .bind(counters.completed)
+            .bind(counters.failed)
+            .bind(counters.skipped)
+            .bind(job_id)
+            .execute(db)
+            .await
+            .map_err(|e| format!("Failed to persist cancelled migration counters: {}", e))?;
+            if cancelled.rows_affected() != 1 {
+                return Err(format!(
+                    "Migration job {} changed status while closing cancellation",
+                    job_id
+                ));
+            }
+            Ok("cancelled".to_string())
+        }
+        Some(status) => Err(format!(
+            "Migration job {} could not close from status {}",
+            job_id, status
+        )),
+        None => Err(format!(
+            "Migration job {} disappeared while closing",
+            job_id
+        )),
+    }
 }
 
 /// Resume one `running` migration from its durable rows. Terminal rows are
@@ -3612,40 +3904,18 @@ async fn resume_migration_job_inner<
         }
     }
 
-    // A crash can happen before a later collection phase materializes its
-    // rows. Re-read only those missing requested collections from the durable
-    // job scope; existing rows are never expanded or replaced.
-    let requested: Vec<String> = match job.collections.as_deref() {
-        Some(json) => serde_json::from_str(json)
-            .map_err(|e| format!("Failed to parse migration collections: {}", e))?,
-        None => vec!["tracks".to_string()],
-    };
-    let playlist_ids: Option<Vec<String>> = job
-        .source_playlist_ids
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|e| format!("Failed to parse migration playlist selection: {}", e))?;
-    if tracks.is_empty() && requested.iter().any(|kind| kind == "tracks") {
-        tracks = fetch_migration_source_tracks(
-            db,
-            &job.source_service,
-            playlist_ids.as_deref(),
-            job.source_account_id,
-        )
-        .await?;
-    }
-    if albums.is_empty() && requested.iter().any(|kind| kind == "albums") {
-        albums =
-            fetch_migration_source_albums(db, &job.source_service, job.source_account_id).await?;
-    }
-    if artists.is_empty() && requested.iter().any(|kind| kind == "artists") {
-        artists =
-            fetch_migration_source_artists(db, &job.source_service, job.source_account_id).await?;
+    // New jobs persist the complete snapshot before their first write. A
+    // legacy running job with a partial snapshot is historical, not safe to
+    // expand from a source mirror that may have changed since it started.
+    let total_items = items.len() as i64;
+    if total_items != job.total_items {
+        return Err(format!(
+            "Migration job {} has an incomplete durable snapshot ({} of {} items)",
+            job_id, total_items, job.total_items
+        ));
     }
 
     let mut counters = migration_status_counters(&items)?;
-    let total_items = (tracks.len() + albums.len() + artists.len()) as i64;
     let started_at = std::time::Instant::now();
     let mut cancelled = false;
     if !tracks.is_empty() {
@@ -3710,19 +3980,9 @@ async fn resume_migration_job_inner<
             total_items - processed
         ));
     }
-    let final_status = if cancelled { "cancelled" } else { "completed" };
-    sqlx::query(
-        "UPDATE migration_jobs SET status = ?, total_items = ?, completed_items = ?, failed_items = ?, skipped_items = ?, error_message = NULL, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
-    )
-    .bind(final_status)
-    .bind(total_items)
-    .bind(counters.completed)
-    .bind(counters.failed)
-    .bind(counters.skipped)
-    .bind(job_id)
-    .execute(db)
-    .await
-    .map_err(|e| format!("Failed to close resumed migration: {}", e))?;
+    let requested_status = if cancelled { "cancelled" } else { "completed" };
+    let final_status =
+        close_migration_job(db, job_id, requested_status, total_items, &counters).await?;
     let _ = app.emit(
         "migration-progress",
         build_migration_progress(
@@ -3730,9 +3990,9 @@ async fn resume_migration_job_inner<
             job_id,
             processed,
             total_items,
-            final_status.to_string(),
-            final_status.to_string(),
-            final_status,
+            final_status.clone(),
+            final_status.clone(),
+            &final_status,
             counters.completed,
             counters.failed,
             counters.skipped,
@@ -3774,7 +4034,7 @@ pub async fn cancel_migration(
     Ok("Migration cancelled".to_string())
 }
 
-/// Retry failed items in a migration and drive the job to a terminal state.
+/// Retry non-terminal items in a migration and drive the job to a terminal state.
 /// The state reset and the `running` transition are atomic; a failed write is
 /// returned to the caller instead of leaving an orphaned running job (#363).
 #[tauri::command]
@@ -3783,44 +4043,92 @@ pub async fn retry_failed_items<R: tauri::Runtime>(
     state: State<'_, AppState>,
     job_id: String,
 ) -> Result<i64, String> {
-    let lock = migration_runner_lock(&job_id);
+    let job: (String, Option<i64>) = sqlx::query_as(
+        "SELECT destination_service, destination_account_id FROM migration_jobs WHERE id = ?",
+    )
+    .bind(&job_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| format!("Failed to load migration destination: {}", e))?
+    .ok_or_else(|| format!("Migration job {} not found", job_id))?;
+    let clients = DestinationClients::for_destination(&state.db, &job.0, job.1).await;
+    retry_failed_items_with_gateway(&app, &state.db, &job_id, &clients).await
+}
+
+/// Retry seam shared by the IPC command and fake-gateway tests. Every
+/// non-terminal row is included: a snapshot failure can leave `matched` with an
+/// exact destination id, and an earlier persistence failure can leave `pending`.
+pub async fn retry_failed_items_with_gateway<
+    G: TrackTransferGateway + AlbumTransferGateway + ArtistTransferGateway,
+    R: tauri::Runtime,
+>(
+    app: &tauri::AppHandle<R>,
+    db: &sqlx::SqlitePool,
+    job_id: &str,
+    gateway: &G,
+) -> Result<i64, String> {
+    let lock = migration_runner_lock(job_id);
     let _guard = lock.lock().await;
-    let mut tx = state
-        .db
+    let mut tx = db
         .begin()
         .await
         .map_err(|e| format!("Failed to begin migration retry: {}", e))?;
+    let job: (String, i64) =
+        sqlx::query_as("SELECT status, total_items FROM migration_jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to load migration retry state: {}", e))?;
+    if !matches!(
+        job.0.as_str(),
+        "running" | "completed" | "failed" | "cancelled"
+    ) {
+        return Err(format!(
+            "Migration job {} cannot be retried from status {}",
+            job_id, job.0
+        ));
+    }
+    let snapshot_items: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM migration_items WHERE job_id = ?")
+            .bind(job_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to verify migration retry snapshot: {}", e))?;
+    if snapshot_items != job.1 {
+        return Err(format!(
+            "Migration job {} has an incomplete durable snapshot ({} of {} items)",
+            job_id, snapshot_items, job.1
+        ));
+    }
     let result = sqlx::query(
-        "UPDATE migration_items SET status = 'pending', error_message = NULL, processed_at = NULL WHERE job_id = ? AND status = 'failed'",
+        "UPDATE migration_items SET status = 'pending', error_message = NULL, processed_at = NULL WHERE job_id = ? AND status IN ('pending', 'matched', 'failed')",
     )
-    .bind(&job_id)
+    .bind(job_id)
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("Failed to retry items: {}", e))?;
     let retried = result.rows_affected() as i64;
     if retried > 0 {
-        sqlx::query(
-            "UPDATE migration_jobs SET status = 'running', completed_at = NULL, error_message = NULL WHERE id = ?",
+        let running = sqlx::query(
+            "UPDATE migration_jobs SET status = 'running', completed_at = NULL, error_message = NULL WHERE id = ? AND status = ?",
         )
-        .bind(&job_id)
+        .bind(job_id)
+        .bind(&job.0)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("Failed to mark migration retry running: {}", e))?;
+        if running.rows_affected() != 1 {
+            return Err(format!(
+                "Migration job {} changed status while preparing retry",
+                job_id
+            ));
+        }
     }
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit migration retry: {}", e))?;
     if retried > 0 {
-        let job: (String, Option<i64>) = sqlx::query_as(
-            "SELECT destination_service, destination_account_id FROM migration_jobs WHERE id = ?",
-        )
-        .bind(&job_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|e| format!("Failed to load migration destination: {}", e))?
-        .ok_or_else(|| format!("Migration job {} not found", job_id))?;
-        let clients = DestinationClients::for_destination(&state.db, &job.0, job.1).await;
-        resume_migration_job_locked(&state.db, &app, &job_id, &clients).await?;
+        resume_migration_job_locked(db, app, job_id, gateway).await?;
     }
     Ok(retried)
 }
