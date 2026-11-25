@@ -794,3 +794,27 @@ documentado en `docs/features/backup.md`; filas de cierre:
 
 Actualización de filas previas del carril `datos-logs-backup`: BR-01 y BR-02
 pasan de describir el manifest v1 a describir el v2 (ver arriba).
+
+## LY05 — retirada del puente Python de letras: consumo del puente de descarga retirado (#188, 2026-11-25)
+
+Comprobación previa: la premisa del ticket («ya nada los invoca») no era cierta y la
+retirada completa queda bloqueada por #185 (LY04, abierto). En el árbol quedan dos
+consumidores vivos del motor Python legacy:
+
+- `src-tauri/src/commands/settings.rs` (`test_lyrics_provider`) lanza
+  `scripts/lyrics_bridge.py test --provider …`; lo invoca la UI de ajustes
+  (`ui/src/api/settings.ts`) y `src-tauri/tests/lyrics_bridge_test_command_test.rs` lo
+  ejecuta. `src-tauri/tests/python_module_hygiene_test.rs` además exige que
+  `lyrics_bridge.py` exista.
+- `scripts/services/qobuz_service.py` importaba `LyricsService` y generaba el sidecar
+  de letras en su `download_track`.
+
+Este carril (solo Python + docs) retira el consumo de descarga, que era el único
+impedimento del lado Python. La eliminación de `lyrics_bridge.py`,
+`scripts/services/lyrics_service.py` y sus tests sigue pendiente de #185: exige
+reescribir `test_lyrics_provider` como sonda Rust y tocar `src-tauri/**`, fuera del
+alcance de este carril.
+
+| ID | Qué se retiró | Dónde vivía | Qué se hizo | Por qué es el arreglo correcto | Riesgo | Prueba | Plan de reapertura | Estado |
+|---|---|---|---|---|---|---|---|---|
+| LY05-01 | Paso de letras del `download_track` del puente Python de Qobuz (`LyricsService`, `apple_music_token`) | `scripts/services/qobuz_service.py:33` (import), `:1267-1275` (firma) y `:1420-1454` (bloque «Step 6») | Fuera el import, el parámetro y el bloque; ningún llamador pasaba `apple_music_token` (`scripts/download_bridge.py` no lo usa) | El camino de descarga de la app es nativo (`src-tauri/src/download/qobuz.rs`, que ya escribe el sidecar con `download/lyrics.rs`); este puente Python es legacy y no se invoca desde Rust (ADR-0009), así que mantener un segundo motor de letras contradecía ADR-0017 decisión 6 | Bajo: código muerto desde la app; el bloque estaba envuelto en `try/except` y ningún test lo cubría | `test_download_bridge_contract.py` (22), `test_services_imports_hygiene.py` (6), `test_python_hygiene.py` (10), `test_qobuz_*.py` (10); suite Python completa en verde | Si el puente legacy vuelve a ser camino de descarga, consumir el pipeline nativo, no reimportar `LyricsService`; la retirada del puente/servicio sigue en #188 tras #185 | retirado (#188, parcial) |
