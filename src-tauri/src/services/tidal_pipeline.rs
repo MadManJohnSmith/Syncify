@@ -1550,6 +1550,7 @@ where
         resolved_stream_context = Some((
             downloader,
             track,
+            cand_account_id,
             tidal_id,
             artist_name,
             album_title,
@@ -1564,6 +1565,7 @@ where
     let (
         downloader,
         track,
+        cover_account_id,
         tidal_id,
         artist_name,
         album_title,
@@ -1588,6 +1590,18 @@ where
             return Err(err_msg);
         }
     };
+
+    let cover_identity = track
+        .album
+        .as_ref()
+        .and_then(|album| album.id)
+        .and_then(|edition_id| {
+            crate::download::cover_art::CoverIdentity::new(
+                "tidal",
+                cover_account_id,
+                &edition_id.to_string(),
+            )
+        });
 
     let release_date = track
         .album
@@ -1855,7 +1869,14 @@ where
         let cover_url = track.album.as_ref().and_then(|a| a.cover_url());
         let http_client = crate::download::http_client::shared_http_client();
         if let Some(ref url) = cover_url {
-            match crate::download::cover_art::fetch_cover(http_client, url, None).await {
+            match crate::download::cover_art::fetch_cover(
+                http_client,
+                url,
+                cover_identity.as_ref(),
+                None,
+            )
+            .await
+            {
                 Ok(cover) => {
                     let sidecar_jpg = temp_staging_dir.join("cover.jpg");
                     if let Err(w_err) = tokio::fs::write(&sidecar_jpg, cover.bytes.as_ref()).await {
@@ -2368,7 +2389,14 @@ where
             let mut downloaded = false;
             while attempts < 2 && !downloaded {
                 attempts += 1;
-                match crate::download::cover_art::fetch_cover(client, url, None).await {
+                match crate::download::cover_art::fetch_cover(
+                    client,
+                    url,
+                    cover_identity.as_ref(),
+                    None,
+                )
+                .await
+                {
                     Ok(cover) => {
                         let sidecar_jpg = temp_staging_dir.join("cover.jpg");
                         if let Err(w_err) =
@@ -3158,7 +3186,14 @@ where
             let fallback_url = track.album.as_ref().and_then(|a| a.cover_url());
             if let Some(ref url) = fallback_url {
                 let client = crate::download::http_client::shared_http_client();
-                match crate::download::cover_art::fetch_cover(client, url, None).await {
+                match crate::download::cover_art::fetch_cover(
+                    client,
+                    url,
+                    cover_identity.as_ref(),
+                    None,
+                )
+                .await
+                {
                     Ok(cover) => {
                         if let Err(error) =
                             tokio::fs::write(&cover_dest, cover.bytes.as_ref()).await

@@ -498,7 +498,25 @@ impl DownloadOrchestrator {
             .filter(|url| !url.is_empty())
         {
             let client = crate::download::http_client::shared_http_client();
-            match crate::download::cover_art::fetch_cover(client, url, cancel_token).await {
+            let cover_identity = request.service_name.as_deref().and_then(|provider| {
+                let account_id = request
+                    .resolution_plan
+                    .as_ref()
+                    .and_then(|plan| plan.primary())
+                    .and_then(|candidate| candidate.account.as_ref())
+                    .map(|account| account.account_id)?;
+                request.service_album_id.as_deref().and_then(|edition_id| {
+                    crate::download::cover_art::CoverIdentity::new(provider, account_id, edition_id)
+                })
+            });
+            match crate::download::cover_art::fetch_cover(
+                client,
+                url,
+                cover_identity.as_ref(),
+                cancel_token,
+            )
+            .await
+            {
                 Ok(cover) => {
                     match crate::download::id3_writer::Mp3Cover::from_bytes(cover.bytes.to_vec()) {
                         Ok(cover) => tags = tags.with_cover(cover),

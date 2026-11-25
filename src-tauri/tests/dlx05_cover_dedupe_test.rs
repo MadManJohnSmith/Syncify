@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use syncify_tauri_lib::download::cover_art::{CoverCache, CoverIdentity};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
@@ -111,6 +112,44 @@ async fn medir_baseline(pistas: usize) -> (usize, u128) {
     (server.request_count(), inicio.elapsed().as_millis())
 }
 
+async fn medir_candidata(pistas: usize) -> (usize, usize, u128) {
+    let server = arrancar_servidor().await;
+    let url = format!("{}/album/cover.png", server.base);
+    let cache = CoverCache::new();
+    let identity = CoverIdentity::new("test", 7, "album-1").expect("identidad explícita");
+    let staging = tempfile::tempdir().unwrap();
+    let inicio = Instant::now();
+    let mut set = JoinSet::new();
+    for track in 0..pistas {
+        let cache = cache.clone();
+        let url = url.clone();
+        let identity = identity.clone();
+        let staging = staging.path().to_path_buf();
+        set.spawn(async move {
+            let cover = cache
+                .fetch(&reqwest::Client::new(), &url, Some(&identity), None)
+                .await
+                .expect("portada compartida");
+            let path = staging.join(format!("{track}.cover.png"));
+            tokio::fs::write(&path, cover.bytes.as_ref())
+                .await
+                .expect("staging propio por pista");
+            assert_eq!(tokio::fs::read(path).await.expect("sidecar"), PNG);
+            cover
+        });
+    }
+    let mut entregadas = 0usize;
+    let mut hits = 0usize;
+    while let Some(result) = set.join_next().await {
+        let cover = result.expect("tarea de portada");
+        assert_eq!(cover.bytes.as_ref(), PNG);
+        hits += usize::from(cover.cache_hit);
+        entregadas += 1;
+    }
+    assert_eq!(entregadas, pistas);
+    (server.request_count(), hits, inicio.elapsed().as_millis())
+}
+
 #[tokio::test]
 async fn baseline_sin_cache_repite_la_portada_por_pista() {
     let mut filas = Vec::new();
@@ -120,4 +159,24 @@ async fn baseline_sin_cache_repite_la_portada_por_pista() {
         filas.push(format!("{pistas} pistas: {peticiones} peticiones, {ms} ms"));
     }
     println!("DLX-05 baseline · {}", filas.join(" · "));
+}
+
+#[tokio::test]
+async fn caché_comparte_una_petición_y_mide_el_ahorro_real() {
+    let mut filas = Vec::new();
+    for pistas in [2usize, 12] {
+        let (baseline_peticiones, baseline_ms) = medir_baseline(pistas).await;
+        let (candidata_peticiones, hits, candidata_ms) = medir_candidata(pistas).await;
+        assert_eq!(baseline_peticiones, pistas);
+        assert_eq!(candidata_peticiones, 1);
+        assert_eq!(hits, pistas - 1);
+        assert_eq!(baseline_peticiones * PNG.len(), pistas * PNG.len());
+        assert_eq!(candidata_peticiones * PNG.len(), PNG.len());
+        filas.push(format!(
+            "{pistas} pistas: {baseline_peticiones}→{candidata_peticiones} peticiones, {}→{} bytes, {baseline_ms}→{candidata_ms} ms, {hits} reutilizaciones",
+            pistas * PNG.len(),
+            PNG.len()
+        ));
+    }
+    println!("DLX-05 antes/después · {}", filas.join(" · "));
 }

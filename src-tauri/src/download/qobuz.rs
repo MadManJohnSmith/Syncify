@@ -2138,15 +2138,16 @@ impl QobuzDownloader {
                 }
             }
 
-            let (token, track, stream_res, downloaded_bytes) = if let Some((
-                _account_id,
+            let (account_id, token, track, stream_res, downloaded_bytes) = if let Some((
+                account_id,
                 token,
                 track,
                 stream_res,
                 downloaded_bytes,
-            )) = resolved_stream_context
+            )) =
+                resolved_stream_context
             {
-                (token, track, stream_res, downloaded_bytes)
+                (Some(account_id), token, track, stream_res, downloaded_bytes)
             } else if candidate_account_ids.is_empty() {
                 // Fallback for cases with no pool or no candidate accounts in SQLite
                 let token = match self.resolve_token(db_opt).await {
@@ -2233,7 +2234,7 @@ impl QobuzDownloader {
                     )
                     .await?;
 
-                (token, track, stream_res, downloaded_bytes)
+                (None, token, track, stream_res, downloaded_bytes)
             } else {
                 let err = last_error.unwrap_or_else(|| {
                 anyhow!("RequiresAuth: Tu cuenta de Qobuz está desconectada. Inicia sesión en Syncify (Ajustes > Cuentas).")
@@ -2243,6 +2244,18 @@ impl QobuzDownloader {
                 return Err(err);
             };
             let token_ref = Some(token.as_str());
+            let cover_identity = account_id.and_then(|account_id| {
+                track
+                    .album
+                    .as_ref()
+                    .and_then(|album| album.id.as_deref())
+                    .or(request.service_album_id.as_deref())
+                    .and_then(|edition_id| {
+                        crate::download::cover_art::CoverIdentity::new(
+                            "qobuz", account_id, edition_id,
+                        )
+                    })
+            });
 
             // 5. La transferencia y la validación del payload ya ocurrieron por
             // cuenta (o en la cuenta única del carril sin plan); aquí solo queda
@@ -2256,6 +2269,8 @@ impl QobuzDownloader {
                 phase_tracker,
                 token_ref,
                 db_opt,
+                cover_identity,
+                cancel_token,
                 lyrics_identity,
             )
             .await
@@ -2273,6 +2288,8 @@ impl QobuzDownloader {
         mut phase_tracker: DownloadPhaseTracker,
         token_ref: Option<&'a str>,
         db_opt: Option<&'a sqlx::SqlitePool>,
+        cover_identity: Option<crate::download::cover_art::CoverIdentity>,
+        cancel_token: Option<&'a CancellationToken>,
         lyrics_identity: LyricsTrackIdentity,
     ) -> Pin<Box<dyn Future<Output = Result<DownloadResult>> + Send + 'a>> {
         Box::pin(async move {
@@ -2439,7 +2456,14 @@ impl QobuzDownloader {
 
                 let mut raw_jpeg_bytes: Option<Vec<u8>> = None;
                 if let Some(ref curl) = cover_url {
-                    match crate::download::cover_art::fetch_cover(&self.client, curl, None).await {
+                    match crate::download::cover_art::fetch_cover(
+                        &self.client,
+                        curl,
+                        cover_identity.as_ref(),
+                        cancel_token,
+                    )
+                    .await
+                    {
                         Ok(cover) => {
                             let cover_staging = staging_dir
                                 .join(format!("{}.cover.jpg", sanitize_filename(item_id)));
@@ -3851,6 +3875,8 @@ mod tests {
                 &staged,
                 1_200_588,
                 DownloadPhaseTracker::new(),
+                None,
+                None,
                 None,
                 None,
                 LyricsTrackIdentity::Direct,
