@@ -156,4 +156,114 @@ describe('PlaylistView Player Integration', () => {
         const queuedIds = mockPlayerReplaceQueue.mock.calls[0][0].map((t: { id: number }) => t.id);
         expect(queuedIds).toEqual([301, 302]);
     });
+
+    it('playAll() loads every page before queueing a large playlist', async () => {
+        const tracks = Array.from({ length: 250 }, (_, index) => ({
+            ...mockTracks[0],
+            id: index === 99 ? 7 : index + 1,
+            position: index + 1,
+            title: `Track ${index + 1}`,
+        }));
+        const offsets: number[] = [];
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_playlists') return mockPlaylists;
+            if (cmd === 'get_local_playlist_tracks') {
+                const offset = Number(args?.offset ?? 0);
+                offsets.push(offset);
+                const pageTracks = tracks.slice(offset, offset + 100);
+                return {
+                    tracks: pageTracks,
+                    total: tracks.length,
+                    offset,
+                    limit: 100,
+                    has_more: offset + pageTracks.length < tracks.length,
+                };
+            }
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.playlist-item').find(el => el.text().includes('Chill Vibes'))!.trigger('click');
+        await flushPromises();
+
+        const playAllBtn = wrapper.findAll('button').find(b => b.text().includes('Play All'));
+        await playAllBtn!.trigger('click');
+        await flushPromises();
+
+        expect(offsets).toEqual([0, 0, 100, 200]);
+        expect(mockPlayerReplaceQueue).toHaveBeenCalledTimes(1);
+        const queuedIds = mockPlayerReplaceQueue.mock.calls[0][0].map((track: { id: number }) => track.id);
+        expect(queuedIds).toEqual(tracks.map(track => track.id));
+    });
+
+    it('ignores stale Play All work after changing playlist and deduplicates repeated clicks', async () => {
+        let resolveOldPage!: (value: any) => void;
+        const calls: { cmd: string; args: any }[] = [];
+        const playlists = [
+            { id: 1, name: 'First Playlist', track_count: 200 },
+            { id: 2, name: 'Second Playlist', track_count: 1 },
+        ];
+        const firstPage = Array.from({ length: 100 }, (_, index) => ({
+            ...mockTracks[0],
+            id: index + 1,
+            position: index + 1,
+            title: `First ${index + 1}`,
+        }));
+        mockInvoke((cmd, args) => {
+            calls.push({ cmd, args });
+            if (cmd === 'get_playlists') return playlists;
+            if (cmd === 'get_local_playlist_tracks') {
+                const playlistId = Number(args?.playlistId);
+                const offset = Number(args?.offset ?? 0);
+                if (playlistId === 1 && offset === 100) {
+                    return new Promise(resolve => { resolveOldPage = resolve; });
+                }
+                if (playlistId === 2) {
+                    return {
+                        tracks: [{ ...mockTracks[0], id: 201, position: 1, title: 'Second only' }],
+                        total: 1,
+                        offset: 0,
+                        limit: 100,
+                        has_more: false,
+                    };
+                }
+                return { tracks: firstPage, total: 200, offset, limit: 100, has_more: true };
+            }
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.playlist-item').find(el => el.text().includes('First Playlist'))!.trigger('click');
+        await flushPromises();
+
+        const firstPlayAll = wrapper.findAll('button').find(b => b.text().includes('Play All'))!;
+        await firstPlayAll.trigger('click');
+        await firstPlayAll.trigger('click');
+        await flushPromises();
+
+        expect(calls.filter(call => call.cmd === 'get_local_playlist_tracks' && call.args.playlistId === 1 && call.args.offset === 0)).toHaveLength(2);
+        expect(wrapper.findAll('button').find(b => b.text().includes('Loading…'))?.attributes('disabled')).toBeDefined();
+
+        await wrapper.findAll('.playlist-item').find(el => el.text().includes('Second Playlist'))!.trigger('click');
+        await flushPromises();
+        resolveOldPage({
+            tracks: [{ ...mockTracks[0], id: 101, position: 101, title: 'Stale tail' }],
+            total: 200,
+            offset: 100,
+            limit: 100,
+            has_more: false,
+        });
+        await flushPromises();
+
+        expect(mockPlayerReplaceQueue).not.toHaveBeenCalled();
+        const secondPlayAll = wrapper.findAll('button').find(b => b.text().includes('Play All'))!;
+        expect(secondPlayAll.attributes('disabled')).toBeUndefined();
+        await secondPlayAll.trigger('click');
+        await flushPromises();
+
+        expect(mockPlayerReplaceQueue).toHaveBeenCalledTimes(1);
+        expect(mockPlayerReplaceQueue.mock.calls[0][0].map((track: { id: number }) => track.id)).toEqual([201]);
+    });
 });
