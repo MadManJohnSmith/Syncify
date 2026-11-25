@@ -411,6 +411,29 @@ impl Default for CoverCache {
     }
 }
 
+#[cfg(test)]
+impl CoverCache {
+    fn with_limits(
+        ttl: Duration,
+        max_entries: usize,
+        max_bytes: usize,
+        max_cover_bytes: usize,
+    ) -> Self {
+        Self {
+            inner: Arc::new(CacheInner {
+                config: CacheConfig {
+                    ttl,
+                    max_entries,
+                    max_bytes,
+                    max_in_flight: MAX_IN_FLIGHT,
+                    max_cover_bytes,
+                },
+                state: Mutex::new(CacheState::new()),
+            }),
+        }
+    }
+}
+
 enum Start {
     Hit(CoverFetch),
     Flight {
@@ -464,13 +487,30 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use tokio::sync::Notify;
     use tokio::task::JoinSet;
 
     const COVER: &[u8] = b"synthetic-cover";
 
+    #[derive(Clone)]
+    struct ResponsePlan {
+        delay: Duration,
+        responses: Arc<Mutex<VecDeque<(u16, &'static [u8])>>>,
+    }
+
+    impl ResponsePlan {
+        fn new(delay: Duration, responses: Vec<(u16, &'static [u8])>) -> Self {
+            Self {
+                delay,
+                responses: Arc::new(Mutex::new(responses.into())),
+            }
+        }
+    }
+
     struct CoverServer {
         base: String,
         requests: Arc<AtomicUsize>,
+        started: Arc<Notify>,
         task: tokio::task::JoinHandle<()>,
     }
 
@@ -480,11 +520,18 @@ mod tests {
         }
     }
 
-    async fn start_server(max_connections: usize) -> CoverServer {
+    async fn start_server_with(
+        max_connections: usize,
+        delay: Duration,
+        responses: Vec<(u16, &'static [u8])>,
+    ) -> CoverServer {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
         let requests = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
+        let plan = ResponsePlan::new(delay, responses);
         let counter = requests.clone();
+        let request_started = started.clone();
         let task = tokio::spawn(async move {
             for _ in 0..max_connections {
                 let Ok(Ok((mut socket, _))) =
@@ -493,29 +540,48 @@ mod tests {
                     break;
                 };
                 let counter = counter.clone();
+                let request_started = request_started.clone();
+                let plan = plan.clone();
                 tokio::spawn(async move {
                     let mut request = [0u8; 2048];
                     if socket.read(&mut request).await.is_err() {
                         return;
                     }
                     counter.fetch_add(1, Ordering::SeqCst);
-                    tokio::time::sleep(Duration::from_millis(30)).await;
+                    request_started.notify_one();
+                    let (status, body) = plan
+                        .responses
+                        .lock()
+                        .expect("response plan mutex poisoned")
+                        .pop_front()
+                        .unwrap_or((200, COVER));
+                    tokio::time::sleep(plan.delay).await;
+                    let reason = if status == 200 {
+                        "OK"
+                    } else {
+                        "Service Unavailable"
+                    };
                     let header = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        COVER.len()
+                        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
                     );
                     if socket.write_all(header.as_bytes()).await.is_err() {
                         return;
                     }
-                    let _ = socket.write_all(COVER).await;
+                    let _ = socket.write_all(body).await;
                 });
             }
         });
         CoverServer {
             base,
             requests,
+            started,
             task,
         }
+    }
+
+    async fn start_server(max_connections: usize) -> CoverServer {
+        start_server_with(max_connections, Duration::from_millis(30), Vec::new()).await
     }
 
     #[tokio::test]
@@ -554,5 +620,265 @@ mod tests {
                 started.elapsed().as_millis()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn different_access_contexts_editions_and_urls_never_share() {
+        let server = start_server(5).await;
+        let cache = CoverCache::new();
+        let client = Client::new();
+        let account_seven = CoverIdentity::new("test", 7, "album-1").unwrap();
+        let account_eight = CoverIdentity::new("test", 8, "album-1").unwrap();
+        let other_edition = CoverIdentity::new("test", 7, "album-2").unwrap();
+        let other_provider = CoverIdentity::new("other", 7, "album-1").unwrap();
+        let first_url = format!("{}/first.png", server.base);
+        let second_url = format!("{}/second.png", server.base);
+        let cases = [
+            (first_url.clone(), account_seven.clone()),
+            (first_url.clone(), account_eight),
+            (first_url.clone(), other_edition),
+            (first_url, other_provider),
+            (second_url, account_seven),
+        ];
+        let mut tasks = JoinSet::new();
+        for (url, identity) in cases {
+            let cache = cache.clone();
+            let client = client.clone();
+            tasks.spawn(async move { cache.fetch(&client, &url, Some(&identity), None).await });
+        }
+        while let Some(result) = tasks.join_next().await {
+            let cover = result.unwrap().unwrap();
+            assert_eq!(cover.bytes.as_ref(), COVER);
+            assert!(!cover.cache_hit);
+        }
+        assert_eq!(server.requests.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_identity_bypasses_cache() {
+        assert!(CoverIdentity::new("", 7, "album-1").is_none());
+        assert!(CoverIdentity::new("test", 0, "album-1").is_none());
+        assert!(CoverIdentity::new("test", 7, " ").is_none());
+
+        let server = start_server(2).await;
+        let url = format!("{}/album.png", server.base);
+        let cache = CoverCache::new();
+        let client = Client::new();
+        let mut tasks = JoinSet::new();
+        for _ in 0..2 {
+            let cache = cache.clone();
+            let client = client.clone();
+            let url = url.clone();
+            tasks.spawn(async move { cache.fetch(&client, &url, None, None).await });
+        }
+        while let Some(result) = tasks.join_next().await {
+            let cover = result.unwrap().unwrap();
+            assert_eq!(cover.bytes.as_ref(), COVER);
+            assert!(!cover.cache_hit);
+        }
+        assert_eq!(server.requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_url_bypasses_cache_but_still_fetches() {
+        let server = start_server(2).await;
+        let url = server.base.replacen("http://", "http://user:password@", 1);
+        let cache = CoverCache::new();
+        let client = Client::new();
+        let identity = CoverIdentity::new("test", 7, "album-1").unwrap();
+        for _ in 0..2 {
+            let cover = cache
+                .fetch(&client, &url, Some(&identity), None)
+                .await
+                .unwrap();
+            assert_eq!(cover.bytes.as_ref(), COVER);
+            assert!(!cover.cache_hit);
+        }
+        assert_eq!(server.requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn canonical_url_ignores_fragment_and_reuses_immutable_bytes() {
+        let server = start_server(1).await;
+        let url = format!("{}/album.png", server.base);
+        let cache = CoverCache::new();
+        let client = Client::new();
+        let identity = CoverIdentity::new("test", 7, "album-1").unwrap();
+        let first = cache
+            .fetch(&client, &format!("{url}#first"), Some(&identity), None)
+            .await
+            .unwrap();
+        let second = cache
+            .fetch(&client, &format!("{url}#second"), Some(&identity), None)
+            .await
+            .unwrap();
+        assert!(!first.cache_hit);
+        assert!(second.cache_hit);
+        assert!(Arc::ptr_eq(&first.bytes, &second.bytes));
+        assert_eq!(server.requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn http_failure_is_not_cached() {
+        let server = start_server_with(2, Duration::ZERO, vec![(503, b""), (200, COVER)]).await;
+        let url = format!("{}/album.png", server.base);
+        let cache = CoverCache::new();
+        let client = Client::new();
+        let identity = CoverIdentity::new("test", 7, "album-1").unwrap();
+        let first = cache.fetch(&client, &url, Some(&identity), None).await;
+        assert!(matches!(first, Err(CoverError::Http(status)) if status.as_u16() == 503));
+        let second = cache
+            .fetch(&client, &url, Some(&identity), None)
+            .await
+            .unwrap();
+        assert_eq!(second.bytes.as_ref(), COVER);
+        assert!(!second.cache_hit);
+        assert_eq!(server.requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn empty_payload_is_not_cached() {
+        let server = start_server_with(2, Duration::ZERO, vec![(200, b""), (200, COVER)]).await;
+        let url = format!("{}/album.png", server.base);
+        let cache = CoverCache::new();
+        let client = Client::new();
+        let identity = CoverIdentity::new("test", 7, "album-1").unwrap();
+        assert!(matches!(
+            cache.fetch(&client, &url, Some(&identity), None).await,
+            Err(CoverError::Empty)
+        ));
+        let second = cache
+            .fetch(&client, &url, Some(&identity), None)
+            .await
+            .unwrap();
+        assert_eq!(second.bytes.as_ref(), COVER);
+        assert_eq!(server.requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn cancelling_one_waiter_does_not_cancel_shared_flight() {
+        let server = start_server(1).await;
+        let url = format!("{}/album.png", server.base);
+        let cache = CoverCache::new();
+        let client = Client::new();
+        let identity = CoverIdentity::new("test", 7, "album-1").unwrap();
+        let token = CancellationToken::new();
+        let request_started = server.started.notified();
+        let leader_cache = cache.clone();
+        let leader_client = client.clone();
+        let leader_url = url.clone();
+        let leader_identity = identity.clone();
+        let leader_token = token.clone();
+        let leader = tokio::spawn(async move {
+            leader_cache
+                .fetch(
+                    &leader_client,
+                    &leader_url,
+                    Some(&leader_identity),
+                    Some(&leader_token),
+                )
+                .await
+        });
+        request_started.await;
+
+        let waiter_cache = cache.clone();
+        let waiter = tokio::spawn(async move {
+            waiter_cache
+                .fetch(&client, &url, Some(&identity), None)
+                .await
+        });
+        token.cancel();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), leader)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(CoverError::Cancelled)
+        ));
+        let cover = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(cover.bytes.as_ref(), COVER);
+        assert!(cover.cache_hit);
+        assert_eq!(server.requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn expiration_and_lru_eviction_refetch() {
+        let server = start_server_with(4, Duration::ZERO, Vec::new()).await;
+        let first_url = format!("{}/first.png", server.base);
+        let second_url = format!("{}/second.png", server.base);
+        let cache = CoverCache::with_limits(Duration::from_millis(20), 1, 1024, 1024);
+        let client = Client::new();
+        let identity = CoverIdentity::new("test", 7, "album-1").unwrap();
+
+        cache
+            .fetch(&client, &first_url, Some(&identity), None)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let after_ttl = cache
+            .fetch(&client, &first_url, Some(&identity), None)
+            .await
+            .unwrap();
+        assert!(!after_ttl.cache_hit);
+        cache
+            .fetch(&client, &second_url, Some(&identity), None)
+            .await
+            .unwrap();
+        let after_eviction = cache
+            .fetch(&client, &first_url, Some(&identity), None)
+            .await
+            .unwrap();
+        assert!(!after_eviction.cache_hit);
+        assert_eq!(server.requests.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn cache_byte_budget_evicts_older_covers() {
+        let server = start_server_with(3, Duration::ZERO, Vec::new()).await;
+        let first_url = format!("{}/first.png", server.base);
+        let second_url = format!("{}/second.png", server.base);
+        let cache = CoverCache::with_limits(Duration::from_secs(60), 4, COVER.len(), COVER.len());
+        let client = Client::new();
+        let identity = CoverIdentity::new("test", 7, "album-1").unwrap();
+
+        cache
+            .fetch(&client, &first_url, Some(&identity), None)
+            .await
+            .unwrap();
+        cache
+            .fetch(&client, &second_url, Some(&identity), None)
+            .await
+            .unwrap();
+        let refetched = cache
+            .fetch(&client, &first_url, Some(&identity), None)
+            .await
+            .unwrap();
+        assert!(!refetched.cache_hit);
+        assert_eq!(server.requests.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn oversized_payload_is_rejected_and_not_cached() {
+        let server = start_server(2).await;
+        let url = format!("{}/album.png", server.base);
+        let cache = CoverCache::with_limits(
+            Duration::from_secs(60),
+            4,
+            1024,
+            COVER.len().saturating_sub(1),
+        );
+        let client = Client::new();
+        let identity = CoverIdentity::new("test", 7, "album-1").unwrap();
+        for _ in 0..2 {
+            assert!(matches!(
+                cache.fetch(&client, &url, Some(&identity), None).await,
+                Err(CoverError::TooLarge { .. })
+            ));
+        }
+        assert_eq!(server.requests.load(Ordering::SeqCst), 2);
     }
 }
