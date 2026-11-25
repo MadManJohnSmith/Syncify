@@ -1853,34 +1853,25 @@ where
 
         let mut raw_jpeg_bytes: Option<Vec<u8>> = None;
         let cover_url = track.album.as_ref().and_then(|a| a.cover_url());
+        let http_client = crate::download::http_client::shared_http_client();
         if let Some(ref url) = cover_url {
-            match reqwest::get(url).await {
-                Ok(resp) if resp.status().is_success() => match resp.bytes().await {
-                    Ok(bytes) if !bytes.is_empty() => {
-                        let sidecar_jpg = temp_staging_dir.join("cover.jpg");
-                        if let Err(w_err) = tokio::fs::write(&sidecar_jpg, &bytes).await {
-                            warn!(path = %sidecar_jpg.display(), error = %w_err, "[Pipeline §6a] Failed to write static cover.jpg");
-                        }
-                        raw_jpeg_bytes = Some(bytes.to_vec());
-                        cover_result_str = "StaticJPEG".to_string();
-                        info!(url = %url, size = bytes.len(), "[Pipeline §6a] Static cover art downloaded and saved as cover.jpg");
+            match crate::download::cover_art::fetch_cover(http_client, url, None).await {
+                Ok(cover) => {
+                    let sidecar_jpg = temp_staging_dir.join("cover.jpg");
+                    if let Err(w_err) = tokio::fs::write(&sidecar_jpg, cover.bytes.as_ref()).await {
+                        warn!(path = %sidecar_jpg.display(), error = %w_err, "[Pipeline §6a] Failed to write static cover.jpg");
                     }
-                    _ => {
-                        warn!("[Pipeline §6a] Static cover art payload was empty");
-                    }
-                },
-                Ok(resp) => {
-                    warn!(status = %resp.status(), "[Pipeline §6a] Static cover HTTP error");
+                    raw_jpeg_bytes = Some(cover.bytes.to_vec());
+                    cover_result_str = "StaticJPEG".to_string();
+                    info!(url = %url, size = cover.bytes.len(), cache_hit = cover.cache_hit, "[Pipeline §6a] Static cover art retrieved and saved as cover.jpg");
                 }
-                Err(e) => {
-                    warn!(error = %e, "[Pipeline §6a] Static cover download request failed");
+                Err(error) => {
+                    warn!(url = %url, %error, "[Pipeline §6a] Static cover unavailable");
                 }
             }
         }
 
         // Attempt Apple Music Animated Cover resolution for motion artwork
-        let http_client = crate::download::http_client::shared_http_client();
-
         match resolve_and_download_animated_cover(
             http_client,
             &artist_name,
@@ -2377,22 +2368,23 @@ where
             let mut downloaded = false;
             while attempts < 2 && !downloaded {
                 attempts += 1;
-                match client.get(url).send().await {
-                    Ok(resp) if resp.status().is_success() => match resp.bytes().await {
-                        Ok(bytes) if !bytes.is_empty() => {
-                            let sidecar_jpg = temp_staging_dir.join("cover.jpg");
-                            if let Err(w_err) = tokio::fs::write(&sidecar_jpg, &bytes).await {
-                                warn!(path = %sidecar_jpg.display(), error = %w_err, "[Pipeline §6a] Failed to write M4A sidecar cover.jpg");
-                            }
-                            m4a_cover_bytes = Some(bytes.to_vec());
-                            cover_result_str = "StaticJPEG".to_string();
-                            info!(size = bytes.len(), url = %url, "[Pipeline §6a] Sidecar cover.jpg saved and staged for M4A atom embedding");
-                            downloaded = true;
-                            break;
+                match crate::download::cover_art::fetch_cover(client, url, None).await {
+                    Ok(cover) => {
+                        let sidecar_jpg = temp_staging_dir.join("cover.jpg");
+                        if let Err(w_err) =
+                            tokio::fs::write(&sidecar_jpg, cover.bytes.as_ref()).await
+                        {
+                            warn!(path = %sidecar_jpg.display(), error = %w_err, "[Pipeline §6a] Failed to write M4A sidecar cover.jpg");
                         }
-                        _ => {}
-                    },
-                    _ => {}
+                        m4a_cover_bytes = Some(cover.bytes.to_vec());
+                        cover_result_str = "StaticJPEG".to_string();
+                        info!(size = cover.bytes.len(), url = %url, cache_hit = cover.cache_hit, "[Pipeline §6a] Sidecar cover.jpg saved and staged for M4A atom embedding");
+                        downloaded = true;
+                        break;
+                    }
+                    Err(error) => {
+                        debug!(url = %url, %error, "[Pipeline §6a] M4A cover candidate failed");
+                    }
                 }
             }
             if downloaded {
@@ -3165,14 +3157,19 @@ where
         if !has_cover {
             let fallback_url = track.album.as_ref().and_then(|a| a.cover_url());
             if let Some(ref url) = fallback_url {
-                if let Ok(resp) = reqwest::get(url).await {
-                    if resp.status().is_success() {
-                        if let Ok(bytes) = resp.bytes().await {
-                            if !bytes.is_empty() {
-                                let _ = tokio::fs::write(&cover_dest, &bytes).await;
-                                info!("[Pipeline §8] ✓ Recovered missing album cover via direct download to {:?}", cover_dest);
-                            }
+                let client = crate::download::http_client::shared_http_client();
+                match crate::download::cover_art::fetch_cover(client, url, None).await {
+                    Ok(cover) => {
+                        if let Err(error) =
+                            tokio::fs::write(&cover_dest, cover.bytes.as_ref()).await
+                        {
+                            warn!(path = %cover_dest.display(), %error, "[Pipeline §8] Failed to write recovered album cover");
+                        } else {
+                            info!(path = %cover_dest.display(), cache_hit = cover.cache_hit, "[Pipeline §8] Recovered missing album cover");
                         }
+                    }
+                    Err(error) => {
+                        warn!(url = %url, %error, "[Pipeline §8] Cover recovery unavailable");
                     }
                 }
             }

@@ -481,6 +481,7 @@ impl DownloadOrchestrator {
     async fn tag_mp3_delivery(
         request: &DownloadRequest,
         res: DownloadResult,
+        cancel_token: Option<&CancellationToken>,
     ) -> Result<DownloadResult> {
         let path = std::path::PathBuf::from(&res.file_path);
         if !crate::download::id3_writer::is_mp3_file(&path) {
@@ -496,22 +497,18 @@ impl DownloadOrchestrator {
             .map(str::trim)
             .filter(|url| !url.is_empty())
         {
-            match reqwest::get(url).await {
-                Ok(response) => match response.bytes().await {
-                    Ok(bytes) => {
-                        match crate::download::id3_writer::Mp3Cover::from_bytes(bytes.to_vec()) {
-                            Ok(cover) => tags = tags.with_cover(cover),
-                            Err(error) => {
-                                warn!(url, %error, "[D16] portada no válida; se omite el APIC")
-                            }
+            let client = crate::download::http_client::shared_http_client();
+            match crate::download::cover_art::fetch_cover(client, url, cancel_token).await {
+                Ok(cover) => {
+                    match crate::download::id3_writer::Mp3Cover::from_bytes(cover.bytes.to_vec()) {
+                        Ok(cover) => tags = tags.with_cover(cover),
+                        Err(error) => {
+                            warn!(url, %error, "[D16] portada no válida; se omite el APIC")
                         }
                     }
-                    Err(error) => {
-                        warn!(url, %error, "[D16] no se pudo leer la portada; se omite el APIC")
-                    }
-                },
+                }
                 Err(error) => {
-                    warn!(url, %error, "[D16] no se pudo descargar la portada; se omite el APIC")
+                    warn!(url, %error, "[D16] no se pudo obtener la portada; se omite el APIC")
                 }
             }
         }
@@ -1622,7 +1619,7 @@ impl DownloadOrchestrator {
         // orquestador. El gate de D05 relee esos tags después. Un fallo de
         // escritura o relectura restaura el original y falla la descarga.
         let result = match result {
-            Ok(res) => Self::tag_mp3_delivery(request, res).await,
+            Ok(res) => Self::tag_mp3_delivery(request, res, cancel_token).await,
             Err(error) => Err(error),
         };
 
@@ -5562,7 +5559,7 @@ mod tests {
             ..DownloadResult::default()
         };
 
-        DownloadOrchestrator::tag_mp3_delivery(&request, delivered)
+        DownloadOrchestrator::tag_mp3_delivery(&request, delivered, None)
             .await
             .expect("el paso de entrega etiqueta el MP3");
 
@@ -5585,7 +5582,7 @@ mod tests {
             file_path: flac.to_string_lossy().into_owned(),
             ..DownloadResult::default()
         };
-        DownloadOrchestrator::tag_mp3_delivery(&request, delivered)
+        DownloadOrchestrator::tag_mp3_delivery(&request, delivered, None)
             .await
             .expect("FLAC no se toca");
         assert_eq!(std::fs::read(&flac).unwrap(), original);

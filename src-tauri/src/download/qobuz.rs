@@ -2439,20 +2439,27 @@ impl QobuzDownloader {
 
                 let mut raw_jpeg_bytes: Option<Vec<u8>> = None;
                 if let Some(ref curl) = cover_url {
-                    match self.client.get(curl).send().await {
-                        Ok(resp) if resp.status().is_success() => {
-                            if let Ok(bytes) = resp.bytes().await {
-                                if !bytes.is_empty() {
-                                    let cover_staging = staging_dir
-                                        .join(format!("{}.cover.jpg", sanitize_filename(item_id)));
-                                    let _ = tokio::fs::write(&cover_staging, &bytes).await;
-                                    staged_cover_jpg_path = Some(cover_staging);
-                                    raw_jpeg_bytes = Some(bytes.to_vec());
-                                    has_cover_cached = true;
-                                }
+                    match crate::download::cover_art::fetch_cover(&self.client, curl, None).await {
+                        Ok(cover) => {
+                            let cover_staging = staging_dir
+                                .join(format!("{}.cover.jpg", sanitize_filename(item_id)));
+                            if let Err(error) =
+                                tokio::fs::write(&cover_staging, cover.bytes.as_ref()).await
+                            {
+                                warn!(
+                                    path = %cover_staging.display(),
+                                    %error,
+                                    "[Qobuz] Failed to write static cover staging sidecar"
+                                );
+                            } else {
+                                staged_cover_jpg_path = Some(cover_staging);
                             }
+                            raw_jpeg_bytes = Some(cover.bytes.to_vec());
+                            has_cover_cached = cover.cache_hit;
                         }
-                        _ => {}
+                        Err(error) => {
+                            debug!(url = %curl, %error, "[Qobuz] Static cover unavailable");
+                        }
                     }
                 }
 
