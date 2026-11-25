@@ -250,73 +250,6 @@ Smoke del 2026-11-24:
 
 ## WK-04 · precedencia, fallback y bucle de arranque (2026-11-25)
 
-La decisión de política vive en `src-tauri/src/webkit_probe/policy.rs` como
-modelo puro: no lee el entorno, no escribe ficheros y no crea el webview. La
-integración que #54 hará antes de construir Tauri la conecta al arranque y
-expone el override de recuperación; mientras esa integración no exista, este
-módulo no cambia el comportamiento de la app.
-
-### Precedencia y fallback
-
-Orden único, de mayor a menor: override explícito > preferencia persistida >
-sonda > fallback compatible.
-
-| Entrada | Ruta | Razón registrada |
-|---|---|---|
-| Override `compatible` | Compatible | `override-compatible` |
-| Override `accelerated` | Acelerada | `override-accelerated` |
-| Override `auto` | Resuelve como Automático | razón de la sonda o del marcador |
-| Preferencia `compatible` | Compatible | `preference-compatible` |
-| Preferencia `accelerated` | Acelerada | `preference-accelerated` |
-| `auto` + fallo previo del mismo fingerprint | Compatible | `previous-failure-fingerprint` |
-| `auto` + fingerprint incompleto | Compatible | `fingerprint-incomplete` |
-| `auto` + sonda `supported` + fingerprint completo | Acelerada | `probe-supported` |
-| `auto` + sonda `unsupported`, `inconclusive` o `skipped` | Compatible | `probe-*` |
-
-Una sonda positiva solo acelera dentro de `Automático`, con fingerprint completo
-y sin fallo previo: no autoriza por sí sola la ruta acelerada. `Compatible`,
-explícita en la preferencia o en un override, gana siempre a la auto-detección.
-El override es un acto de este arranque y, por eso, también un override `auto`
-manda sobre la preferencia persistida. `Acelerado` es opt-in explícito y no
-consulta ni la sonda ni el marcador de fallo; la salida de recuperación fuera de
-la UI es el override `compatible`.
-
-### Corte del bucle de arranque
-
-`AttemptLedger` guarda solo la clave de fingerprint del arranque acelerado que
-no llegó a la UI. Registrar el mismo fallo es idempotente, un arranque
-acelerado completo borra el marcador y una clave distinta —driver, WebKitGTK,
-Mesa, sesión o dispositivo DRM cambiados— rearma el intento automático. Un
-cierre de energía deja el marcador puesto: es el lado conservador y evita que el
-siguiente arranque repita la misma ruta a ciegas. El marcador guarda la clave,
-nunca datos del equipo.
-
-### Matriz de driver y sesión conocidos
-
-| Entorno | Backend/sesión | Evidencia registrada | Decisión con `Automático` |
-|---|---|---|---|
-| Dell Latitude 5420 (Intel Iris Xe), WebKitGTK sin medir | KDE/Wayland real | abort EGL en AppImage v0.3.0 | Compatible: sin sonda positiva no acelera |
-| NVIDIA GTX 1050 Ti, driver 580.178.04, WebKitGTK 2.54.1-1, Mesa 26.2.4-1 | Xvfb X11, sin DRI3 | `supported`: 145 frames y paints, 3600 píxeles rojos en ambas capturas, 7515 cambiados | Acelerada solo con fingerprint completo; no certifica GPU física |
-| Mismo equipo NVIDIA | Wayland real (`wayland-1`) | `inconclusive`: snapshot con marcador, captura de ventana no disponible | Compatible |
-| Mesa llvmpipe en un X11 virtual | X11 sin GPU física | la sonda puede dar `supported`, pero no mide aceleración por hardware | Se registra la ruta; el positivo no se interpreta como GPU probada |
-| Sesión `tty` o sin display | Ninguna | `skipped` (`no-graphical-session`) | Compatible |
-| Entorno sin sonda válida para la clave actual | Cualquiera | fingerprint incompleto, clave nueva o sonda no ejecutada | Compatible hasta una sonda nueva |
-
-La matriz describe la decisión de la política, no una certificación del equipo:
-un positivo de la sonda prueba presentación visible en esa configuración, no
-que el render use una GPU concreta.
-
-### Cobertura sin GPU real
-
-Los tests de `webkit_probe` son puros o lanzan `/bin/sh`; no inicializan
-WebKitGTK, EGL ni X11, y cubren selección de backend, invalidación de
-fingerprint, clasificación de evidencia, timeout/TERM/KILL y, desde WK-04,
-precedencia, fallback y ausencia de bucle. CI sin GPU basta para esa red; el
-smoke en hardware Intel sigue pendiente en la matriz de arriba.
-
-
-## WK-04 · precedencia, fallback y bucle de arranque (2026-11-25)
-
 Esta sección fija el contrato que la política no puede invertir. El modelo puro
 vive en `src-tauri/src/webkit_probe/policy.rs` y **no está cableado**: no lee el
 entorno, no escribe ficheros ni construye el webview. #54 conecta la decisión
@@ -343,7 +276,9 @@ De mayor a menor prioridad; cada nivel ignora los inferiores.
 Un override explícito `Automático` no fuerza aceleración: manda sobre la
 preferencia persistida y vuelve a consultar la sonda con las mismas guardas de
 los niveles 5–8. El marcador de fallo solo frena el modo `Automático`: ni
-`Compatible` ni un opt-in `Acelerado` quedan secuestrados por él.
+`Compatible` ni un opt-in `Acelerado` quedan secuestrados por él. La salida de
+recuperación fuera de la UI es el override `Compatible`: no depende de que la UI
+llegue a ser operable.
 
 ### Matriz de driver y sesión conocidos
 
@@ -360,6 +295,8 @@ Una fila sin versión medida lo dice: no se rellena por analogía.
 | NVIDIA GTX 1050 Ti, driver 580.196.07 | Wayland `wayland-1` | 2.54.3 · sin registrar | WK-01: ~58 paints/s sin errores EGL/GBM; captura de ventana no disponible | Señal de composición, no de píxel: el contrato WK-02 la clasifica `Inconclusive`, nunca `Supported`. |
 | Runner de CI con Xvfb (Mesa sin DRI3) | X11 virtual | la del runner | Smoke WK-02 2026-11-24: `supported/content_observed` con 3600 px rojos en ambas capturas | Banco de la suite, no prueba de GPU física; no autoriza aceleración en hardware real. |
 | Sesión XWayland `:0` real del 2026-11-24 | X11 | sin registrar | Sin cookie de autorización; no se extrajo ni compartió | No medido: no se infiere un resultado de la fila de Xvfb. |
+| Sesión `tty` o sin display gráfico | ninguna | — | Sonda omitida: `skipped/no-graphical-session` | Compatible: una sonda omitida nunca acelera. |
+| Clave nueva o sonda no ejecutada | cualquiera | — | fingerprint incompleto o sin resultado para esa clave | Compatible hasta una sonda nueva de esa clave. |
 
 ### Bucle de arranque
 
