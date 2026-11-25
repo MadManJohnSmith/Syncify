@@ -169,7 +169,7 @@ describe('PlaylistView Player Integration', () => {
             if (cmd === 'get_playlists') return mockPlaylists;
             if (cmd === 'get_local_playlist_tracks') {
                 const offset = Number(args?.offset ?? 0);
-                offsets.push(offset);
+                if (Number(args?.limit) === 100) offsets.push(offset);
                 const pageTracks = tracks.slice(offset, offset + 100);
                 return {
                     tracks: pageTracks,
@@ -243,7 +243,7 @@ describe('PlaylistView Player Integration', () => {
         await firstPlayAll.trigger('click');
         await flushPromises();
 
-        expect(calls.filter(call => call.cmd === 'get_local_playlist_tracks' && call.args.playlistId === 1 && call.args.offset === 0)).toHaveLength(2);
+        expect(calls.filter(call => call.cmd === 'get_local_playlist_tracks' && call.args.playlistId === 1 && call.args.offset === 0 && call.args.limit === 100)).toHaveLength(2);
         expect(wrapper.findAll('button').find(b => b.text().includes('Loading…'))?.attributes('disabled')).toBeDefined();
 
         await wrapper.findAll('.playlist-item').find(el => el.text().includes('Second Playlist'))!.trigger('click');

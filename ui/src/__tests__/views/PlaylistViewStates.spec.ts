@@ -6,6 +6,7 @@
  * 26: el botón de opciones abre un menú; no borra nada por su cuenta.
  * 46: `/playlists?create=1` abre el formulario de creación y limpia el query.
  * R13: el borrado pide la confirmación unificada de la app, no window.confirm.
+ * PL05 (#158): agrupación, portadas de proveedor/mosaico y recuentos reconciliados.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
@@ -50,6 +51,24 @@ const mockTracks = [
 
 function page(tracks: any[], total = tracks.length) {
     return { tracks, total, offset: 0, limit: 500, has_more: false };
+}
+
+function covers(prefix: string, count: number) {
+    return Array.from({ length: count }, (_, index) => ({
+        id: index + 1,
+        position: index + 1,
+        title: `Track ${index + 1}`,
+        artist_name: 'Artist',
+        album_name: `Album ${index + 1}`,
+        duration_ms: 1000,
+        cover_art_url: `https://cdn.test/${prefix}-${index + 1}.jpg`,
+    }));
+}
+
+function mosaicSources(wrapper: { findAll: (selector: string) => Array<{ attributes: (name: string) => string | undefined }> }): string[] {
+    return wrapper.findAll('[data-testid="playlist-cover-mosaic"] [data-testid="track-cover-img"]')
+        .map(image => image.attributes('src'))
+        .filter((src): src is string => typeof src === 'string');
 }
 
 async function mountView(invoke: (cmd: string, args?: any) => unknown) {
@@ -342,5 +361,261 @@ describe('PlaylistView — acción rápida /playlists?create=1 (auditoría 46)',
 
         expect(document.body.textContent).not.toContain('Make playlist public');
         expect(replace).not.toHaveBeenCalled();
+    });
+});
+
+describe('PlaylistView — catálogo de playlists', () => {
+    beforeEach(() => {
+        resetMocks();
+        document.body.innerHTML = '';
+    });
+
+    it('separa locales, importadas por servicio y smart aunque una smart tenga servicio', async () => {
+        mockInvoke((cmd) => {
+            if (cmd === 'get_playlists') {
+                return [
+                    { id: 1, name: 'Local', track_count: 0, image_url: null, service_name: null },
+                    { id: 2, name: 'Remota', track_count: 0, image_url: null, service_name: 'Spotify' },
+                    { id: 3, name: 'Inteligente', track_count: 0, image_url: null, service_name: 'Qobuz', is_smart: true },
+                ];
+            }
+            if (cmd === 'get_local_playlist_tracks') return page([]);
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+
+        expect(wrapper.text()).toContain('My Playlists (1)');
+        expect(wrapper.text()).toContain('Imported from Spotify (1)');
+        expect(wrapper.text()).toContain('Smart Playlists (1)');
+        expect(wrapper.findAll('.playlist-item').map(item => item.text())).toEqual([
+            expect.stringContaining('Favorites'),
+            expect.stringContaining('Local'),
+            expect.stringContaining('Remota'),
+            expect.stringContaining('Inteligente'),
+        ]);
+    });
+
+    it('usa la imagen del proveedor en una playlist importada', async () => {
+        mockInvoke((cmd) => {
+            if (cmd === 'get_playlists') {
+                return [{
+                    id: 2,
+                    name: 'Remota',
+                    track_count: 0,
+                    image_url: 'https://cdn.test/provider.jpg',
+                    service_name: 'spotify',
+                }];
+            }
+            if (cmd === 'get_playlist') {
+                return { id: 2, name: 'Remota', image_url: 'https://cdn.test/provider.jpg' };
+            }
+            if (cmd === 'get_local_playlist_tracks') return page([]);
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+
+        const item = wrapper.findAll('.playlist-item').find(row => row.text().includes('Remota'))!;
+        expect(item.find('[data-testid="playlist-cover-provider-img"]').attributes('src')).toBe('https://cdn.test/provider.jpg');
+    });
+
+    it('reconcilia track_count con las filas recibidas y cuenta ocurrencias repetidas', async () => {
+        mockInvoke((cmd) => {
+            if (cmd === 'get_playlists') {
+                return [{ id: 1, name: 'Repetida', track_count: 99, image_url: null, service_name: null }];
+            }
+            if (cmd === 'get_local_playlist_tracks') {
+                return page([
+                    { id: 7, position: 1, title: 'Misma', duration_ms: 1000 },
+                    { id: 7, position: 2, title: 'Misma', duration_ms: 1000 },
+                ], 2);
+            }
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        const item = wrapper.findAll('.playlist-item').find(row => row.text().includes('Repetida'))!;
+        await item.trigger('click');
+        await flushPromises();
+
+        expect(wrapper.findAll('.track-row')).toHaveLength(2);
+        expect(item.text()).toContain('2 tracks');
+        expect(wrapper.find('.playlist-header').text()).toContain('2 tracks');
+    });
+});
+
+describe('PlaylistView — portadas PL05', () => {
+    beforeEach(() => {
+        resetMocks();
+        document.body.innerHTML = '';
+    });
+
+    it('una local sin imagen propia muestra un mosaico estable y reconcilia su recuento', async () => {
+        const calls: { cmd: string; args: any }[] = [];
+        const tracks = covers('local', 4);
+        mockInvoke((cmd, args) => {
+            calls.push({ cmd, args });
+            if (cmd === 'get_playlists') {
+                return [{
+                    id: 1,
+                    name: 'Local',
+                    description: null,
+                    track_count: 99,
+                    image_url: tracks[0].cover_art_url,
+                    service_name: null,
+                }];
+            }
+            if (cmd === 'get_local_playlist_tracks') return page(tracks, 4);
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+
+        const item = wrapper.findAll('.playlist-item').find(row => row.text().includes('Local'))!;
+        expect(item.text()).toContain('4 tracks');
+        expect(item.get('[data-testid="playlist-cover"]').attributes('data-cover-kind')).toBe('mosaic');
+        expect(mosaicSources(item)).toEqual(tracks.map(track => track.cover_art_url));
+        expect(calls.filter(call => call.cmd === 'get_local_playlist_tracks')).toEqual([
+            { cmd: 'get_local_playlist_tracks', args: { playlistId: 1, offset: 0, limit: 4 } },
+        ]);
+    });
+
+    it('una importada usa la imagen persistida del proveedor, no el primer álbum', async () => {
+        const tracks = covers('remote', 4);
+        mockInvoke((cmd) => {
+            if (cmd === 'get_playlists') {
+                return [{
+                    id: 2,
+                    name: 'Remota',
+                    description: null,
+                    track_count: 4,
+                    image_url: tracks[0].cover_art_url,
+                    service_name: 'spotify',
+                }];
+            }
+            if (cmd === 'get_playlist') {
+                return { id: 2, name: 'Remota', image_url: 'https://cdn.test/provider.jpg' };
+            }
+            if (cmd === 'get_local_playlist_tracks') return page(tracks, 4);
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+
+        const item = wrapper.findAll('.playlist-item').find(row => row.text().includes('Remota'))!;
+        expect(item.get('[data-testid="playlist-cover-provider-img"]').attributes('src')).toBe('https://cdn.test/provider.jpg');
+    });
+
+    it('una importada sin imagen del proveedor cae al mosaico de sus pistas', async () => {
+        const tracks = covers('remote', 4);
+        mockInvoke((cmd) => {
+            if (cmd === 'get_playlists') {
+                return [{
+                    id: 2,
+                    name: 'Remota',
+                    description: null,
+                    track_count: 4,
+                    image_url: tracks[0].cover_art_url,
+                    service_name: 'spotify',
+                }];
+            }
+            if (cmd === 'get_playlist') return { id: 2, name: 'Remota', image_url: null };
+            if (cmd === 'get_local_playlist_tracks') return page(tracks, 4);
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+
+        const item = wrapper.findAll('.playlist-item').find(row => row.text().includes('Remota'))!;
+        expect(item.get('[data-testid="playlist-cover"]').attributes('data-cover-kind')).toBe('mosaic');
+        expect(mosaicSources(item)).toEqual(tracks.map(track => track.cover_art_url));
+    });
+
+    it('una smart usa el mosaico de su resultado materializado aunque tenga image_url', async () => {
+        const tracks = covers('smart', 4);
+        mockInvoke((cmd) => {
+            if (cmd === 'get_playlists') {
+                return [{
+                    id: 3,
+                    name: 'Smart',
+                    description: null,
+                    track_count: 4,
+                    image_url: 'https://cdn.test/ignored.jpg',
+                    service_name: 'qobuz',
+                    is_smart: true,
+                    rules_json: '[]',
+                }];
+            }
+            if (cmd === 'get_local_playlist_tracks') return page(tracks, 4);
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+
+        const item = wrapper.findAll('.playlist-item').find(row => row.text().includes('Smart'))!;
+        expect(item.get('[data-testid="playlist-cover"]').attributes('data-cover-kind')).toBe('mosaic');
+        expect(mosaicSources(item)).toEqual(tracks.map(track => track.cover_art_url));
+    });
+
+    it('conserva el mosaico seleccionado al recargar el catálogo tras un sync', async () => {
+        const tracks = covers('local', 4);
+        mockInvoke((cmd) => {
+            if (cmd === 'get_playlists') {
+                return [{ id: 1, name: 'Local', description: null, track_count: 4, image_url: null }];
+            }
+            if (cmd === 'get_local_playlist_tracks') return page(tracks, 4);
+            if (cmd === 'sync_playlists') return { playlists_synced: 0, message: 'Sin cambios' };
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        await wrapper.findAll('.playlist-item').find(row => row.text().includes('Local'))!.trigger('click');
+        await flushPromises();
+
+        await wrapper.findAll('button').find(button => button.text().includes('Sync All'))!.trigger('click');
+        await flushPromises();
+
+        expect(mosaicSources(wrapper.get('.playlist-header'))).toEqual(tracks.map(track => track.cover_art_url));
+    });
+
+    it('al quitar una ocurrencia se invalida el mosaico y el recuento de la selección', async () => {
+        const initial = covers('local', 4);
+        let afterRemoval = false;
+        mockInvoke((cmd) => {
+            if (cmd === 'get_playlists') {
+                return [{ id: 1, name: 'Local', description: null, track_count: 4, image_url: null }];
+            }
+            if (cmd === 'get_local_playlist_tracks') {
+                return afterRemoval ? page(initial.slice(1), 3) : page(initial, 4);
+            }
+            if (cmd === 'remove_from_playlist') {
+                afterRemoval = true;
+                return 1;
+            }
+            return null;
+        });
+
+        const wrapper = mount(PlaylistView);
+        await flushPromises();
+        const item = wrapper.findAll('.playlist-item').find(row => row.text().includes('Local'))!;
+        await item.trigger('click');
+        await flushPromises();
+        expect(mosaicSources(wrapper.get('.playlist-header'))).toEqual(initial.map(track => track.cover_art_url));
+
+        await wrapper.get('button[aria-label="Remove Track 1 from playlist"]').trigger('click');
+        await flushPromises();
+
+        expect(mosaicSources(wrapper.get('.playlist-header'))).toEqual(initial.slice(1).map(track => track.cover_art_url));
+        expect(mosaicSources(item)).toEqual(initial.slice(1).map(track => track.cover_art_url));
+        expect(item.text()).toContain('3 tracks');
     });
 });
