@@ -160,6 +160,109 @@ fn read_header_prefix(path: &Path, max_bytes: usize) -> Option<Vec<u8>> {
     Some(buffer)
 }
 
+/// DLX-03: comparte la conversión de un FLAC ya parseado entre el inspector y
+/// el gate de entrega. Así tags y métricas nacen de la misma lectura.
+fn flac_header_is_complete(path: &Path) -> bool {
+    read_header_prefix(path, 42)
+        .and_then(|h| AudioByteValidator::parse_flac_streaminfo(&h))
+        .is_some()
+}
+
+pub(crate) fn physical_metadata_from_flac_tag(
+    tag: &metaflac::Tag,
+    file_size: u64,
+) -> Option<PhysicalAudioMetadata> {
+    let streaminfo = tag.get_streaminfo()?;
+    let sample_rate = streaminfo.sample_rate as i32;
+    let bit_depth = streaminfo.bits_per_sample as i32;
+    let channels = streaminfo.num_channels as i32;
+    let total_samples = streaminfo.total_samples;
+    let duration_secs = if sample_rate > 0 {
+        Some(total_samples as f64 / sample_rate as f64)
+    } else {
+        None
+    };
+    let bitrate = duration_secs.and_then(|dur| {
+        if dur > 0.0 && file_size > 0 {
+            Some(((file_size as f64 * 8.0) / dur / 1000.0).round() as i32)
+        } else {
+            None
+        }
+    });
+    let streaminfo_md5_valid = streaminfo.md5.len() == 16 && streaminfo.md5.iter().any(|&b| b != 0);
+    let md5_signature = if streaminfo.md5.len() == 16 {
+        Some(
+            streaminfo
+                .md5
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>(),
+        )
+    } else {
+        None
+    };
+    let integrity_check_mode = if streaminfo_md5_valid {
+        Some("streaminfo_md5".to_string())
+    } else {
+        Some("decode_check".to_string())
+    };
+    Some(PhysicalAudioMetadata {
+        format: "FLAC".to_string(),
+        sample_rate,
+        bit_depth,
+        channels,
+        bitrate,
+        duration_secs,
+        md5_signature,
+        streaminfo_md5_valid,
+        integrity_check_mode,
+        loudness: None,
+    })
+}
+
+pub(crate) fn physical_metadata_for_mp3() -> PhysicalAudioMetadata {
+    PhysicalAudioMetadata {
+        format: "MP3".to_string(),
+        sample_rate: 44100,
+        bit_depth: 16,
+        channels: 2,
+        bitrate: Some(320),
+        duration_secs: None,
+        md5_signature: None,
+        streaminfo_md5_valid: false,
+        integrity_check_mode: None,
+        loudness: None,
+    }
+}
+
+pub(crate) fn physical_metadata_from_mp4_tag(
+    tag: &mp4ameta::Tag,
+    file_size: u64,
+) -> PhysicalAudioMetadata {
+    let duration_secs = Some(tag.duration().as_secs_f64());
+    let bitrate = duration_secs
+        .and_then(|dur| {
+            if dur > 0.0 && file_size > 0 {
+                Some(((file_size as f64 * 8.0) / dur / 1000.0).round() as i32)
+            } else {
+                None
+            }
+        })
+        .or(Some(320));
+    PhysicalAudioMetadata {
+        format: "AAC".to_string(),
+        sample_rate: 44100,
+        bit_depth: 16,
+        channels: 2,
+        bitrate,
+        duration_secs,
+        md5_signature: None,
+        streaminfo_md5_valid: false,
+        integrity_check_mode: None,
+        loudness: None,
+    }
+}
+
 /// Inspect a physical audio file on disk to determine its exact physical audio properties.
 pub fn inspect_physical_audio_file(path: &Path) -> Option<PhysicalAudioMetadata> {
     if !path.is_file() {
@@ -180,62 +283,13 @@ pub fn inspect_physical_audio_file(path: &Path) -> Option<PhysicalAudioMetadata>
         // metrics", never take the worker down). Only hand it a file whose STREAMINFO
         // block is actually present and parseable; otherwise fall through to the
         // bounded parser below.
-        let header_is_complete = read_header_prefix(path, 42)
-            .and_then(|h| AudioByteValidator::parse_flac_streaminfo(&h))
-            .is_some();
+        let header_is_complete = flac_header_is_complete(path);
 
         // Try metaflac first
         if header_is_complete {
             if let Ok(tag) = metaflac::Tag::read_from_path(path) {
-                if let Some(streaminfo) = tag.get_streaminfo() {
-                    let sample_rate = streaminfo.sample_rate as i32;
-                    let bit_depth = streaminfo.bits_per_sample as i32;
-                    let channels = streaminfo.num_channels as i32;
-                    let total_samples = streaminfo.total_samples;
-                    let duration_secs = if sample_rate > 0 {
-                        Some(total_samples as f64 / sample_rate as f64)
-                    } else {
-                        None
-                    };
-                    let bitrate = duration_secs.and_then(|dur| {
-                        if dur > 0.0 && file_size > 0 {
-                            Some(((file_size as f64 * 8.0) / dur / 1000.0).round() as i32)
-                        } else {
-                            None
-                        }
-                    });
-
-                    let streaminfo_md5_valid =
-                        streaminfo.md5.len() == 16 && streaminfo.md5.iter().any(|&b| b != 0);
-                    let md5_signature = if streaminfo.md5.len() == 16 {
-                        Some(
-                            streaminfo
-                                .md5
-                                .iter()
-                                .map(|b| format!("{:02x}", b))
-                                .collect::<String>(),
-                        )
-                    } else {
-                        None
-                    };
-                    let integrity_check_mode = if streaminfo_md5_valid {
-                        Some("streaminfo_md5".to_string())
-                    } else {
-                        Some("decode_check".to_string())
-                    };
-
-                    return Some(PhysicalAudioMetadata {
-                        format: "FLAC".to_string(),
-                        sample_rate,
-                        bit_depth,
-                        channels,
-                        bitrate,
-                        duration_secs,
-                        md5_signature,
-                        streaminfo_md5_valid,
-                        integrity_check_mode,
-                        loudness: None,
-                    });
+                if let Some(physical) = physical_metadata_from_flac_tag(&tag, file_size) {
+                    return Some(physical);
                 }
             }
 
@@ -278,49 +332,26 @@ pub fn inspect_physical_audio_file(path: &Path) -> Option<PhysicalAudioMetadata>
 
     // 2. MP4 / M4A / AAC files
     if ext == "m4a" || ext == "aac" || ext == "mp4" {
-        let mut duration_secs = None;
-        if let Ok(tag) = mp4ameta::Tag::read_from_path(path) {
-            duration_secs = Some(tag.duration().as_secs_f64());
-        }
-
-        let bitrate = duration_secs
-            .and_then(|dur| {
-                if dur > 0.0 && file_size > 0 {
-                    Some(((file_size as f64 * 8.0) / dur / 1000.0).round() as i32)
-                } else {
-                    None
-                }
-            })
-            .or(Some(320));
-
-        return Some(PhysicalAudioMetadata {
-            format: "AAC".to_string(),
-            sample_rate: 44100,
-            bit_depth: 16,
-            channels: 2,
-            bitrate,
-            duration_secs,
-            md5_signature: None,
-            streaminfo_md5_valid: false,
-            integrity_check_mode: None,
-            loudness: None,
+        return Some(match mp4ameta::Tag::read_from_path(path) {
+            Ok(tag) => physical_metadata_from_mp4_tag(&tag, file_size),
+            Err(_) => PhysicalAudioMetadata {
+                format: "AAC".to_string(),
+                sample_rate: 44100,
+                bit_depth: 16,
+                channels: 2,
+                bitrate: Some(320),
+                duration_secs: None,
+                md5_signature: None,
+                streaminfo_md5_valid: false,
+                integrity_check_mode: None,
+                loudness: None,
+            },
         });
     }
 
     // 3. MP3 files
     if ext == "mp3" {
-        return Some(PhysicalAudioMetadata {
-            format: "MP3".to_string(),
-            sample_rate: 44100,
-            bit_depth: 16,
-            channels: 2,
-            bitrate: Some(320),
-            duration_secs: None,
-            md5_signature: None,
-            streaminfo_md5_valid: false,
-            integrity_check_mode: None,
-            loudness: None,
-        });
+        return Some(physical_metadata_for_mp3());
     }
 
     // 4. Fallback check by header magic even if extension is missing/wrong

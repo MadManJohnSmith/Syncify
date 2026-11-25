@@ -344,6 +344,11 @@ pub struct DownloadResult {
     /// persiste para auditar el enrutado; `None` en rutas sin cuenta.
     #[serde(default)]
     pub account_id: Option<i64>,
+    /// Instantánea física de esta entrega. Es memoria interna, no parte del
+    /// contrato serializado: calidad, gateway y worker reutilizan la misma
+    /// inspección en vez de releer el fichero por resultado (DLX-03).
+    #[serde(skip)]
+    pub physical_audio: Option<crate::download::audio_inspector::PhysicalAudioMetadata>,
 }
 
 /// Download Phase state machine according to strict contract
@@ -938,6 +943,7 @@ impl Default for DownloadResult {
             channels: None,
             bitrate: None,
             account_id: None,
+            physical_audio: None,
         }
     }
 }

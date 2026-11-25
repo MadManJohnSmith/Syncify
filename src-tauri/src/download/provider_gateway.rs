@@ -10,7 +10,6 @@
 //! con `with_provider_override` para probar job, enrutado y verificación sin red.
 
 use std::future::Future;
-use std::path::Path;
 use std::pin::Pin;
 
 use tokio_util::sync::CancellationToken;
@@ -104,17 +103,22 @@ pub struct ProviderDelivery {
 }
 
 impl ProviderDelivery {
-    /// Proyecta un [`DownloadResult`] y lee del fichero producido el formato,
-    /// la duración y los parámetros físicos que el resultado no lleva. Solo
-    /// inspección local: no toca el pipeline ni la lógica del descargador. Es
-    /// el constructor canónico para cualquier implementador de
-    /// [`DownloadProvider`].
+    /// Proyecta un [`DownloadResult`] con el formato, la duración y los
+    /// parámetros físicos de la entrega. Reutiliza la instantánea del resultado
+    /// cuando existe; solo inspecciona el fichero en el camino de compatibilidad
+    /// que todavía no la aporta. Es el constructor canónico para cualquier
+    /// implementador de [`DownloadProvider`].
     ///
     /// Cuando la inspección física funciona, sus valores de bit depth y sample
     /// rate mandan sobre los declarados por el motor: el fichero es la fuente
     /// de verdad, no la respuesta del proveedor.
     pub fn from_result(result: DownloadResult, account_id: Option<i64>) -> Self {
-        let physical = inspect_physical_audio_file(Path::new(&result.file_path));
+        // DLX-03: el adaptador ya dejó la inspección física en el resultado.
+        // Solo un constructor usado fuera de ese camino necesita leer el fichero.
+        let physical = result
+            .physical_audio
+            .clone()
+            .or_else(|| inspect_physical_audio_file(std::path::Path::new(&result.file_path)));
         let (format, duration_secs, bit_depth, sample_rate) = match &physical {
             Some(physical) => (
                 Some(physical.format.clone()),
@@ -125,6 +129,7 @@ impl ProviderDelivery {
             None => (None, None, result.bit_depth, result.sample_rate),
         };
         let mut result = result;
+        result.physical_audio = physical.clone();
         // La cuenta que entrega viaja también dentro del `DownloadResult`: los
         // caminos del orquestador que solo conservan `.result` (fallbacks
         // internos) no pierden la atribución de la entrega (D05).

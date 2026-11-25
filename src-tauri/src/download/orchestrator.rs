@@ -444,7 +444,11 @@ impl DownloadOrchestrator {
     #[allow(dead_code)] // Cubierta por `tests/hires_quality_reconciliation_test.rs`.
     pub fn verify_post_download_quality_gate(res: &DownloadResult) -> &'static str {
         let path = std::path::Path::new(&res.file_path);
-        if let Some(phys) = crate::download::audio_inspector::inspect_physical_audio_file(path) {
+        let physical = res
+            .physical_audio
+            .clone()
+            .or_else(|| crate::download::audio_inspector::inspect_physical_audio_file(path));
+        if let Some(phys) = physical {
             phys.canonical_quality()
         } else {
             let fmt = if res.file_path.to_lowercase().ends_with(".flac") {
