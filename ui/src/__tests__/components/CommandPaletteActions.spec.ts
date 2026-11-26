@@ -171,7 +171,7 @@ describe('CommandPalette — actions run real operations (audit 2)', () => {
     })
 
     it('fetches missing lyrics for the whole library', async () => {
-        vi.mocked(lyricsApi.fetchMissingLyrics).mockResolvedValue({ fetched: 5, failed: 1, skipped: 2 })
+        vi.mocked(lyricsApi.fetchMissingLyrics).mockResolvedValue({ fetched: 5, failed: 1, skipped: 2, cancelled: false })
 
         const { wrapper, host } = await openPaletteWith('Fetch lyrics for all tracks')
         clickAction()

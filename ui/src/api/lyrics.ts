@@ -6,7 +6,7 @@
 
 import { invokeCommand } from './tauri';
 import { asArray, asNumber, asRecord, asString } from './normalize';
-import type { Lyrics, LyricsSearchResult } from './types';
+import type { BatchLyricsResult, Lyrics, LyricsSearchResult } from './types';
 
 /**
  * Normalize a raw provider hit from `search_lyrics` into the documented wire
@@ -28,14 +28,17 @@ function normalizeSearchResult(raw: unknown): LyricsSearchResult {
 }
 
 /**
- * Normalize batch-operation counters so missing fields default to 0.
+ * Normalize batch-operation counters so missing fields default to 0, and read
+ * the terminal `cancelled` flag the backend now sends instead of inferring it
+ * from a progress event.
  */
-function normalizeBatchCounts(raw: unknown): { fetched: number; failed: number; skipped: number } {
+function normalizeBatchResult(raw: unknown): BatchLyricsResult {
     const rec = asRecord(raw);
     return {
         fetched: asNumber(rec?.fetched),
         failed: asNumber(rec?.failed),
         skipped: asNumber(rec?.skipped),
+        cancelled: rec?.cancelled === true,
     };
 }
 
@@ -89,42 +92,44 @@ export async function fetchLyrics(trackId: number): Promise<Lyrics | null> {
 /**
  * Batch fetch missing lyrics
  */
-export async function batchFetchLyrics(trackIds: number[]): Promise<{
-    fetched: number;
-    failed: number;
-    skipped: number;
-}> {
-    return normalizeBatchCounts(await invokeCommand<unknown>('batch_fetch_lyrics', { trackIds }));
+export async function batchFetchLyrics(trackIds: number[]): Promise<BatchLyricsResult> {
+    return normalizeBatchResult(await invokeCommand<unknown>('batch_fetch_lyrics', { trackIds }));
 }
 
 /**
  * Batch fetch lyrics with real-time progress events
  * Listen to 'lyrics-fetch-progress' event for updates
  */
-export async function batchFetchLyricsWithProgress(trackIds: number[]): Promise<{
-    fetched: number;
-    failed: number;
-    skipped: number;
-}> {
-    return normalizeBatchCounts(await invokeCommand<unknown>('batch_fetch_lyrics_with_progress', { trackIds }));
+export async function batchFetchLyricsWithProgress(trackIds: number[], runId: number): Promise<BatchLyricsResult> {
+    return normalizeBatchResult(
+        await invokeCommand<unknown>('batch_fetch_lyrics_with_progress', { trackIds, runId }),
+    );
+}
+
+const batchRunIdBase = Date.now() * 1000 + 1;
+let batchRunSeq = 0;
+
+/**
+ * Unique id for one batch run. The backend matches cancellations by id, so a
+ * cancel requested while the dialog is up but before the command lands is
+ * honoured by the run it names and can never abort a later one.
+ */
+export function newBatchRunId(): number {
+    return batchRunIdBase + batchRunSeq++;
 }
 
 /**
- * Ask the running batch fetch to stop after the track in progress.
+ * Ask the run identified by `runId` to stop after the track in progress.
  */
-export async function cancelBatchFetchLyrics(): Promise<boolean> {
-    return invokeCommand<boolean>('cancel_batch_fetch_lyrics', {});
+export async function cancelBatchFetchLyrics(runId: number): Promise<boolean> {
+    return invokeCommand<boolean>('cancel_batch_fetch_lyrics', { runId });
 }
 
 /**
  * Fetch all missing lyrics (auto-detect)
  */
-export async function fetchMissingLyrics(limit?: number): Promise<{
-    fetched: number;
-    failed: number;
-    skipped: number;
-}> {
-    return normalizeBatchCounts(await invokeCommand<unknown>('fetch_missing_lyrics', { limit }));
+export async function fetchMissingLyrics(limit?: number): Promise<BatchLyricsResult> {
+    return normalizeBatchResult(await invokeCommand<unknown>('fetch_missing_lyrics', { limit }));
 }
 
 // ==============================================
@@ -437,6 +442,7 @@ export const lyricsApi = {
     fetchLyrics,
     batchFetchLyrics,
     batchFetchLyricsWithProgress,
+    newBatchRunId,
     cancelBatchFetchLyrics,
     fetchMissingLyrics,
     saveLyrics,
