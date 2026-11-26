@@ -79,6 +79,11 @@ pub use metadata::*;
 pub mod migration;
 pub use migration::*;
 
+/// M06 (#171): lotes, concurrencia por proveedor, backoff y cancelación en el
+/// límite de lote del job de migración (ADR-0016).
+pub mod migration_batch;
+pub use migration_batch::*;
+
 pub mod notifications;
 pub use notifications::*;
 
