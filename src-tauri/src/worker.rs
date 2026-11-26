@@ -1006,14 +1006,15 @@ impl DownloadWorker {
 
     /// #338: aparta el fichero de una entrega rechazada sin destruir audio
     /// válido. La cuarentena es hermana del fichero
-    /// (`<directorio>/.syncify-quarantine/`), oculta e ignorada por la
-    /// biblioteca, y el nombre lleva el `queue_id` para rastrear el rechazo.
-    /// Si el movimiento falla se borra el fichero como último recurso: la
-    /// invariante es que la biblioteca no lo indexe.
+    /// (`<directorio>/.syncify-quarantine/`, nombre en
+    /// `syncify_core_domain::layout::REJECTION_QUARANTINE_DIR_NAME`), oculta y
+    /// excluida del escáner de biblioteca (#370); el nombre lleva el `queue_id`
+    /// para rastrear el rechazo. Si el movimiento falla se borra el fichero
+    /// como último recurso: la invariante es que la biblioteca no lo indexe.
     async fn quarantine_rejected_file(&self, queue_id: i64, file_path: &str) -> Option<PathBuf> {
         let source = Path::new(file_path);
         let parent = source.parent().unwrap_or_else(|| Path::new("."));
-        let quarantine_dir = parent.join(".syncify-quarantine");
+        let quarantine_dir = syncify_core_domain::layout::rejection_quarantine_dir(parent);
         let stem = source
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())

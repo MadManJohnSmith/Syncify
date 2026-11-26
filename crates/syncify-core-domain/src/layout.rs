@@ -84,6 +84,27 @@ pub fn is_various_artists(artist: &str) -> bool {
     crate::metadata::is_various_artists_variant(artist)
 }
 
+/// Nombre del directorio de cuarentena de entregas rechazadas.
+///
+/// Única fuente de verdad para el gate D05 (`worker::quarantine_rejected_file`)
+/// y para el escáner de biblioteca: un rechazo se aparta a
+/// `<directorio de la entrega>/.syncify-quarantine/` y la biblioteca no debe
+/// indexarlo jamás.
+pub const REJECTION_QUARANTINE_DIR_NAME: &str = ".syncify-quarantine";
+
+/// Directorio de cuarentena hermano de `parent`.
+pub fn rejection_quarantine_dir(parent: &Path) -> PathBuf {
+    parent.join(REJECTION_QUARANTINE_DIR_NAME)
+}
+
+/// `true` si algún componente de `path` es el directorio de cuarentena de
+/// rechazos, a cualquier profundidad y tanto para el propio directorio como
+/// para los ficheros que contiene.
+pub fn is_rejection_quarantine(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == REJECTION_QUARANTINE_DIR_NAME)
+}
+
 /// Calculates the canonical album folder name: `[{Year}] {Album}` when year is valid (1900..=2100).
 pub fn canonical_album_name(album: &str, year: Option<i32>) -> String {
     let safe_album = sanitize_filename(album);
@@ -802,5 +823,32 @@ mod tests {
                 .join("[2020] Top Hits 2020")
                 .join("01 - The Weeknd - Blinding Lights.flac")
         );
+    }
+
+    /// #370: la cuarentena de rechazos es un nombre de layout, no una cadena
+    /// suelta en cada call site. El componente debe reconocerse a cualquier
+    /// profundidad y no confundirse con un directorio de nombre parecido.
+    #[test]
+    fn test_rejection_quarantine_layout_is_recognized() {
+        assert_eq!(REJECTION_QUARANTINE_DIR_NAME, ".syncify-quarantine");
+
+        let quarantine = rejection_quarantine_dir(Path::new("/Music/Album"));
+        assert_eq!(
+            quarantine,
+            PathBuf::from("/Music/Album").join(".syncify-quarantine")
+        );
+        assert!(is_rejection_quarantine(&quarantine));
+        assert!(is_rejection_quarantine(
+            &quarantine.join("01 - Track.rejected-q7.flac")
+        ));
+        assert!(is_rejection_quarantine(Path::new(
+            "/Music/Album/.syncify-quarantine/nested/track.flac"
+        )));
+        assert!(!is_rejection_quarantine(Path::new(
+            "/Music/Album/01 - Track.flac"
+        )));
+        assert!(!is_rejection_quarantine(Path::new(
+            "/Music/Album/.syncify-quarantine-copy/01 - Track.flac"
+        )));
     }
 }

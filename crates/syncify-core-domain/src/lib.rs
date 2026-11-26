@@ -38,8 +38,9 @@ pub use cover_rules::{CoverPreservationPolicy, CoverType, CoverUpdateDecision};
 pub use errors::{ErrorTaxonomy, PipelineError, RequiresAuthReason};
 pub use events::{PipelineProgressEvent, PipelineStepStatus};
 pub use layout::{
-    canonical_album_name, is_various_artists, sanitize_filename, FolderFileTemplateConfig,
-    LibraryLayout, TrackLayoutContext,
+    canonical_album_name, is_rejection_quarantine, is_various_artists, rejection_quarantine_dir,
+    sanitize_filename, FolderFileTemplateConfig, LibraryLayout, TrackLayoutContext,
+    REJECTION_QUARANTINE_DIR_NAME,
 };
 pub use manifest::{BatchDownloadManifest, FavoritesBatchSummary, TrackManifestEntry};
 pub use metadata::{
