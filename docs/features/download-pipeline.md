@@ -4,6 +4,10 @@
 > sigue en español; no hay traducción de este documento todavía. El índice
 > que marca su estado está en `docs/README.en.md`.
 
+**Único motor:** este pipeline nativo es la única ruta de descarga. D14 (#126)
+retiró los caminos Python de `scripts/services/`; `download_bridge.py` queda como
+tombstone sin handlers (ADR-0009, D-13).
+
 **Estado de revisión:** 2026-11-14 — re-derivación contra el árbol (verificación dirigida de símbolos y comportamiento; D-04b, issue #59). Re-deriva y absorbe la re-revisión del 2026-10-25 (cadena de encolado `queue_downloads` → `commands/queue.rs::add_to_queue`; bucle del worker event-driven con `slot_available_notify`; claim atómico vía `claim_next_item`; `process_download_claimed` + `process_download_internal`; estado `cancelled`; payload de `syncify:download_progress`) y las entradas del 2026-11-06/07 (puerto de proveedores ADR-0023, invalidación de caché de streaming ADR-0024). Ajustado ahora al árbol: `worker.rs` ronda hoy las 3.400 líneas; el arranque del worker ya no es un reset simple — ejecuta en orden `sanitize_stuck_downloads` (TASK-84: descargas `downloading` de más de 1 h a `failed` y staging purgado), `reconcile_downloads_on_startup` (`services/operation_recovery.rs`), `recover_interrupted_jobs` (`download/job.rs`) para el reset restante a `queued`, `repair_unresolved_queue_sources` y la restauración de la concurrencia desde `sync_settings` (SB01: superficie canónica; la KV `dl_concurrent_downloads` queda como lectura tolerante de legado). El barrido periódico cada 60 s aplica la misma sanitización TASK-84. Sigue sin verificar en escritorio real la ejecución de descargas de punta a punta (GUI, red viva): véase README §"Verification and limitations".
 
 **Último cambio:** 2026-11-22 — D16 (issue #128): escritor ID3v2 compartido

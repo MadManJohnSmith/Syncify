@@ -70,6 +70,38 @@ usan como especificación, no como comportamiento correcto que copiar.
 - Deezer es el camino crítico por `license_token`, `TRACK_TOKEN` y Blowfish-CBC;
   SoundCloud lo es por HLS y la normalización de OAuth.
 
+## Actualización 2026-11-26 — D14 (#126): retirada de los caminos Python
+
+Los caminos de descarga de `scripts/services/` se retiraron: `download_track`,
+la resolución de URL/stream y el volcado a disco de Qobuz, Tidal, Deezer y
+SoundCloud. Los servicios conservan auth, búsqueda, metadatos y calidad
+declarada; no queda ninguna implementación Python que pueda descargar. Un
+guardián (`scripts/tests/test_python_download_retirement.py`) comprueba que
+ningún fuente de producción de `src-tauri/src/` nombra `download_bridge.py` ni
+construye un comando Python desde `src-tauri/src/download/`.
+
+`scripts/download_bridge.py` sobrevive como **tombstone**, no como puente: falla
+con un envelope JSON y exit 1. Dos suites Rust siguen exigiendo su presencia y
+su contrato histórico de override por entorno
+(`src-tauri/tests/python_module_hygiene_test.rs` y
+`src-tauri/tests/qobuz_credentials_leak_test.rs`); borrarlo exige tocar
+`src-tauri/**`, fuera del alcance Python/docs de D14. La deuda queda registrada
+como D-13 en `docs/Deuda_Tecnica_y_UX.md`.
+
+Dos precisiones que el puente Python nunca aportó como referencia de
+comportamiento:
+
+- La ruta SoundCloud no autenticaba: `get_soundcloud_service` construía el
+  servicio sin credenciales y `download_track` fallaba con `session=None`. No
+  era un camino funcional y no se usa como especificación.
+- El prefijo `OAuth ` duplicado (`OAuth OAuth ...`) es un bug del cliente Rust
+  que construye la cabecera, no del puente. Se corrige en D12 (#124).
+
+El puerto nativo de Deezer y SoundCloud (D11 #123 / D12 #124) sigue pendiente;
+su contrato vive en esos tickets y en el historial de git, no en una segunda
+implementación viva. Deezer conserva `resolve_blowfish_key` y la clave pública
+como contrato de seguridad que el puerto reutiliza.
+
 ## Preguntas abiertas
 
 - Matriz exacta de formatos y calidades de Deezer y SoundCloud; la fija el puerto.
