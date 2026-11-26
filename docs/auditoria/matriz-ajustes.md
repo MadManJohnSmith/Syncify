@@ -818,3 +818,25 @@ alcance de este carril.
 | ID | Qué se retiró | Dónde vivía | Qué se hizo | Por qué es el arreglo correcto | Riesgo | Prueba | Plan de reapertura | Estado |
 |---|---|---|---|---|---|---|---|---|
 | LY05-01 | Paso de letras del `download_track` del puente Python de Qobuz (`LyricsService`, `apple_music_token`) | `scripts/services/qobuz_service.py:33` (import), `:1267-1275` (firma) y `:1420-1454` (bloque «Step 6») | Fuera el import, el parámetro y el bloque; ningún llamador pasaba `apple_music_token` (`scripts/download_bridge.py` no lo usa) | El camino de descarga de la app es nativo (`src-tauri/src/download/qobuz.rs`, que ya escribe el sidecar con `download/lyrics.rs`); este puente Python es legacy y no se invoca desde Rust (ADR-0009), así que mantener un segundo motor de letras contradecía ADR-0017 decisión 6 | Bajo: código muerto desde la app; el bloque estaba envuelto en `try/except` y ningún test lo cubría | `test_download_bridge_contract.py` (22), `test_services_imports_hygiene.py` (6), `test_python_hygiene.py` (10), `test_qobuz_*.py` (10); suite Python completa en verde | Si el puente legacy vuelve a ser camino de descarga, consumir el pipeline nativo, no reimportar `LyricsService`; la retirada del puente/servicio sigue en #188 tras #185 | retirado (#188, parcial) |
+
+## D14 — retirada de los caminos de descarga Python (#126, 2026-11-26)
+
+Comprobación previa: el camino de descarga de la app ya era nativo en Rust y
+ningún fuente de producción de `src-tauri/src/` invocaba `download_bridge.py`.
+Los servicios Python seguían ofreciendo `download_track`, resolución de URL o
+stream y volcado a disco, sin consumidor desde la app y con tests propios que
+los trataban como especificación del puerto.
+
+Dos precisiones documentadas, no corregidas aquí:
+
+- La ruta SoundCloud del puente no autenticaba: el servicio se construía sin
+  credenciales y `download_track` fallaba con `session=None`; nunca fue un
+  camino funcional ni una referencia de comportamiento.
+- El prefijo `OAuth ` duplicado es un bug del cliente Rust que compone la
+  cabecera, no del puente; su arreglo pertenece a D12 (#124).
+
+| ID | Qué se retiró | Dónde vivía | Qué se hizo | Por qué es el arreglo correcto | Riesgo | Prueba | Plan de reapertura | Estado |
+|---|---|---|---|---|---|---|---|---|
+| D14-01 | `download_track`, `_get_download_url`, `_get_stream_url`, `_download_hls_stream`, `_download_original_file`, `_generate_blowfish_key`, `_embed_metadata_conditional`, `_detect_bpm` y el contrato `DownloadResult`/`DownloadStatus` | `scripts/services/{qobuz,tidal,deezer,soundcloud}_service.py`, `scripts/services/service_base.py` | Fuera los métodos y sus mapas de formato; se conservan auth, búsqueda, metadatos, `get_available_qualities` y la resolución de credenciales/clave pública que pinchan los tests de seguridad de Rust | La descarga es nativa (ADR-0009); mantener un segundo motor sin consumidor multiplica el contrato y ya divergía de Rust (calidades anunciadas sin evidencia, `LOSSLESS` para cualquier original) | Bajo: código no invocado desde la app; el puerto pendiente (D11/D12) tiene su contrato en los tickets y en el historial | `.venv/bin/python -m unittest discover -s scripts/tests` (492, 2 skipped); `test_python_download_retirement.py` | Si vuelve a hacer falta un camino Python, consumir el pipeline nativo; no reimportar `DownloadResult` | retirado (#126) |
+| D14-02 | `download_bridge.py` como CLI de descarga y su suite de contrato | `scripts/download_bridge.py`, `scripts/tests/test_download_bridge_contract.py` | El fichero queda como tombstone (envelope JSON de error, exit 1, sin handlers ni imports de servicios); se borra la suite de contrato y se ajustan higiene/imports/auditoría de suscripción | Dos suites Rust exigen la ruta y su contrato de entorno (`python_module_hygiene_test.rs`, `qobuz_credentials_leak_test.rs`); borrarlo exige tocar `src-tauri/**`, fuera del carril Python/docs | Bajo: el tombstone no descarga ni importa servicios; el coste es deuda D-13 | `test_python_hygiene.py::test_download_bridge_is_a_retired_tombstone`, `test_python_download_retirement.py` | En un carril Rust, retirar las dos aserciones, borrar el fichero y sus listas de empaquetado (D-13) | retirado (#126, tombstone) |
+| D14-03 | Riesgo de que la descarga vuelva a cruzar a Python | `src-tauri/src/**`, `scripts/services/**` | Guardián estático: ningún fuente de producción Rust nombra el puente ni `src-tauri/src/download/` lanza Python; ningún servicio define los métodos retirados | Cristaliza la verificación del encargo y evita que un cambio futuro reintroduzca un camino que la app no usa | Ninguno: solo lectura del árbol | `scripts/tests/test_python_download_retirement.py` (4) | — | aplicado (#126) |
