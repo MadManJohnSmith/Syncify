@@ -9,6 +9,10 @@ use super::*;
 // SPRINT 6: MIGRATION COMMANDS
 // ==============================================
 
+use crate::commands::migration_batch::{
+    collect_batch, ensure_membership, membership_contains, membership_insert, retry_gateway,
+    retry_track_match, BatchPolicy, DestinationLocks, MembershipSnapshot, RetryPolicy,
+};
 use crate::models::{
     DestinationTrackMatch, MigrationItem, MigrationJob, MigrationOptions, MigrationPreviewResult,
     MigrationProgress, MigrationReport, MigrationTemplate, PlaylistPreview,
@@ -490,6 +494,14 @@ fn build_migration_progress(
         // Only the per-item collection phases address the current item's kind;
         // the other emitters leave it absent (start, playlist mirror, close).
         current_kind: None,
+        // Only the collection phases emit one event per batch (M06); the other
+        // emitters (start, playlist mirror, close) leave the batch counters out.
+        batch_index: None,
+        batch_total: None,
+        batch_created: None,
+        batch_preexisting: None,
+        batch_failed: None,
+        batch_skipped: None,
     }
 }
 
@@ -2328,6 +2340,18 @@ impl MigrationCounters {
     fn processed(&self) -> i64 {
         self.completed + self.failed + self.skipped
     }
+
+    /// Folds one terminal item status into the job's running totals. Unknown
+    /// statuses are a contract error, not a silent zero.
+    fn record(&mut self, status: &str) -> Result<(), String> {
+        match status {
+            "transferred" | "preexisting" => self.completed += 1,
+            "failed" => self.failed += 1,
+            "skipped" => self.skipped += 1,
+            other => return Err(format!("Unknown migration item status '{}'", other)),
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -2423,11 +2447,259 @@ fn migration_status_counters(rows: &[MigrationItem]) -> Result<MigrationCounters
     Ok(counters)
 }
 
+/// Outcomes of one batch, as the progress event reports them (ADR-0016 #6):
+/// created means written by this job now; preexisting was already in the
+/// destination and counts as completed without a write.
+#[derive(Debug, Default)]
+struct BatchOutcomes {
+    created: i64,
+    preexisting: i64,
+    failed: i64,
+    skipped: i64,
+}
+
+impl BatchOutcomes {
+    fn record(&mut self, status: &str) -> Result<(), String> {
+        match status {
+            "transferred" => self.created += 1,
+            "preexisting" => self.preexisting += 1,
+            "failed" => self.failed += 1,
+            "skipped" => self.skipped += 1,
+            other => return Err(format!("Unknown migration item status '{}'", other)),
+        }
+        Ok(())
+    }
+}
+
+/// Cancellation signal of the job, read at every batch boundary. The current
+/// batch always finishes; the untouched rows stay `pending` for a resume.
+async fn migration_job_cancelled(db: &sqlx::SqlitePool, job_id: &str) -> Result<bool, String> {
+    let job: (String,) = sqlx::query_as("SELECT status FROM migration_jobs WHERE id = ?")
+        .bind(job_id)
+        .fetch_one(db)
+        .await
+        .map_err(|e| format!("Failed to read migration job status: {}", e))?;
+    Ok(job.0 == "cancelled")
+}
+
+/// One progress event per batch, never per item: the totals are the job's
+/// running counters and `batch_*` is what this batch alone produced.
+#[allow(clippy::too_many_arguments)]
+fn batch_progress(
+    started_at: std::time::Instant,
+    job_id: &str,
+    kind: &str,
+    label: String,
+    current_item: i64,
+    total_items: i64,
+    batch_index: usize,
+    batch_total: usize,
+    batch: &BatchOutcomes,
+    counters: &MigrationCounters,
+) -> MigrationProgress {
+    let mut progress = build_migration_progress(
+        started_at.elapsed().as_secs_f64(),
+        job_id,
+        current_item,
+        total_items,
+        label,
+        format!(
+            "Batch {} of {}: {} created, {} preexisting, {} failed, {} skipped",
+            batch_index, batch_total, batch.created, batch.preexisting, batch.failed, batch.skipped
+        ),
+        "running",
+        counters.completed,
+        counters.failed,
+        counters.skipped,
+    );
+    progress.current_kind = Some(kind.to_string());
+    progress.batch_index = Some(batch_index as i64);
+    progress.batch_total = Some(batch_total as i64);
+    progress.batch_created = Some(batch.created);
+    progress.batch_preexisting = Some(batch.preexisting);
+    progress.batch_failed = Some(batch.failed);
+    progress.batch_skipped = Some(batch.skipped);
+    progress
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_batch_progress<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    started_at: std::time::Instant,
+    job_id: &str,
+    kind: &str,
+    label: String,
+    current_item: i64,
+    total_items: i64,
+    batch_index: usize,
+    batch_total: usize,
+    batch: &BatchOutcomes,
+    counters: &MigrationCounters,
+) {
+    let progress = batch_progress(
+        started_at,
+        job_id,
+        kind,
+        label,
+        current_item,
+        total_items,
+        batch_index,
+        batch_total,
+        batch,
+        counters,
+    );
+    let _ = app.emit("migration-progress", progress);
+}
+
+/// Shared state one track batch needs: the durable rows, the prefetched
+/// matches, the destination membership snapshot and the per-batch
+/// single-flight locks.
+struct TrackBatchContext<'a, G: TrackTransferGateway> {
+    db: &'a sqlx::SqlitePool,
+    destination_service: &'a str,
+    destination_account_id: Option<i64>,
+    gateway: &'a G,
+    options: &'a MigrationOptions,
+    isrc_map: &'a std::collections::HashMap<String, String>,
+    manual_matches: &'a std::collections::HashMap<String, String>,
+    local_matches: &'a std::collections::HashMap<String, String>,
+    membership: &'a MembershipSnapshot,
+    retry: &'a RetryPolicy,
+    locks: &'a DestinationLocks,
+}
+
+/// Processes one durable track row: reuses a persisted match, otherwise
+/// matches (manual, local mirror, gateway with 429/5xx backoff), checks the
+/// destination snapshot and writes at most once. Returns the row's terminal
+/// status, or `None` when another runner already closed it.
+async fn process_track_item<G: TrackTransferGateway>(
+    context: &TrackBatchContext<'_, G>,
+    track: &MigrationSourceTrack,
+    item_id: i64,
+) -> Result<Option<&'static str>, String> {
+    let durable = match durable_migration_item(context.db, item_id).await? {
+        Some(item) if item.status == "pending" || item.status == "matched" => item,
+        Some(_) => return Ok(None),
+        None => return Err(format!("Migration track item {} disappeared", item_id)),
+    };
+    let persisted_destination = durable.destination_id;
+    let persisted_confidence = durable.match_confidence;
+    let persisted_method = durable.match_method;
+
+    let manual_dest_id = context.manual_matches.get(&track.external_id).cloned();
+    let local_dest_id = context.local_matches.get(&track.external_id).cloned();
+    let (match_confidence, match_method, dest_track_id, mut match_error): (
+        f64,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = if let Some(dest_id) = persisted_destination {
+        (
+            persisted_confidence.unwrap_or(1.0),
+            persisted_method.unwrap_or_else(|| "matched".to_string()),
+            Some(dest_id),
+            None,
+        )
+    } else if let Some(dest_id) = manual_dest_id {
+        (1.0, "manual".to_string(), Some(dest_id), None)
+    } else if let Some(dest_id) = local_dest_id {
+        (1.0, "isrc".to_string(), Some(dest_id), None)
+    } else {
+        let (confidence, method, destination, error) = retry_track_match(context.retry, || {
+            context.gateway.match_track(
+                context.isrc_map.get(&track.external_id).map(String::as_str),
+                &track.title,
+                &track.artist,
+            )
+        })
+        .await;
+        (confidence, method.to_string(), destination, error)
+    };
+
+    if match_confidence >= context.options.match_threshold {
+        if let Some(dest_id) = dest_track_id.as_deref() {
+            record_migration_item_match(
+                context.db,
+                item_id,
+                match_confidence,
+                &match_method,
+                dest_id,
+            )
+            .await?;
+        }
+    }
+
+    let status = if match_confidence < context.options.match_threshold {
+        if context.options.skip_unmatched {
+            "skipped"
+        } else {
+            "failed"
+        }
+    } else if let Some(dest_id) = dest_track_id.as_deref() {
+        // Single-flight per destination id: the same track can appear in two
+        // selected playlists, and the check-then-write is one operation for
+        // both rows. Distinct ids still run concurrently up to the ceiling.
+        let destination_lock = context.locks.lock_for(dest_id);
+        let _destination_guard = destination_lock.lock().await;
+        ensure_membership(context.membership, || {
+            retry_gateway(context.retry, || context.gateway.existing_tracks())
+        })
+        .await?;
+        if membership_contains(context.membership, dest_id).await {
+            "preexisting"
+        } else {
+            match retry_gateway(context.retry, || context.gateway.write_track(dest_id)).await {
+                Ok(()) => {
+                    membership_insert(context.membership, dest_id).await;
+                    "transferred"
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to add to favorites: {}", error);
+                    match_error = Some(format!("Failed to add to favorites: {}", error));
+                    "failed"
+                }
+            }
+        }
+    } else {
+        "failed"
+    };
+
+    let error_message = if status == "failed" {
+        Some(match match_error {
+            Some(error) => format!(
+                "Destination {} account {:?}: {}",
+                context.destination_service, context.destination_account_id, error
+            ),
+            None => format!(
+                "No match found on {} account {:?}",
+                context.destination_service, context.destination_account_id
+            ),
+        })
+    } else {
+        None
+    };
+    record_migration_item_result(
+        context.db,
+        item_id,
+        status,
+        match_confidence,
+        &match_method,
+        dest_track_id.as_deref(),
+        error_message.as_deref(),
+    )
+    .await?;
+    Ok(Some(status))
+}
+
 /// Run the track-favorite collection over durable item rows (M05).
 ///
 /// The source slice is also the resume input: rows already terminal are left
 /// untouched, while `pending`/`matched` rows are matched, checked against the
 /// destination membership snapshot and written at most once by this runner.
+///
+/// M06: the work runs in batches with the destination's concurrency ceiling,
+/// backoff for 429/5xx, one progress event per batch and cancellation only at a
+/// batch boundary; see [`run_track_collection_with_policy`].
 pub async fn run_track_collection<G: TrackTransferGateway, R: tauri::Runtime>(
     db: &sqlx::SqlitePool,
     app: &tauri::AppHandle<R>,
@@ -2441,6 +2713,43 @@ pub async fn run_track_collection<G: TrackTransferGateway, R: tauri::Runtime>(
     base_index: i64,
     total_items: i64,
     started_at: std::time::Instant,
+) -> Result<bool, String> {
+    let policy = BatchPolicy::for_destination(destination_service);
+    run_track_collection_with_policy(
+        db,
+        app,
+        job_id,
+        destination_service,
+        destination_account_id,
+        tracks,
+        gateway,
+        options,
+        counters,
+        base_index,
+        total_items,
+        started_at,
+        &policy,
+    )
+    .await
+}
+
+/// Batch runner behind [`run_track_collection`]; the policy is explicit so a
+/// fake-gateway test can shrink the batches and the backoff.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_track_collection_with_policy<G: TrackTransferGateway, R: tauri::Runtime>(
+    db: &sqlx::SqlitePool,
+    app: &tauri::AppHandle<R>,
+    job_id: &str,
+    destination_service: &str,
+    destination_account_id: Option<i64>,
+    tracks: &[MigrationSourceTrack],
+    gateway: &G,
+    options: &MigrationOptions,
+    counters: &mut MigrationCounters,
+    base_index: i64,
+    total_items: i64,
+    started_at: std::time::Instant,
+    policy: &BatchPolicy,
 ) -> Result<bool, String> {
     let mut item_ids: Vec<i64> = Vec::with_capacity(tracks.len());
     {
@@ -2498,154 +2807,199 @@ pub async fn run_track_collection<G: TrackTransferGateway, R: tauri::Runtime>(
         prefetch_local_destination_matches(db, destination_service, tracks).await;
     let manual_matches =
         prefetch_manual_matches(db, destination_service, destination_account_id).await;
-    let mut existing_tracks = None;
+    // One membership snapshot per phase: loaded on the first match that may
+    // write and extended after each successful one (M05's no-duplicate rule).
+    let membership: MembershipSnapshot = tokio::sync::Mutex::new(None);
 
+    let batch_total = policy.total_batches(tracks.len());
     let mut cancelled = false;
-    for (i, (track, item_id)) in tracks.iter().zip(item_ids.iter()).enumerate() {
-        let job: (String,) = sqlx::query_as("SELECT status FROM migration_jobs WHERE id = ?")
-            .bind(job_id)
-            .fetch_one(db)
-            .await
-            .map_err(|e| format!("Failed to read migration job status: {}", e))?;
-        if job.0 == "cancelled" {
+    for (batch_position, range) in policy.batches(tracks.len()).enumerate() {
+        // M06: cancellation is observed at the batch boundary. The batch that
+        // already started runs to completion; everything after stays `pending`
+        // and is resumable.
+        if migration_job_cancelled(db, job_id).await? {
             cancelled = true;
             break;
         }
-        let durable = match durable_migration_item(db, *item_id).await? {
-            Some(item) if item.status == "pending" || item.status == "matched" => item,
-            Some(_) => continue,
-            None => return Err(format!("Migration track item {} disappeared", item_id)),
-        };
-        let persisted_destination = durable.destination_id;
-        let persisted_confidence = durable.match_confidence;
-        let persisted_method = durable.match_method;
-
-        let manual_dest_id = manual_matches.get(&track.external_id).cloned();
-        let local_dest_id = local_dest_matches.get(&track.external_id).cloned();
-        let (match_confidence, match_method, dest_track_id, mut match_error): (
-            f64,
-            &str,
-            Option<String>,
-            Option<String>,
-        ) = if let Some(dest_id) = persisted_destination {
-            (
-                persisted_confidence.unwrap_or(1.0),
-                persisted_method.as_deref().unwrap_or("matched"),
-                Some(dest_id),
-                None,
-            )
-        } else if let Some(dest_id) = manual_dest_id.as_deref() {
-            (1.0, "manual", Some(dest_id.to_string()), None)
-        } else if let Some(dest_id) = local_dest_id.as_deref() {
-            (1.0, "isrc", Some(dest_id.to_string()), None)
-        } else {
-            gateway
-                .match_track(
-                    isrc_map.get(&track.external_id).map(String::as_str),
-                    &track.title,
-                    &track.artist,
-                )
-                .await
-        };
-
-        if match_confidence >= options.match_threshold {
-            if let Some(dest_id) = dest_track_id.as_deref() {
-                record_migration_item_match(db, *item_id, match_confidence, match_method, dest_id)
-                    .await?;
-            }
-        }
-
-        let status = if match_confidence < options.match_threshold {
-            if options.skip_unmatched {
-                counters.skipped += 1;
-                "skipped"
-            } else {
-                counters.failed += 1;
-                "failed"
-            }
-        } else if let Some(dest_id) = dest_track_id.as_deref() {
-            if existing_tracks.is_none() {
-                existing_tracks = Some(gateway.existing_tracks().await?);
-            }
-            let existing_tracks = existing_tracks.as_mut().unwrap();
-            if existing_tracks.contains(dest_id) {
-                counters.completed += 1;
-                "preexisting"
-            } else {
-                match gateway.write_track(dest_id).await {
-                    Ok(()) => {
-                        existing_tracks.insert(dest_id.to_string());
-                        counters.completed += 1;
-                        "transferred"
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to add to favorites: {}", e);
-                        match_error = Some(format!("Failed to add to favorites: {}", e));
-                        counters.failed += 1;
-                        "failed"
-                    }
-                }
-            }
-        } else {
-            counters.failed += 1;
-            "failed"
-        };
-
-        let error_message = if status == "failed" {
-            Some(match match_error {
-                Some(err) => format!(
-                    "Destination {} account {:?}: {}",
-                    destination_service, destination_account_id, err
-                ),
-                None => format!(
-                    "No match found on {} account {:?}",
-                    destination_service, destination_account_id
-                ),
-            })
-        } else {
-            None
-        };
-        record_migration_item_result(
+        let locks = DestinationLocks::new();
+        let context = TrackBatchContext {
             db,
-            *item_id,
-            status,
-            match_confidence,
-            match_method,
-            dest_track_id.as_deref(),
-            error_message.as_deref(),
-        )
-        .await?;
-
-        let current_action = if status == "transferred" || status == "preexisting" {
-            format!("Transferring {}", track.title)
-        } else {
-            "Searching for match".to_string()
+            destination_service,
+            destination_account_id,
+            gateway,
+            options,
+            isrc_map: &isrc_map,
+            manual_matches: &manual_matches,
+            local_matches: &local_dest_matches,
+            membership: &membership,
+            retry: &policy.retry,
+            locks: &locks,
         };
-        let mut progress = build_migration_progress(
-            started_at.elapsed().as_secs_f64(),
-            job_id,
-            base_index + i as i64 + 1,
-            total_items,
-            format!("{} - {}", track.artist, track.title),
-            current_action,
-            "running",
-            counters.completed,
-            counters.failed,
-            counters.skipped,
-        );
-        progress.current_kind = Some("track".to_string());
-        let _ = app.emit("migration-progress", progress);
+        let batch_items = range
+            .clone()
+            .map(|index| {
+                let track = &tracks[index];
+                let item_id = item_ids[index];
+                let context = &context;
+                async move { process_track_item(context, track, item_id).await }
+            })
+            .collect::<Vec<_>>();
+        let outcomes = collect_batch(batch_items, policy.effective_concurrency()).await?;
 
-        if i % 5 == 0 || i + 1 == tracks.len() {
-            persist_migration_counters(db, job_id, counters).await?;
+        let mut batch = BatchOutcomes::default();
+        for status in outcomes.into_iter().flatten() {
+            counters.record(status)?;
+            batch.record(status)?;
         }
-        if manual_dest_id.is_none() && local_dest_id.is_none() {
-            tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
-        } else {
-            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
-        }
+        persist_migration_counters(db, job_id, counters).await?;
+        let label = range
+            .clone()
+            .next_back()
+            .map(|index| {
+                let track = &tracks[index];
+                format!("{} - {}", track.artist, track.title)
+            })
+            .unwrap_or_default();
+        emit_batch_progress(
+            app,
+            started_at,
+            job_id,
+            "track",
+            label,
+            base_index + range.end as i64,
+            total_items,
+            batch_position + 1,
+            batch_total,
+            &batch,
+            counters,
+        );
     }
     Ok(cancelled)
+}
+
+/// Shared state one album batch needs, same shape as [`TrackBatchContext`].
+struct AlbumBatchContext<'a, G: AlbumTransferGateway> {
+    db: &'a sqlx::SqlitePool,
+    destination_service: &'a str,
+    destination_account_id: Option<i64>,
+    gateway: &'a G,
+    options: &'a MigrationOptions,
+    mirror_matches: &'a std::collections::HashMap<String, String>,
+    membership: &'a MembershipSnapshot,
+    retry: &'a RetryPolicy,
+    locks: &'a DestinationLocks,
+}
+
+/// Processes one durable album row: mirror match first (no network), then the
+/// gateway's own search with 429/5xx backoff; the threshold gates the write.
+async fn process_album_item<G: AlbumTransferGateway>(
+    context: &AlbumBatchContext<'_, G>,
+    album: &MigrationSourceAlbum,
+    item_id: i64,
+) -> Result<Option<&'static str>, String> {
+    let durable = match durable_migration_item(context.db, item_id).await? {
+        Some(item) if item.status == "pending" || item.status == "matched" => item,
+        Some(_) => return Ok(None),
+        None => return Err(format!("Migration album item {} disappeared", item_id)),
+    };
+    let persisted_destination = durable.destination_id;
+    let persisted_confidence = durable.match_confidence;
+    let persisted_method = durable.match_method;
+
+    let (match_confidence, match_method, dest_album_id, mut match_error): (
+        f64,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = if let Some(dest_id) = persisted_destination {
+        (
+            persisted_confidence.unwrap_or(1.0),
+            persisted_method.unwrap_or_else(|| "matched".to_string()),
+            Some(dest_id),
+            None,
+        )
+    } else if let Some(dest_id) = context.mirror_matches.get(&album.external_id) {
+        (1.0, "mirror".to_string(), Some(dest_id.clone()), None)
+    } else {
+        match retry_gateway(context.retry, || context.gateway.match_album(album)).await {
+            Ok(Some((dest_id, confidence, method))) => {
+                (confidence, method.to_string(), Some(dest_id), None)
+            }
+            Ok(None) => (0.0, "none".to_string(), None, None),
+            Err(error) => (0.0, "none".to_string(), None, Some(error)),
+        }
+    };
+
+    if match_confidence >= context.options.match_threshold {
+        if let Some(dest_id) = dest_album_id.as_deref() {
+            record_migration_item_match(
+                context.db,
+                item_id,
+                match_confidence,
+                &match_method,
+                dest_id,
+            )
+            .await?;
+        }
+    }
+
+    let status = if match_confidence < context.options.match_threshold {
+        if context.options.skip_unmatched {
+            "skipped"
+        } else {
+            "failed"
+        }
+    } else if let Some(dest_id) = dest_album_id.as_deref() {
+        let destination_lock = context.locks.lock_for(dest_id);
+        let _destination_guard = destination_lock.lock().await;
+        ensure_membership(context.membership, || {
+            retry_gateway(context.retry, || context.gateway.existing_albums())
+        })
+        .await?;
+        if membership_contains(context.membership, dest_id).await {
+            "preexisting"
+        } else {
+            match retry_gateway(context.retry, || context.gateway.write_album(dest_id)).await {
+                Ok(()) => {
+                    membership_insert(context.membership, dest_id).await;
+                    "transferred"
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to add album to favorites: {}", error);
+                    match_error = Some(format!("Failed to add album to favorites: {}", error));
+                    "failed"
+                }
+            }
+        }
+    } else {
+        "failed"
+    };
+
+    let error_message = if status == "failed" {
+        Some(match match_error {
+            Some(error) => format!(
+                "Destination {} album account {:?}: {}",
+                context.destination_service, context.destination_account_id, error
+            ),
+            None => format!(
+                "No match found on {} album account {:?}",
+                context.destination_service, context.destination_account_id
+            ),
+        })
+    } else {
+        None
+    };
+    record_migration_item_result(
+        context.db,
+        item_id,
+        status,
+        match_confidence,
+        &match_method,
+        dest_album_id.as_deref(),
+        error_message.as_deref(),
+    )
+    .await?;
+    Ok(Some(status))
 }
 
 /// Run the album collection of a migration job (M01): insert one item per
@@ -2657,6 +3011,9 @@ pub async fn run_track_collection<G: TrackTransferGateway, R: tauri::Runtime>(
 /// `base_index` is the item count already processed by earlier phases, and
 /// the returned flag says whether the user cancelled mid-phase (the caller
 /// must then close the job as cancelled, never completed).
+///
+/// M06: batches, provider ceiling, backoff and batch-boundary cancellation,
+/// same contract as [`run_album_collection_with_policy`].
 pub async fn run_album_collection<G: AlbumTransferGateway, R: tauri::Runtime>(
     db: &sqlx::SqlitePool,
     app: &tauri::AppHandle<R>,
@@ -2671,6 +3028,45 @@ pub async fn run_album_collection<G: AlbumTransferGateway, R: tauri::Runtime>(
     base_index: i64,
     total_items: i64,
     started_at: std::time::Instant,
+) -> Result<bool, String> {
+    let policy = BatchPolicy::for_destination(destination_service);
+    run_album_collection_with_policy(
+        db,
+        app,
+        job_id,
+        source_service,
+        destination_service,
+        destination_account_id,
+        albums,
+        gateway,
+        options,
+        counters,
+        base_index,
+        total_items,
+        started_at,
+        &policy,
+    )
+    .await
+}
+
+/// Batch runner behind [`run_album_collection`]; the policy is explicit so a
+/// fake-gateway test can shrink the batches and the backoff.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_album_collection_with_policy<G: AlbumTransferGateway, R: tauri::Runtime>(
+    db: &sqlx::SqlitePool,
+    app: &tauri::AppHandle<R>,
+    job_id: &str,
+    source_service: &str,
+    destination_service: &str,
+    destination_account_id: Option<i64>,
+    albums: &[MigrationSourceAlbum],
+    gateway: &G,
+    options: &MigrationOptions,
+    counters: &mut MigrationCounters,
+    base_index: i64,
+    total_items: i64,
+    started_at: std::time::Instant,
+    policy: &BatchPolicy,
 ) -> Result<bool, String> {
     // Pending items first, one row per album, same transaction shape as the
     // track phase: the rows are what cancellation and progress address, and
@@ -2725,158 +3121,197 @@ pub async fn run_album_collection<G: AlbumTransferGateway, R: tauri::Runtime>(
     let mirror_matches =
         prefetch_local_destination_album_matches(db, source_service, destination_service, albums)
             .await;
-    let mut existing_albums = None;
+    // One membership snapshot per phase: loaded on the first match that may
+    // write and extended after each successful one (M05's no-duplicate rule).
+    let membership: MembershipSnapshot = tokio::sync::Mutex::new(None);
 
+    let batch_total = policy.total_batches(albums.len());
     let mut cancelled = false;
-    for (i, (album, item_id)) in albums.iter().zip(item_ids.iter()).enumerate() {
-        // Same cancellation contract as the track loop: a cancelled job stops
-        // early and is reported as cancelled, never completed.
-        let job: (String,) = sqlx::query_as("SELECT status FROM migration_jobs WHERE id = ?")
-            .bind(job_id)
-            .fetch_one(db)
-            .await
-            .map_err(|e| format!("Failed to read migration job status: {}", e))?;
-        if job.0 == "cancelled" {
+    for (batch_position, range) in policy.batches(albums.len()).enumerate() {
+        // M06: cancellation is observed at the batch boundary. The batch that
+        // already started runs to completion; everything after stays `pending`
+        // and is resumable.
+        if migration_job_cancelled(db, job_id).await? {
             cancelled = true;
             break;
         }
-        let durable = match durable_migration_item(db, *item_id).await? {
-            Some(item) if item.status == "pending" || item.status == "matched" => item,
-            Some(_) => continue,
-            None => return Err(format!("Migration album item {} disappeared", item_id)),
-        };
-        let persisted_destination = durable.destination_id;
-        let persisted_confidence = durable.match_confidence;
-        let persisted_method = durable.match_method;
-
-        // Mirror match first (no network), then the gateway's own search. A
-        // match is not permission to write: the threshold gates the side effect.
-        let (match_confidence, match_method, dest_album_id, mut match_error): (
-            f64,
-            &str,
-            Option<String>,
-            Option<String>,
-        ) = if let Some(dest_id) = persisted_destination {
-            (
-                persisted_confidence.unwrap_or(1.0),
-                persisted_method.as_deref().unwrap_or("matched"),
-                Some(dest_id),
-                None,
-            )
-        } else if let Some(dest_id) = mirror_matches.get(&album.external_id) {
-            (1.0, "mirror", Some(dest_id.clone()), None)
-        } else {
-            match gateway.match_album(album).await {
-                Ok(Some((dest_id, confidence, method))) => {
-                    (confidence, method, Some(dest_id), None)
-                }
-                Ok(None) => (0.0, "none", None, None),
-                Err(e) => (0.0, "none", None, Some(e)),
-            }
-        };
-
-        if match_confidence >= options.match_threshold {
-            if let Some(dest_id) = dest_album_id.as_deref() {
-                record_migration_item_match(db, *item_id, match_confidence, match_method, dest_id)
-                    .await?;
-            }
-        }
-
-        let status = if match_confidence < options.match_threshold {
-            if options.skip_unmatched {
-                counters.skipped += 1;
-                "skipped"
-            } else {
-                counters.failed += 1;
-                "failed"
-            }
-        } else if let Some(dest_id) = dest_album_id.as_deref() {
-            if existing_albums.is_none() {
-                existing_albums = Some(gateway.existing_albums().await?);
-            }
-            let existing_albums = existing_albums.as_mut().unwrap();
-            if existing_albums.contains(dest_id) {
-                counters.completed += 1;
-                "preexisting"
-            } else {
-                match gateway.write_album(dest_id).await {
-                    Ok(()) => {
-                        existing_albums.insert(dest_id.to_string());
-                        counters.completed += 1;
-                        "transferred"
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to add album to favorites: {}", e);
-                        match_error = Some(format!("Failed to add album to favorites: {}", e));
-                        counters.failed += 1;
-                        "failed"
-                    }
-                }
-            }
-        } else {
-            counters.failed += 1;
-            "failed"
-        };
-        let error_message = if status == "failed" {
-            Some(match match_error {
-                Some(err) => format!(
-                    "Destination {} album account {:?}: {}",
-                    destination_service, destination_account_id, err
-                ),
-                None => format!(
-                    "No match found on {} album account {:?}",
-                    destination_service, destination_account_id
-                ),
-            })
-        } else {
-            None
-        };
-
-        record_migration_item_result(
+        let locks = DestinationLocks::new();
+        let context = AlbumBatchContext {
             db,
-            *item_id,
-            status,
-            match_confidence,
-            match_method,
-            dest_album_id.as_deref(),
-            error_message.as_deref(),
-        )
-        .await?;
-
-        let current_action = if status == "transferred" || status == "preexisting" {
-            format!("Transferring album {}", album.title)
-        } else {
-            format!("Searching for album {}", album.title)
+            destination_service,
+            destination_account_id,
+            gateway,
+            options,
+            mirror_matches: &mirror_matches,
+            membership: &membership,
+            retry: &policy.retry,
+            locks: &locks,
         };
-        let mut progress = build_migration_progress(
-            started_at.elapsed().as_secs_f64(),
+        let batch_items = range
+            .clone()
+            .map(|index| {
+                let album = &albums[index];
+                let item_id = item_ids[index];
+                let context = &context;
+                async move { process_album_item(context, album, item_id).await }
+            })
+            .collect::<Vec<_>>();
+        let outcomes = collect_batch(batch_items, policy.effective_concurrency()).await?;
+
+        let mut batch = BatchOutcomes::default();
+        for status in outcomes.into_iter().flatten() {
+            counters.record(status)?;
+            batch.record(status)?;
+        }
+        persist_migration_counters(db, job_id, counters).await?;
+        let label = range
+            .clone()
+            .next_back()
+            .map(|index| {
+                let album = &albums[index];
+                format!("{} - {}", album.artist, album.title)
+            })
+            .unwrap_or_default();
+        emit_batch_progress(
+            app,
+            started_at,
             job_id,
-            base_index + i as i64 + 1,
+            "album",
+            label,
+            base_index + range.end as i64,
             total_items,
-            format!("{} - {}", album.artist, album.title),
-            current_action,
-            "running",
-            counters.completed,
-            counters.failed,
-            counters.skipped,
+            batch_position + 1,
+            batch_total,
+            &batch,
+            counters,
         );
-        progress.current_kind = Some("album".to_string());
-        let _ = app.emit("migration-progress", progress);
-
-        // Same counter-write cadence as the track loop. Item rows remain the
-        // source of truth; startup recomputes counters from them.
-        if i % 5 == 0 || i + 1 == albums.len() {
-            persist_migration_counters(db, job_id, counters).await?;
-        }
-
-        // Small delay to avoid rate limiting (lower for local mirror matches).
-        if mirror_matches.contains_key(&album.external_id) {
-            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
-        } else {
-            tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
-        }
     }
     Ok(cancelled)
+}
+
+/// Shared state one artist batch needs, same shape as [`AlbumBatchContext`].
+struct ArtistBatchContext<'a, G: ArtistTransferGateway> {
+    db: &'a sqlx::SqlitePool,
+    destination_service: &'a str,
+    destination_account_id: Option<i64>,
+    gateway: &'a G,
+    options: &'a MigrationOptions,
+    mirror_matches: &'a std::collections::HashMap<String, String>,
+    membership: &'a MembershipSnapshot,
+    retry: &'a RetryPolicy,
+    locks: &'a DestinationLocks,
+}
+
+/// Processes one durable artist row: mirror match first (no network), then the
+/// gateway's own search with 429/5xx backoff; the threshold gates the follow.
+async fn process_artist_item<G: ArtistTransferGateway>(
+    context: &ArtistBatchContext<'_, G>,
+    artist: &MigrationSourceArtist,
+    item_id: i64,
+) -> Result<Option<&'static str>, String> {
+    let durable = match durable_migration_item(context.db, item_id).await? {
+        Some(item) if item.status == "pending" || item.status == "matched" => item,
+        Some(_) => return Ok(None),
+        None => return Err(format!("Migration artist item {} disappeared", item_id)),
+    };
+    let persisted_destination = durable.destination_id;
+    let persisted_confidence = durable.match_confidence;
+    let persisted_method = durable.match_method;
+
+    let (match_confidence, match_method, dest_artist_id, mut match_error): (
+        f64,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = if let Some(dest_id) = persisted_destination {
+        (
+            persisted_confidence.unwrap_or(1.0),
+            persisted_method.unwrap_or_else(|| "matched".to_string()),
+            Some(dest_id),
+            None,
+        )
+    } else if let Some(dest_id) = context.mirror_matches.get(&artist.external_id) {
+        (1.0, "mirror".to_string(), Some(dest_id.clone()), None)
+    } else {
+        match retry_gateway(context.retry, || context.gateway.match_artist(artist)).await {
+            Ok(Some((dest_id, confidence, method))) => {
+                (confidence, method.to_string(), Some(dest_id), None)
+            }
+            Ok(None) => (0.0, "none".to_string(), None, None),
+            Err(error) => (0.0, "none".to_string(), None, Some(error)),
+        }
+    };
+
+    if match_confidence >= context.options.match_threshold {
+        if let Some(dest_id) = dest_artist_id.as_deref() {
+            record_migration_item_match(
+                context.db,
+                item_id,
+                match_confidence,
+                &match_method,
+                dest_id,
+            )
+            .await?;
+        }
+    }
+
+    let status = if match_confidence < context.options.match_threshold {
+        if context.options.skip_unmatched {
+            "skipped"
+        } else {
+            "failed"
+        }
+    } else if let Some(dest_id) = dest_artist_id.as_deref() {
+        let destination_lock = context.locks.lock_for(dest_id);
+        let _destination_guard = destination_lock.lock().await;
+        ensure_membership(context.membership, || {
+            retry_gateway(context.retry, || context.gateway.existing_artists())
+        })
+        .await?;
+        if membership_contains(context.membership, dest_id).await {
+            "preexisting"
+        } else {
+            match retry_gateway(context.retry, || context.gateway.write_artist(dest_id)).await {
+                Ok(()) => {
+                    membership_insert(context.membership, dest_id).await;
+                    "transferred"
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to follow artist: {}", error);
+                    match_error = Some(format!("Failed to follow artist: {}", error));
+                    "failed"
+                }
+            }
+        }
+    } else {
+        "failed"
+    };
+
+    let error_message = if status == "failed" {
+        Some(match match_error {
+            Some(error) => format!(
+                "Destination {} artist account {:?}: {}",
+                context.destination_service, context.destination_account_id, error
+            ),
+            None => format!(
+                "No match found on {} artist account {:?}",
+                context.destination_service, context.destination_account_id
+            ),
+        })
+    } else {
+        None
+    };
+    record_migration_item_result(
+        context.db,
+        item_id,
+        status,
+        match_confidence,
+        &match_method,
+        dest_artist_id.as_deref(),
+        error_message.as_deref(),
+    )
+    .await?;
+    Ok(Some(status))
 }
 
 /// Run the followed-artist collection of a migration job (M02): insert one
@@ -2889,6 +3324,9 @@ pub async fn run_album_collection<G: AlbumTransferGateway, R: tauri::Runtime>(
 /// earlier phases, and the returned flag says whether the user cancelled
 /// mid-phase (the caller must then close the job as cancelled, never
 /// completed).
+///
+/// M06: batches, provider ceiling, backoff and batch-boundary cancellation,
+/// same contract as [`run_artist_collection_with_policy`].
 pub async fn run_artist_collection<G: ArtistTransferGateway, R: tauri::Runtime>(
     db: &sqlx::SqlitePool,
     app: &tauri::AppHandle<R>,
@@ -2903,6 +3341,45 @@ pub async fn run_artist_collection<G: ArtistTransferGateway, R: tauri::Runtime>(
     base_index: i64,
     total_items: i64,
     started_at: std::time::Instant,
+) -> Result<bool, String> {
+    let policy = BatchPolicy::for_destination(destination_service);
+    run_artist_collection_with_policy(
+        db,
+        app,
+        job_id,
+        source_service,
+        destination_service,
+        destination_account_id,
+        artists,
+        gateway,
+        options,
+        counters,
+        base_index,
+        total_items,
+        started_at,
+        &policy,
+    )
+    .await
+}
+
+/// Batch runner behind [`run_artist_collection`]; the policy is explicit so a
+/// fake-gateway test can shrink the batches and the backoff.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_artist_collection_with_policy<G: ArtistTransferGateway, R: tauri::Runtime>(
+    db: &sqlx::SqlitePool,
+    app: &tauri::AppHandle<R>,
+    job_id: &str,
+    source_service: &str,
+    destination_service: &str,
+    destination_account_id: Option<i64>,
+    artists: &[MigrationSourceArtist],
+    gateway: &G,
+    options: &MigrationOptions,
+    counters: &mut MigrationCounters,
+    base_index: i64,
+    total_items: i64,
+    started_at: std::time::Instant,
+    policy: &BatchPolicy,
 ) -> Result<bool, String> {
     // Pending items first, one row per artist, same transaction shape as the
     // other collection phases: the rows are what cancellation and progress
@@ -2957,157 +3434,67 @@ pub async fn run_artist_collection<G: ArtistTransferGateway, R: tauri::Runtime>(
     let mirror_matches =
         prefetch_local_destination_artist_matches(db, source_service, destination_service, artists)
             .await;
-    let mut existing_artists = None;
+    // One membership snapshot per phase: loaded on the first match that may
+    // write and extended after each successful one (M05's no-duplicate rule).
+    let membership: MembershipSnapshot = tokio::sync::Mutex::new(None);
 
+    let batch_total = policy.total_batches(artists.len());
     let mut cancelled = false;
-    for (i, (artist, item_id)) in artists.iter().zip(item_ids.iter()).enumerate() {
-        // Same cancellation contract as the other collection loops: a cancelled
-        // job stops early and is reported as cancelled, never completed.
-        let job: (String,) = sqlx::query_as("SELECT status FROM migration_jobs WHERE id = ?")
-            .bind(job_id)
-            .fetch_one(db)
-            .await
-            .map_err(|e| format!("Failed to read migration job status: {}", e))?;
-        if job.0 == "cancelled" {
+    for (batch_position, range) in policy.batches(artists.len()).enumerate() {
+        // M06: cancellation is observed at the batch boundary. The batch that
+        // already started runs to completion; everything after stays `pending`
+        // and is resumable.
+        if migration_job_cancelled(db, job_id).await? {
             cancelled = true;
             break;
         }
-        let durable = match durable_migration_item(db, *item_id).await? {
-            Some(item) if item.status == "pending" || item.status == "matched" => item,
-            Some(_) => continue,
-            None => return Err(format!("Migration artist item {} disappeared", item_id)),
-        };
-        let persisted_destination = durable.destination_id;
-        let persisted_confidence = durable.match_confidence;
-        let persisted_method = durable.match_method;
-
-        // Mirror match first (no network), then the gateway's own search. A
-        // match is not permission to write: the threshold gates the side effect.
-        let (match_confidence, match_method, dest_artist_id, mut match_error): (
-            f64,
-            &str,
-            Option<String>,
-            Option<String>,
-        ) = if let Some(dest_id) = persisted_destination {
-            (
-                persisted_confidence.unwrap_or(1.0),
-                persisted_method.as_deref().unwrap_or("matched"),
-                Some(dest_id),
-                None,
-            )
-        } else if let Some(dest_id) = mirror_matches.get(&artist.external_id) {
-            (1.0, "mirror", Some(dest_id.clone()), None)
-        } else {
-            match gateway.match_artist(artist).await {
-                Ok(Some((dest_id, confidence, method))) => {
-                    (confidence, method, Some(dest_id), None)
-                }
-                Ok(None) => (0.0, "none", None, None),
-                Err(e) => (0.0, "none", None, Some(e)),
-            }
-        };
-
-        if match_confidence >= options.match_threshold {
-            if let Some(dest_id) = dest_artist_id.as_deref() {
-                record_migration_item_match(db, *item_id, match_confidence, match_method, dest_id)
-                    .await?;
-            }
-        }
-
-        let status = if match_confidence < options.match_threshold {
-            if options.skip_unmatched {
-                counters.skipped += 1;
-                "skipped"
-            } else {
-                counters.failed += 1;
-                "failed"
-            }
-        } else if let Some(dest_id) = dest_artist_id.as_deref() {
-            if existing_artists.is_none() {
-                existing_artists = Some(gateway.existing_artists().await?);
-            }
-            let existing_artists = existing_artists.as_mut().unwrap();
-            if existing_artists.contains(dest_id) {
-                counters.completed += 1;
-                "preexisting"
-            } else {
-                match gateway.write_artist(dest_id).await {
-                    Ok(()) => {
-                        existing_artists.insert(dest_id.to_string());
-                        counters.completed += 1;
-                        "transferred"
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to follow artist: {}", e);
-                        match_error = Some(format!("Failed to follow artist: {}", e));
-                        counters.failed += 1;
-                        "failed"
-                    }
-                }
-            }
-        } else {
-            counters.failed += 1;
-            "failed"
-        };
-
-        let error_message = if status == "failed" {
-            Some(match match_error {
-                Some(err) => format!(
-                    "Destination {} artist account {:?}: {}",
-                    destination_service, destination_account_id, err
-                ),
-                None => format!(
-                    "No match found on {} artist account {:?}",
-                    destination_service, destination_account_id
-                ),
-            })
-        } else {
-            None
-        };
-
-        record_migration_item_result(
+        let locks = DestinationLocks::new();
+        let context = ArtistBatchContext {
             db,
-            *item_id,
-            status,
-            match_confidence,
-            match_method,
-            dest_artist_id.as_deref(),
-            error_message.as_deref(),
-        )
-        .await?;
-
-        let current_action = if status == "transferred" || status == "preexisting" {
-            format!("Following artist {}", artist.name)
-        } else {
-            format!("Searching for artist {}", artist.name)
+            destination_service,
+            destination_account_id,
+            gateway,
+            options,
+            mirror_matches: &mirror_matches,
+            membership: &membership,
+            retry: &policy.retry,
+            locks: &locks,
         };
-        let mut progress = build_migration_progress(
-            started_at.elapsed().as_secs_f64(),
+        let batch_items = range
+            .clone()
+            .map(|index| {
+                let artist = &artists[index];
+                let item_id = item_ids[index];
+                let context = &context;
+                async move { process_artist_item(context, artist, item_id).await }
+            })
+            .collect::<Vec<_>>();
+        let outcomes = collect_batch(batch_items, policy.effective_concurrency()).await?;
+
+        let mut batch = BatchOutcomes::default();
+        for status in outcomes.into_iter().flatten() {
+            counters.record(status)?;
+            batch.record(status)?;
+        }
+        persist_migration_counters(db, job_id, counters).await?;
+        let label = range
+            .clone()
+            .next_back()
+            .map(|index| artists[index].name.clone())
+            .unwrap_or_default();
+        emit_batch_progress(
+            app,
+            started_at,
             job_id,
-            base_index + i as i64 + 1,
+            "artist",
+            label,
+            base_index + range.end as i64,
             total_items,
-            artist.name.clone(),
-            current_action,
-            "running",
-            counters.completed,
-            counters.failed,
-            counters.skipped,
+            batch_position + 1,
+            batch_total,
+            &batch,
+            counters,
         );
-        progress.current_kind = Some("artist".to_string());
-        let _ = app.emit("migration-progress", progress);
-
-        // Same counter-write cadence as the other collection loops. Item rows
-        // remain the source of truth; startup recomputes counters from them.
-        if i % 5 == 0 || i + 1 == artists.len() {
-            persist_migration_counters(db, job_id, counters).await?;
-        }
-
-        // Small delay to avoid rate limiting (lower for local mirror matches).
-        if mirror_matches.contains_key(&artist.external_id) {
-            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
-        } else {
-            tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
-        }
     }
     Ok(cancelled)
 }
@@ -5054,5 +5441,52 @@ mod migration_tests {
             json["current_action"],
             serde_json::json!("Transferring Bohemian Rhapsody")
         );
+        assert!(
+            json.get("batch_index").is_none(),
+            "start/close events do not carry per-batch counters"
+        );
+    }
+
+    /// M06 (#171): the per-batch event carries this batch's creados,
+    /// existentes, fallidos y omitidos, alongside the job's running totals.
+    #[test]
+    fn test_batch_progress_carries_the_batch_outcomes() {
+        let counters = MigrationCounters {
+            completed: 10,
+            failed: 2,
+            skipped: 1,
+        };
+        let batch = BatchOutcomes {
+            created: 4,
+            preexisting: 1,
+            failed: 2,
+            skipped: 1,
+        };
+        let progress = batch_progress(
+            std::time::Instant::now(),
+            "job-1",
+            "track",
+            "Queen - Bohemian Rhapsody".to_string(),
+            50,
+            30_000,
+            2,
+            600,
+            &batch,
+            &counters,
+        );
+
+        assert_eq!(progress.batch_index, Some(2));
+        assert_eq!(progress.batch_total, Some(600));
+        assert_eq!(progress.batch_created, Some(4));
+        assert_eq!(progress.batch_preexisting, Some(1));
+        assert_eq!(progress.batch_failed, Some(2));
+        assert_eq!(progress.batch_skipped, Some(1));
+        assert_eq!(progress.completed_count, 10);
+        assert_eq!(progress.current_kind.as_deref(), Some("track"));
+        assert!(progress.current_action.contains("4 created"));
+
+        let json = serde_json::to_value(&progress).expect("payload must serialize");
+        assert_eq!(json["batch_created"], serde_json::json!(4));
+        assert_eq!(json["batch_skipped"], serde_json::json!(1));
     }
 }
