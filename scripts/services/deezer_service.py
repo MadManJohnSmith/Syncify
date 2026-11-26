@@ -2,44 +2,28 @@
 Deezer service integration - Phase 1 implementation.
 Based on streamrip and orpheusdl-deezer architecture.
 
-Deezer uses ARL cookie authentication and requires Blowfish decryption
-of downloaded tracks (every 3rd 2048-byte chunk).
+Deezer uses ARL cookie authentication. Conserva auth, búsqueda y metadatos:
+los caminos de descarga (resolución de URL, descifrado Blowfish y volcado a
+disco) se retiraron en D14 (#126). La descarga de Deezer es nativa en Rust.
 """
 
-import asyncio
 import aiohttp
-import hashlib
-import json
 import os
-from typing import List, Optional, Callable, Dict, Any
-from pathlib import Path
+from typing import List, Optional, Dict, Any
 import logging
 from random import randint
-import binascii
-
-try:
-    from Cryptodome.Cipher import Blowfish, AES
-    CRYPTODOME_AVAILABLE = True
-except ImportError:
-    try:
-        from Crypto.Cipher import Blowfish, AES
-        CRYPTODOME_AVAILABLE = True
-    except ImportError:
-        Blowfish = None  # type: ignore
-        AES = None  # type: ignore
-        CRYPTODOME_AVAILABLE = False
 
 try:
     from services.service_base import (
         MusicService, ServiceType, ServiceCredentials, TrackMetadata,
-        AlbumMetadata, PlaylistMetadata, SearchResult, DownloadResult,
-        DownloadQuality, DownloadStatus
+        AlbumMetadata, PlaylistMetadata, SearchResult,
+        DownloadQuality
     )
 except ImportError:
     from .service_base import (
         MusicService, ServiceType, ServiceCredentials, TrackMetadata,
-        AlbumMetadata, PlaylistMetadata, SearchResult, DownloadResult,
-        DownloadQuality, DownloadStatus
+        AlbumMetadata, PlaylistMetadata, SearchResult,
+        DownloadQuality
     )
 
 
@@ -57,15 +41,12 @@ class DeezerService(MusicService):
     
     Key Features:
     - ARL cookie authentication (long-lived session token)
-    - Blowfish decryption of downloaded tracks
     - ISRC support for cross-service matching
     - Gateway API (gw-light.php) for all operations
     """
     
     # API Configuration
     GW_LIGHT_URL = "https://www.deezer.com/ajax/gw-light.php"
-    MEDIA_URL = "https://media.deezer.com/v1/get_url"
-    
     # API Credentials and Decryption Key Configuration
     CLIENT_ID = "447462"
     CLIENT_SECRET = ""
@@ -79,7 +60,12 @@ class DeezerService(MusicService):
 
     @classmethod
     def resolve_blowfish_key(cls, credentials: Optional[ServiceCredentials] = None) -> bytes:
-        """Resolve the Deezer Blowfish key: env or credentials override, then the public key."""
+        """Resolve the Deezer Blowfish key: env or credentials override, then the public key.
+
+        El descifrado ya no ocurre en Python (D14, #126), pero la resolución se
+        conserva como contrato del puerto nativo (D11): la clave pública nunca
+        debe exigirse por entorno y el override solo puede cambiarla.
+        """
         raw_key: Any = os.environ.get("DEEZER_BLOWFISH_KEY")
         if not raw_key and credentials and credentials.extra:
             raw_key = credentials.extra.get("blowfish_key")
@@ -95,21 +81,6 @@ class DeezerService(MusicService):
         """Dynamic Blowfish secret resolved from environment or credentials."""
         return self.resolve_blowfish_key(self.credentials)
     
-    # Quality mapping: DownloadQuality → Deezer format
-    QUALITY_MAP = {
-        DownloadQuality.LOSSY_LOW: 'MP3_128',
-        DownloadQuality.LOSSY_STANDARD: 'MP3_320',
-        DownloadQuality.LOSSLESS_CD: 'FLAC',
-        # Deezer doesn't support Hi-Res beyond 16/44.1
-        DownloadQuality.LOSSLESS_HIRES: 'FLAC',
-    }
-    
-    # Format numbers for encrypted URL generation
-    FORMAT_NUMBERS = {
-        'MP3_128': 1,
-        'MP3_320': 3,
-        'FLAC': 9
-    }
     
     def __init__(self, credentials: Optional[ServiceCredentials] = None, verbose: bool = False):
         if credentials is None:
@@ -125,10 +96,6 @@ class DeezerService(MusicService):
         self.user_id: Optional[str] = None
         self.available_formats: List[str] = ['MP3_128']
         self.logger = logging.getLogger(__name__)
-        if not CRYPTODOME_AVAILABLE:
-            self.logger.warning(
-                "pycryptodome not installed. Deezer track decryption will fail. Run: pip install pycryptodome"
-            )
     
     # ==========================================
     # ABSTRACT PROPERTY IMPLEMENTATIONS
@@ -445,241 +412,6 @@ class DeezerService(MusicService):
         except Exception as e:
             self._log(f"Failed to get metadata for track {track_id}: {e}", "error")
             return None
-    
-    def _generate_blowfish_key(self, track_id: str) -> bytes:
-        """
-        Generate per-track Blowfish decryption key.
-        
-        Deezer uses a unique key for each track based on:
-        - MD5 hash of track ID
-        - XOR with BLOWFISH_SECRET
-        
-        Args:
-            track_id: Deezer track ID
-        
-        Returns:
-            16-byte Blowfish key
-        """
-        # MD5 hash of track ID
-        md5_hash = hashlib.md5(track_id.encode()).hexdigest()
-        
-        # XOR first 16 chars with last 16 chars with BF_SECRET
-        # This is Deezer's key derivation function (KDF)
-        key = ''.join(
-            chr(ord(md5_hash[i]) ^ ord(md5_hash[i + 16]) ^ self.BLOWFISH_SECRET[i])
-            for i in range(16)
-        ).encode()
-        
-        return key
-    
-    async def _get_download_url(self, track_id: str, track_token: str, format_str: str) -> Optional[str]:
-        """
-        Get download URL for a track.
-        
-        Args:
-            track_id: Deezer track ID
-            track_token: Track token from metadata
-            format_str: Format string ('MP3_128', 'MP3_320', 'FLAC')
-        
-        Returns:
-            Download URL or None if not available
-        """
-        try:
-            headers = {
-                'Content-Type': 'application/json'
-            }
-            
-            json_payload = {
-                'license_token': self.license_token,
-                'media': [
-                    {
-                        'type': 'FULL',
-                        'formats': [
-                            {
-                                'cipher': 'BF_CBC_STRIPE',
-                                'format': format_str
-                            }
-                        ]
-                    }
-                ],
-                'track_tokens': [track_token]
-            }
-            
-            async with self.session.post(self.MEDIA_URL, json=json_payload, headers=headers) as response:
-                response.raise_for_status()
-                data = await response.json()
-            
-            # Extract URL from response
-            if data.get('data') and len(data['data']) > 0:
-                media = data['data'][0].get('media', [])
-                if media and len(media) > 0:
-                    sources = media[0].get('sources', [])
-                    if sources and len(sources) > 0:
-                        return sources[0].get('url')
-            
-            return None
-            
-        except Exception as e:
-            self._log(f"Failed to get download URL: {e}", "error")
-            return None
-    
-    async def download_track(
-        self,
-        track_id: str,
-        output_path: Path,
-        quality: DownloadQuality = DownloadQuality.LOSSLESS_CD,
-        progress_callback: Optional[Callable[[int, int], None]] = None
-    ) -> DownloadResult:
-        """
-        Download a track with Blowfish decryption.
-        
-        Deezer encrypts tracks with Blowfish CBC:
-        - Every 3rd chunk of 2048 bytes is encrypted
-        - Cipher must be reset for each encrypted chunk
-        - IV is fixed: [0, 1, 2, 3, 4, 5, 6, 7]
-        
-        Args:
-            track_id: Deezer track ID
-            output_path: Path to save downloaded file
-            quality: Desired quality level
-            progress_callback: Optional callback(downloaded_bytes, total_bytes)
-        
-        Returns:
-            DownloadResult with success status and details
-        """
-        if not self.is_authenticated():
-            return DownloadResult(
-                success=False,
-                error_message="Not authenticated",
-                track_metadata=None,
-                filepath=None,
-                file_size_bytes=0
-            )
-        
-        try:
-            # Get track metadata
-            metadata = await self.get_track_metadata(track_id)
-            if not metadata:
-                return DownloadResult(
-                    success=False,
-                    error_message="Track not found",
-                    track_metadata=None,
-                    filepath=None,
-                    file_size_bytes=0
-                )
-            
-            # Extract download parameters
-            track_token = metadata.custom_tags.get('track_token')
-            if not track_token:
-                return DownloadResult(
-                    success=False,
-                    error_message="Track token not available",
-                    track_metadata=metadata,
-                    filepath=None,
-                    file_size_bytes=0
-                )
-            
-            # Map quality to Deezer format
-            format_str = self.QUALITY_MAP[quality]
-            
-            # Check if format is available with subscription
-            if format_str not in self.available_formats:
-                self._log(f"Format {format_str} not available with subscription, falling back", "warning")
-                # Fallback to best available
-                if 'MP3_320' in self.available_formats:
-                    format_str = 'MP3_320'
-                else:
-                    format_str = 'MP3_128'
-            
-            # Get download URL
-            download_url = await self._get_download_url(track_id, track_token, format_str)
-            if not download_url:
-                return DownloadResult(
-                    success=False,
-                    error_message="Download URL not available",
-                    track_metadata=metadata,
-                    filepath=None,
-                    file_size_bytes=0
-                )
-            
-            # Determine if URL requires decryption
-            is_encrypted = '/mobile/' in download_url or '/media/' in download_url
-            if is_encrypted and (not CRYPTODOME_AVAILABLE or Blowfish is None):
-                raise RuntimeError(
-                    "pycryptodome is required for decrypting Deezer tracks. Run: pip install pycryptodome"
-                )
-            
-            # Generate Blowfish key for decryption
-            bf_key = self._generate_blowfish_key(track_id)
-            
-            # Download and decrypt
-            self._log(f"Downloading track {track_id} as {format_str} (encrypted: {is_encrypted})", "info")
-            
-            async with self.session.get(download_url, allow_redirects=True) as response:
-                response.raise_for_status()
-                total_size = int(response.headers.get('Content-Length', 0))
-                
-                # Check if response is too small (error response)
-                if total_size < 20000 and not download_url.endswith('.jpg'):
-                    error_data = await response.json()
-                    return DownloadResult(
-                        success=False,
-                        error_message=f"Download failed: {error_data}",
-                        track_metadata=metadata,
-                        filepath=None,
-                        file_size_bytes=0
-                    )
-                
-                # Ensure output directory exists
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                
-                downloaded_bytes = 0
-                chunk_index = 0
-                
-                # Fixed IV for Blowfish CBC
-                blowfish_iv = b'\x00\x01\x02\x03\x04\x05\x06\x07'
-                
-                with open(output_path, 'wb') as f:
-                    async for chunk in response.content.iter_chunked(2048):
-                        # Every 3rd chunk of exactly 2048 bytes is encrypted
-                        if is_encrypted and chunk_index % 3 == 0 and len(chunk) == 2048:
-                            # Reset cipher for each encrypted chunk (Deezer DRM requirement)
-                            cipher = Blowfish.new(bf_key, Blowfish.MODE_CBC, blowfish_iv)
-                            chunk = cipher.decrypt(chunk)
-                        
-                        f.write(chunk)
-                        downloaded_bytes += len(chunk)
-                        chunk_index += 1
-                        
-                        # Progress callback
-                        if progress_callback and total_size > 0:
-                            progress_callback(downloaded_bytes, total_size)
-            
-            # Calculate SHA256 hash for verification
-            file_hash = hashlib.sha256()
-            with open(output_path, 'rb') as f:
-                for chunk in iter(lambda: f.read(8192), b''):
-                    file_hash.update(chunk)
-            
-            self._log(f"Successfully downloaded track {track_id} to {output_path}", "info")
-            
-            return DownloadResult(
-                success=True,
-                track_metadata=metadata,
-                filepath=str(output_path),
-                file_size_bytes=os.path.getsize(output_path),
-                download_duration_seconds=0.0
-            )
-            
-        except Exception as e:
-            self._log(f"Download failed: {e}", "error")
-            return DownloadResult(
-                success=False,
-                error_message=str(e),
-                track_metadata=metadata if 'metadata' in locals() else None,
-                filepath=None,
-                file_size_bytes=0
-            )
     
     async def get_album_metadata(self, album_id: str) -> Optional[AlbumMetadata]:
         """Retrieve and normalize Deezer album metadata."""

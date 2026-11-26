@@ -2,7 +2,10 @@
 Tidal music streaming service integration.
 
 This module provides access to Tidal's high-fidelity music catalog via OAuth 2.0 and PKCE authentication.
-Supports up to 24-bit/192kHz FLAC downloads with HiFi+ subscription.
+
+Conserva auth, búsqueda y metadatos. Los caminos de descarga (`streamUrl`, el
+manifiesto BTS y el volcado a disco) se retiraron en D14 (#126): la descarga de
+Tidal es nativa en Rust (`src-tauri/src/download/tidal.rs`).
 """
 
 import asyncio
@@ -12,8 +15,7 @@ import json
 import logging
 import os
 import random
-import time
-from typing import List, Optional, Callable
+from typing import List, Optional
 from urllib.parse import parse_qs, urlsplit, urlencode
 
 import aiohttp
@@ -26,7 +28,6 @@ from services.service_base import (
     SearchResult,
     AlbumMetadata,
     PlaylistMetadata,
-    DownloadResult,
     DownloadQuality
 )
 from services.tidal_auth import (
@@ -48,8 +49,6 @@ class TidalService(MusicService):
     - Device authorization flow for easy login
     - Token refresh for persistent sessions
     - ISRC-based duplicate detection
-    - Progress callbacks for downloads
-    - SHA256 file hashing
     """
     
     # API Endpoints
@@ -72,13 +71,6 @@ class TidalService(MusicService):
         """Client id of the public PKCE client used for Hi-Res / HiFi+ (TIDAL_CLIENT_ID_PKCE)."""
         return resolve_tidal_pkce_client_id()
     
-    # Quality mapping
-    QUALITY_MAP = {
-        DownloadQuality.LOSSY_LOW: "LOW",          # AAC 96kbps
-        DownloadQuality.LOSSY_STANDARD: "HIGH",     # AAC 320kbps
-        DownloadQuality.LOSSLESS_CD: "LOSSLESS",    # FLAC 16/44.1
-        DownloadQuality.LOSSLESS_HIRES: "HI_RES"    # FLAC 24-bit MQA/Hi-Res
-    }
     
     def __init__(self, credentials: ServiceCredentials, use_pkce: bool = True, verbose: bool = False):
         """
@@ -601,196 +593,6 @@ class TidalService(MusicService):
             self.logger.error(f"Metadata retrieval error: {e}")
             return None
     
-    async def download_track(
-        self,
-        track_id: str,
-        output_path: str,
-        quality: DownloadQuality = DownloadQuality.LOSSLESS_CD,
-        progress_callback: Optional[Callable[[int, int], None]] = None
-    ) -> DownloadResult:
-        """
-        Download a track from Tidal.
-        
-        Args:
-            track_id: Tidal track ID
-            output_path: Full path where file should be saved
-            quality: Desired download quality
-            progress_callback: Optional callback(downloaded_bytes, total_bytes)
-        
-        Returns:
-            DownloadResult with success status and metadata
-        """
-        start_time = time.time()
-        
-        # Step 1: Get track metadata
-        metadata = await self.get_track_metadata(track_id)
-        if not metadata:
-            return DownloadResult(
-                success=False,
-                error_message="Failed to retrieve track metadata",
-                filepath=None,
-                file_size_bytes=0,
-                download_duration_seconds=0.0,
-                track_metadata=None
-            )
-        
-        # Step 2: Get stream URL
-        stream_url = await self._get_stream_url(track_id, quality)
-        if not stream_url:
-            return DownloadResult(
-                success=False,
-                error_message=f"Failed to get stream URL (quality: {quality.value})",
-                filepath=None,
-                file_size_bytes=0,
-                download_duration_seconds=0.0,
-                track_metadata=metadata
-            )
-        
-        # Step 3: Create output directory
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        
-        # Step 4: Download file
-        try:
-            headers = {"Authorization": f"{self.token_type} {self.access_token}"}
-            
-            async with self.session.get(stream_url, headers=headers) as response:
-                if not response.ok:
-                    error_text = await response.text()
-                    return DownloadResult(
-                        success=False,
-                        error_message=f"Download failed: {error_text}",
-                        filepath=None,
-                        file_size_bytes=0,
-                        download_duration_seconds=time.time() - start_time,
-                        track_metadata=metadata
-                    )
-                
-                total_size = int(response.headers.get('content-length', 0))
-                downloaded = 0
-                hasher = hashlib.sha256()
-                
-                with open(output_path, 'wb') as f:
-                    async for chunk in response.content.iter_chunked(8192):
-                        f.write(chunk)
-                        hasher.update(chunk)
-                        downloaded += len(chunk)
-                        
-                        if progress_callback:
-                            progress_callback(downloaded, total_size)
-            
-            file_hash = hasher.hexdigest()
-            download_time = time.time() - start_time
-            
-            self.logger.info(f"✓ Downloaded '{metadata.title}' ({downloaded} bytes in {download_time:.2f}s)")
-            self.logger.info(f"  SHA256: {file_hash}")
-            
-            return DownloadResult(
-                success=True,
-                track_metadata=metadata,
-                filepath=output_path,
-                file_size_bytes=downloaded,
-                download_duration_seconds=download_time
-            )
-        
-        except Exception as e:
-            self.logger.error(f"Download error: {e}")
-            return DownloadResult(
-                success=False,
-                error_message=f"Download error: {str(e)}",
-                filepath=None,
-                file_size_bytes=0,
-                download_duration_seconds=time.time() - start_time,
-                track_metadata=metadata
-            )
-    
-    async def _get_stream_url(self, track_id: str, quality: DownloadQuality) -> Optional[str]:
-        """
-        Get streaming URL for a track.
-        
-        Args:
-            track_id: Tidal track ID
-            quality: Desired quality level
-        
-        Returns:
-            Direct download URL or None if unavailable
-        """
-        if not self.is_authenticated():
-            self.logger.error("Not authenticated")
-            return None
-        
-        # Map quality to Tidal format
-        tidal_quality = self.QUALITY_MAP.get(quality, "LOSSLESS")
-        
-        stream_url = f"{self.API_BASE}/tracks/{track_id}/streamUrl"
-        params = {
-            "soundQuality": tidal_quality,
-            "playbackMode": "STREAM",
-            "assetPresentation": "FULL",
-            "countryCode": self.country_code
-        }
-        headers = {"Authorization": f"{self.token_type} {self.access_token}"}
-        
-        try:
-            async with self.session.get(stream_url, params=params, headers=headers) as response:
-                if not response.ok:
-                    error_text = await response.text()
-                    self.logger.error(f"Stream URL request failed: {error_text}")
-                    return None
-                
-                data = await response.json()
-            
-            # PKCE may return a direct URL. OAuth commonly returns a base64-
-            # encoded BTS JSON manifest containing one or more CDN URLs.
-            if "url" in data:
-                url = data["url"]
-                self.logger.info(f"✓ Got stream URL (quality: {data.get('audioQuality', tidal_quality)})")
-                return url
-            elif "manifest" in data:
-                url = self._stream_url_from_bts_manifest(data["manifest"])
-                if url:
-                    self.logger.info(
-                        f"✓ Got stream URL from BTS manifest (quality: {data.get('audioQuality', tidal_quality)})"
-                    )
-                    return url
-                return None
-            else:
-                self.logger.error("No URL or manifest in stream response")
-                return None
-        
-        except Exception as e:
-            self.logger.error(f"Error getting stream URL: {e}")
-            return None
-    
-    def _stream_url_from_bts_manifest(self, encoded_manifest: object) -> Optional[str]:
-        """Return the first safe CDN URL from a Tidal BTS JSON manifest."""
-        if not isinstance(encoded_manifest, str) or not encoded_manifest:
-            self.logger.error("Invalid BTS manifest")
-            return None
-        try:
-            padding = "=" * (-len(encoded_manifest) % 4)
-            raw_manifest = base64.b64decode(encoded_manifest + padding, validate=True)
-            manifest = json.loads(raw_manifest.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            self.logger.error("Invalid BTS manifest: %s", exc)
-            return None
-
-        if not isinstance(manifest, dict):
-            self.logger.error("Invalid BTS manifest payload")
-            return None
-        encryption_type = manifest.get("encryptionType", "NONE")
-        if encryption_type not in (None, "NONE"):
-            self.logger.error("Unsupported encrypted BTS manifest: %s", encryption_type)
-            return None
-        urls = manifest.get("urls")
-        if not isinstance(urls, list):
-            self.logger.error("BTS manifest has no URL list")
-            return None
-        for url in urls:
-            if isinstance(url, str) and url.startswith(("https://", "http://")):
-                return url
-        self.logger.error("BTS manifest has no usable HTTP URL")
-        return None
-
     async def _get_api_json(self, path: str, params: Optional[dict] = None) -> Optional[dict]:
         """Fetch one authenticated Tidal API payload."""
         if not self.is_authenticated() or self.session is None:

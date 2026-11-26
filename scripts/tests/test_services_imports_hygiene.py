@@ -120,7 +120,7 @@ class TestServicesImportsHygiene(unittest.TestCase):
         self.assertTrue(hasattr(service, "get_album_tracks"))
         self.assertTrue(hasattr(service, "get_playlist_metadata"))
         self.assertTrue(hasattr(service, "get_playlist_tracks"))
-        self.assertTrue(hasattr(service, "download_track"))
+        self.assertFalse(hasattr(service, "download_track"))
         self.assertTrue(hasattr(service, "get_available_qualities"))
 
     def test_deezer_music_service_contract(self):

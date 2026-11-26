@@ -5,11 +5,8 @@ All service implementations (Qobuz, Tidal, Deezer, etc.) must inherit from this.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any, Callable, TYPE_CHECKING
+from typing import List, Optional, Dict, Any
 from enum import Enum
-
-if TYPE_CHECKING:
-    from core_logic.migration_engine import AudioQualityConfig, MetadataTagConfig
 
 
 class ServiceType(Enum):
@@ -35,16 +32,6 @@ class DownloadQuality(Enum):
     HI_RES_24_96 = "lossless_hires_96"
     HIGH = "lossy_standard"
     STANDARD = "lossy_standard"
-
-
-class DownloadStatus(Enum):
-    """Download status tracking."""
-    QUEUED = "queued"
-    DOWNLOADING = "downloading"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    PAUSED = "paused"
-    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -203,83 +190,6 @@ class SearchResult:
         return (self.duration_ms or 0) // 1000
 
 
-@dataclass(init=False)
-class DownloadResult:
-    """Result of a download operation.
-
-    Canonical keyword arguments: success, track_metadata, filepath,
-    file_size_bytes, download_duration_seconds, status, error_message.
-
-    Backward compatibility (used by service implementations that predate the
-    canonical contract, e.g. soundcloud_service.py):
-    - ``file_path`` / ``size_bytes`` / ``file_size`` kwargs map to
-      ``filepath`` / ``file_size_bytes``.
-    - Any other legacy kwarg (e.g. ``format``, ``quality``) is preserved as a
-      dynamic attribute instead of raising TypeError.
-    - ``success`` defaults to True so legacy success-path constructions that
-      omit it keep working.
-    """
-    success: bool = True
-    track_metadata: Optional[TrackMetadata] = None
-    filepath: Optional[str] = None
-    file_size_bytes: Optional[int] = None
-    download_duration_seconds: Optional[float] = None
-    status: DownloadStatus = DownloadStatus.COMPLETED
-    error_message: Optional[str] = None
-
-    def __init__(
-        self,
-        success: bool = True,
-        track_metadata: Optional[TrackMetadata] = None,
-        filepath: Optional[str] = None,
-        file_size_bytes: Optional[int] = None,
-        download_duration_seconds: Optional[float] = None,
-        status: DownloadStatus = DownloadStatus.COMPLETED,
-        error_message: Optional[str] = None,
-        **legacy_kwargs: Any,
-    ):
-        self.success = success
-        self.track_metadata = track_metadata
-        self.filepath = filepath
-        self.file_size_bytes = file_size_bytes
-        self.download_duration_seconds = download_duration_seconds
-        self.status = status
-        self.error_message = error_message
-
-        # Legacy alias resolution (canonical values win when both are given)
-        aliases = {
-            "file_path": ("filepath", "filepath"),
-            "size_bytes": ("file_size_bytes", "file_size_bytes"),
-            "file_size": ("file_size_bytes", "file_size_bytes"),
-        }
-        for key, value in legacy_kwargs.items():
-            if key in aliases:
-                attr = aliases[key][0]
-                if value is not None and getattr(self, attr) is None:
-                    setattr(self, attr, value)
-            else:
-                # Preserve extra legacy attributes (e.g. format, quality)
-                setattr(self, key, value)
-
-    @property
-    def file_path(self) -> Optional[str]:
-        """Backward compatibility alias for filepath."""
-        return self.filepath
-
-    @file_path.setter
-    def file_path(self, value: Optional[str]) -> None:
-        self.filepath = value
-
-    @property
-    def size_bytes(self) -> Optional[int]:
-        """Backward compatibility alias for file_size_bytes."""
-        return self.file_size_bytes
-
-    @size_bytes.setter
-    def size_bytes(self, value: Optional[int]) -> None:
-        self.file_size_bytes = value
-
-
 class MusicService(ABC):
     """
     Abstract base class for music service integrations.
@@ -287,8 +197,10 @@ class MusicService(ABC):
     Each service implementation must provide:
     1. Authentication
     2. Search functionality
-    3. Download capabilities
-    4. Metadata retrieval
+    3. Metadata retrieval
+
+    La descarga no es parte del contrato: los caminos Python se retiraron en
+    D14 (#126) y la descarga vive en Rust (ADR-0009).
     """
     
     def __init__(self, credentials: ServiceCredentials, verbose: bool = False):
@@ -400,32 +312,6 @@ class MusicService(ABC):
             
         Returns:
             List of TrackMetadata objects
-        """
-        pass
-    
-    @abstractmethod
-    async def download_track(
-        self, 
-        track_id: str, 
-        output_path: str,
-        quality: DownloadQuality = DownloadQuality.LOSSLESS_CD,
-        audio_config: Optional['AudioQualityConfig'] = None,
-        metadata_config: Optional['MetadataTagConfig'] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None
-    ) -> DownloadResult:
-        """
-        Download a track to disk.
-        
-        Args:
-            track_id: Service-specific track identifier
-            output_path: Destination file path
-            quality: Desired download quality
-            audio_config: Optional audio quality configuration
-            metadata_config: Optional metadata tag configuration
-            progress_callback: Optional callback(bytes_downloaded, total_bytes)
-            
-        Returns:
-            DownloadResult with status and metadata
         """
         pass
     

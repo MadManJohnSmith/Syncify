@@ -5,33 +5,24 @@ This module provides complete SoundCloud API functionality including:
 - Token-based authentication (client_id + app_version)
 - Automatic token extraction from web app
 - Track and playlist search
-- HLS segment streaming downloads
-- Original file downloads (when available)
+- Metadata retrieval
+
+Conserva auth, búsqueda y metadatos: los caminos de descarga (HLS por
+segmentos, fichero original y el volcado a disco) se retiraron en D14 (#126).
+La descarga de SoundCloud es nativa en Rust.
 
 Note: SoundCloud does not provide ISRC in API responses, so cross-service
 matching will rely on artist + title matching instead.
 """
 
 import asyncio
-import functools
-import hashlib
 import logging
-import os
 import random
 import re
-import tempfile
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional, Callable, Any
+from typing import Optional
 
 import aiohttp
-
-try:
-    import m3u8
-    M3U8_AVAILABLE = True
-except ImportError:
-    m3u8 = None  # type: ignore
-    M3U8_AVAILABLE = False
 
 try:
     from .service_base import (
@@ -42,7 +33,6 @@ try:
         TrackMetadata,
         AlbumMetadata,
         PlaylistMetadata,
-        DownloadResult,
         DownloadQuality,
     )
 except ImportError:
@@ -54,7 +44,6 @@ except ImportError:
         TrackMetadata,
         AlbumMetadata,
         PlaylistMetadata,
-        DownloadResult,
         DownloadQuality,
     )
 
@@ -73,15 +62,13 @@ class SoundCloudService(MusicService):
     """
     SoundCloud music service implementation.
     
-    Provides access to SoundCloud's free streaming platform with MP3 downloads.
-    Unlike subscription services, SoundCloud focuses on user-uploaded content
-    and independent artists.
+    Provides access to SoundCloud's free streaming platform for catalog and
+    metadata. Unlike subscription services, SoundCloud focuses on user-uploaded
+    content and independent artists.
     
     Features:
-    - Free streaming (no subscription required)
+    - Free streaming catalog (no subscription required)
     - MP3 128kbps standard quality
-    - Original file downloads (when uploader enables it)
-    - HLS segmented streaming
     - No ISRC support (uses artist + title matching)
     
     Authentication:
@@ -92,14 +79,6 @@ class SoundCloudService(MusicService):
     # API endpoints
     BASE_URL = "https://api-v2.soundcloud.com"
     STOCK_URL = "https://soundcloud.com/"
-    
-    # Download status markers
-    NON_STREAMABLE = "_non_streamable"
-    ORIGINAL_DOWNLOAD = "_original_download"
-    NOT_RESOLVED = "_not_resolved"
-    
-    # Constants
-    MAX_BATCH_SIZE = 50  # Maximum track IDs per batch request
     
     def __init__(self, credentials: Optional[ServiceCredentials] = None, verbose: bool = False):
         """
@@ -357,74 +336,6 @@ class SoundCloudService(MusicService):
         logger.debug(f"Retrieved metadata: {metadata.title} by {metadata.artist}")
         return metadata
     
-    async def download_track(
-        self,
-        track_id: str,
-        output_path: str,
-        quality: DownloadQuality = DownloadQuality.LOSSY_LOW,
-        audio_config: Optional[Any] = None,
-        metadata_config: Optional[Any] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None
-    ) -> DownloadResult:
-        """
-        Download a track from SoundCloud.
-        
-        Downloads either the original file (if available) or HLS stream segments.
-        Progress is reported per segment for HLS downloads.
-        
-        Args:
-            track_id: SoundCloud track ID
-            output_path: Path to save the downloaded file
-            quality: Desired quality (LOSSLESS for original, HIGH for MP3)
-            progress_callback: Optional callback for progress updates (current, total)
-            
-        Returns:
-            DownloadResult: Download result with file info
-            
-        Raises:
-            Exception: If track not streamable or download fails
-        """
-        logger.info(f"Downloading track: {track_id} to {output_path}")
-        
-        # Parse custom ID format if present
-        if "|" in track_id:
-            track_id, _ = track_id.split("|", 1)
-        
-        # Get track metadata
-        params = {
-            "client_id": self.client_id,
-            "app_version": self.app_version,
-            "app_locale": "en",
-        }
-        
-        url = f"{self.BASE_URL}/tracks/{track_id}"
-        async with self.session.get(url, params=params) as resp:
-            resp.raise_for_status()
-            track = await resp.json()
-        
-        # Check if track is streamable
-        if not track.get("streamable") or track.get("policy") == "BLOCK":
-            raise Exception(f"Track {track_id} is not streamable")
-        
-        # Determine download method
-        if (quality == DownloadQuality.LOSSLESS and
-            track.get("downloadable") and
-            track.get("has_downloads_left")):
-            # Download original file
-            logger.info("Downloading original file (high quality)")
-            result = await self._download_original_file(
-                track_id, output_path, progress_callback
-            )
-        else:
-            # Download HLS stream
-            logger.info("Downloading HLS stream (MP3 128k)")
-            result = await self._download_hls_stream(
-                track, output_path, progress_callback
-            )
-        
-        logger.info(f"Download completed: {result.file_path}")
-        return result
-    
     async def get_user_playlists(self, user_id: Optional[str] = None) -> list[dict]:
         """
         Get playlists for a user (defaults to likes if no user_id provided).
@@ -631,202 +542,6 @@ class SoundCloudService(MusicService):
         
         return client_id, app_version
     
-    async def _download_original_file(
-        self,
-        track_id: str,
-        output_path: str,
-        progress_callback: Optional[Callable[[int, int], None]]
-    ) -> DownloadResult:
-        """
-        Download the original uploaded file (high quality).
-        
-        Args:
-            track_id: Track ID
-            output_path: Output file path
-            progress_callback: Progress callback
-            
-        Returns:
-            DownloadResult: Download result
-        """
-        # Get download URL
-        params = {
-            "client_id": self.client_id,
-            "app_version": self.app_version,
-            "app_locale": "en",
-        }
-        
-        url = f"{self.BASE_URL}/tracks/{track_id}/download"
-        async with self.session.get(url, params=params) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-        
-        download_url = data["redirectUri"]
-        logger.debug(f"Got original file URL: {download_url[:50]}...")
-        
-        # Download file
-        async with self.session.get(download_url) as resp:
-            resp.raise_for_status()
-            total_size = int(resp.headers.get("Content-Length", 0))
-            
-            downloaded = 0
-            with open(output_path, "wb") as f:
-                async for chunk in resp.content.iter_chunked(8192):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    
-                    if progress_callback and total_size > 0:
-                        progress_callback(downloaded, total_size)
-        
-        # Determine file format from extension or content
-        file_extension = Path(output_path).suffix or ".mp3"
-        
-        return DownloadResult(
-            file_path=output_path,
-            file_size=os.path.getsize(output_path),
-            format=file_extension.lstrip(".").upper(),
-            quality=DownloadQuality.LOSSLESS
-        )
-    
-    async def _download_hls_stream(
-        self,
-        track: dict,
-        output_path: str,
-        progress_callback: Optional[Callable[[int, int], None]]
-    ) -> DownloadResult:
-        """
-        Download HLS stream segments and concatenate.
-        
-        Args:
-            track: Track metadata dict
-            output_path: Output file path
-            progress_callback: Progress callback (reports segments completed)
-            
-        Returns:
-            DownloadResult: Download result
-        """
-        # Find HLS transcoding URL
-        transcoding_url = None
-        for tc in track["media"]["transcodings"]:
-            fmt = tc["format"]
-            if fmt["protocol"] == "hls" and fmt["mime_type"] == "audio/mpeg":
-                transcoding_url = tc["url"]
-                break
-        
-        if not transcoding_url:
-            raise Exception("No HLS transcoding available for track")
-        
-        logger.debug(f"Found HLS transcoding URL: {transcoding_url[:50]}...")
-        
-        # Get M3U8 playlist URL
-        params = {
-            "client_id": self.client_id,
-            "app_version": self.app_version,
-            "app_locale": "en",
-        }
-        
-        async with self.session.get(transcoding_url, params=params) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-        
-        m3u8_url = data["url"]
-        logger.debug(f"Got M3U8 playlist URL: {m3u8_url[:50]}...")
-        
-        # Fetch and parse M3U8 playlist
-        if not M3U8_AVAILABLE or m3u8 is None:
-            raise RuntimeError("m3u8 library is required for SoundCloud HLS streaming. Run: pip install m3u8")
-        async with self.session.get(m3u8_url) as resp:
-            resp.raise_for_status()
-            m3u8_content = await resp.text(encoding="utf-8")
-        
-        parsed_m3u8 = m3u8.loads(m3u8_content)
-        total_segments = len(parsed_m3u8.segments)
-        logger.info(f"Downloading {total_segments} HLS segments...")
-        
-        # Download all segments to temporary files
-        temp_dir = tempfile.mkdtemp(prefix="soundcloud_")
-        segment_files = []
-        
-        try:
-            for i, segment in enumerate(parsed_m3u8.segments):
-                segment_url = segment.uri
-                temp_file = os.path.join(temp_dir, f"segment_{i:04d}.mp3")
-                
-                async with self.session.get(segment_url) as resp:
-                    resp.raise_for_status()
-                    content = await resp.read()
-                
-                with open(temp_file, "wb") as f:
-                    f.write(content)
-                
-                segment_files.append(temp_file)
-                
-                if progress_callback:
-                    progress_callback(i + 1, total_segments)
-            
-            # Concatenate segments directly (no ffmpeg needed for MP3)
-            logger.info("Concatenating segments...")
-            with open(output_path, "wb") as output_file:
-                for segment_file in segment_files:
-                    with open(segment_file, "rb") as f:
-                        output_file.write(f.read())
-            
-            logger.info("Successfully concatenated all segments")
-            
-        finally:
-            # Clean up temporary files
-            for segment_file in segment_files:
-                try:
-                    os.remove(segment_file)
-                except Exception as e:
-                    logger.warning(f"Failed to remove temp file {segment_file}: {e}")
-            
-            try:
-                os.rmdir(temp_dir)
-            except Exception as e:
-                logger.warning(f"Failed to remove temp directory {temp_dir}: {e}")
-        
-        return DownloadResult(
-            file_path=output_path,
-            file_size=os.path.getsize(output_path),
-            format="MP3",
-            quality=DownloadQuality.LOSSY_LOW
-        )
-    
-    def _get_custom_id(self, track: dict) -> str:
-        """
-        Generate custom ID format that includes download availability.
-        
-        Format: {track_id}|{download_status}
-        
-        Args:
-            track: Track metadata dict
-            
-        Returns:
-            str: Custom ID string
-        """
-        track_id = track["id"]
-        
-        # Check if track is streamable
-        if not track.get("streamable") or track.get("policy") == "BLOCK":
-            return f"{track_id}|{self.NON_STREAMABLE}"
-        
-        # Check for original download
-        if track.get("downloadable") and track.get("has_downloads_left"):
-            return f"{track_id}|{self.ORIGINAL_DOWNLOAD}"
-        
-        # Find HLS transcoding URL
-        transcoding_url = None
-        for tc in track.get("media", {}).get("transcodings", []):
-            fmt = tc["format"]
-            if fmt["protocol"] == "hls" and fmt["mime_type"] == "audio/mpeg":
-                transcoding_url = tc["url"]
-                break
-        
-        if transcoding_url:
-            return f"{track_id}|{transcoding_url}"
-        
-        return f"{track_id}|{self.NON_STREAMABLE}"
-
 
 # Example usage
 if __name__ == "__main__":
@@ -854,22 +569,6 @@ if __name__ == "__main__":
                 print(f"  Genre: {metadata.genre}")
                 print(f"  Quality: {metadata.quality}")
                 print(f"  ISRC: {metadata.isrc or 'Not available'}")
-                
-                # Optional: Download track
-                # def progress(current, total):
-                #     percent = (current / total) * 100
-                #     print(f"\rDownload progress: {percent:.1f}%", end="")
-                # 
-                # print("\nDownloading track...")
-                # result = await service.download_track(
-                #     track_id,
-                #     "output.mp3",
-                #     quality=DownloadQuality.HIGH,
-                #     progress_callback=progress
-                # )
-                # print(f"\nDownloaded: {result.file_path}")
-                # print(f"Size: {result.file_size / 1024 / 1024:.2f} MB")
-                # print(f"Format: {result.format}")
         
         finally:
             await service.close()
