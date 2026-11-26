@@ -32,11 +32,9 @@ del 2026-11-22, al final). Lo que un bloque posterior contradice queda marcado
   fuera de tmpfs; nunca el `/tmp/syncify-target` compartido.
   *(Precisado el 2026-11-22: en carriles, un target persistente por carril,
   no por worktree; ver bloque 2026-11-22.)*
-- **Contrato de entrega.** Commits + PR con base `dev` + puertas corridas con
+- **Contrato de entrega.** Commits + PR con base `wave/ola-N-batch-M` para un
+  carril (el consolidado del lote va contra `main`) + puertas corridas con
   salida verbatim. Un «completed» sin commits y PR es un fallo del encargo.
-  *(Superado el 2026-11-21/22 en la base del PR: el PR de carril va contra
-  la rama del lote `wave/ola-N-batch-M`, no contra `dev`; ver
-  [`protocolo-pr.md`](protocolo-pr.md).)*
 - **Revisión con artefacto.** La revisión independiente publica
   `gh pr review --comment` (hallazgos, fecha y veredicto) antes del merge; sin
   ese comentario el claim no cuenta.
