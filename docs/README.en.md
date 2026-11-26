@@ -30,7 +30,7 @@ relaxed, and the landmines. Start there.
 |---|---|
 | `README.en.md` (this file) | English |
 | `APP_FLOW.en.md` | English |
-| `features/` design specs (11 files) | Spanish only |
+| `features/` design specs (12 files) | Spanish only |
 | `adr/0001-identidad-de-tracks.md` | Spanish only |
 | `PLAN_UNIFICACION_IMPORTACION.md` | Spanish only |
 | `MATRIZ_PARIDAD_IMPORTACION.md` | Spanish only |
@@ -64,6 +64,10 @@ against the code.
   identity.
 - `features/metadata-enrichment.md`: enrichment from MusicBrainz, Last.fm and
   AcoustID, and the background worker.
+- `features/lyrics.md`: the LETRAS flow — the per-source engine with sequential
+  upgrade selection, the negative cache, deletion marks, storage, the cancellable
+  batch routes, word-level karaoke, and the honest implementation status of the
+  pieces ADR-0017 and ADR-0018 design (#194).
 - `features/playlist-system.md`: playlist synchronisation and persistence.
 - `features/settings-system.md`: hierarchical configuration and its SQLite
   persistence, single-source defaults and backend-only reset.

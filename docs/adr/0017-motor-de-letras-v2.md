@@ -56,6 +56,20 @@ el motor. Las colas batch no son cancelables: cerrar el diálogo no detiene el b
   spike previo (E-01) y queda mantenida por las sondas en campo.
 - Los tests del puente legacy se retiran junto con él.
 
+## Aceptación y trazabilidad
+
+- **Spec:** #176 (LETRAS). **Tickets:** #178–#194; cierre LY16/#194.
+- **Comportamiento vigente:** `docs/features/lyrics.md`. **Evidencia de red:**
+  `docs/LYRICS_PROVIDER_MATRIX.md` (spike LY00/#178, 2026-11-14).
+- **Implementado en el árbol al cierre:** crate y fachada fina (#179),
+  selección secuencial con mejora (#183), caché negativa persistente (#184),
+  Marcas de borrado en las cuatro rutas (#180), karaoke por palabra en pantalla
+  completa (#181), cola batch cancelable (#186, follow-up #378) y candidato
+  nativo de Tidal caracterizado (#192).
+- **Pendiente, y por eso este ADR sigue `propuesto`:** credenciales por Fuente y
+  sondas Rust (#185), retirada del puente Python (#188), auto-fetch y barrido
+  de reintentos (#190, #191) y spike del endpoint nativo de Tidal (#182).
+
 ## Alternativas descartadas
 
 - **Fan-out best-of-N.** Más peticiones contra rate-limits de LRCLIB/Musixmatch y

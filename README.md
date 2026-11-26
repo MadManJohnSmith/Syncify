@@ -87,8 +87,12 @@ that: it turns "your" catalog into *your* catalog.
 - **Get professional-grade metadata automatically**: multi-value artists,
   collaborations, compilations handled correctly, countries, BPM, musical
   key and energy — from MusicBrainz, AcoustID and Last.fm.
-- **Synced lyrics as `.lrc` sidecars**, resolved through a 16-strategy
-  cascade across 10 providers.
+- **Synced lyrics as `.lrc` sidecars**, resolved through a user-ordered
+  catalogue of 12 sources over 10 networks with sequential upgrade — a
+  line-synced hit never hides a word-synced one further down — and
+  word-by-word karaoke in the full-screen player when the source carries word
+  timings. The live-endpoint evidence is in the
+  [lyrics matrix](docs/LYRICS_PROVIDER_MATRIX.md).
 - **High-resolution covers** (including animated ones) saved next to your
   music, organized in artist/album folders under `~/Music/Syncify`.
 - **Keep it healthy**: duplicate detection and merge, catalog identity
@@ -274,8 +278,14 @@ verification ticket:
 - **The graphical session.** UI layout, audio playback, tray, MPRIS/D-Bus,
   and window-manager behaviour have not been exercised on a real desktop
   (#149).
-- **Live network paths.** No launch login (#63), no real download (#127), and
-  no provider enrichment or lyrics resolution against real services (#178).
+- **Live network paths.** No launch login (#63) and no real download (#127).
+  Provider enrichment against real services (MusicBrainz, Last.fm, AcoustID)
+  has not been exercised either.
+- **Lyrics endpoints.** The 12-source catalogue was re-verified against live
+  endpoints on 2026-11-14, without credentials (see the
+  [lyrics matrix](docs/LYRICS_PROVIDER_MATRIX.md) §4). The credential-dependent
+  sources and Tidal's native lyrics endpoint remain unconfirmed (#182), and the
+  released build did not exercise in-app resolution against real services.
 - **Ignored Rust tests.** The 14 ignored tests — kept out of CI because they
   need live network, real credentials, a runtime SQLite database, physical
   storage or wall-clock timing — have not been exercised.
