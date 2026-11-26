@@ -25,7 +25,7 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
 ## Especificaciones de Módulos y Arquitectura Vigente
 
 - **`features/`**: especificaciones funcionales de los subsistemas principales
-  (11 ficheros). Cada una abre con un sello `**Estado de revisión:**` que dice
+  (12 ficheros). Cada una abre con un sello `**Estado de revisión:**` que dice
   cuándo se contrastó contra el árbol:
   - `auth-flow.md`: flujos de autenticación OAuth, PKCE y scraping de sesión,
     reconciliación multi-cuenta.
@@ -42,6 +42,10 @@ relajan y las minas. Empieza por ahí. Este índice no duplica su contenido.
     el merge que conserva fuentes, pertenencias, favoritos y playlists (#383).
   - `metadata-enrichment.md`: enriquecimiento con MusicBrainz, Last.fm y
     AcoustID, y el worker de fondo.
+  - `lyrics.md`: el flujo LETRAS — motor por Fuentes con selección secuencial,
+    caché negativa, Marcas de borrado, almacenamiento, rutas de lote
+    cancelables, karaoke por palabra y el estado real de las piezas que ADR-0017
+    y ADR-0018 diseñan (#194).
   - `playlist-system.md`: sincronización y persistencia de listas de
     reproducción.
   - `settings-system.md`: configuración jerárquica y persistencia en SQLite,

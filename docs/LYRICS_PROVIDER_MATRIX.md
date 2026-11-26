@@ -9,7 +9,9 @@ las 12 fuentes; evidencia fechada en §4). Catálogo y despacho en
 `src-tauri/src/download/lyrics.rs`, migraciones `src-tauri/migrations/0013_lyrics_provider_settings.sql`,
 `src-tauri/migrations/0014_lyrics_config.sql` y `src-tauri/migrations/0100_lyrics_provider_catalog.sql`,
 capa de ajustes (`src-tauri/src/commands/lyrics.rs`, `src-tauri/src/commands/settings.rs`) y UI
-(`ui/src/composables/useLyricsSettings.ts`). Resumen: el motor ya no es una cascada fija de 16
+(`ui/src/composables/useLyricsSettings.ts`). El comportamiento del flujo
+—resolución, almacenamiento, rutas de adquisición y reproductor— vive en
+`docs/features/lyrics.md`. Resumen: el motor ya no es una cascada fija de 16
 estrategias sino un catálogo de **12 fuentes configurables por el usuario**; la prioridad y el
 habilitado/deshabilitado por fuente se documentan como capa propia (§2.3); se corrige la cita de un
 test que no existía (§5); los endpoints citados se contrastan con el código vigente y las
