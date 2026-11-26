@@ -228,6 +228,58 @@ async fn retry_resumes_pending_rows_left_by_cancellation() {
     assert_eq!(job, ("completed".to_string(), 2));
 }
 
+/// #363: a crash after the runner wrote its last item but before it closed the
+/// job leaves `running` with every row already terminal. Retry has nothing to
+/// reset; #363 forbids a `running` job without a runner, so Re-run must drive
+/// that job to its terminal state instead of leaving it running forever.
+#[tokio::test]
+async fn retry_closes_a_running_job_whose_items_are_all_terminal() {
+    let pool = setup_test_db().await;
+    sqlx::query(
+        r#"INSERT INTO migration_jobs
+               (id, source_service, destination_service, options, status,
+                total_items, completed_items, collections)
+           VALUES ('orphan-running', 'spotify', 'qobuz', ?, 'running',
+                   1, 1, '["tracks"]')"#,
+    )
+    .bind(options_json())
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO migration_items
+               (job_id, kind, source_track_id, source_track_title,
+                source_track_artist, status, destination_track_id)
+           VALUES ('orphan-running', 'track', 'sp-done', 'Done', 'Artist',
+                   'transferred', 'qb-done')"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let app = test_app(pool.clone());
+
+    let retried = retry_failed_items(
+        app.handle().clone(),
+        app.state::<AppState>(),
+        "orphan-running".into(),
+    )
+    .await
+    .expect("retry command");
+    assert_eq!(retried, 0, "no non-terminal row is reset");
+
+    let job: (String, i64) = sqlx::query_as(
+        "SELECT status, completed_items FROM migration_jobs WHERE id = 'orphan-running'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        job,
+        ("completed".to_string(), 1),
+        "retry must close a running job whose rows are all terminal"
+    );
+}
+
 /// A retry cannot reconstruct rows that were never snapshotted. Refuse it before
 /// resetting item state so a partial legacy job does not become an orphaned
 /// running job or silently complete a smaller migration.

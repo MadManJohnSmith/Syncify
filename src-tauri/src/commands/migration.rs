@@ -4058,6 +4058,8 @@ pub async fn retry_failed_items<R: tauri::Runtime>(
 /// Retry seam shared by the IPC command and fake-gateway tests. Every
 /// non-terminal row is included: a snapshot failure can leave `matched` with an
 /// exact destination id, and an earlier persistence failure can leave `pending`.
+/// A job that was already `running` is resumed even when no row needed a reset,
+/// so Re-run never leaves `running` without a runner (#363).
 pub async fn retry_failed_items_with_gateway<
     G: TrackTransferGateway + AlbumTransferGateway + ArtistTransferGateway,
     R: tauri::Runtime,
@@ -4088,6 +4090,7 @@ pub async fn retry_failed_items_with_gateway<
             job_id, job.0
         ));
     }
+    let was_running = job.0 == "running";
     let snapshot_items: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM migration_items WHERE job_id = ?")
             .bind(job_id)
@@ -4127,7 +4130,12 @@ pub async fn retry_failed_items_with_gateway<
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit migration retry: {}", e))?;
-    if retried > 0 {
+    // A running job always needs a runner (#363). Usually that means the rows
+    // just reset to pending; when every row was already terminal, resuming
+    // simply walks the durable snapshot and closes the job, so a crash between
+    // the last item write and close_migration_job cannot leave it running
+    // forever.
+    if retried > 0 || was_running {
         resume_migration_job_locked(db, app, job_id, gateway).await?;
     }
     Ok(retried)
