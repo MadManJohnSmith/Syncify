@@ -848,7 +848,7 @@ impl PlayerState {
             if let Some(session) = cache.for_seq(*seq) {
                 match guard_stream_frontier(engine, &session, dirty) {
                     FrontierOutcome::Quiet => {}
-                    FrontierOutcome::State(payload) => stream_states.push(payload),
+                    FrontierOutcome::State(payload) => stream_states.push(*payload),
                     FrontierOutcome::StallRefill => stall_refill = Some(session),
                 }
             }
@@ -1580,7 +1580,7 @@ pub(crate) enum FrontierOutcome {
     /// Nada que hacer.
     Quiet,
     /// Estado de stream a emitir por `player:stream-state`.
-    State(StreamStatePayload),
+    State(Box<StreamStatePayload>),
     /// El seek pendiente lleva una ventana completa de espera acotada sin
     /// progreso de descarga: lanzar la re-resolución única (relleno).
     StallRefill,
@@ -1613,7 +1613,7 @@ pub(crate) fn guard_stream_frontier(
         }
         if session.is_canceled() {
             session.paused_for_buffer.store(false, Ordering::SeqCst);
-            return FrontierOutcome::State(stream_cache::state_payload(session, None));
+            return FrontierOutcome::State(Box::new(stream_cache::state_payload(session, None)));
         }
         let duration = engine.duration().map(|d| d.as_secs_f64());
         let reachable = duration
@@ -1631,9 +1631,10 @@ pub(crate) fn guard_stream_frontier(
         return match session.stall_check(STREAM_PENDING_SEEK_TIMEOUT) {
             StallCheck::Progressing => FrontierOutcome::Quiet,
             StallCheck::Stalled => FrontierOutcome::StallRefill,
-            StallCheck::Exhausted => {
-                FrontierOutcome::State(terminate_stall(session, StreamFillError::StillStalled))
-            }
+            StallCheck::Exhausted => FrontierOutcome::State(Box::new(terminate_stall(
+                session,
+                StreamFillError::StillStalled,
+            ))),
         };
     }
 
@@ -1654,7 +1655,7 @@ pub(crate) fn guard_stream_frontier(
         engine.pause();
         session.paused_for_buffer.store(true, Ordering::SeqCst);
         *dirty = true;
-        FrontierOutcome::State(stream_cache::state_payload(session, None))
+        FrontierOutcome::State(Box::new(stream_cache::state_payload(session, None)))
     } else if !playing
         && session.paused_for_buffer.load(Ordering::SeqCst)
         && frontier >= position + FRONTIER_RESUME_MARGIN_SECS
@@ -1662,7 +1663,7 @@ pub(crate) fn guard_stream_frontier(
         let _ = engine.resume();
         session.paused_for_buffer.store(false, Ordering::SeqCst);
         *dirty = true;
-        FrontierOutcome::State(stream_cache::state_payload(session, None))
+        FrontierOutcome::State(Box::new(stream_cache::state_payload(session, None)))
     } else {
         FrontierOutcome::Quiet
     }
@@ -1683,7 +1684,7 @@ fn serve_pending_seek(
         }
         session.paused_for_buffer.store(false, Ordering::SeqCst);
         *dirty = true;
-        FrontierOutcome::State(stream_cache::state_payload(session, None))
+        FrontierOutcome::State(Box::new(stream_cache::state_payload(session, None)))
     } else {
         session.set_pending_seek(target);
         FrontierOutcome::Quiet
