@@ -299,6 +299,8 @@ export const TauriEvents = {
     PLAYER_ADVANCED: 'player:advanced',
     // P02 (#133): modos persistidos por el backend (MPRIS reordena la cola)
     PLAYER_MODES_CHANGED: 'player:modes-changed',
+    // P03 (#134): una entrada efímera cambió de identidad o de promoción
+    PLAYER_QUEUE_ENTRY_CHANGED: 'player:queue-entry-changed',
 } as const;
 
 export type TauriEventName = typeof TauriEvents[keyof typeof TauriEvents];

@@ -1151,7 +1151,7 @@ async function displayableUrl(path: string | null | undefined): Promise<string |
 // The legacy probes below stay as a best-effort fallback for environments that
 // do not provide the new fields (older mocks, remote artwork only).
 async function loadCurrentTrackDetails() {
-  if (!current.value) {
+  if (!current.value || current.value.id <= 0) {
     metadata.value = null
     lyrics.value = null
     fileTags.value = {}
@@ -1261,7 +1261,7 @@ async function loadCurrentTrackDetails() {
 }
 
 async function refreshLyrics() {
-  if (!current.value) return
+  if (!current.value || current.value.id <= 0) return
   lyricsLoading.value = true
   try {
     const trackId = current.value.id

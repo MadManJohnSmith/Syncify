@@ -21,6 +21,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::commands::playback_queue::{
     perform_get_playback_queue, perform_set_modes, perform_set_position, perform_set_shuffle,
+    PlaybackQueueEntryDto,
 };
 use crate::services::mpris::MprisService;
 use crate::services::playback_advance::{
@@ -174,16 +175,11 @@ async fn play<R: Runtime>(app: &AppHandle<R>) -> Result<Option<PlayerAdvancedPay
             Ok(None)
         }
         crate::services::mpris::PlaybackStatus::Stopped => {
-            let track_id = if state.is_loaded() {
-                state.current_track_id()
-            } else {
-                let db = app.state::<crate::AppState>().db.clone();
-                let snapshot = perform_get_playback_queue(&db).await?;
-                snapshot.current.as_ref().map(|current| current.track_id)
-            };
-            match track_id {
-                Some(track_id) => {
-                    reopen_track(app, track_id).await?;
+            let db = app.state::<crate::AppState>().db.clone();
+            let snapshot = perform_get_playback_queue(&db).await?;
+            match snapshot.current.as_ref() {
+                Some(entry) => {
+                    reopen_entry(app, entry.clone()).await?;
                     Ok(None)
                 }
                 // Sin pista actual: play arranca la cabeza de los pendientes,
@@ -217,21 +213,44 @@ async fn stop<R: Runtime>(app: &AppHandle<R>) -> Result<Option<PlayerAdvancedPay
     Ok(None)
 }
 
-/// Recarga la pista en el motor desde cero (play tras pausa/final/stop). El
-/// volumen sale del estado persistido, como en el avance de P01.
-async fn reopen_track<R: Runtime>(
+/// Recarga la entrada actual desde cero (play tras final/stop). El volumen
+/// sale del estado persistido, como en el avance de P01.
+async fn reopen_entry<R: Runtime>(
     app: &AppHandle<R>,
-    track_id: i64,
-) -> Result<Option<PlayerAdvancedPayload>, String> {
+    entry: PlaybackQueueEntryDto,
+) -> Result<(), String> {
     let db = app.state::<crate::AppState>().db.clone();
     let snapshot = perform_get_playback_queue(&db).await?;
     let volume = if snapshot.muted { 0.0 } else { snapshot.volume };
     let cache = app.state::<StreamCacheState>();
     let state = app.state::<PlayerState>();
-    state
-        .open(app, &cache, &db, track_id, true, volume)
-        .await
-        .map(|_| None)
+    if entry.track_id > 0 {
+        state
+            .open(app, &cache, &db, entry.track_id, true, volume)
+            .await?;
+    } else {
+        let service_id = entry
+            .service_id
+            .ok_or_else(|| "la entrada efímera no tiene service_id".to_string())?;
+        let service_track_id = entry
+            .service_track_id
+            .ok_or_else(|| "la entrada efímera no tiene service_track_id".to_string())?;
+        state
+            .open_provider_item(
+                app,
+                &cache,
+                &db,
+                crate::services::streaming::ProviderStreamItem {
+                    entry_id: entry.entry_id,
+                    service_id,
+                    service_track_id,
+                },
+                true,
+                volume,
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 async fn seek_relative<R: Runtime>(app: &AppHandle<R>, offset_us: i64) -> Result<(), String> {

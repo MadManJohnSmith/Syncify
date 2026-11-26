@@ -12,6 +12,9 @@
  */
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invokeCommand, TauriEvents } from './tauri'
+import type { PlaybackQueueEntryDto, PlayerAdvanced } from './types'
+
+export type { PlayerAdvanced } from './types'
 
 export type PlayerEngineState = 'stopped' | 'playing' | 'paused'
 
@@ -23,7 +26,7 @@ export interface PlayerTick {
     durationSec: number | null;
 }
 
-/** Generación y duración que devuelve cada carga (`player_load_track`). */
+/** Generación y duración que devuelve cada carga del motor. */
 export interface PlayerLoadResult {
     seq: number;
     durationSec: number | null;
@@ -59,32 +62,18 @@ export interface PlayerStreamQuality {
     matchMethod: string;
 }
 
-/** Resultado de `player_load_track` (local o streaming). */
+/** Resultado de una carga de biblioteca o proveedor (local o streaming). */
 export interface PlayerTrackLoadResult extends PlayerLoadResult {
     /** `null` cuando la pista se reprodujo desde un archivo local. */
     stream: PlayerStreamInfo | null;
 }
 
-/**
- * Payload de `player:advanced` (P01, #132): el backend decidió la siguiente
- * pista tras el fin natural de la anterior y la cargó en el motor. La UI
- * sincroniza su proyección con este evento; no avanza por su cuenta.
- *
- * P02 (#133): `previousEntryId` sólo llega en un `previous` manual; entonces
- * la pista que sonaba vuelve al frente de los pendientes y la entrada
- * avanzada (la última del historial) es la actual.
- */
-export interface PlayerAdvanced {
-    seq: number;
-    trackId: number;
-    entryId: string;
-    previousEntryId?: string;
-}
-
 /** Payload de `player:stream-state` (backend camelCase). */
 export interface PlayerStreamState extends PlayerStreamQuality {
     seq: number;
+    /** `0` para una entrada efímera de proveedor. */
     trackId: number;
+    entryId?: string;
     buffering: boolean;
     downloadedBytes: number;
     totalBytes: number | null;
@@ -125,6 +114,23 @@ export function playerLoadTrack(
             durationSec: r.duration_sec,
             stream: r.stream ?? null,
         }));
+}
+
+/** Carga una entrada de cola de biblioteca o proveedor por su entry_id. */
+export function playerLoadQueueEntry(
+    entryId: string,
+    autoplay: boolean,
+    volume: number,
+): Promise<PlayerTrackLoadResult> {
+    return invokeCommand<RawLoadResult>('player_load_queue_entry', {
+        entryId,
+        autoplay,
+        volume,
+    }).then(r => ({
+        seq: r.seq,
+        durationSec: r.duration_sec,
+        stream: r.stream ?? null,
+    }));
 }
 
 export function playerPause(): Promise<void> {
@@ -168,17 +174,33 @@ export function onPlayerEnded(cb: (seq: number) => void): Promise<UnlistenFn> {
 
 /** Suscripción a `player:advanced`: el backend avanzó de pista por su cuenta. */
 export function onPlayerAdvanced(cb: (advanced: PlayerAdvanced) => void): Promise<UnlistenFn> {
-    return listen<{ seq: number; track_id: number; entry_id: string; previous_entry_id?: string }>(
-        TauriEvents.PLAYER_ADVANCED,
-        (event) => {
-            cb({
-                seq: event.payload.seq,
-                trackId: event.payload.track_id,
-                entryId: event.payload.entry_id,
-                previousEntryId: event.payload.previous_entry_id,
-            });
-        },
-    );
+    return listen<{
+        seq: number;
+        track_id: number;
+        service_id: number | null;
+        service_track_id: string | null;
+        entry_id: string;
+        previous_entry_id?: string;
+    }>(TauriEvents.PLAYER_ADVANCED, (event) => {
+        cb({
+            seq: event.payload.seq,
+            trackId: event.payload.track_id,
+            serviceId: event.payload.service_id,
+            serviceTrackId: event.payload.service_track_id,
+            entryId: event.payload.entry_id,
+            previousEntryId: event.payload.previous_entry_id,
+        });
+    });
+}
+
+/** Delta de una entrada tras promoción o cambio de su motivo de promoción. */
+export function onPlayerQueueEntryChanged(
+    cb: (entry: PlaybackQueueEntryDto) => void,
+): Promise<UnlistenFn> {
+    return listen<{ entry: PlaybackQueueEntryDto }>(
+        TauriEvents.PLAYER_QUEUE_ENTRY_CHANGED,
+        event => cb(event.payload.entry),
+    )
 }
 
 /** Modos persistidos por el backend (MPRIS reordena la cola pendiente). */

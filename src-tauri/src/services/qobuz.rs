@@ -989,6 +989,12 @@ impl QobuzClient {
         Ok(())
     }
 
+    /// Metadatos de un ítem concreto, sin materializarlo en biblioteca.
+    pub async fn get_track(&self, track_id: i64) -> Result<QobuzTrack, String> {
+        self.api_request("track/get", vec![("track_id", track_id.to_string())], true)
+            .await
+    }
+
     /// Get full album details (album/get?album_id=...)
     pub async fn get_album_full(&self, album_id: &str) -> Result<QobuzAlbum, String> {
         let params = vec![("album_id", album_id.to_string())];
