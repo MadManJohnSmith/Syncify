@@ -1039,6 +1039,7 @@ pub async fn import_spotify_playlists(
             // Import playlist tracks (with error handling to skip problematic playlists)
             let mut track_offset = 0;
             let track_limit = 100;
+            let mut expansion_failed = false;
 
             loop {
                 tracing::debug!(
@@ -1054,6 +1055,7 @@ pub async fn import_spotify_playlists(
                 let tracks_page = match tracks_result {
                     Ok(page) => page,
                     Err(e) => {
+                        expansion_failed = true;
                         tracing::warn!(
                             "Failed to fetch tracks for playlist {}: {} - skipping",
                             &playlist.name,
@@ -1164,6 +1166,14 @@ pub async fn import_spotify_playlists(
             let _ = crate::commands::playlists::recompact_playlist_positions(
                 &state.db,
                 playlist_db_id.0,
+            )
+            .await;
+            // #398: mismo cierre que el brazo del sync, para que una importación
+            // manual de playlists también alimente las canónicas.
+            crate::services::playlist_canonical::finish_playlist_expansion(
+                &state.db,
+                playlist_db_id.0,
+                expansion_failed,
             )
             .await;
 
@@ -2090,9 +2100,23 @@ where
             let mut processed_in_playlist: u64 = 0;
             loop {
                 let t_tracks_api = std::time::Instant::now();
-                let tracks_page = client
+                let tracks_page = match client
                     .get_playlist_tracks(&playlist.id.to_string(), track_next_url.as_deref())
-                    .await?;
+                    .await
+                {
+                    Ok(page) => page,
+                    Err(error) => {
+                        // #398: la página falló tras los reintentos del cliente;
+                        // la fuente queda incompleta y no se fusiona.
+                        crate::services::playlist_canonical::finish_playlist_expansion(
+                            db,
+                            playlist_db_id,
+                            true,
+                        )
+                        .await;
+                        return Err(error);
+                    }
+                };
                 totals.api_fetch_ms += t_tracks_api.elapsed().as_millis() as u64;
                 if tracks_page.collection.is_empty() {
                     break;
@@ -2212,6 +2236,14 @@ where
             // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
             let _ =
                 crate::commands::playlists::recompact_playlist_positions(db, playlist_db_id).await;
+            // #398: el recorrido terminó; certifica el total declarado y
+            // recalcula la canónica del grupo.
+            crate::services::playlist_canonical::finish_playlist_expansion(
+                db,
+                playlist_db_id,
+                false,
+            )
+            .await;
         }
         playlist_next_url = page.next_href;
         if playlist_next_url.is_none() {
@@ -4441,6 +4473,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                 if let Some((p_id,)) = playlist_db_id {
                     let declared_total: i64 = pl.nb_tracks.unwrap_or(0).max(0) as i64;
                     let mut track_offset: i32 = 0;
+                    let mut expansion_failed = false;
                     loop {
                         let t_exp = std::time::Instant::now();
                         let (tracks, page_total) = match client
@@ -4449,6 +4482,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                         {
                             Ok(v) => v,
                             Err(e) => {
+                                expansion_failed = true;
                                 tracing::warn!(
                                     "[S189] Deezer playlist '{}' expansion incomplete at offset {}: {}",
                                     pl.title, track_offset, e
@@ -4563,6 +4597,14 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                     // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
                     let _ =
                         crate::commands::playlists::recompact_playlist_positions(db, p_id).await;
+                    // #398: certifica la expansión y recalcula el grupo canónico
+                    // al que pertenece la copia (solo si el recorrido terminó).
+                    crate::services::playlist_canonical::finish_playlist_expansion(
+                        db,
+                        p_id,
+                        expansion_failed,
+                    )
+                    .await;
                 }
             }
             match crate::services::import_pagination::next_offset(
@@ -5024,6 +5066,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                         if let Some((p_id,)) = playlist_db_id {
                             let mut track_offset: i32 = 0;
                             let spotify_page_limit: i32 = 100;
+                            let mut expansion_failed = false;
                             let mut playlist_provider_total: i64 = pl
                                 .tracks
                                 .as_ref()
@@ -5037,6 +5080,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                 {
                                     Ok(p) => p,
                                     Err(e) => {
+                                        expansion_failed = true;
                                         tracing::warn!(
                                             "[S198] Spotify playlist '{}' expansion incomplete at offset {}: {}",
                                             pl.name, track_offset, e
@@ -5204,6 +5248,13 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                             let _ =
                                 crate::commands::playlists::recompact_playlist_positions(db, p_id)
                                     .await;
+                            // #398: cierra la expansión y repara la canónica del grupo.
+                            crate::services::playlist_canonical::finish_playlist_expansion(
+                                db,
+                                p_id,
+                                expansion_failed,
+                            )
+                            .await;
                         }
                     }
                     offset += limit;
@@ -6396,6 +6447,15 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                             let _ =
                                 crate::commands::playlists::recompact_playlist_positions(db, p_id)
                                     .await;
+                            // #398: un fallo de página deja la fuente incompleta;
+                            // si el recorrido terminó, se certifica y se
+                            // recalcula el grupo canónico.
+                            crate::services::playlist_canonical::finish_playlist_expansion(
+                                db,
+                                p_id,
+                                playlist_fetch_error.is_some(),
+                            )
+                            .await;
                         }
 
                         if let Some(fetch_err) = playlist_fetch_error {
@@ -7584,6 +7644,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                         if let Some((p_id,)) = playlist_db_id {
                             let mut track_offset: i32 = 0;
                             let qobuz_page_limit: i32 = 200;
+                            let mut expansion_failed = false;
                             // Declared fallback when a page omits its total.
                             let mut playlist_provider_total: i64 =
                                 pl.tracks_count.map(|c| c.max(0) as i64).unwrap_or(0);
@@ -7600,6 +7661,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                 {
                                     Ok(d) => d,
                                     Err(e) => {
+                                        expansion_failed = true;
                                         tracing::warn!(
                                             "[S198] Qobuz playlist '{}' expansion incomplete at offset {}: {}",
                                             pl.name, track_offset, e
@@ -7826,6 +7888,13 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                             let _ =
                                 crate::commands::playlists::recompact_playlist_positions(db, p_id)
                                     .await;
+                            // #398: cierra la expansión de Qobuz y repara la canónica.
+                            crate::services::playlist_canonical::finish_playlist_expansion(
+                                db,
+                                p_id,
+                                expansion_failed,
+                            )
+                            .await;
                         }
                     }
                     offset += limit;
@@ -10180,5 +10249,202 @@ mod sync_arm_contracts {
 
         assert_eq!(transport.call_count(), 1);
         assert!(!is_marked(&db, account_id).await, "decisión 12");
+    }
+}
+
+#[cfg(test)]
+mod sync_playlist_canonical_wiring {
+    //! Cableado de la canonicalización de playlists en el sync real (#398).
+    //!
+    //! Caracteriza el hueco que dejó #74: `upsert_playlist_and_source` +
+    //! recompactación dejan `expansion_complete` pendiente y dos copias exactas
+    //! importadas por el sync NO se fusionan. El cierre explícito de la
+    //! expansión (lo que ahora llaman los importadores) es lo que certifica la
+    //! fuente y recalcula su grupo canónico.
+
+    use super::*;
+    use crate::services::playlist_canonical::{canonicalize_playlists, finish_playlist_expansion};
+
+    async fn fixture_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool SQLite en memoria");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migraciones aplicadas");
+        pool
+    }
+
+    async fn seed_account(pool: &sqlx::SqlitePool, service: &str, label: &str) -> i64 {
+        sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, display_name, email, is_active)
+             SELECT id, ?, ?, 1 FROM services WHERE name = ? RETURNING id",
+        )
+        .bind(label)
+        .bind(format!("{label}@example.test"))
+        .bind(service)
+        .fetch_one(pool)
+        .await
+        .expect("cuenta sembrada")
+    }
+
+    async fn seed_tracks(pool: &sqlx::SqlitePool, count: i64) -> Vec<i64> {
+        let mut ids = Vec::new();
+        for index in 0..count {
+            let id =
+                sqlx::query_scalar("INSERT INTO tracks (title, isrc) VALUES (?, ?) RETURNING id")
+                    .bind(format!("Sync canonical {index}"))
+                    .bind(format!("SYNC-CANON-{}-{index}", uuid::Uuid::new_v4()))
+                    .fetch_one(pool)
+                    .await
+                    .expect("track sembrada");
+            ids.push(id);
+        }
+        ids
+    }
+
+    /// Misma secuencia que un brazo del sync: upsert con el total declarado por
+    /// el proveedor, alta de `playlist_tracks` y recompactación de posiciones.
+    async fn import_like_sync(
+        pool: &sqlx::SqlitePool,
+        account_id: i64,
+        remote_id: &str,
+        name: &str,
+        declared: i32,
+        track_ids: &[i64],
+    ) -> i64 {
+        let playlist_id = upsert_playlist_and_source(
+            pool, account_id, remote_id, name, None, None, 1, 0, None, declared,
+        )
+        .await
+        .expect("upsert de sync")
+        .expect("playlist no tombstoneada");
+        for (position, track_id) in track_ids.iter().enumerate() {
+            sqlx::query(
+                "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
+            )
+            .bind(playlist_id)
+            .bind(track_id)
+            .bind(position as i32 + 1)
+            .execute(pool)
+            .await
+            .expect("pertenencia de sync");
+        }
+        crate::commands::playlists::recompact_playlist_positions(pool, playlist_id)
+            .await
+            .expect("recompactación de sync");
+        playlist_id
+    }
+
+    async fn canonical_id(pool: &sqlx::SqlitePool, playlist_id: i64) -> Option<i64> {
+        sqlx::query_scalar(
+            "SELECT canonical_id FROM playlist_canonical_members WHERE playlist_id = ?",
+        )
+        .bind(playlist_id)
+        .fetch_optional(pool)
+        .await
+        .expect("membresía canónica")
+    }
+
+    async fn expansion_state(pool: &sqlx::SqlitePool, playlist_id: i64) -> Option<i64> {
+        sqlx::query_scalar("SELECT expansion_complete FROM playlist_sources WHERE playlist_id = ?")
+            .bind(playlist_id)
+            .fetch_one(pool)
+            .await
+            .expect("estado de expansión")
+    }
+
+    #[tokio::test]
+    async fn sync_copies_stay_pending_and_unmerged_until_the_expansion_is_closed() {
+        let pool = fixture_pool().await;
+        let spotify = seed_account(&pool, "spotify", "Wiring Spotify").await;
+        let qobuz = seed_account(&pool, "qobuz", "Wiring Qobuz").await;
+        let tracks = seed_tracks(&pool, 2).await;
+        let first = import_like_sync(&pool, spotify, "wire-sp", "Wiring", 2, &tracks).await;
+        let second = import_like_sync(&pool, qobuz, "wire-qb", "wiring", 2, &tracks).await;
+
+        canonicalize_playlists(&pool).await.expect("pasada global");
+
+        assert_eq!(
+            canonical_id(&pool, first).await,
+            None,
+            "sin cierre explícito la fuente queda pendiente y no se fusiona"
+        );
+        assert_eq!(canonical_id(&pool, second).await, None);
+        assert_eq!(
+            expansion_state(&pool, first).await,
+            None,
+            "una fuente reencontrada por el sync no hereda completitud"
+        );
+    }
+
+    #[tokio::test]
+    async fn closing_the_expansion_merges_exact_sync_copies_across_services() {
+        let pool = fixture_pool().await;
+        let spotify = seed_account(&pool, "spotify", "Closed Spotify").await;
+        let qobuz = seed_account(&pool, "qobuz", "Closed Qobuz").await;
+        let tracks = seed_tracks(&pool, 2).await;
+        let first = import_like_sync(&pool, spotify, "closed-sp", "Closed", 2, &tracks).await;
+        let second = import_like_sync(&pool, qobuz, "closed-qb", "closed", 2, &tracks).await;
+
+        assert!(finish_playlist_expansion(&pool, first, false).await);
+        assert!(finish_playlist_expansion(&pool, second, false).await);
+
+        let first_canonical = canonical_id(&pool, first).await;
+        assert_eq!(first_canonical, canonical_id(&pool, second).await);
+        let sources: Vec<(i64,)> = sqlx::query_as(
+            "SELECT playlist_id FROM playlist_canonical_members WHERE canonical_id = ? ORDER BY playlist_id",
+        )
+        .bind(first_canonical.expect("canónica"))
+        .fetch_all(&pool)
+        .await
+        .expect("fuentes de la canónica");
+        assert_eq!(sources, vec![(first,), (second,)], "dos fuentes");
+        assert_eq!(expansion_state(&pool, first).await, Some(1));
+    }
+
+    #[tokio::test]
+    async fn declared_total_without_matching_occurrences_is_not_certified() {
+        let pool = fixture_pool().await;
+        let qobuz = seed_account(&pool, "qobuz", "Mismatch").await;
+        let tracks = seed_tracks(&pool, 2).await;
+        // El proveedor declara 3; el sync solo persistió 2 ocurrencias.
+        let playlist = import_like_sync(&pool, qobuz, "mismatch-qb", "Mismatch", 3, &tracks).await;
+
+        assert!(
+            !finish_playlist_expansion(&pool, playlist, false).await,
+            "un declarado que no cuadra no certifica la expansión"
+        );
+        assert_eq!(expansion_state(&pool, playlist).await, Some(0));
+        assert_eq!(canonical_id(&pool, playlist).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_failed_page_never_merges_with_its_complete_copy() {
+        let pool = fixture_pool().await;
+        let tidal = seed_account(&pool, "tidal", "Failed Tidal").await;
+        let spotify = seed_account(&pool, "spotify", "Failed Spotify").await;
+        let tracks = seed_tracks(&pool, 2).await;
+        let complete =
+            import_like_sync(&pool, tidal, "failed-tidal", "Failed page", 2, &tracks).await;
+        let broken = import_like_sync(&pool, spotify, "failed-sp", "failed page", 2, &tracks).await;
+
+        assert!(finish_playlist_expansion(&pool, complete, false).await);
+        assert!(!finish_playlist_expansion(&pool, broken, true).await);
+
+        assert_eq!(expansion_state(&pool, broken).await, Some(0));
+        assert_eq!(canonical_id(&pool, broken).await, None);
+        let complete_canonical = canonical_id(&pool, complete).await;
+        let sources: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM playlist_canonical_members WHERE canonical_id = ?",
+        )
+        .bind(complete_canonical.expect("canónica de la fuente completa"))
+        .fetch_one(&pool)
+        .await
+        .expect("fuentes");
+        assert_eq!(sources, 1, "la copia completa queda sola, sin fusionarse");
     }
 }

@@ -749,3 +749,122 @@ async fn test_playlists_reach_the_catalog_through_the_engine() {
         .expect("count membership");
     assert_eq!(membership_rows, 2, "membership is not duplicated");
 }
+
+/// #398: el brazo de playlists no solo importa: al terminar el recorrido cierra
+/// la expansión de cada fuente. Sin ese cierre la playlist queda pendiente y
+/// jamás participa en una canónica, aunque su contenido coincida exactamente
+/// con el de otra cuenta. Este test fija el cableado, no solo el núcleo.
+#[tokio::test]
+async fn test_playlists_sync_closes_expansion_for_canonicalization() {
+    let base = spawn_mock(Arc::new(|_method, target| {
+        if target.starts_with("/me/library/playlists_without_albums") {
+            (
+                200,
+                serde_json::json!({
+                    "collection": [{
+                        "playlist": {
+                            "id": 88,
+                            "title": "Canonical Wiring",
+                            "description": null,
+                            "track_count": 2,
+                            "duration": 400_000,
+                            "user": {"id": 42, "username": "curator"}
+                        }
+                    }],
+                    "next_href": null
+                })
+                .to_string(),
+            )
+        } else if target.starts_with("/playlists/88/tracks") {
+            (
+                200,
+                serde_json::json!({
+                    "collection": [
+                        {
+                            "created_at": "2024-01-01T00:00:00Z",
+                            "track": {
+                                "id": 4001,
+                                "title": "Alpha",
+                                "duration": 200000,
+                                "user": {"id": 9, "username": "uploader"},
+                                "publisher_metadata": {
+                                    "artist": "Artist A",
+                                    "album_title": "Album A",
+                                    "isrc": "FR-10S8-13-00004"
+                                }
+                            }
+                        },
+                        {
+                            "created_at": "2024-01-02T00:00:00Z",
+                            "track": {
+                                "id": 4002,
+                                "title": "Beta",
+                                "duration": 180000,
+                                "user": {"id": 9, "username": "uploader"},
+                                "publisher_metadata": {
+                                    "artist": "Artist A",
+                                    "album_title": "Album A",
+                                    "isrc": "FR-10S8-13-00005"
+                                }
+                            }
+                        }
+                    ],
+                    "next_href": null
+                })
+                .to_string(),
+            )
+        } else {
+            panic!("unexpected request: {}", target);
+        }
+    }))
+    .await;
+
+    let (pool, account_id, soundcloud_service_id) = setup_test_db().await;
+    let client = SoundCloudClient::new("token".into())
+        .with_user_id(7)
+        .with_api_base(base);
+
+    sync_soundcloud_playlists_with_engine(
+        &pool,
+        account_id,
+        soundcloud_service_id,
+        &client,
+        false,
+        |_res, _title, _processed, _page_finished| {},
+    )
+    .await
+    .expect("playlists sync");
+
+    let playlist_id: i64 = sqlx::query_scalar(
+        "SELECT playlist_id FROM playlist_sources \
+         WHERE account_id = ? AND service_playlist_id = '88'",
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("fuente de la playlist");
+
+    let expansion_complete: Option<i64> =
+        sqlx::query_scalar("SELECT expansion_complete FROM playlist_sources WHERE playlist_id = ?")
+            .bind(playlist_id)
+            .fetch_one(&pool)
+            .await
+            .expect("estado de expansión");
+    assert_eq!(
+        expansion_complete,
+        Some(1),
+        "el recorrido completo certifica el total declarado"
+    );
+
+    let canonical_id: Option<i64> = sqlx::query_scalar(
+        "SELECT canonical_id FROM playlist_canonical_members WHERE playlist_id = ?",
+    )
+    .bind(playlist_id)
+    .fetch_optional(&pool)
+    .await
+    .expect("membresía canónica");
+    assert!(
+        canonical_id.is_some(),
+        "el sync real debe cerrar la expansión para que la copia participe en su canónica"
+    );
+}
