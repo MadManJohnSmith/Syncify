@@ -1939,6 +1939,7 @@ impl QobuzClient {
                     let mut track_offset = 0i32;
                     let track_limit = 50i32;
                     let mut track_position = 0i32;
+                    let mut expansion_failed = false;
 
                     loop {
                         let detail = match self
@@ -1947,6 +1948,7 @@ impl QobuzClient {
                         {
                             Ok(d) => d,
                             Err(e) => {
+                                expansion_failed = true;
                                 tracing::warn!(
                                     "Qobuz: Failed to fetch tracks for playlist '{}': {}",
                                     playlist.name,
@@ -2070,6 +2072,15 @@ impl QobuzClient {
                             break;
                         }
                     }
+
+                    // #398: cierra la expansión para que la importación manual de
+                    // playlists también alimente las canónicas.
+                    crate::services::playlist_canonical::finish_playlist_expansion(
+                        db,
+                        pid,
+                        expansion_failed,
+                    )
+                    .await;
                 }
                 Ok(None) => {
                     // PL01 (#154): tombstone del usuario; el sync no la recrea.

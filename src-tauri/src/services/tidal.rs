@@ -1885,6 +1885,7 @@ impl TidalClient {
                 // 2. Import tracks for this playlist
                 let mut track_offset = 0;
                 let track_limit = 20; // Reduced for better UI/Console feedback during batch
+                let mut expansion_failed = false;
 
                 loop {
                     tracing::info!(
@@ -1904,6 +1905,7 @@ impl TidalClient {
                             if !crate::services::http_retry::is_transient_error_message(&e) {
                                 return Err(e);
                             }
+                            expansion_failed = true;
                             tracing::warn!(
                                 "[S187][tidal] legacy playlist '{}': page at offset {} failed after retry: {} — importadas {} de {} provider",
                                 playlist.title, track_offset, e, track_offset, playlist.track_count
@@ -2127,6 +2129,15 @@ impl TidalClient {
                         break;
                     }
                 }
+
+                // #398: cierra la expansión de esta playlist para que la
+                // importación manual también alimente las canónicas.
+                crate::services::playlist_canonical::finish_playlist_expansion(
+                    db,
+                    playlist_db_id,
+                    expansion_failed,
+                )
+                .await;
             }
 
             // S187: advance by the REAL page length; short pages mid-list continue.
