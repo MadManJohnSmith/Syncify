@@ -486,6 +486,91 @@ async fn apple_gaps_are_reported_as_partial() {
 }
 
 // ============================================================
+// Paridad con el importador legacy
+// ============================================================
+
+/// El job importa las mismas canciones que el importador antiguo
+/// (`AppleMusicClient::import_library`) contra el mismo proveedor simulado.
+#[tokio::test]
+async fn apple_job_matches_the_legacy_importer_for_songs() {
+    let _env = lock_env();
+    let server = spawn_mock(Arc::new(respond_songs)).await;
+    std::env::set_var(APPLE_MUSIC_BASE_URL_ENV, &server.base);
+
+    // Camino antiguo: el método del cliente que usaba el importador legacy.
+    let legacy_pool = setup_test_db().await;
+    let legacy_account = seed_apple_account(&legacy_pool, "Legacy Apple", "token").await;
+    let legacy_client = syncify_tauri_lib::services::AppleMusicClient::from_credentials(
+        "developer-token".to_string(),
+        "token".to_string(),
+        &serde_json::json!({ "storefront": "us" }),
+    );
+    let legacy_result = legacy_client
+        .import_library(&legacy_pool, legacy_account)
+        .await
+        .expect("the legacy importer completes");
+    assert_eq!(legacy_result.imported, 2);
+
+    // Camino nuevo: el brazo del job unificado.
+    let job_pool = setup_test_db().await;
+    let job_account = seed_apple_account(&job_pool, "Job Apple", "token").await;
+    perform_sync_service_with_emitter(
+        &job_pool,
+        "apple_music",
+        Some(job_account),
+        Some(songs_only_prefs()),
+        Option::<&ProgressCollector>::None,
+    )
+    .await
+    .expect("the job completes");
+    std::env::remove_var(APPLE_MUSIC_BASE_URL_ENV);
+
+    assert_eq!(
+        track_rows(&legacy_pool).await,
+        track_rows(&job_pool).await,
+        "same canonical tracks (title+ISRC)"
+    );
+    assert_eq!(
+        library_entry_count(&legacy_pool, legacy_account).await,
+        library_entry_count(&job_pool, job_account).await,
+        "same library entries"
+    );
+    assert_eq!(
+        apple_source_ids(&legacy_pool).await,
+        apple_source_ids(&job_pool).await,
+        "same Apple provider identity"
+    );
+}
+
+async fn track_rows(pool: &sqlx::SqlitePool) -> Vec<(String, Option<String>)> {
+    sqlx::query_as("SELECT title, isrc FROM tracks ORDER BY title, isrc")
+        .fetch_all(pool)
+        .await
+        .expect("track rows")
+}
+
+async fn library_entry_count(pool: &sqlx::SqlitePool, account_id: i64) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM library_entries WHERE account_id = ?")
+        .bind(account_id)
+        .fetch_one(pool)
+        .await
+        .expect("library entries")
+}
+
+async fn apple_source_ids(pool: &sqlx::SqlitePool) -> Vec<String> {
+    let mut ids: Vec<String> = sqlx::query_scalar(
+        "SELECT ts.service_track_id FROM track_sources ts \
+         JOIN services s ON s.id = ts.service_id WHERE LOWER(s.name) = 'apple_music' \
+         ORDER BY ts.service_track_id",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("apple source ids");
+    ids.sort();
+    ids
+}
+
+// ============================================================
 // Identidad de biblioteca vs identidad de catálogo
 // ============================================================
 
@@ -575,6 +660,15 @@ async fn apple_library_ids_are_not_stored_as_catalog_ids() {
     .await
     .expect("apple track sources");
     source_ids.sort();
+    assert!(
+        server
+            .requests
+            .lock()
+            .expect("mock requests")
+            .iter()
+            .all(|request| request.method == "GET"),
+        "a library import only reads"
+    );
     assert_eq!(
         source_ids,
         vec!["2000000001".to_string(), "2000000002".to_string()],

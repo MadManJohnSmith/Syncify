@@ -2349,7 +2349,56 @@ pub(crate) struct AppleMusicImportSummary {
     pub skipped: i64,
     pub albums_imported: i32,
     pub playlists_imported: i32,
+    /// Songs walked in the favorites collection (the tracks own the favorites
+    /// coverage axis, not the album/playlist expansions).
+    pub songs_seen: i64,
+    /// Provider totals declared once per collection; `None` when Apple omits
+    /// `meta.total`, which the coverage axis must show as unknown.
+    pub reported_favorites: Option<i64>,
+    pub reported_albums: Option<i64>,
+    pub reported_playlists: Option<i64>,
     pub warnings: Vec<String>,
+}
+
+/// Fases que el brazo `apple_music` reporta al mismo canal de progreso que el
+/// resto de proveedores (issue #68).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AppleMusicImportPhase {
+    FetchingFavoriteTracks,
+    ImportingFavoriteTracks,
+    FetchingFavoriteAlbums,
+    ImportingFavoriteAlbums,
+    FetchingPlaylists,
+    ImportingPlaylists,
+}
+
+impl AppleMusicImportPhase {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::FetchingFavoriteTracks => "fetching_favorite_tracks",
+            Self::ImportingFavoriteTracks => "importing_favorite_tracks",
+            Self::FetchingFavoriteAlbums => "fetching_favorite_albums",
+            Self::ImportingFavoriteAlbums => "importing_favorite_albums",
+            Self::FetchingPlaylists => "fetching_playlists",
+            Self::ImportingPlaylists => "importing_playlists",
+        }
+    }
+}
+
+/// Un paso de progreso del importador de Apple Music.
+#[derive(Debug, Clone)]
+pub(crate) struct AppleMusicImportProgress {
+    pub phase: AppleMusicImportPhase,
+    /// Ítems procesados en esta fase.
+    pub current: u64,
+    /// Total declarado por el proveedor para esta fase, si lo publica.
+    pub total: Option<u64>,
+    /// Pistas importadas en esta fase.
+    pub imported: u64,
+    /// Pistas procesadas acumuladas en todas las fases (el callback legacy
+    /// mostraba este acumulado, no el de una sola fase).
+    pub processed_total: u64,
+    pub message: String,
 }
 
 /// Resolve the canonical track row for an Apple Music library song.
@@ -2414,16 +2463,45 @@ async fn resolve_apple_music_track_id(
     Ok(track_id)
 }
 
-/// Import Apple Music library
-/// COMPARTIDO por el comando legacy y el brazo "apple_music" del motor unificado.
-/// Requiere music_user_token + developer_token en credenciales guardadas; el
-/// storefront se lee de las mismas credenciales (o de `APPLE_MUSIC_STOREFRONT`).
+/// Import Apple Music library — camino legacy del comando (`import_apple_music_library`
+/// e `import_service`): cuenta activa y todas las colecciones que Apple expone.
+/// El brazo `apple_music` del motor unificado llama al mismo núcleo con la
+/// cuenta elegida y las preferencias de la corrida (issue #68).
 async fn run_apple_music_library_import(
     db: &DbPool,
-    mut on_progress: impl FnMut(u64),
+    mut on_progress: impl FnMut(u64) + Send,
 ) -> Result<AppleMusicImportSummary, String> {
     let (account_id, creds) = load_service_credentials(db, "apple_music").await?;
+    let prefs = ImportPreferences {
+        service_name: "apple_music".to_string(),
+        favorite_tracks: true,
+        favorite_albums: true,
+        favorite_artists: false,
+        playlists: true,
+        purchases: false,
+        library_history: false,
+        include_appearances: false,
+        force_retry_unavailable: false,
+    };
+    run_apple_music_library_import_for_account(db, account_id, &creds, &prefs, |progress| {
+        on_progress(progress.processed_total)
+    })
+    .await
+}
 
+/// Import Apple Music library for an explicit account and the run's
+/// preferences.
+/// COMPARTIDO por el comando legacy y el brazo "apple_music" del motor unificado.
+/// Requiere music_user_token + developer_token en las credenciales dadas; el
+/// storefront se lee de las mismas credenciales (o de `APPLE_MUSIC_STOREFRONT`).
+/// Solo recorre las colecciones activadas: favoritos, álbumes y playlists.
+async fn run_apple_music_library_import_for_account(
+    db: &DbPool,
+    account_id: i64,
+    creds: &serde_json::Value,
+    prefs: &ImportPreferences,
+    mut on_progress: impl FnMut(AppleMusicImportProgress) + Send,
+) -> Result<AppleMusicImportSummary, String> {
     let music_user_token = creds["music_user_token"]
         .as_str()
         .ok_or("Missing music_user_token in stored credentials")?;
@@ -2445,141 +2523,177 @@ async fn run_apple_music_library_import(
     let mut summary = AppleMusicImportSummary::default();
     let mut imported = 0i64;
     let mut skipped = 0i64;
-
-    let mut offset = 0;
-    let limit = 100;
+    let mut processed_total = 0u64;
 
     let apple_service_id = client.get_service_id(db, "apple_music").await?;
     tracing::info!("Apple Music service_id={}", apple_service_id);
 
-    loop {
-        tracing::info!(
-            "Fetching Apple Music library songs: offset={}, limit={}",
-            offset,
-            limit
-        );
-        let page = match client.get_library_songs(offset, limit).await {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!("Apple Music API error: {}", e);
-                return Err(e);
+    if prefs.favorite_tracks {
+        on_progress(AppleMusicImportProgress {
+            phase: AppleMusicImportPhase::FetchingFavoriteTracks,
+            current: 0,
+            total: None,
+            imported: 0,
+            processed_total: 0,
+            message: "Importing Apple Music favorites...".to_string(),
+        });
+
+        let mut offset = 0;
+        let limit = 100;
+
+        loop {
+            tracing::info!(
+                "Fetching Apple Music library songs: offset={}, limit={}",
+                offset,
+                limit
+            );
+            let page = match client.get_library_songs(offset, limit).await {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!("Apple Music API error: {}", e);
+                    return Err(e);
+                }
+            };
+            if summary.reported_favorites.is_none() {
+                summary.reported_favorites = page.meta.as_ref().and_then(|m| m.total);
             }
-        };
+            let reported_total = summary.reported_favorites.map(|total| total.max(0) as u64);
 
-        let track_count = page.data.as_ref().map(|t| t.len()).unwrap_or(0);
-        tracing::info!(
-            "Apple Music API returned {} tracks, has_next: {}",
-            track_count,
-            page.next.is_some()
-        );
+            let track_count = page.data.as_ref().map(|t| t.len()).unwrap_or(0);
+            tracing::info!(
+                "Apple Music API returned {} tracks, has_next: {}",
+                track_count,
+                page.next.is_some()
+            );
 
-        let tracks = match page.data {
-            Some(t) if !t.is_empty() => t,
-            _ => {
-                tracing::info!("No more tracks, breaking loop");
-                break;
-            }
-        };
-
-        for track in &tracks {
-            if let Some(ref attrs) = track.attributes {
-                tracing::info!(
-                    "Processing track: {} by {} (ISRC: {:?})",
-                    &attrs.name,
-                    &attrs.artist_name,
-                    &attrs.isrc
-                );
-
-                // Get or create artist
-                let artist_id = client.get_or_create_artist(db, &attrs.artist_name).await?;
-                tracing::debug!("Artist ID for {}: {}", &attrs.artist_name, artist_id);
-
-                // Get or create album so the song keeps its album identity even
-                // before the album expansion pass runs.
-                if let Some(album_name) = attrs
-                    .album_name
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|n| !n.is_empty())
-                {
-                    let _ = client
-                        .get_or_create_album(db, album_name, artist_id)
-                        .await?;
+            let tracks = match page.data {
+                Some(t) if !t.is_empty() => t,
+                _ => {
+                    tracing::info!("No more tracks, breaking loop");
+                    break;
                 }
+            };
 
-                // Create/update track. Reuses the canonical row by ISRC when
-                // another service already owns that recording.
-                let duration_ms = attrs.duration_in_millis.unwrap_or(0);
-                let track_id = resolve_apple_music_track_id(
-                    db,
-                    &attrs.name,
-                    duration_ms,
-                    attrs.isrc.as_deref(),
-                )
-                .await?;
-                tracing::debug!("Resolved Apple Music track ID: {}", track_id);
-
-                if track_id == 0 {
-                    tracing::warn!("Skipping track with ID 0: {}", &attrs.name);
-                    skipped += 1;
-                    continue;
-                }
-
-                // Do not steal the Apple Music source slot from another edition
-                // that already owns it (neither by track nor by provider item).
-                let existing_apple_source: Option<String> = sqlx::query_scalar(
-                    "SELECT service_track_id FROM track_sources WHERE track_id = ? AND service_id = ?",
-                )
-                .bind(track_id)
-                .bind(apple_service_id)
-                .fetch_optional(db)
-                .await
-                .map_err(|e| format!("DB error: {e}"))?;
-                let source_slot_conflict = existing_apple_source
-                    .as_deref()
-                    .is_some_and(|item| item != track.id);
-
-                let existing_item_owner: Option<i64> = sqlx::query_scalar(
-                    "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ?",
-                )
-                .bind(apple_service_id)
-                .bind(&track.id)
-                .fetch_optional(db)
-                .await
-                .map_err(|e| format!("DB error: {e}"))?;
-                let item_owner_conflict =
-                    existing_item_owner.is_some_and(|owner| owner != track_id);
-
-                if source_slot_conflict {
-                    tracing::warn!(
-                        "Apple Music item {} resolves to track {} but that track already has Apple Music source {}; keeping the existing source",
-                        track.id,
-                        track_id,
-                        existing_apple_source.as_deref().unwrap_or("<unknown>")
+            for track in &tracks {
+                if let Some(ref attrs) = track.attributes {
+                    tracing::info!(
+                        "Processing track: {} by {} (ISRC: {:?})",
+                        &attrs.name,
+                        &attrs.artist_name,
+                        &attrs.isrc
                     );
-                }
-                if item_owner_conflict {
-                    tracing::warn!(
-                        "Apple Music item {} is already linked to track {:?}; not moving its source to track {}",
-                        track.id,
-                        existing_item_owner,
-                        track_id
+
+                    // Get or create artist
+                    let artist_id = client.get_or_create_artist(db, &attrs.artist_name).await?;
+                    tracing::debug!("Artist ID for {}: {}", &attrs.artist_name, artist_id);
+
+                    // Get or create album so the song keeps its album identity even
+                    // before the album expansion pass runs.
+                    if let Some(album_name) = attrs
+                        .album_name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|n| !n.is_empty())
+                    {
+                        let _ = client
+                            .get_or_create_album(db, album_name, artist_id)
+                            .await?;
+                    }
+
+                    // Create/update track. Reuses the canonical row by ISRC when
+                    // another service already owns that recording.
+                    let duration_ms = attrs.duration_in_millis.unwrap_or(0);
+                    let track_id = resolve_apple_music_track_id(
+                        db,
+                        &attrs.name,
+                        duration_ms,
+                        attrs.isrc.as_deref(),
+                    )
+                    .await?;
+                    tracing::debug!("Resolved Apple Music track ID: {}", track_id);
+
+                    if track_id == 0 {
+                        tracing::warn!("Skipping track with ID 0: {}", &attrs.name);
+                        skipped += 1;
+                        summary.songs_seen += 1;
+                        processed_total += 1;
+                        on_progress(AppleMusicImportProgress {
+                            phase: AppleMusicImportPhase::ImportingFavoriteTracks,
+                            current: summary.songs_seen.max(0) as u64,
+                            total: reported_total,
+                            imported: imported.max(0) as u64,
+                            processed_total,
+                            message: format!(
+                                "Importing Apple Music favorites ({}/{})",
+                                summary.songs_seen,
+                                reported_total
+                                    .map(|total| total.to_string())
+                                    .unwrap_or_else(|| "?".to_string())
+                            ),
+                        });
+                        continue;
+                    }
+
+                    // Do not steal the Apple Music source slot from another edition
+                    // that already owns it (neither by track nor by provider item).
+                    let existing_apple_source: Option<String> = sqlx::query_scalar(
+                        "SELECT service_track_id FROM track_sources WHERE track_id = ? AND service_id = ?",
+                    )
+                    .bind(track_id)
+                    .bind(apple_service_id)
+                    .fetch_optional(db)
+                    .await
+                    .map_err(|e| format!("DB error: {e}"))?;
+                    let source_track_id = track.source_track_id();
+                    let source_slot_conflict = existing_apple_source
+                        .as_deref()
+                        .is_some_and(|item| item != source_track_id);
+
+                    let existing_item_owner: Option<i64> = sqlx::query_scalar(
+                        "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ?",
+                    )
+                    .bind(apple_service_id)
+                    .bind(source_track_id)
+                    .fetch_optional(db)
+                    .await
+                    .map_err(|e| format!("DB error: {e}"))?;
+                    let item_owner_conflict =
+                        existing_item_owner.is_some_and(|owner| owner != track_id);
+
+                    if source_slot_conflict {
+                        tracing::warn!(
+                            "Apple Music item {} resolves to track {} but that track already has Apple Music source {}; keeping the existing source",
+                            track.id,
+                            track_id,
+                            existing_apple_source.as_deref().unwrap_or("<unknown>")
+                        );
+                    }
+                    if item_owner_conflict {
+                        tracing::warn!(
+                            "Apple Music item {} is already linked to track {:?}; not moving its source to track {}",
+                            track.id,
+                            existing_item_owner,
+                            track_id
+                        );
+                    }
+
+                    // Add track-artist relation
+                    let _ = crate::db::write_or_log(
+                        "run_apple_music_library_import",
+                        sqlx::query(
+                            "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+                        )
+                        .bind(track_id)
+                        .bind(artist_id)
+                        .execute(db),
+                    )
+                    .await;
+
+                    // Add to library entry (TASK-108: normalized added_at, heals 1970/NULL)
+                    let safe_added_at = crate::services::import_pagination::normalize_added_at(
+                        attrs.date_added.as_deref(),
                     );
-                }
-
-                // Add track-artist relation
-                let _ = crate::db::write_or_log("run_apple_music_library_import", sqlx::query(
-                    "INSERT OR IGNORE INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')"
-                )
-                .bind(track_id)
-                .bind(artist_id)
-                .execute(db)).await;
-
-                // Add to library entry (TASK-108: normalized added_at, heals 1970/NULL)
-                let safe_added_at = crate::services::import_pagination::normalize_added_at(
-                    attrs.date_added.as_deref(),
-                );
-                let result = sqlx::query(
+                    let result = sqlx::query(
                     r#"
                     INSERT INTO library_entries (account_id, track_id, is_liked, is_purchased, added_at)
                     VALUES (?, ?, 1, 0, ?)
@@ -2598,27 +2712,47 @@ async fn run_apple_music_library_import(
                 .await
                 .map_err(|e| format!("DB error: {}", e))?;
 
-                if result.rows_affected() > 0 {
-                    imported += 1;
-                    tracing::info!("Imported track: {} (ID: {})", &attrs.name, track_id);
-                } else {
-                    skipped += 1;
-                    tracing::info!(
-                        "Track already in library: {} (ID: {})",
-                        &attrs.name,
-                        track_id
-                    );
-                }
+                    if result.rows_affected() > 0 {
+                        imported += 1;
+                        tracing::info!("Imported track: {} (ID: {})", &attrs.name, track_id);
+                    } else {
+                        skipped += 1;
+                        tracing::info!(
+                            "Track already in library: {} (ID: {})",
+                            &attrs.name,
+                            track_id
+                        );
+                    }
 
-                // Add track source, unless another edition already owns this
-                // Apple Music item or this track's Apple Music slot.
-                if !source_slot_conflict && !item_owner_conflict {
-                    if let Err(e) = sqlx::query(
+                    // L00 (#97): la pertenencia conserva el id de BIBLIOTECA
+                    // (`track.id`); el id de catálogo es la identidad descargable
+                    // y vive en `track_sources`, no aquí.
+                    let _ = crate::db::write_or_log(
+                    "run_apple_music_library_import",
+                    crate::services::library_membership::record_membership(
+                        db,
+                        &crate::services::library_membership::MembershipWrite {
+                            account_id,
+                            track_id,
+                            collection:
+                                crate::services::library_membership::MembershipCollection::Favorite,
+                            collection_id: None,
+                            provider_item: Some(track.id.clone()),
+                            added_at: attrs.date_added.clone(),
+                        },
+                    ),
+                )
+                .await;
+
+                    // Add track source, unless another edition already owns this
+                    // Apple Music item or this track's Apple Music slot.
+                    if !source_slot_conflict && !item_owner_conflict {
+                        if let Err(e) = sqlx::query(
                         "INSERT OR REPLACE INTO track_sources (track_id, service_id, service_track_id, format, bit_depth, sample_rate, bitrate, quality_score, available) VALUES (?, ?, ?, 'AAC', 16, 44100, 256, NULL, 1)"
                     )
                     .bind(track_id)
                     .bind(apple_service_id)
-                    .bind(&track.id)
+                    .bind(source_track_id)
                     .execute(db)
                     .await
                     {
@@ -2628,60 +2762,160 @@ async fn run_apple_music_library_import(
                             e
                         );
                     }
+                    }
+
+                    summary.songs_seen += 1;
+                    processed_total += 1;
+                    on_progress(AppleMusicImportProgress {
+                        phase: AppleMusicImportPhase::ImportingFavoriteTracks,
+                        current: summary.songs_seen.max(0) as u64,
+                        total: reported_total,
+                        imported: imported.max(0) as u64,
+                        processed_total,
+                        message: format!(
+                            "Importing Apple Music favorites ({}/{})",
+                            summary.songs_seen,
+                            reported_total
+                                .map(|total| total.to_string())
+                                .unwrap_or_else(|| "?".to_string())
+                        ),
+                    });
+                } else {
+                    tracing::warn!("Track missing attributes: {:?}", track.id);
                 }
-            } else {
-                tracing::warn!("Track missing attributes: {:?}", track.id);
+            }
+
+            let next_decision = crate::services::import_pagination::next_apple_music_offset(
+                offset,
+                tracks.len() as i32,
+                limit,
+                page.next.as_deref(),
+                page.meta.as_ref().and_then(|m| m.total),
+            );
+
+            match next_decision {
+                Some(next_off) => offset = next_off,
+                None => break,
             }
         }
+    }
 
-        // Update progress using helper
-        on_progress((imported + skipped) as u64);
-
-        let next_decision = crate::services::import_pagination::next_apple_music_offset(
-            offset,
-            tracks.len() as i32,
-            limit,
-            page.next.as_deref(),
-            page.meta.as_ref().and_then(|m| m.total),
-        );
-
-        match next_decision {
-            Some(next_off) => offset = next_off,
-            None => break,
+    // Also import user's library albums (TASK-108) when the collection is
+    // activated. A failure here is reported, never dropped: the songs are
+    // already in, the albums simply did not land.
+    if prefs.favorite_albums {
+        on_progress(AppleMusicImportProgress {
+            phase: AppleMusicImportPhase::FetchingFavoriteAlbums,
+            current: 0,
+            total: None,
+            imported: 0,
+            processed_total,
+            message: "Importing Apple Music favorite albums...".to_string(),
+        });
+        let processed_before = processed_total;
+        match client
+            .import_albums_with_progress(db, account_id, |progress| {
+                on_progress(AppleMusicImportProgress {
+                    phase: AppleMusicImportPhase::ImportingFavoriteAlbums,
+                    current: progress.entities_seen,
+                    total: progress.reported_total.map(|total| total.max(0) as u64),
+                    imported: progress.tracks_imported,
+                    processed_total: processed_before + progress.tracks_imported,
+                    message: format!(
+                        "Importing Apple Music favorite albums ({}/{})",
+                        progress.entities_seen,
+                        progress
+                            .reported_total
+                            .map(|total| total.to_string())
+                            .unwrap_or_else(|| "?".to_string())
+                    ),
+                });
+            })
+            .await
+        {
+            Ok(albums_res) => {
+                imported += albums_res.imported as i64;
+                skipped += albums_res.skipped as i64;
+                summary.albums_imported = albums_res.entities;
+                summary.reported_albums = albums_res.reported_total;
+                processed_total = (imported + skipped).max(0) as u64;
+                on_progress(AppleMusicImportProgress {
+                    phase: AppleMusicImportPhase::ImportingFavoriteAlbums,
+                    current: summary.albums_imported.max(0) as u64,
+                    total: summary.reported_albums.map(|total| total.max(0) as u64),
+                    imported: imported.max(0) as u64,
+                    processed_total,
+                    message: format!(
+                        "Imported Apple Music favorite albums ({})",
+                        summary.albums_imported
+                    ),
+                });
+            }
+            Err(album_err) => {
+                tracing::error!("Apple Music album import failed: {}", album_err);
+                summary
+                    .warnings
+                    .push(format!("Apple Music albums not imported: {}", album_err));
+            }
         }
     }
 
-    // Also import user's library albums (TASK-108). A failure here is reported,
-    // never dropped: the songs are already in, the albums simply did not land.
-    match client.import_albums(db, account_id).await {
-        Ok(albums_res) => {
-            imported += albums_res.imported as i64;
-            skipped += albums_res.skipped as i64;
-            summary.albums_imported = albums_res.entities;
-            on_progress((imported + skipped) as u64);
-        }
-        Err(album_err) => {
-            tracing::error!("Apple Music album import failed: {}", album_err);
-            summary
-                .warnings
-                .push(format!("Apple Music albums not imported: {}", album_err));
-        }
-    }
-
-    // Also import user's library playlists (TASK-108)
-    match client.import_playlists(db, account_id).await {
-        Ok(playlists_res) => {
-            imported += playlists_res.imported as i64;
-            skipped += playlists_res.skipped as i64;
-            summary.playlists_imported = playlists_res.entities;
-            on_progress((imported + skipped) as u64);
-        }
-        Err(playlists_err) => {
-            tracing::error!("Apple Music playlist import failed: {}", playlists_err);
-            summary.warnings.push(format!(
-                "Apple Music playlists not imported: {}",
-                playlists_err
-            ));
+    // Also import user's library playlists (TASK-108) when activated.
+    if prefs.playlists {
+        on_progress(AppleMusicImportProgress {
+            phase: AppleMusicImportPhase::FetchingPlaylists,
+            current: 0,
+            total: None,
+            imported: 0,
+            processed_total,
+            message: "Importing Apple Music playlists...".to_string(),
+        });
+        let processed_before = processed_total;
+        match client
+            .import_playlists_with_progress(db, account_id, |progress| {
+                on_progress(AppleMusicImportProgress {
+                    phase: AppleMusicImportPhase::ImportingPlaylists,
+                    current: progress.entities_seen,
+                    total: progress.reported_total.map(|total| total.max(0) as u64),
+                    imported: progress.tracks_imported,
+                    processed_total: processed_before + progress.tracks_imported,
+                    message: format!(
+                        "Importing Apple Music playlists ({}/{})",
+                        progress.entities_seen,
+                        progress
+                            .reported_total
+                            .map(|total| total.to_string())
+                            .unwrap_or_else(|| "?".to_string())
+                    ),
+                });
+            })
+            .await
+        {
+            Ok(playlists_res) => {
+                imported += playlists_res.imported as i64;
+                skipped += playlists_res.skipped as i64;
+                summary.playlists_imported = playlists_res.entities;
+                summary.reported_playlists = playlists_res.reported_total;
+                processed_total = (imported + skipped).max(0) as u64;
+                on_progress(AppleMusicImportProgress {
+                    phase: AppleMusicImportPhase::ImportingPlaylists,
+                    current: summary.playlists_imported.max(0) as u64,
+                    total: summary.reported_playlists.map(|total| total.max(0) as u64),
+                    imported: imported.max(0) as u64,
+                    processed_total,
+                    message: format!(
+                        "Imported Apple Music playlists ({})",
+                        summary.playlists_imported
+                    ),
+                });
+            }
+            Err(playlists_err) => {
+                tracing::error!("Apple Music playlist import failed: {}", playlists_err);
+                summary.warnings.push(format!(
+                    "Apple Music playlists not imported: {}",
+                    playlists_err
+                ));
+            }
         }
     }
 
@@ -8055,22 +8289,44 @@ pub(crate) async fn perform_sync_service_with_emitter_inner<E: SyncProgressEmitt
             .await?;
         }
         "apple_music" => {
-            // F3-2: brazo propio del motor unificado. Delega en el importador de
-            // biblioteca, que persiste canciones, álbumes y playlists con ISRC
-            // (identidad canónica) y `track_sources` AAC. Requiere ambos tokens
-            // en credenciales; el storefront sale de las mismas credenciales.
-            load_service_credentials(db, "apple_music")
-                .await
-                .map_err(|e| format!("RequiresAuth: {}", e))?;
-            match run_apple_music_library_import(db, |_| {}).await {
+            // F3-2/#68: brazo propio del motor unificado. Comparte núcleo con
+            // el comando legacy, pero corre con la cuenta elegida (`creds` ya
+            // descifradas por el orquestador) y las colecciones activadas.
+            // Requiere ambos tokens en credenciales; el storefront sale de las
+            // mismas credenciales.
+            match run_apple_music_library_import_for_account(
+                db,
+                account_id,
+                &creds,
+                &prefs,
+                |progress| {
+                    emit(SyncProgressEvent::running(
+                        &service_normalized,
+                        Some(account_id),
+                        progress.phase.as_str(),
+                        progress.current,
+                        progress.total,
+                        &progress.message,
+                        progress.imported,
+                        progress.processed_total,
+                    ));
+                },
+            )
+            .await
+            {
                 Ok(summary) => {
-                    arm.imported_tracks_total = summary.imported.max(0) as u64;
-                    arm.skipped_tracks_total = summary.skipped.max(0) as u64;
-                    arm.tracks_processed = (summary.imported + summary.skipped).max(0) as u64;
-                    arm.favorite_tracks_total = (summary.imported + summary.skipped).max(0) as u64;
+                    arm.imported_tracks_total += summary.imported.max(0) as u64;
+                    arm.skipped_tracks_total += summary.skipped.max(0) as u64;
+                    arm.tracks_processed += (summary.imported + summary.skipped).max(0) as u64;
+                    arm.favorite_tracks_total += summary.songs_seen.max(0) as u64;
                     arm.favorite_albums_total += summary.albums_imported.max(0) as u64;
                     arm.playlists_total += summary.playlists_imported.max(0) as u64;
-                    arm.warnings.extend(summary.warnings);
+                    arm.reported_favorites = summary.reported_favorites;
+                    arm.reported_albums = summary.reported_albums;
+                    arm.reported_playlists = summary.reported_playlists;
+                    // Un hueco de colección (álbumes o playlists que no
+                    // entraron) es parcial, no un aviso verde.
+                    arm.errors.extend(summary.warnings);
                 }
                 Err(am_err) => {
                     arm.errors.push(format!("Apple Music library: {}", am_err));
