@@ -90,8 +90,12 @@ le da la vuelta: convierte "tu" catálogo en *tu* catálogo.
 - **Metadatos de nivel profesional automáticos**: artistas múltiples,
   colaboraciones y compilaciones bien resueltas, países, BPM, tonalidad y
   energía — desde MusicBrainz, AcoustID y Last.fm.
-- **Letras sincronizadas como `.lrc`**, resueltas con una cascada de 16
-  estrategias sobre 10 proveedores.
+- **Letras sincronizadas como `.lrc`**, resueltas con un catálogo de 12 fuentes
+  sobre 10 redes que el usuario puede reordenar, con mejora secuencial —un
+  acierto de línea no oculta uno de palabra más abajo— y karaoke palabra a
+  palabra en el reproductor a pantalla completa cuando la fuente trae timings
+  de palabra. La evidencia de endpoints en vivo está en la
+  [matriz de letras](docs/LYRICS_PROVIDER_MATRIX.md).
 - **Portadas en alta resolución** (incluidas animadas) guardadas junto a tu
   música, organizadas en carpetas por artista y álbum bajo `~/Music/Syncify`.
 - **Manténla sana**: deduplicación y fusión, auditorías de identidad del
@@ -287,9 +291,15 @@ verificación—:
 - **La sesión gráfica.** El diseño de la UI, la reproducción de audio, la
   bandeja, MPRIS/D-Bus y el comportamiento en el gestor de ventanas no se han
   ejercitado en un escritorio real (#149).
-- **La red en vivo.** Ningún login de arranque (#63), ninguna descarga real
-  (#127) ni enriquecimiento o resolución de letras contra servicios reales
-  (#178).
+- **La red en vivo.** Ningún login de arranque (#63) y ninguna descarga real
+  (#127). Tampoco se ha ejercitado el enriquecimiento de metadatos contra
+  servicios reales (MusicBrainz, Last.fm, AcoustID).
+- **Endpoints de letras.** El catálogo de 12 fuentes se re-verificó contra
+  endpoints en vivo el 2026-11-14, sin credenciales (ver la
+  [matriz de letras](docs/LYRICS_PROVIDER_MATRIX.md) §4). Las fuentes que
+  dependen de credenciales y el endpoint nativo de letras de Tidal siguen sin
+  confirmar (#182), y la release no ejercitó la resolución in-app contra
+  servicios reales.
 - **Tests de Rust ignorados.** Los 14 tests ignorados —fuera de CI porque
   necesitan red real, credenciales reales, una base SQLite de ejecución,
   almacenamiento físico o medida de tiempo real— no se han ejercitado.
