@@ -232,8 +232,6 @@ async fn retry_resumes_pending_rows_left_by_cancellation() {
 /// job leaves `running` with every row already terminal. Retry has nothing to
 /// reset; #363 forbids a `running` job without a runner, so Re-run must drive
 /// that job to its terminal state instead of leaving it running forever.
-///
-/// Characterization of the current behaviour: the job is not touched.
 #[tokio::test]
 async fn retry_closes_a_running_job_whose_items_are_all_terminal() {
     let pool = setup_test_db().await;
@@ -277,8 +275,8 @@ async fn retry_closes_a_running_job_whose_items_are_all_terminal() {
     .unwrap();
     assert_eq!(
         job,
-        ("running".to_string(), 1),
-        "current gap: the all-terminal running job is left without a runner"
+        ("completed".to_string(), 1),
+        "retry must close a running job whose rows are all terminal"
     );
 }
 
