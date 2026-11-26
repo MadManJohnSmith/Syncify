@@ -30,7 +30,6 @@ from services.service_base import (
     DownloadQuality, DownloadStatus
 )
 from services.metadata_enrichment import enrich_metadata, EnrichedMetadata
-from services.lyrics_service import LyricsService
 
 
 class QobuzService(MusicService):
@@ -1271,8 +1270,7 @@ class QobuzService(MusicService):
         quality: DownloadQuality = DownloadQuality.LOSSLESS_CD,
         audio_config: Optional['AudioQualityConfig'] = None,
         metadata_config: Optional['MetadataTagConfig'] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
-        apple_music_token: Optional[str] = None
+        progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> DownloadResult:
         """
         Download a track from Qobuz.
@@ -1417,43 +1415,7 @@ class QobuzService(MusicService):
                 import sys
                 print(f"[METADATA ERROR] Failed to embed metadata for: {output_path} - {last_embed_error}", file=sys.stderr)
             
-            # Step 6: Fetch and save synced lyrics (optional)
-            try:
-                lyrics_service = LyricsService(
-                    apple_music_token=apple_music_token,
-                    verbose=self.verbose
-                )
-                duration_seconds = int(metadata.duration_ms / 1000) if metadata.duration_ms else None
-                
-                lyrics_result = await lyrics_service.get_lyrics(
-                    track_name=metadata.title,
-                    artist_name=metadata.artists[0] if metadata.artists else "",
-                    album_name=metadata.album,
-                    duration_seconds=duration_seconds
-                )
-                
-                # Save synced lyrics as .lrc file
-                if lyrics_result.synced_lyrics:
-                    lrc_path = LyricsService.save_lrc_file(lyrics_result.synced_lyrics, output_path)
-                    if lrc_path:
-                        source_info = f" (from {lyrics_result.source})"
-                        word_info = " [word-synced]" if lyrics_result.word_synced else ""
-                        self._log(f"  ✓ Saved synced lyrics: {Path(lrc_path).name}{source_info}{word_info}")
-                # Fallback to plain lyrics as .txt if no synced available
-                elif lyrics_result.plain_lyrics:
-                    txt_path = LyricsService.save_txt_file(lyrics_result.plain_lyrics, output_path)
-                    if txt_path:
-                        self._log(f"  ✓ Saved plain lyrics: {Path(txt_path).name} (from {lyrics_result.source})")
-                elif lyrics_result.instrumental:
-                    self._log(f"  ℹ Track is instrumental (no lyrics)")
-                else:
-                    self._log(f"  ℹ No lyrics found")
-                
-                await lyrics_service.close()
-            except Exception as e:
-                self._log(f"  Warning: Could not fetch lyrics: {e}", "warning")
-            
-            # Step 7: Calculate file hash for duplicate detection
+            # Step 6: Calculate file hash for duplicate detection
             file_hash = None
             try:
                 with open(output_path, 'rb') as f:

@@ -5,6 +5,8 @@ pub mod amazon;
 pub mod audio_inspector;
 // Q4 (#87): pausa compartida por proveedor para tormentas de transporte.
 pub mod breaker;
+// DLX-05 (#46): caché acotada de portada estática con single-flight.
+pub mod cover_art;
 // D04 (#116): evidencia de entrega por cuenta (granted/denied/stale).
 pub mod entitlements;
 pub mod http_client;

@@ -846,12 +846,27 @@ fn main() {
             // the persistent journal and download_queue.
             // ═══════════════════════════════════════════════════════
             let db_for_recovery = db_pool_clone.clone();
+            let recovery_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = crate::services::operation_recovery::reconcile_startup_operations(&db_for_recovery, None).await {
                     tracing::warn!("Post-crash startup reconciliation encountered an error: {}", e);
                 }
                 if let Err(e) = crate::services::operation_recovery::cleanup_staging_and_recover_stuck_queue(&db_for_recovery, None).await {
                     tracing::warn!("Startup staging cleanup and queue recovery encountered an error: {}", e);
+                }
+                match crate::services::operation_recovery::recover_interrupted_migrations(&db_for_recovery).await {
+                    Ok(job_ids) => {
+                        for job_id in job_ids {
+                            let db = db_for_recovery.clone();
+                            let app = recovery_handle.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = crate::commands::migration::resume_migration_job(&app, &db, &job_id).await {
+                                    tracing::warn!("Failed to resume migration {} after restart: {}", job_id, e);
+                                }
+                            });
+                        }
+                    }
+                    Err(e) => tracing::warn!("Failed to list interrupted migration jobs: {}", e),
                 }
             });
 

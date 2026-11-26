@@ -481,6 +481,7 @@ impl DownloadOrchestrator {
     async fn tag_mp3_delivery(
         request: &DownloadRequest,
         res: DownloadResult,
+        cancel_token: Option<&CancellationToken>,
     ) -> Result<DownloadResult> {
         let path = std::path::PathBuf::from(&res.file_path);
         if !crate::download::id3_writer::is_mp3_file(&path) {
@@ -489,29 +490,46 @@ impl DownloadOrchestrator {
         let mut tags = crate::download::id3_writer::Mp3Tags::from_download_request(request);
         // La portada no viaja en `DownloadRequest`, solo su URL: se descarga
         // aquí, en el único enganche de entrega MP3. Un fallo de red no tumba
-        // la entrega; solo deja el APIC sin escribir.
+        // la entrega; solo deja el APIC sin escribir. La cancelación sí aborta.
         if let Some(url) = request
             .cover_url
             .as_deref()
             .map(str::trim)
             .filter(|url| !url.is_empty())
         {
-            match reqwest::get(url).await {
-                Ok(response) => match response.bytes().await {
-                    Ok(bytes) => {
-                        match crate::download::id3_writer::Mp3Cover::from_bytes(bytes.to_vec()) {
-                            Ok(cover) => tags = tags.with_cover(cover),
-                            Err(error) => {
-                                warn!(url, %error, "[D16] portada no válida; se omite el APIC")
-                            }
+            let client = crate::download::http_client::shared_http_client();
+            let cover_identity = request.service_name.as_deref().and_then(|provider| {
+                let account_id = request
+                    .resolution_plan
+                    .as_ref()
+                    .and_then(|plan| plan.primary())
+                    .and_then(|candidate| candidate.account.as_ref())
+                    .map(|account| account.account_id)?;
+                request.service_album_id.as_deref().and_then(|edition_id| {
+                    crate::download::cover_art::CoverIdentity::new(provider, account_id, edition_id)
+                })
+            });
+            match crate::download::cover_art::fetch_cover(
+                client,
+                url,
+                cover_identity.as_ref(),
+                cancel_token,
+            )
+            .await
+            {
+                Ok(cover) => {
+                    match crate::download::id3_writer::Mp3Cover::from_bytes(cover.bytes.to_vec()) {
+                        Ok(cover) => tags = tags.with_cover(cover),
+                        Err(error) => {
+                            warn!(url, %error, "[D16] portada no válida; se omite el APIC")
                         }
                     }
-                    Err(error) => {
-                        warn!(url, %error, "[D16] no se pudo leer la portada; se omite el APIC")
-                    }
-                },
+                }
+                Err(crate::download::cover_art::CoverError::Cancelled) => {
+                    return Err(anyhow!("Download cancelled by user"));
+                }
                 Err(error) => {
-                    warn!(url, %error, "[D16] no se pudo descargar la portada; se omite el APIC")
+                    warn!(url, %error, "[D16] no se pudo obtener la portada; se omite el APIC")
                 }
             }
         }
@@ -1622,7 +1640,7 @@ impl DownloadOrchestrator {
         // orquestador. El gate de D05 relee esos tags después. Un fallo de
         // escritura o relectura restaura el original y falla la descarga.
         let result = match result {
-            Ok(res) => Self::tag_mp3_delivery(request, res).await,
+            Ok(res) => Self::tag_mp3_delivery(request, res, cancel_token).await,
             Err(error) => Err(error),
         };
 
@@ -5562,7 +5580,7 @@ mod tests {
             ..DownloadResult::default()
         };
 
-        DownloadOrchestrator::tag_mp3_delivery(&request, delivered)
+        DownloadOrchestrator::tag_mp3_delivery(&request, delivered, None)
             .await
             .expect("el paso de entrega etiqueta el MP3");
 
@@ -5585,9 +5603,37 @@ mod tests {
             file_path: flac.to_string_lossy().into_owned(),
             ..DownloadResult::default()
         };
-        DownloadOrchestrator::tag_mp3_delivery(&request, delivered)
+        DownloadOrchestrator::tag_mp3_delivery(&request, delivered, None)
             .await
             .expect("FLAC no se toca");
         assert_eq!(std::fs::read(&flac).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn d16_cover_cancellation_aborts_delivery_without_tagging() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mp3 = dir.path().join("cancelled.mp3");
+        let original = [0xFF, 0xFB, 0x90, 0x64, 0, 0, 0, 0];
+        std::fs::write(&mp3, original).unwrap();
+        let request = DownloadRequest {
+            track_name: "Tema".to_string(),
+            artist_name: "Artista".to_string(),
+            album_name: "Álbum".to_string(),
+            cover_url: Some("http://127.0.0.1:9/cover.jpg".to_string()),
+            ..DownloadRequest::default()
+        };
+        let delivered = DownloadResult {
+            file_path: mp3.to_string_lossy().into_owned(),
+            ..DownloadResult::default()
+        };
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let error = DownloadOrchestrator::tag_mp3_delivery(&request, delivered, Some(&token))
+            .await
+            .expect_err("cancellation must abort MP3 delivery");
+
+        assert!(error.to_string().contains("Download cancelled by user"));
+        assert_eq!(std::fs::read(&mp3).unwrap(), original);
     }
 }

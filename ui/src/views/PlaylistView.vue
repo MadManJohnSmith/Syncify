@@ -84,8 +84,9 @@
                 draggable="true"
                 @dragstart="onDragStart($event, playlist)"
               >
-                <TrackCover
-                  :src="playlist.image_url"
+                <PlaylistCover
+                  :src="playlist.coverImageUrl"
+                  :tiles="playlist.mosaicTiles"
                   :item-id="playlist.id"
                   :alt="playlist.name"
                   size-class="w-10 h-10"
@@ -116,7 +117,7 @@
             class="w-full px-4 py-2 flex items-center justify-between text-xs font-semibold text-gray-500 uppercase tracking-wide hover:bg-gray-100 dark:hover:bg-surface-highlight"
           >
             <span class="flex items-center gap-2">
-              <span :class="['w-3 h-3 rounded-full', service.color]"></span>
+              <span :class="['w-3 h-3 rounded-full', getServiceColor(service.id)]"></span>
               Imported from {{ service.name }} ({{ service.playlists.length }})
             </span>
             <span class="material-symbols-outlined text-sm">{{ expandedCategories[service.id] ? 'expand_less' : 'expand_more' }}</span>
@@ -131,8 +132,9 @@
                 @click="selectPlaylist(playlist)"
                 @contextmenu.prevent="openPlaylistMenu($event, playlist)"
               >
-                <TrackCover
-                  :src="playlist.coverArt || playlist.image_url"
+                <PlaylistCover
+                  :src="playlist.coverImageUrl"
+                  :tiles="playlist.mosaicTiles"
                   :item-id="playlist.id"
                   :alt="playlist.name"
                   size-class="w-10 h-10"
@@ -142,7 +144,7 @@
                 <div class="flex-1 min-w-0">
                   <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ playlist.name }}</p>
                   <div class="flex items-center gap-2 text-xs text-gray-500">
-                    <span>{{ playlist.track_count ?? playlist.trackCount }} tracks</span>
+                    <span>{{ playlist.track_count }} tracks</span>
                     <span v-if="playlist.last_synced" class="flex items-center gap-1 text-green-500">
                       <span class="material-symbols-outlined text-xs">sync</span>
                       Synced
@@ -184,12 +186,17 @@
                 @click="selectPlaylist(playlist)"
                 @contextmenu.prevent="openPlaylistMenu($event, playlist)"
               >
-                <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shrink-0">
-                  <span class="material-symbols-outlined text-white text-lg">{{ playlist.icon || 'auto_awesome' }}</span>
-                </div>
+                <PlaylistCover
+                  :tiles="playlist.mosaicTiles"
+                  :item-id="playlist.id"
+                  :alt="playlist.name"
+                  size-class="w-10 h-10"
+                  rounded="rounded-lg"
+                  icon="auto_awesome"
+                />
                 <div class="flex-1 min-w-0">
                   <p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ playlist.name }}</p>
-                  <p class="text-xs text-gray-500">{{ playlist.trackCount }} tracks · Auto-updates</p>
+                  <p class="text-xs text-gray-500">{{ playlist.track_count }} tracks · Auto-updates</p>
                 </div>
                 <div class="opacity-60 group-hover:opacity-100 transition-opacity flex items-center gap-1">
                   <button @click.stop="playPlaylist(playlist)" class="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded">
@@ -227,8 +234,9 @@
         <div class="flex gap-6">
           <!-- Cover Art -->
           <div class="relative group shrink-0">
-            <TrackCover
-              :src="selectedPlaylist.coverArt || selectedPlaylist.image_url || null"
+            <PlaylistCover
+              :src="playlistPresentation[selectedPlaylist.id]?.providerImageUrl ?? null"
+              :tiles="playlistPresentation[selectedPlaylist.id]?.tiles ?? []"
               :item-id="selectedPlaylist.id"
               :alt="selectedPlaylist.name"
               size-class="w-32 h-32 shadow-lg"
@@ -243,7 +251,7 @@
             <div class="flex items-start justify-between">
               <div>
                 <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">
-                  {{ selectedPlaylist.smart ? 'Smart Playlist' : selectedPlaylist.service ? `Imported from ${selectedPlaylist.service}` : 'Playlist' }}
+                  {{ selectedPlaylist.smart ? 'Smart Playlist' : selectedPlaylistServiceName ? `Imported from ${selectedPlaylistServiceName}` : 'Playlist' }}
                 </p>
                 <h1 
                   v-if="!isEditingName"
@@ -774,6 +782,16 @@ import { useToast, confirm, prompt } from '@/composables/useToast'
 import { usePlayer } from '@/composables/usePlayer'
 import { useVirtualWindow } from '@/composables/useVirtualWindow'
 import TrackCover from '@/components/TrackCover.vue'
+import PlaylistCover from '@/components/PlaylistCover.vue'
+import {
+    aggregatePlaylists,
+    formatPlaylistServiceName,
+    getPlaylistServiceKey,
+    reconcilePlaylistMosaic,
+    type PlaylistMosaicCache,
+    type PlaylistCoverTrack,
+    type PlaylistPresentation,
+} from '@/utils/playlistCatalog'
 
 /** Synthetic Favorites entry ID: it does not exist in the `playlists` table. */
 const FAVORITES_PLAYLIST_ID = -1
@@ -845,9 +863,13 @@ const favoritesPlaylist = ref<any>({
   size: '0 GB',
 })
 
-const myPlaylists = ref<Playlist[]>([])
-const importedServices = ref<any[]>([])
-const smartPlaylists = ref<any[]>([])
+const playlists = ref<Playlist[]>([])
+const playlistPresentation = ref<Record<number, PlaylistPresentation>>({})
+const playlistMosaicCache: PlaylistMosaicCache = new Map()
+const playlistCatalog = computed(() => aggregatePlaylists(playlists.value, playlistPresentation.value))
+const myPlaylists = computed(() => playlistCatalog.value.local)
+const importedServices = computed(() => playlistCatalog.value.services)
+const smartPlaylists = computed(() => playlistCatalog.value.smart)
 const playlistTracks = ref<any[]>([])
 const playlistTotal = ref(0)
 const nextPlaylistOffset = ref(0)
@@ -860,12 +882,44 @@ const tracksError = ref<string | null>(null)
 /** A later-page failure keeps the rows already loaded and can be retried. */
 const tracksLoadMoreError = ref<string | null>(null)
 const PLAYLIST_PAGE_SIZE = 100
+const PLAYLIST_ARTWORK_PAGE_SIZE = 4
 const PLAYLIST_ROW_HEIGHT = 56
 const PLAYLIST_OVERSCAN = 6
 const PLAYLIST_LOAD_MORE_THRESHOLD_PX = 280
 const PLAYLIST_FOOTER_HEIGHT = 56
 let playlistLoadSeq = 0
+let playlistCatalogLoadSeq = 0
 let playlistPlaybackSeq = 0
+
+function updatePlaylistPresentation(playlistId: number, patch: Partial<PlaylistPresentation>) {
+  playlistPresentation.value = {
+    ...playlistPresentation.value,
+    [playlistId]: { ...playlistPresentation.value[playlistId], ...patch },
+  }
+}
+
+function updatePlaylistMosaic(playlistId: number, tracks: readonly PlaylistCoverTrack[]) {
+  const tiles = reconcilePlaylistMosaic(playlistMosaicCache, playlistId, tracks)
+  updatePlaylistPresentation(playlistId, { tiles })
+}
+
+function updateLoadedPlaylistMosaic() {
+  const playlistId = selectedPlaylist.value?.id
+  if (typeof playlistId !== 'number') return
+  updatePlaylistMosaic(playlistId, playlistTracks.value.map(track => ({
+    id: track.id,
+    position: track.position,
+    cover_art_url: track.albumArt || null,
+  })))
+}
+
+function reconcilePlaylistCount(playlistId: number, total: number) {
+  const playlist = playlists.value.find(item => item.id === playlistId)
+  if (playlist) playlist.track_count = total
+  if (selectedPlaylist.value?.id === playlistId) {
+    selectedPlaylist.value = { ...selectedPlaylist.value, track_count: total }
+  }
+}
 
 function cancelPendingPlaylistPlayback() {
   playlistPlaybackSeq += 1
@@ -877,6 +931,11 @@ const playlistFooterHeight = computed(() =>
     ? PLAYLIST_FOOTER_HEIGHT
     : 0
 )
+
+const selectedPlaylistServiceName = computed(() => {
+  const serviceKey = selectedPlaylist.value?.serviceKey
+  return serviceKey ? formatPlaylistServiceName(serviceKey) : null
+})
 
 const canMutateSelectedPlaylist = computed(() => {
   const playlist = selectedPlaylist.value
@@ -957,7 +1016,7 @@ const filteredImportedServices = computed(() => {
   return importedServices.value
     .map(service => ({
       ...service,
-      playlists: service.playlists.filter((p: any) => p.name.toLowerCase().includes(query)),
+      playlists: service.playlists.filter(p => p.name.toLowerCase().includes(query)),
     }))
     .filter(service => service.playlists.length > 0)
 })
@@ -990,6 +1049,8 @@ watch(
 
 onUnmounted(() => {
   playlistLoadSeq += 1
+  playlistCatalogLoadSeq += 1
+  playlistMosaicCache.clear()
   cancelPendingPlaylistPlayback()
   if (previewDebounceTimer) {
     clearTimeout(previewDebounceTimer)
@@ -1039,12 +1100,13 @@ async function selectPlaylist(playlist: any) {
     playlistTotal.value = page.total
     nextPlaylistOffset.value = page.offset + page.tracks.length
     hasMoreTracks.value = page.has_more && page.tracks.length > 0
+    updatePlaylistMosaic(playlist.id, page.tracks)
 
     // PL02 (#155): `total` cuenta ocurrencias, no pistas distintas.
     if (playlist.id === FAVORITES_PLAYLIST_ID) {
       favoritesPlaylist.value.track_count = page.total
     } else {
-      playlist.track_count = page.total
+      reconcilePlaylistCount(playlist.id, page.total)
     }
   } catch (error) {
     if (seq !== playlistLoadSeq) return
@@ -1081,6 +1143,7 @@ async function loadMorePlaylistTracks() {
     playlistTotal.value = page.total
     nextPlaylistOffset.value = offset + page.tracks.length
     hasMoreTracks.value = page.has_more
+    updateLoadedPlaylistMosaic()
   } catch (error) {
     if (seq !== playlistLoadSeq) return
     tracksLoadMoreError.value = String(error)
@@ -1091,61 +1154,45 @@ async function loadMorePlaylistTracks() {
 }
 
 async function loadPlaylists() {
+  const seq = ++playlistCatalogLoadSeq
   try {
-    const playlists = await libraryApi.getPlaylists()
+    const loadedPlaylists = await libraryApi.getPlaylists()
+    if (seq !== playlistCatalogLoadSeq) return
 
-    // Separate smart playlists vs regular playlists
-    smartPlaylists.value = playlists
-      .filter(p => Boolean(p.is_smart))
-      .map(p => {
-        let parsedRules = []
-        if (p.rules_json) {
-          try {
-            parsedRules = JSON.parse(p.rules_json)
-          } catch {
-            parsedRules = []
-          }
-        }
-        return {
-          id: p.id,
-          name: p.name,
-          trackCount: p.track_count,
-          icon: 'auto_awesome',
-          smart: true,
-          rules: parsedRules,
-          rules_json: p.rules_json,
-          image_url: p.image_url,
-          coverArt: p.image_url,
-        }
-      })
-
-    const nonSmart = playlists.filter(p => !p.is_smart)
-    const localPlaylists: Playlist[] = []
-    const serviceMap = new Map<string, any[]>()
-
-    for (const p of nonSmart) {
-      const sName = p.service_name?.toLowerCase()
-      if (sName && ['spotify', 'qobuz', 'tidal', 'deezer', 'apple_music', 'soundcloud'].includes(sName)) {
-        if (!serviceMap.has(sName)) {
-          serviceMap.set(sName, [])
-        }
-        serviceMap.get(sName)!.push({
-          ...p,
-          coverArt: p.image_url,
-        })
-      } else {
-        localPlaylists.push(p)
-      }
+    playlists.value = loadedPlaylists
+    playlistPresentation.value = {}
+    playlistMosaicCache.clear()
+    if (typeof selectedPlaylist.value?.id === 'number' && selectedPlaylist.value.id > 0) {
+      updateLoadedPlaylistMosaic()
     }
 
-    myPlaylists.value = localPlaylists
-
-    importedServices.value = Array.from(serviceMap.entries()).map(([svcKey, pls]) => ({
-      id: svcKey,
-      name: svcKey.charAt(0).toUpperCase() + svcKey.slice(1),
-      color: getServiceColor(svcKey),
-      playlists: pls,
+    const artwork = await Promise.all(loadedPlaylists.map(async playlist => {
+      const serviceKey = playlist.is_smart ? null : getPlaylistServiceKey(playlist)
+      const [trackPage, detail] = await Promise.all([
+        libraryApi.getPlaylistTracks(playlist.id, 0, PLAYLIST_ARTWORK_PAGE_SIZE).catch(error => {
+          console.error(`Failed to load artwork for playlist ${playlist.id}:`, error)
+          return null
+        }),
+        serviceKey
+          ? playlistsApi.getPlaylist(playlist.id).catch(error => {
+              console.error(`Failed to load provider artwork for playlist ${playlist.id}:`, error)
+              return null
+            })
+          : Promise.resolve(null),
+      ])
+      return { playlist, trackPage, providerImageUrl: detail?.image_url ?? null, serviceKey }
     }))
+    if (seq !== playlistCatalogLoadSeq) return
+
+    for (const { playlist, trackPage, providerImageUrl, serviceKey } of artwork) {
+      if (trackPage) {
+        reconcilePlaylistCount(playlist.id, trackPage.total)
+        if (selectedPlaylist.value?.id !== playlist.id) {
+          updatePlaylistMosaic(playlist.id, trackPage.tracks)
+        }
+      }
+      if (serviceKey) updatePlaylistPresentation(playlist.id, { providerImageUrl })
+    }
   } catch (error) {
     console.error('Failed to load playlists:', error)
   }
@@ -1261,14 +1308,8 @@ function cancelEditDescription() {
 
 function applyUpdatedPlaylist(updated: Playlist) {
   selectedPlaylist.value = { ...selectedPlaylist.value, ...updated }
-  const index = myPlaylists.value.findIndex(p => p.id === updated.id)
-  if (index >= 0) myPlaylists.value[index] = { ...myPlaylists.value[index], ...updated }
-  const smartIndex = smartPlaylists.value.findIndex(p => p.id === updated.id)
-  if (smartIndex >= 0) smartPlaylists.value[smartIndex] = { ...smartPlaylists.value[smartIndex], ...updated }
-  for (const group of importedServices.value) {
-    const sIdx = group.playlists.findIndex((p: any) => p.id === updated.id)
-    if (sIdx >= 0) group.playlists[sIdx] = { ...group.playlists[sIdx], ...updated }
-  }
+  const index = playlists.value.findIndex(p => p.id === updated.id)
+  if (index >= 0) playlists.value[index] = { ...playlists.value[index], ...updated }
 }
 
 async function deleteSelectedPlaylist() {
@@ -1287,14 +1328,13 @@ async function deleteSelectedPlaylist() {
     isLoading.value = false
     isLoadingMore.value = false
     cancelPendingPlaylistPlayback()
-    myPlaylists.value = myPlaylists.value.filter(p => p.id !== playlist.id)
-    smartPlaylists.value = smartPlaylists.value.filter(p => p.id !== playlist.id)
-    for (const group of importedServices.value) {
-      group.playlists = group.playlists.filter((p: any) => p.id !== playlist.id)
-    }
-    importedServices.value = importedServices.value.filter(g => g.playlists.length > 0)
+    playlists.value = playlists.value.filter(p => p.id !== playlist.id)
     selectedPlaylist.value = null
     playlistTracks.value = []
+    playlistMosaicCache.delete(playlist.id)
+    const remainingPresentation = { ...playlistPresentation.value }
+    delete remainingPresentation[playlist.id]
+    playlistPresentation.value = remainingPresentation
     toast.success('Playlist deleted')
   } catch (error) {
     toast.error('Failed to delete playlist', String(error))
@@ -1356,7 +1396,7 @@ async function createPlaylist() {
       is_public: newPlaylist.value.public
     })
     
-    myPlaylists.value.unshift(playlist)
+    playlists.value.unshift(playlist)
     showCreateModal.value = false
     newPlaylist.value = { name: '', description: '', public: false }
     selectPlaylist(playlist)
@@ -1755,12 +1795,14 @@ async function menuDeletePlaylist() {
 
 function getServiceColor(service: string) {
   const colors: Record<string, string> = {
-    Spotify: 'bg-green-500',
-    Qobuz: 'bg-blue-600',
-    Tidal: 'bg-black',
-    Deezer: 'bg-purple-500',
+    spotify: 'bg-green-500',
+    qobuz: 'bg-blue-600',
+    tidal: 'bg-black',
+    deezer: 'bg-purple-500',
+    apple_music: 'bg-red-500',
+    soundcloud: 'bg-orange-500',
   }
-  return colors[service] || 'bg-gray-500'
+  return colors[service.toLowerCase()] || 'bg-gray-500'
 }
 
 // Drag and drop
@@ -1789,6 +1831,7 @@ async function onTrackDrop(event: DragEvent, newIndex: number) {
       selectedPlaylist.value.id,
       tracks.map((item, index) => ({ trackId: item.id, newPosition: index + 1 })),
     )
+    updateLoadedPlaylistMosaic()
   } catch (error) {
     playlistTracks.value = previous
     toast.error('Failed to reorder playlist tracks', String(error))

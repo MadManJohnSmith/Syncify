@@ -247,3 +247,82 @@ Smoke del 2026-11-24:
   tenía; no se extrajo ni compartió su cookie. La cobertura X11 viene de Xvfb.
 - **Pendiente:** repetir el smoke en el Dell Latitude 5420 y en una sesión X11
   autorizada; CI sin GPU no sustituye esa evidencia.
+
+## WK-04 · precedencia, fallback y bucle de arranque (2026-11-25)
+
+Esta sección fija el contrato que la política no puede invertir. El modelo puro
+vive en `src-tauri/src/webkit_probe/policy.rs` y **no está cableado**: no lee el
+entorno, no escribe ficheros ni construye el webview. #54 conecta la decisión
+antes de crear Tauri; aquí solo se prueba que la precedencia, el fallback y el
+corte del bucle se comportan como se documenta. Los tests están en
+`src-tauri/src/webkit_probe/tests.rs` y corren con `nextest run -p
+syncify-tauri --lib`, sin GPU, sin webview y sin captura de pantalla.
+
+### Orden de decisión
+
+De mayor a menor prioridad; cada nivel ignora los inferiores.
+
+| # | Entrada | Ruta efectiva | Razón registrada |
+|---|---|---|---|
+| 1 | Override explícito `Compatible` | compatible | `override-compatible` |
+| 2 | Override explícito `Acelerado` | acelerada | `override-accelerated` |
+| 3 | Preferencia persistida `Compatible` | compatible | `preference-compatible` |
+| 4 | Preferencia persistida `Acelerado` | acelerada | `preference-accelerated` |
+| 5 | `Automático` con fallo previo de la misma clave | compatible | `previous-failure-fingerprint` |
+| 6 | `Automático` con fingerprint incompleto | compatible | `fingerprint-incomplete` |
+| 7 | `Automático` con sonda `Supported` | acelerada | `probe-supported` |
+| 8 | `Automático` con sonda `Unsupported`/`Inconclusive`/`Skipped` | compatible | `probe-*` |
+
+Un override explícito `Automático` no fuerza aceleración: manda sobre la
+preferencia persistida y vuelve a consultar la sonda con las mismas guardas de
+los niveles 5–8. El marcador de fallo solo frena el modo `Automático`: ni
+`Compatible` ni un opt-in `Acelerado` quedan secuestrados por él. La salida de
+recuperación fuera de la UI es el override `Compatible`: no depende de que la UI
+llegue a ser operable.
+
+### Matriz de driver y sesión conocidos
+
+Las filas son **evidencia fechada**, no una tabla de GPUs soportadas. La
+decisión no se toma por marca ni modelo (invariante 4); el fingerprint cubre
+backend efectivo, sesión, display, GPU/PCI, driver por dispositivo, DRM, kernel,
+WebKitGTK, Mesa y overrides de render, y un cambio material rearma el intento.
+Una fila sin versión medida lo dice: no se rellena por analogía.
+
+| Equipo / driver | Sesión · backend | WebKitGTK · Mesa | Evidencia | Lectura para la política |
+|---|---|---|---|---|
+| Dell Latitude 5420, Intel Iris Xe (i5-1145G7); driver y kernel sin medir | KDE/Wayland; AppImage v0.3.0 | sin medir | Abort real `Could not create default EGL display: EGL_BAD_PARAMETER` (2026-10, origen del workaround) | Ruta compatible obligatoria. `Automático` solo puede acelerar allí con sonda positiva y recuperación probada; no hay ninguna medición posterior. |
+| NVIDIA GTX 1050 Ti, driver 580.196.07; kernel 7.3.4-1-cachyos | X11/XWayland `:0` | 2.54.3 · sin registrar | WK-01 2026-11-21: ruta acelerada 0 frames rAF, 0 paints, ventana 0/0 px, `Failed to create GBM buffer` 3/3 | Acelerar sobre X11 en esta máquina no presenta contenido; la sonda debe devolver `Unsupported`, no confiar en `eglinfo`. |
+| NVIDIA GTX 1050 Ti, driver 580.196.07 | Wayland `wayland-1` | 2.54.3 · sin registrar | WK-01: ~58 paints/s sin errores EGL/GBM; captura de ventana no disponible | Señal de composición, no de píxel: el contrato WK-02 la clasifica `Inconclusive`, nunca `Supported`. |
+| Runner de CI con Xvfb (Mesa sin DRI3) | X11 virtual | la del runner | Smoke WK-02 2026-11-24: `supported/content_observed` con 3600 px rojos en ambas capturas | Banco de la suite, no prueba de GPU física; no autoriza aceleración en hardware real. |
+| Sesión XWayland `:0` real del 2026-11-24 | X11 | sin registrar | Sin cookie de autorización; no se extrajo ni compartió | No medido: no se infiere un resultado de la fila de Xvfb. |
+| Sesión `tty` o sin display gráfico | ninguna | — | Sonda omitida: `skipped/no-graphical-session` | Compatible: una sonda omitida nunca acelera. |
+| Clave nueva o sonda no ejecutada | cualquiera | — | fingerprint incompleto o sin resultado para esa clave | Compatible hasta una sonda nueva de esa clave. |
+
+### Bucle de arranque
+
+`AttemptLedger` guarda una sola clave: la del fingerprint cuyo arranque
+acelerado no llegó a la UI. Repetir el mismo fallo es idempotente y no acumula
+intentos; un arranque acelerado completo borra el marcador. Mientras la clave
+coincida, `Automático` resuelve compatible las veces que haga falta: no hay
+segundo, tercer ni enésimo intento que pueda repetir el abort. Una clave distinta
+—driver, WebKitGTK, Mesa, sesión o display cambiados— rearma el intento, y la
+clave antigua sigue bloqueada si se vuelve a ella. Un cierre de energía no borra
+un marcador ya escrito: quitarlo exige la señal positiva de que la UI llegó a
+mostrarse. El marcador de "intento iniciado" para la primera prueba y su
+detección tras un corte pertenecen a #54.
+
+### Cobertura y límites
+
+| Test | Criterio que protege |
+|---|---|
+| `wk04_explicit_compatible_outranks_preference_and_positive_probe` | Preferencia explícita `Compatible` gana incluso con sonda positiva. |
+| `wk04_override_outranks_the_stored_preference_in_both_directions` | Override explícito > preferencia persistida, incluido `Automático`. |
+| `wk04_negative_incomplete_or_skipped_probe_falls_back_to_compatible` | Sonda negativa, inconclusa, omitida o fingerprint incompleto caen a compatible. |
+| `wk04_accelerated_failure_is_not_retried_in_a_loop` | Un fallo previo no se repite en bucle; otra clave rearma; el éxito limpia. |
+| `wk04_failure_ledger_only_gates_auto_not_an_explicit_opt_in` | El marcador frena solo `Automático`; no secuestra `Compatible` ni un opt-in `Acelerado`. |
+| `wk04_modes_parse_strictly_and_verdicts_map_without_upgrading` | Parseo estricto de modos y mapeo de veredictos sin ascender señales. |
+
+La matriz de sesión/backend no se duplica aquí: ya la cubre
+`backend_matrix_keeps_session_and_effective_backend_separate`. Estos tests no
+sustituyen el smoke en el Latitude 5420 ni la medición A/B: prueban la
+decisión, no que una GPU concreta presente píxeles.

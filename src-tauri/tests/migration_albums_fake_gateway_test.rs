@@ -57,6 +57,7 @@ fn test_app(pool: SqlitePool) -> tauri::App<tauri::test::MockRuntime> {
 /// escrituras observadas y fallos de escritura programados.
 struct FakeAlbumGateway {
     matches: HashMap<String, String>,
+    existing: HashSet<String>,
     write_failures: HashSet<String>,
     written: Mutex<Vec<String>>,
 }
@@ -65,6 +66,7 @@ impl FakeAlbumGateway {
     fn with_match(source_id: &str, dest_id: &str) -> Self {
         Self {
             matches: HashMap::from([(source_id.to_string(), dest_id.to_string())]),
+            existing: HashSet::new(),
             write_failures: HashSet::new(),
             written: Mutex::new(Vec::new()),
         }
@@ -81,6 +83,10 @@ impl FakeAlbumGateway {
 }
 
 impl AlbumTransferGateway for FakeAlbumGateway {
+    async fn existing_albums(&self) -> Result<HashSet<String>, String> {
+        Ok(self.existing.clone())
+    }
+
     async fn match_album(
         &self,
         album: &MigrationSourceAlbum,
@@ -186,7 +192,8 @@ async fn test_album_phase_matches_writes_and_records_kinds() {
         albums.len() as i64,
         std::time::Instant::now(),
     )
-    .await;
+    .await
+    .unwrap();
     assert!(!cancelled);
 
     let items = job_items(&pool, &job_id).await;
@@ -277,7 +284,8 @@ async fn test_album_phase_prefers_the_local_mirror_match() {
         1,
         std::time::Instant::now(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let items = job_items(&pool, &job_id).await;
     let item = &items[0];
@@ -301,8 +309,8 @@ async fn test_album_phase_prefers_the_local_mirror_match() {
 }
 
 /// Un match cuyo intento de escritura falla deja el ítem `failed` con el
-/// error real, el id de destino vacío y la confianza del match — la misma
-/// honestidad que el flujo de pistas.
+/// error real y conserva el id de destino ya persistido: un timeout ambiguo
+/// debe reanudarse contra ese mismo id, no volver a emparejar.
 #[tokio::test]
 async fn test_album_phase_records_failed_writes() {
     let pool = setup_test_db().await;
@@ -334,14 +342,19 @@ async fn test_album_phase_records_failed_writes() {
         1,
         std::time::Instant::now(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let items = job_items(&pool, &job_id).await;
     let item = &items[0];
     assert_eq!(item.2, "failed");
     assert_eq!(item.3, Some(0.9), "the match's confidence is kept");
     assert_eq!(item.4.as_deref(), Some("metadata"));
-    assert_eq!(item.5, None, "the failed write records no destination id");
+    assert_eq!(
+        item.5.as_deref(),
+        Some("qb-alb-1"),
+        "the exact attempted destination id survives for idempotent retry"
+    );
     let error = item
         .6
         .as_deref()
@@ -395,7 +408,8 @@ async fn test_album_phase_applies_the_threshold_to_gateway_matches() {
         1,
         std::time::Instant::now(),
     )
-    .await;
+    .await
+    .unwrap();
 
     let items = job_items(&pool, &job_id).await;
     let item = &items[0];
@@ -770,9 +784,9 @@ async fn test_playlists_collection_alone_is_refused_before_the_job_exists() {
     );
 }
 
-/// Una cancelación que aterriza durante la fase de pistas no abre la fase de
-/// álbumes: el job cancelado no gana filas de álbum `pending` que sobrevivan a
-/// la cancelación (la fase solo arranca si `!cancelled`).
+/// Una cancelación que aterriza durante la fase de pistas no procesa álbumes,
+/// pero sus filas `pending` ya forman parte del snapshot durable y quedan para
+/// una reanudación futura.
 #[tokio::test]
 async fn test_cancelled_track_phase_does_not_open_the_album_phase() {
     let pool = setup_test_db().await;
@@ -811,11 +825,13 @@ async fn test_cancelled_track_phase_does_not_open_the_album_phase() {
 
     // La cancelación llega con el primer ítem de pista, como si el usuario
     // hubiera pulsado Cancelar durante la fase de pistas. Un trigger la hace
-    // determinista: no compite con el bucle por la BD.
+    // determinista: no compite con el bucle por la BD. Se dispara al procesar
+    // el ítem, no al preinsertar el snapshot mientras el job sigue `pending`.
     sqlx::query(
         r#"CREATE TRIGGER cancel_job_on_first_track_item
-           AFTER INSERT ON migration_items
-           WHEN NEW.kind = 'track'
+           AFTER UPDATE OF status ON migration_items
+           WHEN NEW.kind = 'track' AND OLD.status = 'pending'
+               AND NEW.status IN ('matched', 'failed', 'skipped', 'preexisting', 'transferred')
            BEGIN
                UPDATE migration_jobs SET status = 'cancelled' WHERE id = NEW.job_id;
            END"#,
@@ -849,15 +865,15 @@ async fn test_cancelled_track_phase_does_not_open_the_album_phase() {
     );
 
     let album_items: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM migration_items WHERE job_id = ? AND kind = 'album'",
+        "SELECT COUNT(*) FROM migration_items WHERE job_id = ? AND kind = 'album' AND status = 'pending'",
     )
     .bind(&job_id)
     .fetch_one(&pool)
     .await
     .unwrap();
     assert_eq!(
-        album_items, 0,
-        "no pending album row outlives the cancellation"
+        album_items, 1,
+        "the durable snapshot keeps the service-wide favorite album for resume"
     );
 
     let track_items: i64 = sqlx::query_scalar(
