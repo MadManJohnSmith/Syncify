@@ -165,6 +165,46 @@ pub async fn canonicalize_playlists(db: &SqlitePool) -> Result<CanonicalizationS
     Ok(summary)
 }
 
+/// Cierra la expansión de una playlist al terminar su importación (#398).
+///
+/// El llamador recorre todas las páginas del proveedor, registra cada pista en
+/// `playlist_tracks` y recompacta posiciones; aquí se certifica el total
+/// declarado y se recalcula el grupo canónico al que pertenece. Un fallo de
+/// expansión (`expansion_failed`) marca la fuente como incompleta y deshace su
+/// membresía: una copia a medias nunca se fusiona con una completa. Devuelve
+/// `true` solo cuando la fuente quedó certificada.
+///
+/// Un fallo de base de datos no propaga el error: la playlist queda sin
+/// membresía (el estado seguro) y el sync continúa con las demás.
+pub async fn finish_playlist_expansion(
+    db: &SqlitePool,
+    playlist_id: i64,
+    expansion_failed: bool,
+) -> bool {
+    let result: Result<bool, String> = async {
+        if expansion_failed {
+            mark_playlist_source_expansion_incomplete(db, playlist_id).await?;
+            return Ok(false);
+        }
+        let complete = record_playlist_source_expansion(db, playlist_id).await?;
+        canonicalize_playlist(db, playlist_id).await?;
+        Ok(complete)
+    }
+    .await;
+
+    match result {
+        Ok(complete) => complete,
+        Err(error) => {
+            tracing::warn!(
+                playlist_id,
+                %error,
+                "playlist expansion could not be closed; left unmerged"
+            );
+            false
+        }
+    }
+}
+
 /// Recalcula una playlist y las copias de su nombre. Es la costura que usan los
 /// importadores después de recompactar: no escanea todo el catálogo por cada
 /// playlist, pero sí repara el grupo completo al que pertenece.
