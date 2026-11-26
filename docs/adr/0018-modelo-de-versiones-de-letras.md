@@ -48,6 +48,19 @@ faltantes, pipeline Tidal y re-fetch karaoke.
   histórica.
 - `lyrics_type` (hoy `CAST(NULL)`) pasa a dato real derivado de la versión activa.
 
+## Aceptación y trazabilidad
+
+- **Spec:** #176 (LETRAS). **Tickets:** #178–#194; cierre LY16/#194.
+- **Estado al cierre: no implementado.** Hoy sigue vigente una fila por formato
+  en la tabla `lyrics` (`UNIQUE(track_id, format)`) y la prioridad fija
+  `lrc > plain > ttml`; «Saved Versions» de la UI son esas filas de formato.
+  Las cuatro rutas de LY-12b ya respetan las Marcas de borrado (#180), pero el
+  almacén de versiones, la lectura en unión, la regla de versión activa y el pin
+  son #187/#189. La migración del almacén nuevo no existe (la siguiente a 0119
+  está reservada como `0120_`).
+- **Comportamiento real, con lo pendiente declarado:** `docs/features/lyrics.md`
+  §3 y §9. Este ADR registra la decisión de destino, no el estado actual.
+
 ## Alternativas descartadas
 
 - **Rebuild con translado de filas.** Requería tocar datos existentes de usuarios.
