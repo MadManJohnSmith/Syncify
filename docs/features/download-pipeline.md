@@ -243,8 +243,13 @@ consulta o el borrado del ledger. El fichero se mueve a una cuarentena
 explícita
 (`<directorio de la entrega>/.syncify-quarantine/`, con el `queue_id` en el
 nombre) para conservar el audio válido de un rechazo por portada, tags o
-calidad; la biblioteca no lo indexa (tampoco lo hace con el fichero original,
-que ya no está). Si crear la cuarentena o mover el fichero falla, el rechazo
+calidad. El nombre y la ruta viven en una sola definición de dominio
+(`REJECTION_QUARANTINE_DIR_NAME` y `rejection_quarantine_dir` en
+`crates/syncify-core-domain/src/layout.rs`), que comparten el gate y la
+biblioteca. El escáner (`scan_local_audio_entries`) poda ese subárbol con
+`is_rejection_quarantine`, y la reconciliación física tampoco lo relinka como
+huérfano: ni `sync_local_library` ni un re-escaneo posterior reimportan el
+rechazo. Si crear la cuarentena o mover el fichero falla, el rechazo
 **elimina el audio como último recurso**: la invariante es que la biblioteca no
 indexe la entrega rechazada, no que el audio sobreviva. El motivo del fallo
 incluye la ruta de cuarentena cuando se movió. El orden gate → `mark_complete`

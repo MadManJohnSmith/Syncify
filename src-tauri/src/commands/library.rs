@@ -5167,6 +5167,11 @@ pub async fn perform_reconcile_library_physical_state(
     if opts.orphan_policy != OrphanPolicy::Ignore {
         for entry in walkdir::WalkDir::new(base_path)
             .into_iter()
+            // #370: la cuarentena D05 no es audio de la biblioteca; no debe
+            // relinkarse como huérfano ni reimportarse por la puerta trasera.
+            .filter_entry(|entry| {
+                !syncify_core_domain::layout::is_rejection_quarantine(entry.path())
+            })
             .filter_map(|e| e.ok())
         {
             let p = entry.path();
@@ -6555,7 +6560,12 @@ fn scan_local_audio_files_with_weights(
     if !recursive {
         walker = walker.max_depth(1);
     }
-    scan_local_audio_entries(walker, weights)
+    // #370: la cuarentena de rechazos es hermana del audio que la biblioteca
+    // indexa. No se recorre: sus ficheros no pertenecen a la biblioteca.
+    let entries = walker
+        .into_iter()
+        .filter_entry(|entry| !syncify_core_domain::layout::is_rejection_quarantine(entry.path()));
+    scan_local_audio_entries(entries, weights)
 }
 
 fn scan_local_audio_entries(
@@ -6566,6 +6576,12 @@ fn scan_local_audio_entries(
     for entry in entries {
         let entry = entry.map_err(|e| format!("Failed to traverse local library: {}", e))?;
         let path = entry.path();
+        // Defensa en profundidad para iteradores que no pasan por el walker
+        // (tests de caracterización incluidos): ningún fichero bajo la
+        // cuarentena se indexa, ni siquiera si taparía un error de lectura.
+        if syncify_core_domain::layout::is_rejection_quarantine(path) {
+            continue;
+        }
         let metadata = entry
             .metadata()
             .map_err(|e| format!("Failed to inspect {:?}: {}", path, e))?;
@@ -7905,6 +7921,64 @@ mod local_library_tests {
         assert!(
             std::path::Path::new(&path).is_file(),
             "File must exist on disk"
+        );
+    }
+
+    /// #370: la cuarentena de rechazos del gate D05 vive junto al audio
+    /// (`<directorio>/.syncify-quarantine/`) y el escáner no debe indexarla.
+    /// Sin exclusión, cualquier re-escaneo reimporta el fichero rechazado.
+    #[test]
+    fn test_scan_local_audio_files_skips_rejection_quarantine() {
+        let temp_dir = TempDir::new().unwrap();
+        let kept = temp_dir.path().join("kept.flac");
+        create_dummy_flac_with_tags(&kept, "Kept", "Artist", "Album", None);
+
+        let quarantine = syncify_core_domain::layout::rejection_quarantine_dir(temp_dir.path());
+        std::fs::create_dir_all(&quarantine).unwrap();
+        let rejected = quarantine.join("rejected.rejected-q7.flac");
+        create_dummy_flac_with_tags(&rejected, "Rejected", "Artist", "Album", None);
+
+        let scanned = scan_local_audio_files(temp_dir.path(), true).unwrap();
+        let paths: Vec<_> = scanned
+            .iter()
+            .map(|track| track.file_path.clone())
+            .collect();
+        assert_eq!(
+            paths.len(),
+            1,
+            "the rejection quarantine must not be scanned: {paths:?}"
+        );
+        assert!(paths[0].ends_with("kept.flac"), "got: {paths:?}");
+    }
+
+    /// #370: la reproducción del bug de reimport. Una entrega rechazada que el
+    /// gate movió a cuarentena no puede volver a la biblioteca en el siguiente
+    /// `sync_local_library`.
+    #[tokio::test]
+    async fn test_sync_local_library_does_not_reimport_quarantined_reject() {
+        let db = create_test_db().await;
+        let temp_dir = TempDir::new().unwrap();
+        let accepted = temp_dir.path().join("accepted.flac");
+        create_dummy_flac_with_tags(&accepted, "Accepted", "Artist", "Album", None);
+
+        let quarantine = syncify_core_domain::layout::rejection_quarantine_dir(temp_dir.path());
+        std::fs::create_dir_all(&quarantine).unwrap();
+        let rejected = quarantine.join("rejected.rejected-q9.flac");
+        create_dummy_flac_with_tags(&rejected, "Rejected Take", "Artist", "Album", None);
+
+        let report = sync_local_library(&db, temp_dir.path().to_str().unwrap(), true)
+            .await
+            .unwrap();
+        assert_eq!(report.imported, 1, "only the accepted track is imported");
+
+        let rejected_tracks: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM tracks WHERE title = 'Rejected Take'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            rejected_tracks, 0,
+            "a quarantined reject must not be reimported"
         );
     }
 
