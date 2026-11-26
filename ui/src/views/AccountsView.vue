@@ -807,7 +807,9 @@
                               @click="syncAccountNow(acct)"
                               :disabled="Boolean(liveRuns[acct.id] && !liveRuns[acct.id]!.terminal)"
                               class="px-2 py-1 text-primary hover:bg-primary/10 rounded font-medium disabled:opacity-50"
-                              title="Sync this account's favorites now (progress, cancellation and history)"
+                              :title="syncRunChannelFor(selectedService?.id) === 'persisted'
+                                ? 'Sync this account\'s favorites now (progress, cancellation and history)'
+                                : 'Sync this account now (same phases and progress as the service sync)'"
                               :data-testid="`sync-run-start-${acct.id}`"
                             >
                               Sync now
@@ -848,9 +850,10 @@
                           </div>
                         </template>
 
-                        <!-- SyncRun: corrida en vivo (cuenta, fase, vistos e
+                        <!-- SyncRun: corrida en vivo (cuenta, fase, progreso,
                              importados, tiempo) e historial reciente
-                             (issue #65, ADR-0006) -->
+                             (issues #65/#68, ADR-0006). Misma tarjeta para el
+                             canal persistido y para el orquestador común. -->
                         <div
                           v-if="isSyncRunVisibleFor(acct)"
                           class="w-full mt-1 p-2 rounded bg-gray-50 dark:bg-surface-highlight/40 border border-gray-200 dark:border-border-dark text-xs space-y-1"
@@ -866,12 +869,15 @@
                                 {{ syncRunPhaseLabel(liveRuns[acct.id]!.phase) }}
                               </span>
                               <span class="text-text-secondary shrink-0" :data-testid="`sync-run-counters-${acct.id}`">
-                                {{ liveRuns[acct.id]!.seen }} seen · {{ liveRuns[acct.id]!.imported }} imported
+                                {{ liveRuns[acct.id]!.seen }} seen<span v-if="liveRuns[acct.id]!.reportedTotal != null"> of {{ liveRuns[acct.id]!.reportedTotal }}</span> · {{ liveRuns[acct.id]!.imported }} imported
                               </span>
                             </div>
                             <div class="flex items-center gap-2 shrink-0">
                               <span class="text-text-secondary tabular-nums">{{ syncRunElapsed(acct.id) }}</span>
+                              <!-- Solo el canal persistido expone cancelación;
+                                   el orquestador no promete una bandera que no tiene. -->
                               <button
+                                v-if="liveRuns[acct.id]!.channel === 'persisted'"
                                 @click="cancelAccountRun(acct)"
                                 class="px-2 py-0.5 text-error hover:bg-error/10 rounded font-medium"
                                 :data-testid="`sync-run-cancel-${acct.id}`"
@@ -888,6 +894,22 @@
                             </span>
                             <span class="text-text-secondary shrink-0 tabular-nums">
                               {{ formatRunDuration(runHistory[acct.id]![0]) }}
+                            </span>
+                          </div>
+                          <!-- Canal del orquestador: sin fila de historial, la
+                               última corrida cerrada sigue visible mientras la
+                               ficha esté abierta. -->
+                          <div
+                            v-else-if="liveRuns[acct.id]?.terminal"
+                            class="flex items-center justify-between gap-2"
+                            :data-testid="`sync-run-last-${acct.id}`"
+                          >
+                            <span class="text-text-secondary truncate">
+                              Last run: {{ syncRunStatusLabel(liveRuns[acct.id]!.status) }} ·
+                              {{ liveRuns[acct.id]!.imported }} imported
+                            </span>
+                            <span class="text-text-secondary shrink-0 tabular-nums">
+                              {{ syncRunElapsed(acct.id) }}
                             </span>
                           </div>
                         </div>
@@ -1201,7 +1223,7 @@ import { libraryApi } from '@/api/library'
 import { playlistsApi } from '@/api/playlists'
 import type { ImportPlaylistFromFileResult } from '@/api/playlists'
 import { useToast } from '@/composables/useToast'
-import type { AccountLifecycleState, ImportResult } from '@/api/types'
+import type { AccountLifecycleState, ImportResult, ServiceSyncResult } from '@/api/types'
 import { useEventBus, TauriEvents } from '@/composables/useEventBus'
 import { useGlobalTasks } from '@/composables/useGlobalTasks'
 import { useSyncSettings } from '@/composables/useSyncSettings'
@@ -1215,13 +1237,23 @@ const router = useRouter()
 const toast = useToast()
 const eventBus = useEventBus()
 
-// ---- SyncRun: corridas con estado (issue #65, ADR-0006) ----
-// La ficha de cuenta muestra la corrida en vivo (cuenta, fase, vistos e
-// importados, tiempo) y permite cancelarla en el límite de página. El estado
-// vive aquí: llega por los eventos sync-run-* y se reconcilia con
-// get_sync_run al abrir la ficha.
+// ---- SyncRun: corridas con estado (issue #65/#68, ADR-0006) ----
+// La ficha de cuenta muestra la corrida en vivo (cuenta, fase, progreso,
+// importados y tiempo). Hay dos canales porque los backends exponen hoy cosas
+// distintas, pero la tarjeta es la misma:
+//  - `persisted`: SyncRun con fila propia, cancelación e historial (Qobuz,
+//    issue #65). Llega por `sync-run-*` y se reconcilia con `get_sync_run`.
+//  - `orchestrator`: el motor unificado que ya corre Apple Music con la cuenta
+//    elegida y las colecciones activadas (issue #68/#400). Llega por
+//    `sync-progress` (que trae `account_id`) y no inventa filas ni cancelación
+//    que el backend no ofrece.
+type SyncRunChannel = 'persisted' | 'orchestrator'
+
 interface LiveSyncRun {
-    runId: number
+    channel: SyncRunChannel
+    /** Id de la fila SyncRun; `null` en el canal del orquestador. */
+    runId: number | null
+    startedAt: number
     phase: string
     status: string
     seen: number
@@ -1279,6 +1311,12 @@ function syncRunPhaseLabel(phase: string): string {
         authenticating: 'Authenticating…',
         fetching_favorite_tracks: 'Fetching favorites…',
         importing_favorite_tracks: 'Importing favorites…',
+        // Apple Music recorre sus propias colecciones (issue #68): las fases
+        // del orquestador se nombran, nunca se pintan como claves crudas.
+        fetching_favorite_albums: 'Fetching albums…',
+        importing_favorite_albums: 'Importing albums…',
+        fetching_playlists: 'Fetching playlists…',
+        importing_playlists: 'Importing playlists…',
         persisting: 'Persisting…',
         completed: 'Completed',
     }
@@ -1292,6 +1330,7 @@ function syncRunStatusLabel(status: string): string {
         partial: 'Partial (gaps)',
         failed: 'Failed',
         cancelled: 'Cancelled',
+        requires_auth: 'Reauthentication required',
     }
     return labels[status] || status
 }
@@ -1306,10 +1345,92 @@ function formatRunDuration(run: SyncRunRecord): string {
     return formatRunElapsed(Math.max(0, finished - started))
 }
 
+const PERSISTED_SYNC_RUN_SERVICES = new Set(['qobuz'])
+const ORCHESTRATED_SYNC_RUN_SERVICES = new Set(['apple_music'])
+
+function normalizeRunServiceId(serviceId: string | undefined | null): string {
+    return (serviceId ?? '').toLowerCase()
+}
+
 function canUseSyncRunsFor(serviceId: string | undefined | null): boolean {
-    // El corte SyncRun actual es Qobuz + favoritos (issue #65): la UI no
-    // promete colecciones ni proveedores que el contrato aún no recorre.
-    return serviceId === 'qobuz'
+    return syncRunChannelFor(serviceId) !== null
+}
+
+function syncRunChannelFor(serviceId: string | undefined | null): SyncRunChannel | null {
+    const key = normalizeRunServiceId(serviceId)
+    if (PERSISTED_SYNC_RUN_SERVICES.has(key)) return 'persisted'
+    if (ORCHESTRATED_SYNC_RUN_SERVICES.has(key)) return 'orchestrator'
+    return null
+}
+
+/** Solo el canal persistido tiene fila propia, cancelación e historial. */
+function canPersistSyncRunFor(serviceId: string | undefined | null): boolean {
+    return syncRunChannelFor(serviceId) === 'persisted'
+}
+
+function createLiveRun(channel: SyncRunChannel, startedAt: number): LiveSyncRun {
+    return {
+        channel,
+        runId: null,
+        startedAt,
+        phase: 'started',
+        status: 'running',
+        seen: 0,
+        imported: 0,
+        reportedTotal: null,
+        elapsedMs: 0,
+        lastEventAt: startedAt,
+        terminal: false,
+    }
+}
+
+/** Cierra la corrida del orquestador con el resultado tipado del comando. */
+function finishOrchestratedRun(accountId: number, result: ServiceSyncResult): void {
+    const live = liveRuns[accountId]
+    if (!live || live.channel !== 'orchestrator') return
+    // `errors` agrupa los huecos de proveedor (Apple empuja ahí las warnings):
+    // una corrida con huecos es parcial, nunca un verde limpio.
+    const gaps = result.errors?.length ?? 0
+    live.status = !result.success ? 'failed' : gaps > 0 ? 'partial' : 'completed'
+    live.phase = 'completed'
+    live.imported = result.imported_tracks_total ?? result.importedTracksTotal ?? live.imported
+    live.terminal = true
+    live.elapsedMs = Date.now() - live.startedAt
+    live.lastEventAt = Date.now()
+    stopTickerIfIdle()
+}
+
+/** Progreso del orquestador común (`sync-progress`) para la cuenta. */
+function applyOrchestratedProgress(payload: any): void {
+    const accountId = payload?.account_id
+    const serviceId = typeof payload?.service === 'string' ? payload.service : ''
+    if (typeof accountId !== 'number') return
+    if (!ORCHESTRATED_SYNC_RUN_SERVICES.has(serviceId.toLowerCase())) return
+
+    let live = liveRuns[accountId]
+    if (!live || live.channel !== 'orchestrator') {
+        // Un evento terminal aislado (corrida de otra ventana) no abre tarjeta.
+        if (payload.terminal) return
+        live = createLiveRun('orchestrator', Date.now())
+        liveRuns[accountId] = live
+        ensureRunTicker()
+    }
+    if (live.terminal) return
+
+    if (typeof payload.phase === 'string' && payload.phase) live.phase = payload.phase
+    if (typeof payload.status === 'string' && payload.status) live.status = payload.status
+    if (typeof payload.current === 'number') live.seen = payload.current
+    if (typeof payload.imported_tracks_total === 'number') live.imported = payload.imported_tracks_total
+    // El total pertenece a la colección de ESTA fase; sin total, desconocido.
+    live.reportedTotal = typeof payload.total === 'number' ? payload.total : null
+    live.lastEventAt = Date.now()
+
+    if (payload.terminal) {
+        live.terminal = true
+        live.status = payload.status || (payload.phase === 'failed' ? 'failed' : 'completed')
+        live.elapsedMs = Date.now() - live.startedAt
+        stopTickerIfIdle()
+    }
 }
 
 function isSyncRunVisibleFor(acct: any): boolean {
@@ -1320,28 +1441,53 @@ function isSyncRunVisibleFor(acct: any): boolean {
 }
 
 async function syncAccountNow(acct: any): Promise<void> {
-    try {
-        const response = await syncRunsApi.startSyncRun(acct.id)
-        liveRuns[acct.id] = {
-            runId: response.run_id,
-            phase: 'started',
-            status: 'running',
-            seen: 0,
-            imported: 0,
-            reportedTotal: null,
-            elapsedMs: 0,
-            lastEventAt: Date.now(),
-            terminal: false,
+    const serviceId: string | undefined = selectedService.value?.id
+    const channel = syncRunChannelFor(serviceId)
+    if (!channel) return
+    if (syncingServices[normalizeRunServiceId(serviceId)]) {
+        showToast('A sync is already running for this service', 'info')
+        return
+    }
+    if (liveRuns[acct.id] && !liveRuns[acct.id]!.terminal) return
+
+    liveRuns[acct.id] = createLiveRun(channel, Date.now())
+    ensureRunTicker()
+
+    if (channel === 'persisted') {
+        try {
+            const response = await syncRunsApi.startSyncRun(acct.id)
+            const live = liveRuns[acct.id]
+            if (live) live.runId = response.run_id
+        } catch (e) {
+            delete liveRuns[acct.id]
+            stopTickerIfIdle()
+            showToast(`${e instanceof Error ? e.message : String(e)}`, 'error')
         }
-        ensureRunTicker()
-    } catch (e) {
-        showToast(`${e instanceof Error ? e.message : String(e)}`, 'error')
+        return
+    }
+
+    // Apple Music: mismo motor y mismas preferencias que el Sync de la
+    // tarjeta, pero con la cuenta elegida explícita (issue #68).
+    const result = await importFromService(serviceId!, acct.id)
+    const live = liveRuns[acct.id]
+    if (!live || live.channel !== 'orchestrator') return
+    if (result) {
+        finishOrchestratedRun(acct.id, result)
+    } else if (!live.terminal) {
+        live.status = 'failed'
+        live.phase = 'completed'
+        live.terminal = true
+        live.elapsedMs = Date.now() - live.startedAt
+        live.lastEventAt = Date.now()
+        stopTickerIfIdle()
     }
 }
 
 async function cancelAccountRun(acct: any): Promise<void> {
     const live = liveRuns[acct.id]
     if (!live || live.terminal) return
+    // El orquestador no expone bandera de cancelación: no se promete.
+    if (live.channel !== 'persisted' || live.runId === null) return
     try {
         await syncRunsApi.cancelSyncRun(live.runId)
         showToast('Cancel requested; the run stops at the next page boundary', 'info')
@@ -1359,7 +1505,7 @@ async function refreshRunHistory(accountId: number): Promise<void> {
 }
 
 async function refreshRunHistoryForAccounts(accounts: any[]): Promise<void> {
-    if (!canUseSyncRunsFor(selectedService.value?.id)) return
+    if (!canPersistSyncRunFor(selectedService.value?.id)) return
     await Promise.all(accounts.filter(acct => acct?.id).map(acct => refreshRunHistory(acct.id)))
 }
 
@@ -1368,7 +1514,7 @@ async function refreshRunHistoryForAccounts(accounts: any[]): Promise<void> {
 async function reconcileLiveRunsWithBackend(accounts: any[]): Promise<void> {
     for (const acct of accounts.filter(item => item?.id)) {
         const live = liveRuns[acct.id]
-        if (!live || live.terminal) continue
+        if (!live || live.terminal || live.channel !== 'persisted' || live.runId === null) continue
         try {
             const record = await syncRunsApi.getSyncRun(live.runId)
             if (record.status !== 'running') {
@@ -1376,6 +1522,7 @@ async function reconcileLiveRunsWithBackend(accounts: any[]): Promise<void> {
                 live.imported = record.imported_total
                 live.reportedTotal = record.reported_total
                 live.terminal = true
+                live.elapsedMs = Date.now() - live.startedAt
                 stopTickerIfIdle()
             }
         } catch {
@@ -1946,13 +2093,13 @@ async function importQobuzPurchases() {
 // Import from service using unified sync_service with real auth & preferences
 // R3: Apple Music and SoundCloud use the same full sync as the rest;
 // the old `partialCatalogServices` veto no longer exists.
-async function importFromService(serviceName: string, accountId?: number) {
+async function importFromService(serviceName: string, accountId?: number): Promise<ServiceSyncResult | null> {
   const serviceKey = serviceName.toLowerCase()
 
   // Prevent duplicate sync calls if already syncing this service
   if (syncingServices[serviceKey]) {
     showToast(`${serviceName} sync already in progress`, 'info')
-    return
+    return null
   }
   
   syncingServices[serviceKey] = true
@@ -1984,7 +2131,7 @@ async function importFromService(serviceName: string, accountId?: number) {
         success: false,
       })
       await fetchData()
-      return
+      return syncRes
     }
 
     const changedTracks = syncRes.tracksChangedUnique ?? syncRes.tracks_changed_unique ?? syncRes.importedTracksTotal ?? syncRes.imported_tracks_total ?? 0
@@ -2058,6 +2205,7 @@ async function importFromService(serviceName: string, accountId?: number) {
         success: true,
       })
     }
+    return syncRes
   } catch (e: any) {
     const errorMsg = e?.message || e?.toString() || String(e) || 'Unknown error'
     const formattedServiceName = serviceName.charAt(0).toUpperCase() + serviceName.slice(1)
@@ -2106,6 +2254,7 @@ async function importFromService(serviceName: string, accountId?: number) {
     }
 
     await fetchData()
+    return null
   } finally {
     delete syncingServices[serviceKey]
   }
@@ -2544,6 +2693,9 @@ onMounted(async () => {
     if (payload?.service) {
       syncingServices[payload.service.toLowerCase()] = true
     }
+    // Apple Music (issue #68) comparte tarjeta: el orquestador emite las
+    // mismas fases con su `account_id`.
+    applyOrchestratedProgress(payload)
   })
 
   // Listen for failures
@@ -2617,7 +2769,9 @@ onMounted(async () => {
   await eventBus.on(TauriEvents.SYNC_RUN_STARTED, (payload: any) => {
     if (typeof payload?.account_id !== 'number') return
     liveRuns[payload.account_id] = {
+      channel: 'persisted',
       runId: payload.run_id,
+      startedAt: Date.now(),
       phase: payload.phase || 'started',
       status: payload.status || 'running',
       seen: payload.seen || 0,
@@ -2637,6 +2791,7 @@ onMounted(async () => {
     live.phase = payload.phase
     live.seen = payload.seen || live.seen
     live.imported = payload.imported || live.imported
+    live.reportedTotal = payload.reported_total ?? live.reportedTotal
     live.elapsedMs = payload.elapsed_ms || live.elapsedMs
     live.lastEventAt = Date.now()
   })
@@ -2650,7 +2805,7 @@ onMounted(async () => {
       live.seen = payload.seen || live.seen
       live.imported = payload.imported || live.imported
       live.reportedTotal = payload.reported_total ?? live.reportedTotal
-      live.elapsedMs = payload.elapsed_ms || live.elapsedMs
+      live.elapsedMs = payload.elapsed_ms || live.elapsedMs || Date.now() - live.startedAt
       live.terminal = true
       stopTickerIfIdle()
     }

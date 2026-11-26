@@ -202,8 +202,8 @@ describe('Qobuz SyncRun card (characterization before #68)', () => {
     await flushPromises()
 
     expect(modalText()).toContain('Importing favorites…')
-    // Today the card counts what arrived; the provider total is not surfaced.
-    expect(modalText()).toContain('12 seen · 5 imported')
+    // The provider total is the denominator; a missing total stays unknown.
+    expect(modalText()).toContain('12 seen of 40 · 5 imported')
     const cancel = document.body.querySelector('[data-testid="sync-run-cancel-2"]')
     expect(cancel).not.toBeNull()
 
@@ -314,7 +314,7 @@ describe('Apple Music run card (#68)', () => {
     wrapper.unmount()
   })
 
-  it('keeps the Qobuz card on the persisted channel and does not leak Apple phases as raw keys', async () => {
+  it('names Apple phases instead of leaking raw keys into the card', async () => {
     installBackend()
     const wrapper = await mountAccounts()
     await openSettingsFor(wrapper, 'Apple_music')
