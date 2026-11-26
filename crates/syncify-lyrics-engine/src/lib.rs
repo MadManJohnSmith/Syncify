@@ -10,6 +10,7 @@ pub mod config;
 pub mod failures;
 pub mod flac;
 pub mod hooks;
+pub mod native;
 pub mod pipeline;
 pub mod sources;
 pub mod types;
@@ -23,7 +24,8 @@ pub use failures::{
 };
 pub use flac::validate_and_embed_flac_lyrics;
 pub use hooks::{EngineHooks, NoopHooks};
-pub use pipeline::{generate_sidecar_lrc, LyricsPipelineService};
+pub use native::{parse_tidal_native_payload, TIDAL_NATIVE_PROVIDER, TIDAL_NATIVE_SOURCE};
+pub use pipeline::{compete_with_native, generate_sidecar_lrc, LyricsPipelineService};
 pub use sources::lrclib::LRCLibResponse;
 pub use types::{LyricsLine, LyricsResponse};
 

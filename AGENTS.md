@@ -34,7 +34,7 @@ npm --prefix ui run build && npm --prefix ui run test:run                  # 161
 
 ```
 
-Todo corre sin red salvo los 13 tests `#[ignore]`, que necesitan servicios reales.
+Todo corre sin red salvo los 14 tests `#[ignore]`, que necesitan servicios reales.
 No los des-ignores en CI ni añadas `--skip`.
 
 ### Cifras del AGENTS.md

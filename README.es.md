@@ -290,7 +290,7 @@ verificación—:
 - **La red en vivo.** Ningún login de arranque (#63), ninguna descarga real
   (#127) ni enriquecimiento o resolución de letras contra servicios reales
   (#178).
-- **Tests de Rust ignorados.** Los 13 tests ignorados —fuera de CI porque
+- **Tests de Rust ignorados.** Los 14 tests ignorados —fuera de CI porque
   necesitan red real, credenciales reales, una base SQLite de ejecución,
   almacenamiento físico o medida de tiempo real— no se han ejercitado.
 - **Windows.** La comprobación cruzada del target `x86_64-pc-windows-msvc` no
