@@ -437,7 +437,7 @@ describe('LyricsView (fully wired tab)', () => {
         emitMockEvent('lyrics-fetch-progress', {
             status: 'cancelled', current: 1, total: 2, track: 'Batch Song', message: '',
         });
-        resolveBatch({ fetched: 1, failed: 0, skipped: 0 });
+        resolveBatch({ fetched: 1, failed: 0, skipped: 0, cancelled: true });
         await flushPromises();
 
         // A cancelled run ends without the running dialog lingering.
@@ -481,7 +481,7 @@ describe('LyricsView (fully wired tab)', () => {
         emitMockEvent('lyrics-fetch-progress', {
             status: 'cancelled', current: 1, total: 2, track: 'Batch Song', message: '',
         });
-        deferred[0]({ fetched: 1, failed: 0, skipped: 0 });
+        deferred[0]({ fetched: 1, failed: 0, skipped: 0, cancelled: true });
         await flushPromises();
         expect(document.body.textContent).not.toContain('Fetching Lyrics');
         expect(cancelCalls).toBe(1);
@@ -493,7 +493,7 @@ describe('LyricsView (fully wired tab)', () => {
         emitMockEvent('lyrics-fetch-progress', {
             status: 'completed', current: 2, total: 2, track: 'Batch Song', message: '',
         });
-        deferred[1]({ fetched: 2, failed: 0, skipped: 0 });
+        deferred[1]({ fetched: 2, failed: 0, skipped: 0, cancelled: false });
         await flushPromises();
         expect(cancelCalls).toBe(1);
         expect(document.body.textContent).not.toContain('Fetching Lyrics');
@@ -509,7 +509,7 @@ describe('LyricsView (fully wired tab)', () => {
             };
             // After the fetch the stored lyric is unsynced → must be dropped.
             if (cmd === 'get_lyrics') return plainLyrics(5);
-            if (cmd === 'batch_fetch_lyrics_with_progress') return { fetched: 1, failed: 0, skipped: 0 };
+            if (cmd === 'batch_fetch_lyrics_with_progress') return { fetched: 1, failed: 0, skipped: 0, cancelled: false };
             if (cmd === 'delete_lyrics') { deletedTracks.push(Number((args as { trackId: number }).trackId)); return null; }
             if (cmd === 'update_lyrics_config') {
                 configUpdates.push((args as { config: Record<string, unknown> }).config);
@@ -541,6 +541,91 @@ describe('LyricsView (fully wired tab)', () => {
         expect(configUpdates[0].min_sync_level).toBe('word');
         // The unsynced payload was deleted per the "synced only" preference
         expect(deletedTracks).toEqual([5]);
+    });
+
+    it('#378 H5: a cancelled "Synced only" batch neither prunes nor deletes lyrics', async () => {
+        const deletedTracks: number[] = [];
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_library') return {
+                tracks: [createTestTrack({ id: 5, title: 'Batch Song', lyrics_type: 'none' })],
+                total: 1, offset: 0, limit: 500, has_more: false,
+            };
+            // An unsynced payload is stored, but the run was cancelled: it must
+            // survive because the batch never reached every target.
+            if (cmd === 'get_lyrics') return plainLyrics(5);
+            if (cmd === 'batch_fetch_lyrics_with_progress') {
+                return { fetched: 1, failed: 0, skipped: 0, cancelled: true };
+            }
+            if (cmd === 'delete_lyrics') { deletedTracks.push(Number((args as { trackId: number }).trackId)); return null; }
+            if (cmd === 'update_lyrics_config') return { ...CONFIG, min_sync_level: 'word' };
+            if (cmd === 'get_lyrics_stats') return { total_tracks: 1, with_lyrics: 1, synced_lyrics: 0, embedded_lyrics: 0 };
+            if (cmd === 'get_lyrics_providers') return PROVIDERS;
+            if (cmd === 'get_lyrics_config') return CONFIG;
+            return null;
+        });
+
+        const wrapper = mount(LyricsView);
+        await flushPromises();
+        await wrapper.find('input[type="checkbox"]').trigger('click');
+        await flushPromises();
+        await wrapper.findAll('button').find(b => b.text().includes('Fetch Lyrics'))!.trigger('click');
+        await wrapper.findAll('button').find(b => b.text().trim() === 'Synced only')!.trigger('click');
+        await flushPromises();
+
+        expect(deletedTracks).toEqual([]);
+    });
+
+    it('#378: a cancel names the running batch id and the next batch gets a fresh one', async () => {
+        const batchRunIds: number[] = [];
+        const cancelRunIds: number[] = [];
+        const deferred: Array<(value: unknown) => void> = [];
+        mockInvoke((cmd, args) => {
+            if (cmd === 'get_library') return {
+                tracks: [createTestTrack({ id: 5, title: 'Batch Song', lyrics_type: 'none' })],
+                total: 1, offset: 0, limit: 500, has_more: false,
+            };
+            if (cmd === 'update_lyrics_config') return { ...CONFIG };
+            if (cmd === 'batch_fetch_lyrics_with_progress') {
+                batchRunIds.push(Number((args as { runId: number }).runId));
+                return new Promise((resolve) => { deferred.push(resolve); });
+            }
+            if (cmd === 'cancel_batch_fetch_lyrics') {
+                cancelRunIds.push(Number((args as { runId: number }).runId));
+                return true;
+            }
+            if (cmd === 'get_lyrics_stats') return { total_tracks: 1, with_lyrics: 0, synced_lyrics: 0, embedded_lyrics: 0 };
+            if (cmd === 'get_lyrics_providers') return PROVIDERS;
+            if (cmd === 'get_lyrics_config') return CONFIG;
+            return null;
+        });
+
+        const wrapper = mount(LyricsView);
+        await flushPromises();
+
+        const startBatch = async () => {
+            await wrapper.find('input[type="checkbox"]').trigger('click');
+            await flushPromises();
+            await wrapper.findAll('button').find(b => b.text().includes('Fetch Lyrics'))!.trigger('click');
+            await wrapper.findAll('button').find(b => b.text().trim() === 'Prefer synced')!.trigger('click');
+            await flushPromises();
+        };
+
+        await startBatch();
+        (document.querySelector('[data-testid="batch-cancel"]') as HTMLButtonElement).click();
+        await flushPromises();
+        // The cancel carries the id of the run it wants to stop, so the backend
+        // can honour it even if it lands before the command did.
+        expect(batchRunIds[0]).toBeGreaterThan(0);
+        expect(cancelRunIds).toEqual([batchRunIds[0]]);
+
+        deferred[0]({ fetched: 0, failed: 0, skipped: 0, cancelled: true });
+        await flushPromises();
+
+        // A new batch never reuses the previous id (a late cancel cannot kill it).
+        await startBatch();
+        expect(batchRunIds[1]).not.toBe(batchRunIds[0]);
+        deferred[1]({ fetched: 1, failed: 0, skipped: 0, cancelled: false });
+        await flushPromises();
     });
 });
 

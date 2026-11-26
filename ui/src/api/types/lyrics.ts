@@ -56,6 +56,18 @@ export interface LyricsSearchResult {
     instrumental: boolean;
 }
 
+/**
+ * Wire contract of the Rust `BatchLyricsResult` (commands/lyrics.rs).
+ * `cancelled` is the terminal state of the run, so a cancelled run is never
+ * mistaken for a completed one.
+ */
+export interface BatchLyricsResult {
+    fetched: number;
+    failed: number;
+    skipped: number;
+    cancelled: boolean;
+}
+
 // ==============================================
 // SPRINT 3: LYRICS TAB + SETTINGS
 // ==============================================
