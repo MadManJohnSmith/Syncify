@@ -9,9 +9,10 @@ use syncify_lyrics_engine::EngineHooks;
 // La superficie pública del motor viaja intacta para los consumidores del núcleo.
 #[allow(unused_imports)]
 pub use syncify_lyrics_engine::{
-    clear_lyrics_cache, generate_sidecar_lrc, is_valid_lyrics, set_cached_lyrics,
-    validate_and_embed_flac_lyrics, LRCLibResponse, LyricsClient, LyricsEngineConfig, LyricsLine,
-    LyricsPipelineService, LyricsResponse, LyricsSourceSetting, LYRICS_SOURCE_IDS,
+    clear_lyrics_cache, compete_with_native, generate_sidecar_lrc, is_valid_lyrics,
+    parse_tidal_native_payload, set_cached_lyrics, validate_and_embed_flac_lyrics, LRCLibResponse,
+    LyricsClient, LyricsEngineConfig, LyricsLine, LyricsPipelineService, LyricsResponse,
+    LyricsSourceSetting, LYRICS_SOURCE_IDS, TIDAL_NATIVE_PROVIDER, TIDAL_NATIVE_SOURCE,
 };
 
 // El contrato de dominio sigue expuesto por la misma ruta que antes de la extracción.

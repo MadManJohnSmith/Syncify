@@ -276,7 +276,7 @@ verification ticket:
   (#149).
 - **Live network paths.** No launch login (#63), no real download (#127), and
   no provider enrichment or lyrics resolution against real services (#178).
-- **Ignored Rust tests.** The 13 ignored tests — kept out of CI because they
+- **Ignored Rust tests.** The 14 ignored tests — kept out of CI because they
   need live network, real credentials, a runtime SQLite database, physical
   storage or wall-clock timing — have not been exercised.
 - **Windows.** The cross-check for the `x86_64-pc-windows-msvc` target has not
