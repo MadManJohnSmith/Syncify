@@ -71,6 +71,21 @@ pub enum SelectionOutcome {
     Continue,
 }
 
+/// Whether a provider-native candidate (Tidal's own lyrics, LY14/#192) takes
+/// the seat of the result the generic cascade accepted.
+///
+/// The native candidate is one more **Versión de letra**, never a blind
+/// replacement: only a strictly finer [`SyncLevel`] wins. On a tie the generic
+/// result keeps the seat, which is the source-priority tie-break the spec orders
+/// after sync level and language. `None` means the generic cascade resolved
+/// nothing, so any genuine native level improves on it.
+pub fn native_candidate_wins(native: SyncLevel, generic: Option<SyncLevel>) -> bool {
+    match generic {
+        Some(level) => native > level,
+        None => true,
+    }
+}
+
 /// Stepwise selector for the automatic resolution cascade.
 ///
 /// The selector owns only the ordering decision; the caller keeps fetching while
@@ -310,5 +325,34 @@ mod tests {
         }
         assert_eq!(selection.best_level(), None);
         assert!(selection.finish().is_none());
+    }
+
+    #[test]
+    fn native_candidate_wins_only_with_a_finer_level() {
+        assert!(native_candidate_wins(
+            SyncLevel::Word,
+            Some(SyncLevel::Line)
+        ));
+        assert!(native_candidate_wins(
+            SyncLevel::Line,
+            Some(SyncLevel::Plain)
+        ));
+        assert!(
+            native_candidate_wins(SyncLevel::Word, None),
+            "a native payload improves on no generic result"
+        );
+        assert!(
+            native_candidate_wins(SyncLevel::Plain, None),
+            "any genuine native level beats an unresolved cascade"
+        );
+
+        assert!(
+            !native_candidate_wins(SyncLevel::Line, Some(SyncLevel::Line)),
+            "a tie keeps the generic source (source priority)"
+        );
+        assert!(
+            !native_candidate_wins(SyncLevel::Plain, Some(SyncLevel::Line)),
+            "a native payload never degrades the accepted level"
+        );
     }
 }

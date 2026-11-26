@@ -17,6 +17,7 @@ vi.mock('../../api/tauri', () => ({
 
 vi.mock('../../api/player', () => ({
     playerLoadTrack: vi.fn(),
+    playerLoadQueueEntry: vi.fn(),
     playerPause: vi.fn(),
     playerResume: vi.fn(),
     playerStop: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock('../../api/player', () => ({
     onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
     onPlayerAdvanced: vi.fn(),
+    onPlayerQueueEntryChanged: vi.fn(),
     onPlayerModesChanged: vi.fn(() => Promise.resolve()),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
@@ -61,6 +63,8 @@ function configureEngineMocks(): void {
     seq = 0;
     engine().playerLoadTrack.mockReset().mockImplementation(() =>
         Promise.resolve({ seq: ++seq, durationSec: 200, stream: null }));
+    engine().playerLoadQueueEntry.mockReset().mockImplementation(() =>
+        Promise.resolve({ seq: ++seq, durationSec: 200, stream: null }));
     engine().playerPause.mockReset().mockResolvedValue(undefined);
     engine().playerResume.mockReset().mockResolvedValue(undefined);
     engine().playerStop.mockReset().mockResolvedValue(undefined);
@@ -80,6 +84,7 @@ function configureEngineMocks(): void {
         endedCb = cb;
         return Promise.resolve(() => {});
     });
+    engine().onPlayerQueueEntryChanged.mockReset().mockResolvedValue(() => {});
 }
 
 function tick(positionSec: number): void {

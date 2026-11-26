@@ -1189,6 +1189,7 @@ fn main() {
             commands::apply_country_tag_repair,
             // Fase 1 del player: motor nativo (rodio + symphonia)
             commands::player_load_track,
+            commands::player_load_queue_entry,
             commands::player_pause,
             commands::player_resume,
             commands::player_stop,
@@ -1198,9 +1199,11 @@ fn main() {
             // #131 (P00): cola de reproducción persistente en SQLite
             commands::playback_queue_get,
             commands::playback_queue_enqueue,
+            commands::playback_queue_enqueue_provider_item,
             commands::playback_queue_remove,
             commands::playback_queue_reorder,
             commands::playback_queue_set_current,
+            commands::playback_queue_set_current_entry,
             commands::playback_queue_clear,
             commands::playback_history_clear,
             commands::playback_state_set_position,

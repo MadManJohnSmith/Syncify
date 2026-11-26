@@ -11,9 +11,10 @@
 //! (`record_local_play`). Este módulo no toca el motor: persiste el agregado
 //! de cola que la UI orquesta sobre él.
 //!
-//! Entradas efímeras de proveedor: aún no existen (sub-issues de #130); toda
-//! entrada referencia un track de biblioteca y la FK `tracks(id) ON DELETE
-//! CASCADE` descarta las entradas de una pista borrada.
+//! Entradas efímeras de proveedor (#134): una entrada referencia un track de
+//! biblioteca o la identidad `service_id` + `service_track_id` de un ítem del
+//! proveedor. Encolar una efímera no crea `Track` ni `TrackSource`; la promoción
+//! ocurre sólo tras 30 s reales de escucha.
 
 use super::*;
 use tauri::Manager;
@@ -26,10 +27,24 @@ const HISTORY_LIMIT: i64 = 100;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PlaybackQueueEntryDto {
     pub entry_id: String,
+    /// Track de biblioteca; `0` identifica una entrada que sigue efímera.
     pub track_id: i64,
+    /// Identidad del proveedor mientras la entrada sigue efímera.
+    pub service_id: Option<i64>,
+    pub service_track_id: Option<String>,
     /// `pending` | `history` | `current`.
     pub kind: String,
     pub position: i64,
+    /// Motivo persistido cuando la promoción aún no pudo resolver identidad.
+    pub promotion_error: Option<String>,
+}
+
+/// Evento delta: una entrada cambió de identidad o de motivo de promoción.
+pub const PLAYER_QUEUE_ENTRY_CHANGED_EVENT: &str = "player:queue-entry-changed";
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PlayerQueueEntryChangedPayload {
+    pub entry: PlaybackQueueEntryDto,
 }
 
 /// Instantánea completa del agregado de cola (`playback_queue_get`).
@@ -73,8 +88,16 @@ fn new_entry_id() -> String {
 /// Lee la instantánea completa del agregado. Cada lista en su orden propio:
 /// pendientes por `position` ascendente, historial en orden de reproducción.
 pub async fn perform_get_playback_queue(db: &DbPool) -> Result<PlaybackQueueSnapshot, String> {
-    let rows: Vec<(String, i64, String, i64)> = sqlx::query_as(
-        "SELECT entry_id, track_id, kind, position \
+    let rows: Vec<(
+        String,
+        i64,
+        Option<i64>,
+        Option<String>,
+        String,
+        i64,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT entry_id, COALESCE(track_id, 0), service_id, service_track_id, kind, position, promotion_error \
          FROM player_queue_entries \
          ORDER BY position ASC, enqueued_at ASC, rowid ASC",
     )
@@ -84,11 +107,24 @@ pub async fn perform_get_playback_queue(db: &DbPool) -> Result<PlaybackQueueSnap
     let entries: Vec<PlaybackQueueEntryDto> = rows
         .into_iter()
         .map(
-            |(entry_id, track_id, kind, position)| PlaybackQueueEntryDto {
+            |(
                 entry_id,
                 track_id,
+                service_id,
+                service_track_id,
                 kind,
                 position,
+                promotion_error,
+            )| {
+                PlaybackQueueEntryDto {
+                    entry_id,
+                    track_id,
+                    service_id,
+                    service_track_id,
+                    kind,
+                    position,
+                    promotion_error,
+                }
             },
         )
         .collect();
@@ -121,6 +157,33 @@ pub async fn perform_get_playback_queue(db: &DbPool) -> Result<PlaybackQueueSnap
     })
 }
 
+/// Reserva posiciones para inserciones nuevas. Delante desplaza todos los
+/// pendientes; detrás empalma tras el máximo actual.
+async fn reserve_pending_positions(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    count: usize,
+    at_front: bool,
+) -> Result<i64, String> {
+    let shift = count as i64;
+    if at_front {
+        sqlx::query(
+            "UPDATE player_queue_entries SET position = position + ? WHERE kind = 'pending'",
+        )
+        .bind(shift)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        return Ok(0);
+    }
+    let max: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(position), -1) FROM player_queue_entries WHERE kind = 'pending'",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(max + 1)
+}
+
 /// Encola tracks de biblioteca (devuelve los `entry_id` en el mismo orden).
 /// `at_front` inserta delante de los pendientes (regla `playNext`); si no,
 /// al final. La FK valida que los tracks existan.
@@ -131,28 +194,7 @@ pub async fn perform_enqueue(
 ) -> Result<Vec<String>, String> {
     validate_track_ids(track_ids)?;
     let mut tx = db.begin().await.map_err(|e| e.to_string())?;
-
-    // Delante desplaza todos los pendientes y ocupa las primeras posiciones;
-    // detrás empalma tras el máximo actual (no hace falta reasignar nada).
-    let shift = track_ids.len() as i64;
-    let start: i64 = if at_front {
-        sqlx::query(
-            "UPDATE player_queue_entries SET position = position + ? WHERE kind = 'pending'",
-        )
-        .bind(shift)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-        0
-    } else {
-        let max: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(position), -1) FROM player_queue_entries WHERE kind = 'pending'",
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-        max + 1
-    };
+    let start = reserve_pending_positions(&mut tx, track_ids.len(), at_front).await?;
 
     let mut entry_ids = Vec::with_capacity(track_ids.len());
     for (i, track_id) in track_ids.iter().enumerate() {
@@ -181,24 +223,68 @@ pub async fn perform_enqueue(
     Ok(entry_ids)
 }
 
-/// Transición de `previous` (#133, P02): la entrada del historial pasa a ser
-/// la pista actual y la pista que sonaba vuelve al FRENTE de los pendientes.
-/// Es la misma semántica que la UI aplicaba en memoria; aquí queda persistida.
-#[cfg(target_os = "linux")]
-pub async fn perform_return_to_pending_and_set_current(
+/// Encola un ítem del proveedor sin materializarlo en biblioteca. La única
+/// escritura es la entrada efímera: ni `tracks` ni `track_sources` se tocan.
+pub async fn perform_enqueue_provider_item(
+    db: &DbPool,
+    service_id: i64,
+    service_track_id: &str,
+    at_front: bool,
+) -> Result<String, String> {
+    if service_id <= 0 {
+        return Err(format!("service_id inválido: {service_id}"));
+    }
+    let service_track_id = service_track_id.trim();
+    if service_track_id.is_empty() {
+        return Err("service_track_id vacío: se esperaba un id del proveedor".to_string());
+    }
+    let service_name: String = sqlx::query_scalar("SELECT name FROM services WHERE id = ?")
+        .bind(service_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("El servicio {service_id} no existe"))?;
+    if !matches!(
+        service_name.to_ascii_lowercase().as_str(),
+        "qobuz" | "tidal"
+    ) {
+        return Err(format!(
+            "Proveedor sin reproducción o promoción de entradas efímeras: {service_name}"
+        ));
+    }
+    let preflight_error =
+        crate::services::streaming::eligible_streaming_account_ids(db, &service_name)
+            .await?
+            .is_empty()
+            .then(|| "reconnect: no hay una cuenta habilitada con streaming".to_string());
+
+    let entry_id = new_entry_id();
+    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+    let position = reserve_pending_positions(&mut tx, 1, at_front).await?;
+    sqlx::query(
+        "INSERT INTO player_queue_entries \
+         (entry_id, service_id, service_track_id, kind, position, promotion_error) \
+         VALUES (?, ?, ?, 'pending', ?, ?)",
+    )
+    .bind(&entry_id)
+    .bind(service_id)
+    .bind(service_track_id)
+    .bind(position)
+    .bind(preflight_error)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(entry_id)
+}
+
+/// `previous` sobre cualquier identidad (biblioteca o efímera): devuelve la
+/// pista que sonaba al frente de los pendientes y activa la entrada histórica.
+pub async fn perform_return_to_pending_and_set_current_entry(
     db: &DbPool,
     entry_id: &str,
-    track_id: i64,
-) -> Result<(), String> {
-    if track_id <= 0 {
-        return Err(format!("track_id inválido: {track_id}"));
-    }
-    if entry_id.trim().is_empty() {
-        return Err("entry_id vacío".to_string());
-    }
+) -> Result<PlaybackQueueEntryDto, String> {
     let mut tx = db.begin().await.map_err(|e| e.to_string())?;
-
-    // La pista que sonaba deja el foco y ocupa la primera posición pendiente.
     sqlx::query("UPDATE player_queue_entries SET position = position + 1 WHERE kind = 'pending'")
         .execute(&mut *tx)
         .await
@@ -209,10 +295,7 @@ pub async fn perform_return_to_pending_and_set_current(
     .execute(&mut *tx)
     .await
     .map_err(|e| e.to_string())?;
-
-    // La entrada del historial pasa a actual; si no existe, no se confirma
-    // un agregado a medias.
-    let promoted = sqlx::query(
+    let updated = sqlx::query(
         "UPDATE player_queue_entries SET kind = 'current', position = 0 \
          WHERE entry_id = ? AND kind = 'history'",
     )
@@ -221,7 +304,7 @@ pub async fn perform_return_to_pending_and_set_current(
     .await
     .map_err(|e| e.to_string())?
     .rows_affected();
-    if promoted != 1 {
+    if updated != 1 {
         tx.rollback()
             .await
             .map_err(|e| format!("rollback tras previous sin fila: {e}"))?;
@@ -229,7 +312,6 @@ pub async fn perform_return_to_pending_and_set_current(
             "La entrada {entry_id} no está en el historial (o ya no está)"
         ));
     }
-
     sqlx::query(
         "UPDATE player_state SET position_sec = 0, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
     )
@@ -237,7 +319,7 @@ pub async fn perform_return_to_pending_and_set_current(
     .await
     .map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;
-    Ok(())
+    perform_get_queue_entry(db, entry_id).await
 }
 
 /// Quita UNA entrada pendiente por su identidad. El historial y la pista
@@ -416,6 +498,141 @@ pub async fn perform_set_current(db: &DbPool, entry_id: &str, track_id: i64) -> 
     Ok(())
 }
 
+/// Lee una entrada concreta por su identidad estable.
+pub async fn perform_get_queue_entry(
+    db: &DbPool,
+    entry_id: &str,
+) -> Result<PlaybackQueueEntryDto, String> {
+    let row: Option<(
+        String,
+        i64,
+        Option<i64>,
+        Option<String>,
+        String,
+        i64,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT entry_id, COALESCE(track_id, 0), service_id, service_track_id, kind, position, promotion_error \
+         FROM player_queue_entries WHERE entry_id = ?",
+    )
+    .bind(entry_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let (entry_id, track_id, service_id, service_track_id, kind, position, promotion_error) =
+        row.ok_or_else(|| format!("La entrada {entry_id} no existe"))?;
+    Ok(PlaybackQueueEntryDto {
+        entry_id,
+        track_id,
+        service_id,
+        service_track_id,
+        kind,
+        position,
+        promotion_error,
+    })
+}
+
+/// Persiste el motivo de preflight/promoción sin tocar una entrada ya convertida.
+pub async fn perform_set_provider_promotion_error(
+    db: &DbPool,
+    entry_id: &str,
+    reason: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE player_queue_entries SET promotion_error = ? \
+         WHERE entry_id = ? AND track_id IS NULL",
+    )
+    .bind(reason)
+    .bind(entry_id)
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Activa una entrada por su identidad estable, sea de biblioteca o efímera.
+/// La transacción cubre también la carrera con la promoción: el `UPDATE` no
+/// depende de cómo era la identidad cuando empezó la llamada.
+pub async fn perform_set_current_entry(
+    db: &DbPool,
+    entry_id: &str,
+) -> Result<PlaybackQueueEntryDto, String> {
+    if entry_id.trim().is_empty() {
+        return Err("entry_id vacío".to_string());
+    }
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+    let exists: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM player_queue_entries WHERE entry_id = ?")
+            .bind(entry_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    if exists != 1 {
+        tx.rollback()
+            .await
+            .map_err(|e| format!("rollback tras activar entrada inexistente: {e}"))?;
+        return Err(format!("La entrada {entry_id} no existe"));
+    }
+    let already_current: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM player_queue_entries \
+         WHERE entry_id = ? AND kind = 'current'",
+    )
+    .bind(entry_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    if already_current == 0 {
+        let promoted = sqlx::query(
+            "UPDATE player_queue_entries \
+             SET kind = 'history', \
+                 position = (SELECT COALESCE(MAX(position), -1) FROM player_queue_entries \
+                             WHERE kind = 'history') + 1 \
+             WHERE kind = 'current'",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected();
+        if promoted > 1 {
+            tx.rollback()
+                .await
+                .map_err(|e| format!("rollback con current múltiple: {e}"))?;
+            return Err("Estado ambiguo: había más de una pista actual".to_string());
+        }
+        if promoted == 1 {
+            trim_history(&mut tx).await?;
+        }
+        let updated = sqlx::query(
+            "UPDATE player_queue_entries SET kind = 'current', position = 0 \
+             WHERE entry_id = ? AND kind IN ('pending', 'history')",
+        )
+        .bind(entry_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected();
+        if updated != 1 {
+            tx.rollback()
+                .await
+                .map_err(|e| format!("rollback al activar entrada: {e}"))?;
+            return Err(format!(
+                "La entrada {entry_id} no está pendiente ni en el historial"
+            ));
+        }
+    }
+    sqlx::query(
+        "UPDATE player_state SET position_sec = 0, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    perform_get_queue_entry(db, entry_id).await
+}
+
 /// Vacía la cola pendiente. La pista actual y el historial no se tocan (la
 /// regla de la UI: `clearQueue` nunca corta lo que suena).
 pub async fn perform_clear_queue(db: &DbPool) -> Result<(), String> {
@@ -571,6 +788,17 @@ pub async fn playback_queue_enqueue(
     perform_enqueue(&state.db, &track_ids, at_front).await
 }
 
+/// Encola un ítem del proveedor como entrada efímera, sin crear biblioteca.
+#[tauri::command]
+pub async fn playback_queue_enqueue_provider_item(
+    state: State<'_, crate::AppState>,
+    service_id: i64,
+    service_track_id: String,
+    at_front: bool,
+) -> Result<String, String> {
+    perform_enqueue_provider_item(&state.db, service_id, &service_track_id, at_front).await
+}
+
 /// Quita una entrada pendiente de la cola.
 #[tauri::command]
 pub async fn playback_queue_remove(
@@ -598,6 +826,15 @@ pub async fn playback_queue_set_current(
     track_id: i64,
 ) -> Result<(), String> {
     perform_set_current(&state.db, &entry_id, track_id).await
+}
+
+/// Activa una entrada de cola por su identidad, sin exigir un Track.
+#[tauri::command]
+pub async fn playback_queue_set_current_entry(
+    state: State<'_, crate::AppState>,
+    entry_id: String,
+) -> Result<PlaybackQueueEntryDto, String> {
+    perform_set_current_entry(&state.db, &entry_id).await
 }
 
 /// Vacía la cola pendiente (la pista actual y el historial se conservan).

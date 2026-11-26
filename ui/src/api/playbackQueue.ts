@@ -8,32 +8,15 @@
  * distintos.
  *
  * No confundir: `api/queue.ts` es la cola de descargas.
+ *
+ * P03 (#134): una entrada puede referenciar un Track o una identidad de
+ * proveedor. `track_id = 0` identifica estas últimas hasta su promoción.
  */
 
 import { invokeCommand } from './tauri';
+import type { PlaybackQueueEntryDto, PlaybackQueueSnapshotDto } from './types';
 
-/** Entrada de cola/historial tal como la devuelve el backend. */
-export interface PlaybackQueueEntryDto {
-    entry_id: string;
-    track_id: number;
-    /** `pending` | `history` | `current`. */
-    kind: string;
-    position: number;
-}
-
-/** Instantánea completa del agregado (`playback_queue_get`). */
-export interface PlaybackQueueSnapshotDto {
-    pending: PlaybackQueueEntryDto[];
-    /** Orden de reproducción (el más reciente al final). */
-    history: PlaybackQueueEntryDto[];
-    current: PlaybackQueueEntryDto | null;
-    position_sec: number;
-    shuffle: boolean;
-    /** `off` | `all` | `one`. */
-    repeat: string;
-    volume: number;
-    muted: boolean;
-}
+export type { PlaybackQueueEntryDto, PlaybackQueueSnapshotDto } from './types';
 
 /** Lee la instantánea completa: cola, historial, current, posición y modos. */
 export function getPlaybackQueueSnapshot(): Promise<PlaybackQueueSnapshotDto> {
@@ -47,6 +30,22 @@ export function getPlaybackQueueSnapshot(): Promise<PlaybackQueueSnapshotDto> {
  */
 export function playbackQueueEnqueue(trackIds: number[], atFront: boolean): Promise<string[]> {
     return invokeCommand<string[]>('playback_queue_enqueue', { trackIds, atFront });
+}
+
+/**
+ * Encola un ítem del proveedor sin crear Track ni TrackSource. La promoción
+ * ocurre sólo después de 30 s reales de escucha.
+ */
+export function playbackQueueEnqueueProviderItem(
+    serviceId: number,
+    serviceTrackId: string,
+    atFront: boolean,
+): Promise<string> {
+    return invokeCommand<string>('playback_queue_enqueue_provider_item', {
+        serviceId,
+        serviceTrackId,
+        atFront,
+    });
 }
 
 /** Quita una entrada pendiente de la cola. */
@@ -65,6 +64,11 @@ export function playbackQueueReorder(entryIds: string[]): Promise<void> {
  */
 export function playbackQueueSetCurrent(entryId: string, trackId: number): Promise<void> {
     return invokeCommand<void>('playback_queue_set_current', { entryId, trackId });
+}
+
+/** Activa una entrada persistida por su identidad, sin exigir un Track. */
+export function playbackQueueSetCurrentEntry(entryId: string): Promise<PlaybackQueueEntryDto> {
+    return invokeCommand<PlaybackQueueEntryDto>('playback_queue_set_current_entry', { entryId });
 }
 
 /** Vacía la cola pendiente (la pista actual y el historial se conservan). */

@@ -11,8 +11,8 @@
 //!   generación. Los comandos de aquí son delgados y delegan en ella.
 //! - Aquí también: el ticker de 250 ms, que consume `PlayerState::tick()` y
 //!   emite los eventos del player.
-//! - En la UI (`usePlayer.ts`): cola, historial, modos, crédito de escucha y
-//!   persistencia.
+//! - La UI (`usePlayer.ts`) proyecta cola, historial y modos; el crédito de
+//!   escucha y la promoción de efímeras viven en el backend.
 //!
 //! Eventos (el frontend descarta todo lo que no case con su `seq`):
 //! - `player:tick {seq, state, position_sec, duration_sec}` — cada 250 ms
@@ -20,6 +20,8 @@
 //!   seek en pausa...).
 //! - `player:ended {seq}` — una única vez por carga cuando la pista llegó a su
 //!   final natural (no con `player_stop`).
+//! - `player:queue-entry-changed {entry}` — una efímera cambió de identidad o
+//!   persistió un nuevo motivo de promoción.
 
 use std::time::Duration;
 
@@ -50,6 +52,54 @@ pub async fn player_load_track<R: tauri::Runtime>(
     state
         .open(&app, &cache, &app_state.db, track_id, autoplay, volume)
         .await
+}
+
+/// Carga una entrada de cola por su identidad, sea de biblioteca o efímera.
+#[tauri::command]
+pub async fn player_load_queue_entry<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, PlayerState>,
+    cache: State<'_, StreamCacheState>,
+    app_state: State<'_, crate::AppState>,
+    entry_id: String,
+    autoplay: bool,
+    volume: f64,
+) -> Result<PlayerLoadResult, String> {
+    let entry =
+        crate::commands::playback_queue::perform_get_queue_entry(&app_state.db, &entry_id).await?;
+    if entry.track_id > 0 {
+        state
+            .open(
+                &app,
+                &cache,
+                &app_state.db,
+                entry.track_id,
+                autoplay,
+                volume,
+            )
+            .await
+    } else {
+        let service_id = entry
+            .service_id
+            .ok_or_else(|| "la entrada efímera no tiene service_id".to_string())?;
+        let service_track_id = entry
+            .service_track_id
+            .ok_or_else(|| "la entrada efímera no tiene service_track_id".to_string())?;
+        state
+            .open_provider_item(
+                &app,
+                &cache,
+                &app_state.db,
+                crate::services::streaming::ProviderStreamItem {
+                    entry_id,
+                    service_id,
+                    service_track_id,
+                },
+                autoplay,
+                volume,
+            )
+            .await
+    }
 }
 
 /// Pausa (no-op si no hay nada sonando).
@@ -111,6 +161,33 @@ pub fn spawn_player_ticker<R: tauri::Runtime>(app: &AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(TICK_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        if let Some(app_state) = app.try_state::<crate::AppState>() {
+            let db = app_state.db.clone();
+            tauri::async_runtime::spawn(async move {
+                match crate::services::playback_promotion::reconcile_queue_promotions(&db).await {
+                    Ok(recovered) if recovered > 0 => tracing::info!(
+                        recovered,
+                        "créditos de promoción recuperados al arrancar el player"
+                    ),
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!("no se pudieron reconciliar promociones pendientes: {error}")
+                    }
+                }
+                match crate::services::playback_promotion::retry_unresolved_queue_promotions(&db)
+                    .await
+                {
+                    Ok(retried) if retried > 0 => tracing::info!(
+                        retried,
+                        "promociones efímeras reintentadas al arrancar el player"
+                    ),
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!("no se pudieron reintentar promociones efímeras: {error}")
+                    }
+                }
+            });
+        }
         loop {
             interval.tick().await;
             let Some(state) = app.try_state::<PlayerState>() else {
@@ -152,34 +229,52 @@ pub fn spawn_player_ticker<R: tauri::Runtime>(app: &AppHandle<R>) {
                 crate::services::playback_advance::spawn_auto_advance(app.clone(), payload.seq);
             }
             if let Some(credit) = out.listen_credit {
-                // P01 (#132): el backend acumula 30 s reales y acredita una
-                // única vez por sesión (dedupe por PK en `playback_listens`).
-                // Un fallo no es recuperable desde el ticker: queda en el log.
+                // P01/P03: el backend acumula 30 s reales. Una efímera se
+                // promociona y acredita con el token congelado; una pista de
+                // biblioteca mantiene el camino directo idempotente.
                 let db = match app.try_state::<crate::AppState>() {
                     Some(state) => state.db.clone(),
                     None => continue,
                 };
+                let provider_entry_id = match &credit.target {
+                    crate::services::streaming::StreamTarget::Provider(item) => {
+                        Some(item.entry_id.clone())
+                    }
+                    crate::services::streaming::StreamTarget::Library(_) => None,
+                };
+                let event_app = provider_entry_id.as_ref().map(|_| app.clone());
                 tauri::async_runtime::spawn(async move {
-                    match crate::commands::playback::perform_record_local_play(
-                        &db,
-                        credit.track_id,
-                        &credit.listen_session_id,
-                    )
-                    .await
-                    {
-                        Ok(stats) if stats.counted => {
-                            tracing::info!(
-                                track_id = credit.track_id,
-                                play_count = stats.play_count,
-                                "escucha acreditada por el backend (30 s reales)"
-                            );
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!(
-                                track_id = credit.track_id,
-                                "no se pudo acreditar la escucha: {e}"
-                            );
+                    let result =
+                        crate::commands::playback::perform_apply_listen_credit(&db, &credit).await;
+                    match &result {
+                        Ok(outcome) => tracing::info!(
+                            target = ?credit.target,
+                            ?outcome,
+                            "escucha procesada por el backend (30 s reales)"
+                        ),
+                        Err(error) => tracing::warn!(
+                            target = ?credit.target,
+                            "no se pudo procesar la escucha: {error}"
+                        ),
+                    }
+                    if let (Some(entry_id), Some(event_app)) = (provider_entry_id, event_app) {
+                        match crate::commands::playback_queue::perform_get_queue_entry(
+                            &db, &entry_id,
+                        )
+                        .await
+                        {
+                            Ok(entry) => {
+                                let _ = event_app.emit(
+                                    crate::commands::playback_queue::PLAYER_QUEUE_ENTRY_CHANGED_EVENT,
+                                    crate::commands::playback_queue::PlayerQueueEntryChangedPayload {
+                                        entry,
+                                    },
+                                );
+                            }
+                            Err(error) => tracing::warn!(
+                                entry_id = %entry_id,
+                                "no se pudo publicar el cambio de la entrada: {error}"
+                            ),
                         }
                     }
                 });

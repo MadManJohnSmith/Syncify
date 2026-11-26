@@ -1,7 +1,9 @@
 # Matriz de resolución de letras: 12 fuentes configurables sobre 10 redes
 
 **Estado:** vigente — reescrito contra el árbol.
-**Última revisión:** 2026-11-18 (LY02/#183: selección secuencial con mejora en §2.1–2.2).
+**Última revisión:** 2026-11-26 (LY14/#192: competición del candidato nativo de Tidal y estado sin
+confirmar del spike LY13/#182, §4.3). La revisión anterior (LY02/#183) fue la de selección
+secuencial con mejora en §2.1–2.2.
 La revisión de red es del 2026-11-14 (spike LY00, issue #178: sondeos de los endpoints de
 las 12 fuentes; evidencia fechada en §4). Catálogo y despacho en
 `src-tauri/src/download/lyrics.rs`, migraciones `src-tauri/migrations/0013_lyrics_provider_settings.sql`,
@@ -237,6 +239,38 @@ Prueba de descarga real contra Qobuz registrada en la revisión anterior:
 
 Esta validación puntual demuestra la ejecución end-to-end de esa fuente en el pipeline vivo en su
 momento; **no** es prueba de disponibilidad de red de las 12 fuentes.
+
+### 4.3 Letra nativa de Tidal (LY13/#182 y LY14/#192) — **sin verificar**
+
+| Elemento | Valor |
+| :--- | :--- |
+| Endpoint candidato | `GET https://api.tidal.com/v1/tracks/{track_id}/lyrics?countryCode={ISO-3166}` |
+| Credencial | OAuth Bearer de la cuenta Tidal (el mismo `access_token` que usan búsqueda y playback); `X-Tidal-SessionId` opcional, tomado de `GET /v1/sessions` |
+| Entrega esperada | JSON con `subtitles` (LRC, con marcaje `<mm:ss.xx>` si el proveedor entrega palabras) y `lyrics` (texto o LRC) |
+| Estado | **Sin confirmar.** El spike LY13/#182 está en `ready-for-human`: exige credenciales reales del dueño y un agente AFK no puede ejecutarlo |
+
+La sonda ejecutable queda en `src-tauri/tests/tidal_native_lyrics_live_test.rs`, tras `#[ignore]`:
+
+```bash
+SYNCIFY_TIDAL_ACCESS_TOKEN='...' SYNCIFY_TIDAL_TRACK_ID=24167 \
+SYNCIFY_TIDAL_COUNTRY_CODE=MX \
+cargo test --locked --test tidal_native_lyrics_live_test -- --ignored --nocapture
+```
+
+Imprime status, claves del payload y primeras líneas, y falla con el status y el cuerpo exactos si el
+endpoint responde otra cosa: así el spike cierra también con conclusión negativa razonada. El parser
+del payload vive en `crates/syncify-lyrics-engine/src/native.rs` y es defensivo: un campo ausente o
+vacío no fabrica una versión.
+
+**Comportamiento vigente:** sin endpoint confirmado, el pipeline de Tidal sigue resolviendo con el
+motor genérico. `parse_tidal_native_payload` no contacta red y nada lo llama desde producción; el
+catálogo de fuentes configurables sigue teniendo 12 entradas. La competición por Nivel de sincronía
+ya existe y está probada con gateway falso
+(`LyricsPipelineService::resolve_lyrics_and_sidecar_competing` y `compete_with_native`): solo gana un
+candidato nativo estrictamente más fino, y un empate conserva la fuente genérica. Falta cablearla
+cuando el spike confirme el endpoint y cuando el almacén de versiones de LY08/#187 exista (hoy no
+hay tabla `lyrics_versions`: el ganador se guardaría en la fila única por formato que ya escribe el
+pipeline).
 
 ## 5. Preservación de Enhanced LRC (sección corregida)
 

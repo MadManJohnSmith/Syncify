@@ -945,4 +945,6 @@ pub use header::{
 // the top would shift every line number cited by `docs/auditoria/` and tests.
 pub mod selection;
 
-pub use selection::{SelectionOutcome, SequentialSelection, SourceOutcome, SyncLevel};
+pub use selection::{
+    native_candidate_wins, SelectionOutcome, SequentialSelection, SourceOutcome, SyncLevel,
+};

@@ -26,6 +26,7 @@ vi.mock('../../api/tauri', () => ({
 
 vi.mock('../../api/player', () => ({
     playerLoadTrack: vi.fn(),
+    playerLoadQueueEntry: vi.fn(),
     playerPause: vi.fn(),
     playerResume: vi.fn(),
     playerStop: vi.fn(),
@@ -36,6 +37,7 @@ vi.mock('../../api/player', () => ({
     onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
     onPlayerAdvanced: vi.fn(),
+    onPlayerQueueEntryChanged: vi.fn(),
     onPlayerModesChanged: vi.fn(() => Promise.resolve()),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
@@ -66,6 +68,8 @@ function configureEngineMocks(): void {
     seq = 0;
     engine().playerLoadTrack.mockReset().mockImplementation(() =>
         Promise.resolve({ seq: ++seq, durationSec: 200, stream: null }));
+    engine().playerLoadQueueEntry.mockReset().mockImplementation(() =>
+        Promise.resolve({ seq: ++seq, durationSec: 200, stream: null }));
     engine().playerPause.mockReset().mockResolvedValue(undefined);
     engine().playerResume.mockReset().mockResolvedValue(undefined);
     engine().playerStop.mockReset().mockResolvedValue(undefined);
@@ -78,6 +82,7 @@ function configureEngineMocks(): void {
     });
     engine().onPlayerStreamState.mockReset().mockResolvedValue(() => {});
     engine().onPlayerAdvanced.mockReset().mockResolvedValue(() => {});
+    engine().onPlayerQueueEntryChanged.mockReset().mockResolvedValue(() => {});
     engine().onPlayerEnded.mockReset().mockResolvedValue(() => {});
 }
 
@@ -221,6 +226,66 @@ describe('usePlayer — persistencia en el backend y restauración (#131)', () =
         expect(player.history.value.map(e => e.trackId)).toEqual([1]);
     });
 
+    it('restaura una efímera por entry_id sin consultar la biblioteca', async () => {
+        backend({
+            playback_queue_get: () => Promise.resolve(snapshot({
+                current: {
+                    entry_id: 'provider-current',
+                    track_id: 0,
+                    service_id: 2,
+                    service_track_id: 'qobuz-7',
+                    kind: 'current',
+                    position: 0,
+                    promotion_error: null,
+                },
+                position_sec: 12,
+            })),
+        });
+        const player = (await freshPlayer()).usePlayer();
+
+        await player.restoreFromPersistence();
+        await flushPromises();
+
+        expect(engine().playerLoadQueueEntry).toHaveBeenCalledWith('provider-current', false, 1);
+        expect(engine().playerLoadTrack).not.toHaveBeenCalled();
+        expect(engine().playerSeek).toHaveBeenCalledWith(12);
+        expect(mockInvoke().mock.calls.some(([cmd]) => cmd === 'get_track_metadata')).toBe(false);
+        expect(player.current.value?.id).toBe(0);
+        expect(player.positionSec.value).toBe(12);
+    });
+
+    it('reproduce una efímera pendiente por entry_id y la activa por identidad', async () => {
+        backend({
+            playback_queue_get: () => Promise.resolve(snapshot({
+                pending: [{
+                    entry_id: 'provider-pending',
+                    track_id: 0,
+                    service_id: 2,
+                    service_track_id: 'qobuz-8',
+                    kind: 'pending',
+                    position: 0,
+                    promotion_error: null,
+                }],
+            })),
+        });
+        const player = (await freshPlayer()).usePlayer();
+        await player.restoreFromPersistence();
+        await flushPromises();
+        mockInvoke().mockClear();
+
+        await player.play();
+        await flushPromises();
+
+        expect(engine().playerLoadQueueEntry).toHaveBeenCalledWith('provider-pending', true, 1);
+        expect(engine().playerLoadTrack).not.toHaveBeenCalled();
+        expect(mockInvoke().mock.calls.some(([cmd]) => cmd === 'get_track_metadata')).toBe(false);
+        expect(mockInvoke()).toHaveBeenCalledWith('playback_queue_set_current_entry', {
+            entryId: 'provider-pending',
+        });
+        expect(player.current.value?.id).toBe(0);
+        expect(player.queue.value).toHaveLength(0);
+    });
+
     it('la clave antigua syncify.playerState.v1 se descarta sin migrar y la UI no escribe localStorage de reproducción', async () => {
         backend();
         localStorage.setItem(LEGACY_KEY, JSON.stringify({ version: 1, queue: [{ entryId: 'e', trackId: 1 }] }));
@@ -263,7 +328,15 @@ describe('usePlayer — persistencia en el backend y restauración (#131)', () =
             if (cmd === 'playback_queue_enqueue') {
                 return Promise.resolve(['be-1']);
             }
-            if (cmd === 'playback_queue_set_current') return Promise.resolve(undefined);
+            if (cmd === 'playback_queue_set_current_entry') return Promise.resolve({
+                entry_id: args?.entryId,
+                track_id: 8,
+                service_id: null,
+                service_track_id: null,
+                kind: 'current',
+                position: 0,
+                promotion_error: null,
+            });
             if (cmd === 'get_track_metadata') {
                 return Promise.resolve({ track_id: args?.trackId, title: 'S', artist_name: 'A', album_name: null, cover_art_url: null, file_path: '/lib/x.flac', sources: [] });
             }
@@ -280,7 +353,7 @@ describe('usePlayer — persistencia en el backend y restauración (#131)', () =
         // next(): consume la cabeza y el backend hace la transición atómica.
         player.next();
         await flushPromises();
-        expect(mockInvoke()).toHaveBeenCalledWith('playback_queue_set_current', { entryId: 'be-1', trackId: 8 });
+        expect(mockInvoke()).toHaveBeenCalledWith('playback_queue_set_current_entry', { entryId: 'be-1' });
         expect(player.current.value?.id).toBe(8);
         expect(player.queue.value).toHaveLength(0);
     });
@@ -417,9 +490,9 @@ describe('usePlayer — persistencia en el backend y restauración (#131)', () =
 
         const tracked = mockInvoke().mock.calls.map(c => `${c[0]}:${(c[1] as Record<string, unknown> | undefined)?.trackId}`);
         // La cabeza muerta se valida y descarta al vuelo; la siguiente suena
-        // y el avance persiste con playback_queue_set_current (transición
-        // atómica: cabeza consumida, current anterior → historial).
-        expect(tracked).toEqual(['get_track_metadata:999', 'get_track_metadata:5', 'playback_queue_set_current:5']);
+        // y el avance persiste con playback_queue_set_current_entry
+        // (transición atómica por identidad, sin exigir un Track).
+        expect(tracked).toEqual(['get_track_metadata:999', 'get_track_metadata:5', 'playback_queue_set_current_entry:undefined']);
         expect(engine().playerLoadTrack).toHaveBeenLastCalledWith(5, true, 1);
         expect(player.current.value?.id).toBe(5);
         expect(player.queue.value).toHaveLength(0);

@@ -1309,7 +1309,10 @@ const player = usePlayer()
 const isPlayingAudio = computed(() => player.isPlaying.value)
 const playbackPosition = computed(() => player.positionSec.value)
 const playbackRateValue = computed(() => player.playbackRate.value)
-const playerTrackId = computed(() => player.current.value?.id ?? null)
+const playerTrackId = computed(() => {
+  const id = player.current.value?.id
+  return id !== undefined && id > 0 ? id : null
+})
 
 // Real data refs
 const tracks = ref<LibraryTrack[]>([])

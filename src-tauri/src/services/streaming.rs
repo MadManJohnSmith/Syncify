@@ -113,6 +113,31 @@ struct Candidate {
     service_track_id: String,
 }
 
+/// Identidad reproducible de una entrada de cola. El ítem de proveedor no
+/// necesita un Track para abrir su stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderStreamItem {
+    pub entry_id: String,
+    pub service_id: i64,
+    pub service_track_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamTarget {
+    Library(i64),
+    Provider(ProviderStreamItem),
+}
+
+impl StreamTarget {
+    /// Identidad expuesta por eventos históricos. `0` significa efímero.
+    pub fn track_id(&self) -> i64 {
+        match self {
+            Self::Library(track_id) => *track_id,
+            Self::Provider(_) => 0,
+        }
+    }
+}
+
 const STREAMABLE_EXTENSIONS: &[&str] = &["flac", "mp3", "m4a", "mp4", "aac", "ogg", "opus", "wav"];
 
 /// Resuelve la mejor fuente de streaming reproducible para `track_id`.
@@ -229,6 +254,102 @@ pub async fn resolve_stream_for_track(
         "No se pudo resolver ninguna fuente reproducible: {}",
         failures.join(" · ")
     ))
+}
+
+/// Cuentas que pueden intentar streaming ahora. Es el mismo predicado usado por
+/// el preflight de encolado y por la resolución de Qobuz/Tidal.
+pub(crate) async fn eligible_streaming_account_ids(
+    db: &SqlitePool,
+    service_name: &str,
+) -> Result<Vec<i64>, String> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT a.id
+        FROM accounts a
+        JOIN services s ON s.id = a.service_id
+        WHERE LOWER(s.name) = ?
+          AND a.state = 'enabled'
+          AND COALESCE(a.credentials_invalid, 0) = 0
+          AND COALESCE(a.streaming_entitled, -1) != 0
+          AND COALESCE(a.invalid_reason, '') <> 'logged_out'
+        ORDER BY
+          CASE
+            WHEN a.streaming_entitled = 1 THEN 2
+            WHEN a.streaming_entitled = 0 THEN 0
+            ELSE 1
+          END DESC,
+          a.is_active DESC,
+          a.id DESC
+        "#,
+    )
+    .bind(service_name.to_ascii_lowercase())
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Revalida el preflight antes de abrir un stream de proveedor. No consulta al
+/// proveedor si la cuenta está desconectada, archivada o sin derecho.
+pub(crate) async fn ensure_provider_streaming_account(
+    db: &SqlitePool,
+    service_id: i64,
+) -> Result<(), String> {
+    let service_name: String = sqlx::query_scalar("SELECT name FROM services WHERE id = ?")
+        .bind(service_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("El servicio {service_id} no existe"))?;
+    if eligible_streaming_account_ids(db, &service_name)
+        .await?
+        .is_empty()
+    {
+        return Err("reconnect: no hay una cuenta habilitada con streaming".to_string());
+    }
+    Ok(())
+}
+
+/// Resuelve una entrada efímera sin consultar ni crear `tracks`.
+pub(crate) async fn resolve_stream_for_provider_item(
+    db: &SqlitePool,
+    http: &reqwest::Client,
+    service_id: i64,
+    service_track_id: &str,
+) -> Result<ResolvedStream, String> {
+    let service_name: String = sqlx::query_scalar("SELECT name FROM services WHERE id = ?")
+        .bind(service_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("El servicio {service_id} no existe"))?;
+    let candidate = Candidate {
+        service_name: service_name.clone(),
+        service_track_id: service_track_id.trim().to_string(),
+    };
+    if candidate.service_track_id.is_empty() {
+        return Err("service_track_id vacío".to_string());
+    }
+    match service_name.to_ascii_lowercase().as_str() {
+        "qobuz" => resolve_qobuz(db, http, &candidate, None).await,
+        "tidal" => resolve_tidal(db, http, &candidate, None).await,
+        other => Err(format!(
+            "Servicio de streaming no soportado para entradas efímeras: {other}"
+        )),
+    }
+}
+
+pub(crate) async fn resolve_stream_for_target(
+    db: &SqlitePool,
+    http: &reqwest::Client,
+    target: &StreamTarget,
+) -> Result<ResolvedStream, String> {
+    match target {
+        StreamTarget::Library(track_id) => resolve_stream_for_track(db, http, *track_id).await,
+        StreamTarget::Provider(item) => {
+            resolve_stream_for_provider_item(db, http, item.service_id, &item.service_track_id)
+                .await
+        }
+    }
 }
 
 async fn load_track_duration_ms(db: &SqlitePool, track_id: i64) -> Option<i64> {
@@ -1017,32 +1138,11 @@ async fn load_candidates(db: &SqlitePool, track_id: i64) -> Result<Vec<Candidate
         .collect())
 }
 
-/// Cuentas candidatas para un servicio, priorizando cuentas con derecho de
-/// streaming confirmado (`streaming_entitled = 1`), luego no determinado (`-1`),
-/// activas primero y más recientes primero. Excluye credenciales inválidas.
+/// Cuentas candidatas para un servicio, con el preflight de cuenta aplicado.
 async fn candidate_account_ids(db: &SqlitePool, service_name: &str) -> Vec<i64> {
-    sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT a.id
-        FROM accounts a
-        JOIN services s ON s.id = a.service_id
-        WHERE LOWER(s.name) = ?
-          AND COALESCE(a.credentials_invalid, 0) = 0
-          AND COALESCE(a.streaming_entitled, -1) != 0
-        ORDER BY
-          CASE
-            WHEN a.streaming_entitled = 1 THEN 2
-            WHEN a.streaming_entitled = 0 THEN 0
-            ELSE 1
-          END DESC,
-          a.is_active DESC,
-          a.id DESC
-        "#,
-    )
-    .bind(service_name)
-    .fetch_all(db)
-    .await
-    .unwrap_or_default()
+    eligible_streaming_account_ids(db, service_name)
+        .await
+        .unwrap_or_default()
 }
 
 async fn resolve_qobuz(

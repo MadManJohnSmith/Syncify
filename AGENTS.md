@@ -27,14 +27,14 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/syncify-target-$(basen
 cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
-cargo test --workspace --locked --no-fail-fast   # 365 objetivos de test: recuento real
+cargo test --workspace --locked --no-fail-fast   # 369 objetivos de test: recuento real
 cargo test --locked --test batch_50_audit_test -- --test-threads=1
-npm --prefix ui run build && npm --prefix ui run test:run                  # 160 ficheros de test UI
-.venv/bin/python -m unittest discover -s scripts/tests                    # 525 tests (2 skipped)
+npm --prefix ui run build && npm --prefix ui run test:run                  # 161 ficheros de test UI
+.venv/bin/python -m unittest discover -s scripts/tests                    # 498 tests (2 skipped)
 
 ```
 
-Todo corre sin red salvo los 13 tests `#[ignore]`, que necesitan servicios reales.
+Todo corre sin red salvo los 14 tests `#[ignore]`, que necesitan servicios reales.
 No los des-ignores en CI ni añadas `--skip`.
 
 ### Cifras del AGENTS.md

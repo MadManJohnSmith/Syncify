@@ -48,10 +48,12 @@ en lyrics, `ensure_ascii=False+default=str` en el resto). Añadir un puente cost
     que un bug siga siendo un error de proceso y no un fallo de dominio.
   - `run_cli(handler, parse=None)` — modo humano para los CLIs de mantenimiento.
   - Una sola serialización: `ensure_ascii=False` + `default=str` + stdout UTF-8.
-- **Alcance:** migran los 8 puentes vivos y los 7 CLIs de mantenimiento. Los puentes
-  legacy `download_bridge.py` y `organizer_bridge.py` **no** se tocan: están
-  protegidos por `src-tauri/tests/python_module_hygiene_test.rs` y el camino de
-  descarga es nativo en Rust (ADR-0009).
+- **Alcance:** migran los 8 puentes vivos y los 7 CLIs de mantenimiento.
+  `organizer_bridge.py` **no** se toca: está protegido por
+  `src-tauri/tests/python_module_hygiene_test.rs`. `download_bridge.py` dejó de
+  ser un puente en D14 (#126): su contenido se retiró y solo sobrevive como
+  tombstone porque dos suites Rust exigen la ruta (ADR-0009, D-13); el camino de
+  descarga es nativo en Rust.
 
 ## Consecuencias
 

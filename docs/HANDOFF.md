@@ -4,6 +4,10 @@ Este fichero no guarda estado: solo dice dónde re-derivarlo. Desde el
 2026-11-22 los relevos de sesión son registros fechados en `docs/historico/`
 y nunca se editan para ponerlos al día.
 
+No conviertas este fichero en un relevo: sin listas de issues ni de próximos
+pasos. Un puntero solo envejece si deja de apuntar a lo que existe; la puerta
+`scripts/tests/test_docs_consistency.py` comprueba que siga así.
+
 ## Cómo re-derivar el estado vigente
 
 1. **Tracker** (GitHub Issues vía `gh`, ver `docs/agents/issue-tracker.md`):

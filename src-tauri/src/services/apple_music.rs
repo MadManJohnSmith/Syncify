@@ -49,6 +49,30 @@ pub struct AppleMusicTrack {
     pub attributes: Option<AppleMusicTrackAttributes>,
 }
 
+impl AppleMusicTrack {
+    /// Apple Music answers library collections with **library** ids (`i.…`)
+    /// while the catalog exposes numeric ids. The catalog id rides in
+    /// `attributes.playParams.catalogId` for library items.
+    pub fn catalog_id(&self) -> Option<&str> {
+        self.attributes
+            .as_ref()?
+            .play_params
+            .as_ref()?
+            .catalog_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+    }
+
+    /// Id stored as the downloadable provider item (`track_sources`): the
+    /// catalog id when the library item exposes it, because SongLink and the
+    /// catalog APIs address songs by catalog id. The library id (`track.id`)
+    /// stays as the library identity of the resource.
+    pub fn source_track_id(&self) -> &str {
+        self.catalog_id().unwrap_or(&self.id)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AppleMusicTrackAttributes {
@@ -59,6 +83,13 @@ pub struct AppleMusicTrackAttributes {
     pub isrc: Option<String>,
     pub date_added: Option<String>,
     pub track_number: Option<i32>,
+    pub play_params: Option<AppleMusicPlayParams>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AppleMusicPlayParams {
+    pub catalog_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -198,11 +229,23 @@ pub fn resolve_storefront(credentials_value: Option<&str>) -> String {
 
 /// Outcome of importing one Apple Music entity collection (albums or
 /// playlists): the track counters plus how many entities of that kind landed.
+/// `reported_total` is the collection size Apple declared once (`meta.total`),
+/// never a page count.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AppleMusicEntityImport {
     pub imported: i32,
     pub skipped: i32,
     pub entities: i32,
+    pub reported_total: Option<i64>,
+}
+
+/// Progress of one entity collection (albums or playlists) for the unified
+/// engine: how many entities landed and how many tracks they pulled in.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AppleMusicEntityProgress {
+    pub entities_seen: u64,
+    pub tracks_imported: u64,
+    pub reported_total: Option<i64>,
 }
 
 /// Query Apple Music uses to page through a library collection.
@@ -684,7 +727,7 @@ impl AppleMusicClient {
                 )
                 .bind(track_id)
                 .bind(service_id)
-                .bind(&track.id)
+                .bind(track.source_track_id())
                 .execute(db)
                 )
                 .await;
@@ -717,15 +760,35 @@ impl AppleMusicClient {
         db: &SqlitePool,
         account_id: i64,
     ) -> Result<AppleMusicEntityImport, String> {
+        self.import_albums_with_progress(db, account_id, |_| {})
+            .await
+    }
+
+    /// Same as [`Self::import_albums`] while reporting one progress step per
+    /// album: the unified engine shows the album phase advancing instead of a
+    /// silent multi-minute fetch.
+    pub async fn import_albums_with_progress<F>(
+        &self,
+        db: &SqlitePool,
+        account_id: i64,
+        mut on_progress: F,
+    ) -> Result<AppleMusicEntityImport, String>
+    where
+        F: FnMut(AppleMusicEntityProgress) + Send,
+    {
         let mut offset = 0;
         let limit = 50;
         let mut imported = 0;
         let mut skipped = 0;
         let mut entities = 0;
+        let mut reported_total = None;
         let service_id = self.get_service_id(db, "apple_music").await?;
 
         loop {
             let page = self.get_library_albums(offset, limit).await?;
+            if reported_total.is_none() {
+                reported_total = page.meta.as_ref().and_then(|m| m.total);
+            }
             let albums = page.data.clone().unwrap_or_default();
             if albums.is_empty() {
                 break;
@@ -852,11 +915,17 @@ impl AppleMusicClient {
                     )
                     .bind(track_id)
                     .bind(service_id)
-                    .bind(&track.id)
+                    .bind(track.source_track_id())
                     .execute(db)
                     )
                     .await;
                 }
+
+                on_progress(AppleMusicEntityProgress {
+                    entities_seen: entities.max(0) as u64,
+                    tracks_imported: imported.max(0) as u64,
+                    reported_total,
+                });
             }
 
             let next_decision = crate::services::import_pagination::next_apple_music_offset(
@@ -877,6 +946,7 @@ impl AppleMusicClient {
             imported,
             skipped,
             entities,
+            reported_total,
         })
     }
 
@@ -886,15 +956,34 @@ impl AppleMusicClient {
         db: &SqlitePool,
         account_id: i64,
     ) -> Result<AppleMusicEntityImport, String> {
+        self.import_playlists_with_progress(db, account_id, |_| {})
+            .await
+    }
+
+    /// Same as [`Self::import_playlists`] while reporting one progress step per
+    /// playlist, so the unified engine's playlist phase advances visibly.
+    pub async fn import_playlists_with_progress<F>(
+        &self,
+        db: &SqlitePool,
+        account_id: i64,
+        mut on_progress: F,
+    ) -> Result<AppleMusicEntityImport, String>
+    where
+        F: FnMut(AppleMusicEntityProgress) + Send,
+    {
         let mut offset = 0;
         let limit = 50;
         let mut imported = 0;
+        let mut reported_total = None;
         let mut skipped = 0;
         let mut entities = 0;
         let service_id = self.get_service_id(db, "apple_music").await?;
 
         loop {
             let page = self.get_library_playlists(offset, limit).await?;
+            if reported_total.is_none() {
+                reported_total = page.meta.as_ref().and_then(|m| m.total);
+            }
             let playlists = page.data.clone().unwrap_or_default();
             if playlists.is_empty() {
                 break;
@@ -942,6 +1031,11 @@ impl AppleMusicClient {
                         playlist.id
                     );
                     skipped += 1;
+                    on_progress(AppleMusicEntityProgress {
+                        entities_seen: entities.max(0) as u64,
+                        tracks_imported: imported.max(0) as u64,
+                        reported_total,
+                    });
                     continue;
                 }
 
@@ -1106,11 +1200,17 @@ impl AppleMusicClient {
                     )
                     .bind(track_id)
                     .bind(service_id)
-                    .bind(&track.id)
+                    .bind(track.source_track_id())
                     .execute(db)
                     )
                     .await;
                 }
+
+                on_progress(AppleMusicEntityProgress {
+                    entities_seen: entities.max(0) as u64,
+                    tracks_imported: imported.max(0) as u64,
+                    reported_total,
+                });
             }
 
             let next_decision = crate::services::import_pagination::next_apple_music_offset(
@@ -1131,6 +1231,7 @@ impl AppleMusicClient {
             imported,
             skipped,
             entities,
+            reported_total,
         })
     }
 

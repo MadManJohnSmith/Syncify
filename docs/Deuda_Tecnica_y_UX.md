@@ -323,6 +323,25 @@ condicionado, cuyo contrato es declarar solo lo que espera a un tercero.
   reiniciar (o leer) `isFavorite` en `loadArtist`, con un test de carrera A→B.
 - **Cierra**: la secuenciación + captura de id + `isFavorite` con su test de carrera.
 
+### D-13 — `download_bridge.py` sobrevive como tombstone tras D14
+
+- **Observado (2026-11-26, #126)**: D14 retiró los caminos de descarga de
+  `scripts/services/` (Qobuz, Tidal, Deezer y SoundCloud) y dejó
+  `scripts/download_bridge.py` como tombstone que responde con error y exit 1.
+  El fichero no puede borrarse en un carril Python/docs porque dos suites Rust
+  exigen su ruta y su contrato de entorno:
+  `src-tauri/tests/python_module_hygiene_test.rs`
+  (`test_legitimate_production_bridges_exist`) y
+  `src-tauri/tests/qobuz_credentials_leak_test.rs`
+  (`test_qobuz_bridges_keep_env_override_contract`).
+- **Corrección que lo cerraría**: en un carril que toque `src-tauri/**`, quitar
+  `download_bridge.py` de la lista de puentes requeridos, retirar el caso de
+  override de Qobuz (su sujeto ya no existe) y borrar el fichero junto con sus
+  entradas en las listas de empaquetado y en el guardián
+  `scripts/tests/test_python_download_retirement.py`.
+- **Cierra**: el fichero y sus referencias desaparecen del árbol y las suites
+  Rust siguen verdes.
+
 ## Cerrado en esta revisión
 
 | ID | Qué se cerró | Evidencia |

@@ -9,7 +9,7 @@ tests read Electron startup logs where the bridge's JSON was expected and every
 assertion about the payload fails for a reason that has nothing to do with the
 bridge.
 
-`test_download_bridge_contract.py` already worked around this inline, because
+The retired download-bridge suite already worked around this inline, because
 the same trap catches the Rust side (`get_python_executable`). This module is
 that workaround, shared: prefer `sys.executable` when it really is an
 interpreter, otherwise fall back to the running interpreter's own prefix and

@@ -1215,3 +1215,389 @@ fn cascade_skips_sources_with_a_fresh_failure_without_contacting_them() {
         );
     });
 }
+
+// LY14 (#192) — letra nativa de Tidal: el candidato del proveedor compite por
+// Nivel de sincronía y solo gana cuando es estrictamente más fino. El gateway
+// es falso: estos tests no contactan red; el E2E real vive en
+// `src-tauri/tests/tidal_native_lyrics_live_test.rs` tras `#[ignore]`.
+
+fn fixture_generic_line_resolution() -> LyricsResolution {
+    LyricsResolution::new_resolved(
+        "LRCLIB",
+        "lrclib_synced",
+        LyricsSyncType::LineSynced,
+        Some("[00:10.00]I wish you could swim".to_string()),
+        Some("I wish you could swim".to_string()),
+        vec![LyricsLineDomain {
+            start_time_ms: 10000,
+            words: "I wish you could swim".to_string(),
+            end_time_ms: None,
+        }],
+        false,
+        "lrclib.net",
+    )
+}
+
+/// Gateway falso del pipeline Tidal: devuelve el payload nativo ya parseado.
+async fn fake_tidal_native_gateway(payload: &serde_json::Value) -> Option<LyricsResponse> {
+    crate::native::parse_tidal_native_payload(payload)
+}
+
+fn fake_native_json(subtitles: &str, lyrics: &str) -> serde_json::Value {
+    serde_json::json!({ "subtitles": subtitles, "lyrics": lyrics })
+}
+
+#[test]
+fn tidal_native_payload_parses_line_synced_subtitles() {
+    let payload = fake_native_json(
+        "[00:10.00]I wish you could swim\n[00:12.50]Like dolphins can swim",
+        "I wish you could swim\nLike dolphins can swim",
+    );
+    let candidate = crate::native::parse_tidal_native_payload(&payload)
+        .expect("las subtitles sincronizadas producen un candidato");
+
+    assert_eq!(candidate.provider, "Tidal");
+    assert_eq!(candidate.source, "tidal_native");
+    assert_eq!(candidate.sync_type, "LINE_SYNCED");
+    assert_eq!(candidate.lines.len(), 2);
+    assert_eq!(candidate.lines[0].start_time_ms, 10_000);
+    assert_eq!(
+        candidate.plain_lyrics.as_deref(),
+        Some("I wish you could swim\nLike dolphins can swim"),
+        "la copia plana conserva el texto de la versión sincronizada"
+    );
+    assert!(candidate.elrc_content.is_none());
+}
+
+#[test]
+fn tidal_native_payload_keeps_word_level_elrc() {
+    let payload = fake_native_json(
+        "[00:10.00] <00:10.00>I <00:10.50>wish <00:11.00>you <00:11.50>could <00:12.00>swim",
+        "",
+    );
+    let candidate = crate::native::parse_tidal_native_payload(&payload)
+        .expect("una línea con tiempos de palabra produce candidato");
+
+    assert_eq!(candidate.sync_type, "WORD_SYNCED");
+    assert!(candidate
+        .elrc_content
+        .as_deref()
+        .is_some_and(|elrc| elrc.contains("<00:10.50>")));
+    assert_eq!(candidate.lines.len(), 1);
+}
+
+#[test]
+fn tidal_native_payload_without_timestamps_stays_plain() {
+    let payload = fake_native_json("", "I wish you could swim\nLike dolphins can swim");
+    let candidate = crate::native::parse_tidal_native_payload(&payload)
+        .expect("un payload de solo texto sigue siendo una versión válida");
+
+    assert_eq!(candidate.sync_type, "PLAIN");
+    assert!(candidate.lines.is_empty());
+    assert_eq!(
+        candidate.plain_lyrics.as_deref(),
+        Some("I wish you could swim\nLike dolphins can swim")
+    );
+}
+
+#[test]
+fn tidal_native_payload_without_content_is_not_a_candidate() {
+    for payload in [
+        serde_json::json!({}),
+        serde_json::json!({ "subtitles": "   ", "lyrics": "" }),
+        serde_json::json!({ "trackId": 42 }),
+    ] {
+        assert!(crate::native::parse_tidal_native_payload(&payload).is_none());
+    }
+}
+
+fn competing_service(
+    min_sync_level: &str,
+    preferred_language: &str,
+) -> crate::pipeline::LyricsPipelineService {
+    let mut config = LyricsEngineConfig::default();
+    config.sources.clear();
+    config.min_sync_level = min_sync_level.to_string();
+    config.preferred_language = preferred_language.to_string();
+    crate::pipeline::LyricsPipelineService::with_client(LyricsClient::with_parts_and_config(
+        reqwest::Client::new(),
+        Arc::new(NoopHooks),
+        config,
+    ))
+}
+
+#[test]
+fn native_word_synced_beats_generic_line_synced_and_generates_sidecar() {
+    let _guard = IDENTITY_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    futures::executor::block_on(async {
+        crate::cache::clear_lyrics_cache();
+        let service = competing_service("line", "original");
+        crate::cache::set_cached_lyrics(
+            "Artist X",
+            "Song Y",
+            Some("Album Z"),
+            fixture_generic_line_resolution(),
+            fixture_generic_line_resolution().generate_sidecar_lrc(),
+        );
+
+        let native = fake_tidal_native_gateway(&fake_native_json(
+            "[00:10.00] <00:10.00>I <00:10.50>wish <00:11.00>you <00:11.50>could <00:12.00>swim",
+            "",
+        ))
+        .await;
+
+        let (winner, sidecar) = service
+            .resolve_lyrics_and_sidecar_competing(
+                "artist x",
+                "song y",
+                Some("album z"),
+                180.0,
+                native,
+            )
+            .await
+            .expect("competición resuelta");
+
+        assert_eq!(winner.provider, "Tidal");
+        assert_eq!(winner.sync_type, LyricsSyncType::KaraokeWordSynced);
+        assert!(
+            sidecar.is_some_and(|lrc| lrc.contains("<00:10.50>")),
+            "el sidecar se genera del ganador nativo, no del genérico"
+        );
+    });
+}
+
+#[test]
+fn native_tie_keeps_the_generic_source() {
+    let _guard = IDENTITY_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    futures::executor::block_on(async {
+        crate::cache::clear_lyrics_cache();
+        let service = competing_service("line", "original");
+        crate::cache::set_cached_lyrics(
+            "Artist X",
+            "Song Y",
+            Some("Album Z"),
+            fixture_generic_line_resolution(),
+            fixture_generic_line_resolution().generate_sidecar_lrc(),
+        );
+
+        let native = fake_tidal_native_gateway(&fake_native_json(
+            "[00:10.00]I wish you could swim\n[00:12.50]Like dolphins can swim",
+            "",
+        ))
+        .await;
+
+        let (winner, _) = service
+            .resolve_lyrics_and_sidecar_competing(
+                "artist x",
+                "song y",
+                Some("album z"),
+                180.0,
+                native,
+            )
+            .await
+            .expect("competición resuelta");
+
+        assert_eq!(
+            winner.provider, "LRCLIB",
+            "un empate no desbanca a la fuente genérica (prioridad de fuente)"
+        );
+        assert_eq!(winner.sync_type, LyricsSyncType::LineSynced);
+    });
+}
+
+#[test]
+fn native_plain_never_degrades_the_generic_level() {
+    let _guard = IDENTITY_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    futures::executor::block_on(async {
+        crate::cache::clear_lyrics_cache();
+        let service = competing_service("line", "original");
+        crate::cache::set_cached_lyrics(
+            "Artist X",
+            "Song Y",
+            Some("Album Z"),
+            fixture_generic_line_resolution(),
+            fixture_generic_line_resolution().generate_sidecar_lrc(),
+        );
+
+        let native = fake_tidal_native_gateway(&fake_native_json(
+            "",
+            "I wish you could swim\nLike dolphins can swim",
+        ))
+        .await;
+
+        let (winner, _) = service
+            .resolve_lyrics_and_sidecar_competing(
+                "artist x",
+                "song y",
+                Some("album z"),
+                180.0,
+                native,
+            )
+            .await
+            .expect("competición resuelta");
+
+        assert_eq!(winner.provider, "LRCLIB");
+        assert_eq!(winner.sync_type, LyricsSyncType::LineSynced);
+    });
+}
+
+#[test]
+fn without_a_native_candidate_the_generic_result_is_unchanged() {
+    let _guard = IDENTITY_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    futures::executor::block_on(async {
+        crate::cache::clear_lyrics_cache();
+        let service = competing_service("line", "original");
+        let generic = fixture_generic_line_resolution();
+        crate::cache::set_cached_lyrics(
+            "Artist X",
+            "Song Y",
+            Some("Album Z"),
+            generic.clone(),
+            fixture_generic_line_resolution().generate_sidecar_lrc(),
+        );
+
+        let (plain_call, plain_sidecar) = service
+            .resolve_lyrics_and_sidecar("artist x", "song y", Some("album z"), 180.0)
+            .await
+            .expect("resolución genérica");
+        let (competing_call, competing_sidecar) = service
+            .resolve_lyrics_and_sidecar_competing(
+                "artist x",
+                "song y",
+                Some("album z"),
+                180.0,
+                None,
+            )
+            .await
+            .expect("resolución genérica");
+
+        assert_eq!(plain_call, generic);
+        assert_eq!(competing_call, plain_call);
+        assert_eq!(competing_sidecar, plain_sidecar);
+    });
+}
+
+#[test]
+fn native_rejected_by_the_language_policy_falls_back_to_generic() {
+    let _guard = IDENTITY_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    futures::executor::block_on(async {
+        crate::cache::clear_lyrics_cache();
+        let service = competing_service("line", "es");
+        crate::cache::set_cached_lyrics(
+            "Artist X",
+            "Song Y",
+            Some("Album Z"),
+            fixture_generic_line_resolution(),
+            None,
+        );
+
+        // Inglés con objetivo español: el candidato nativo cae por idioma,
+        // igual que caería una Fuente en la cascada.
+        let native = fake_tidal_native_gateway(&fake_native_json(
+            "[00:10.00] <00:10.00>I <00:10.50>wish <00:11.00>you <00:11.50>could <00:12.00>swim",
+            "",
+        ))
+        .await;
+
+        let (winner, _) = service
+            .resolve_lyrics_and_sidecar_competing(
+                "artist x",
+                "song y",
+                Some("album z"),
+                180.0,
+                native,
+            )
+            .await
+            .expect("competición resuelta");
+
+        assert_eq!(winner.provider, "LRCLIB");
+        assert_eq!(winner.sync_type, LyricsSyncType::LineSynced);
+    });
+}
+
+#[test]
+fn native_candidate_is_rejudged_instead_of_being_frozen_in_the_cache() {
+    let _guard = IDENTITY_CACHE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    futures::executor::block_on(async {
+        crate::cache::clear_lyrics_cache();
+        let service = competing_service("line", "original");
+        crate::cache::set_cached_lyrics(
+            "Artist X",
+            "Song Y",
+            Some("Album Z"),
+            fixture_generic_line_resolution(),
+            None,
+        );
+
+        let native = fake_tidal_native_gateway(&fake_native_json(
+            "[00:10.00] <00:10.00>I <00:10.50>wish <00:11.00>you <00:11.50>could <00:12.00>swim",
+            "",
+        ))
+        .await;
+
+        let (first, _) = service
+            .resolve_lyrics_and_sidecar_competing(
+                "artist x",
+                "song y",
+                Some("album z"),
+                180.0,
+                native,
+            )
+            .await
+            .expect("competición resuelta");
+        let (second, _) = service
+            .resolve_lyrics_and_sidecar_competing(
+                "artist x",
+                "song y",
+                Some("album z"),
+                180.0,
+                None,
+            )
+            .await
+            .expect("resolución genérica");
+
+        assert_eq!(first.provider, "Tidal");
+        assert_eq!(
+            second.provider, "LRCLIB",
+            "la caché guarda la resolución genérica, no el ganador nativo"
+        );
+    });
+}
+
+#[test]
+fn tidal_native_payload_falls_back_to_lyrics_when_subtitles_have_no_timestamps() {
+    let payload = fake_native_json(
+        "not lrc at all",
+        "[00:10.00]I wish you could swim\n[00:12.50]Like dolphins can swim",
+    );
+    let candidate = crate::native::parse_tidal_native_payload(&payload)
+        .expect("las lyrics con timestamps siguen siendo una versión sincronizada");
+
+    assert_eq!(candidate.sync_type, "LINE_SYNCED");
+    assert_eq!(candidate.lines.len(), 2);
+}
+
+#[test]
+fn tidal_native_payload_orders_lines_by_timestamp() {
+    let payload = fake_native_json(
+        "[00:12.50]Like dolphins can swim\n[00:10.00]I wish you could swim",
+        "",
+    );
+    let candidate = crate::native::parse_tidal_native_payload(&payload)
+        .expect("las subtitles producen candidato");
+
+    let starts: Vec<i64> = candidate.lines.iter().map(|l| l.start_time_ms).collect();
+    assert_eq!(starts, vec![10_000, 12_500]);
+}

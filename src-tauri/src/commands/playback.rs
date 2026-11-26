@@ -30,7 +30,7 @@ pub struct PlayStats {
 /// (minúsculas con guiones) ANTES de tocar la PK de `playback_listens`:
 /// `"ABC…"` y `"abc…"` son el mismo token y no deben poder contar dos veces.
 /// Acepta las formas que parsea `uuid` (hifenada, simple, braced, urn).
-fn normalize_listen_session_id(raw: &str) -> Result<String, String> {
+pub(crate) fn normalize_listen_session_id(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err("listen_session_id vacío: se esperaba un UUID".to_string());
@@ -40,25 +40,15 @@ fn normalize_listen_session_id(raw: &str) -> Result<String, String> {
         .map_err(|_| format!("listen_session_id inválido (se esperaba UUID): {raw:?}"))
 }
 
-/// Núcleo testeable de `record_local_play` (patrón `perform_*` del resto de
-/// comandos): recibe el pool directamente y no `State`.
+/// Núcleo transaccional del crédito. El llamador posee la transacción: así la
+/// promoción puede convertir la entrada y acreditar la escucha de forma atómica.
 ///
-/// Semántica transaccional — INSERT-primero, nunca SELECT-then-INSERT:
-///   1. `BEGIN`.
-///   2. `INSERT … ON CONFLICT(listen_session_id) DO NOTHING` — la PK decide
-///      el doble conteo en una sola sentencia atómica.
-///   3. `rows_affected == 1` → `UPDATE tracks …`; exigir `rows_affected == 1`
-///      o ROLLBACK + Err (cinturón además de la FK, por si una regresión
-///      futura desactiva `PRAGMA foreign_keys`).
-///   4. `rows_affected == 0` → misma pista: devolver estadísticas con
-///      `counted: false` SIN UPDATE ni cambio de `last_played`; pista
-///      distinta → ROLLBACK + Err (el token pertenece a otra escucha).
-///
-/// Límite de confianza documentado (doc fase 1 / MPRIS): el backend garantiza
-/// atomicidad e idempotencia, no puede certificar por sí solo los 30 s
-/// audibles de la fase 1 — eso lo acredita la UI antes de invocar.
-pub async fn perform_record_local_play(
-    db: &DbPool,
+/// Semántica INSERT-primero, nunca SELECT-then-INSERT:
+/// 1. `INSERT … ON CONFLICT(listen_session_id) DO NOTHING` decide el doble conteo.
+/// 2. Si insertó, `UPDATE tracks` exige exactamente una fila.
+/// 3. Si el token ya existe, sólo acepta la misma pista y no modifica stats.
+pub(crate) async fn record_local_play_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     track_id: i64,
     listen_session_id: &str,
 ) -> Result<PlayStats, String> {
@@ -67,44 +57,29 @@ pub async fn perform_record_local_play(
     }
     let session_id = normalize_listen_session_id(listen_session_id)?;
 
-    // (1) BEGIN. Primera sentencia es el INSERT (escritura): una transacción
-    // DEFERRED no sufre SQLITE_BUSY_SNAPSHOT aquí — el lock de escritura se
-    // toma en el INSERT y busy_timeout (30 s, db.rs) serializa escritores.
-    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
-
-    // (2) INSERT-primero: el conflicto de PK decide sin SELECT previo, también
-    // bajo llamadas concurrentes con el mismo token. Con FK activa (db.rs
-    // activa `PRAGMA foreign_keys = ON` en CADA conexión del pool), una pista
-    // inexistente/borrada muere aquí: error definitivo, no transitorio.
     let inserted = sqlx::query(
         "INSERT INTO playback_listens (listen_session_id, track_id) VALUES (?, ?) \
          ON CONFLICT(listen_session_id) DO NOTHING",
     )
     .bind(&session_id)
     .bind(track_id)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(|e| e.to_string())?
     .rows_affected();
 
     if inserted == 1 {
-        // (3) Primera vez que esta sesión cuenta.
         let updated = sqlx::query(
             "UPDATE tracks \
              SET play_count = play_count + 1, last_played = CURRENT_TIMESTAMP \
              WHERE id = ?",
         )
         .bind(track_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|e| e.to_string())?
         .rows_affected();
         if updated != 1 {
-            // Cinturón además de la FK: si una regresión futura desactiva
-            // FK, la sesión NUNCA se persiste sin su incremento asociado.
-            tx.rollback()
-                .await
-                .map_err(|e| format!("rollback tras UPDATE sin fila: {e}"))?;
             return Err(format!(
                 "El track {track_id} no existe; no se cuenta la escucha"
             ));
@@ -112,14 +87,9 @@ pub async fn perform_record_local_play(
         let (play_count, last_played): (i64, Option<String>) =
             sqlx::query_as("SELECT play_count, last_played FROM tracks WHERE id = ?")
                 .bind(track_id)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await
                 .map_err(|e| e.to_string())?;
-        tx.commit().await.map_err(|e| e.to_string())?;
-        tracing::info!(
-            "record_local_play: track_id={} contado (play_count={play_count})",
-            track_id
-        );
         return Ok(PlayStats {
             track_id,
             play_count,
@@ -128,28 +98,20 @@ pub async fn perform_record_local_play(
         });
     }
 
-    // (4) Conflicto de PK: la sesión ya se registró antes.
     let existing_track_id: Option<i64> =
         sqlx::query_scalar("SELECT track_id FROM playback_listens WHERE listen_session_id = ?")
             .bind(&session_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await
             .map_err(|e| e.to_string())?;
-
     match existing_track_id {
         Some(existing) if existing == track_id => {
-            // Reintento idempotente: SIN UPDATE, last_played intacto.
             let (play_count, last_played): (i64, Option<String>) =
                 sqlx::query_as("SELECT play_count, last_played FROM tracks WHERE id = ?")
                     .bind(track_id)
-                    .fetch_one(&mut *tx)
+                    .fetch_one(&mut **tx)
                     .await
                     .map_err(|e| e.to_string())?;
-            tx.commit().await.map_err(|e| e.to_string())?;
-            tracing::debug!(
-                "record_local_play: track_id={} ya contado con esta sesión (dedupe)",
-                track_id
-            );
             Ok(PlayStats {
                 track_id,
                 play_count,
@@ -157,23 +119,100 @@ pub async fn perform_record_local_play(
                 counted: false,
             })
         }
-        Some(existing) => {
-            tx.rollback()
-                .await
-                .map_err(|e| format!("rollback tras conflicto con otra pista: {e}"))?;
-            Err(format!(
-                "El token de escucha ya pertenece al track {existing}, no al {track_id}"
-            ))
+        Some(existing) => Err(format!(
+            "El token de escucha ya pertenece al track {existing}, no al {track_id}"
+        )),
+        None => Err(format!(
+            "Conflicto de sesión de escucha {session_id} sin fila registrada"
+        )),
+    }
+}
+
+/// Núcleo testeable de `record_local_play` (patrón `perform_*` del resto de
+/// comandos): recibe el pool directamente y no `State`.
+pub async fn perform_record_local_play(
+    db: &DbPool,
+    track_id: i64,
+    listen_session_id: &str,
+) -> Result<PlayStats, String> {
+    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+    let stats = record_local_play_in_tx(&mut tx, track_id, listen_session_id).await?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    if stats.counted {
+        tracing::info!(
+            "record_local_play: track_id={} contado (play_count={})",
+            stats.track_id,
+            stats.play_count
+        );
+    } else {
+        tracing::debug!(
+            "record_local_play: track_id={} ya contado con esta sesión (dedupe)",
+            stats.track_id
+        );
+    }
+    Ok(stats)
+}
+
+/// Aplica el crédito que produjo el ticker. Una entrada de biblioteca usa el
+/// camino directo; una efímera resuelve identidad y promociona antes de contar.
+pub async fn perform_apply_listen_credit(
+    db: &DbPool,
+    credit: &crate::services::playback_session::ListenCredit,
+) -> Result<crate::services::playback_promotion::PromotionOutcome, String> {
+    use crate::services::playback_promotion::{
+        freeze_queue_listen_session, promote_queue_entry, resolve_provider_identity,
+    };
+    use crate::services::streaming::StreamTarget;
+
+    match &credit.target {
+        StreamTarget::Library(track_id) => {
+            let stats = perform_record_local_play(db, *track_id, &credit.listen_session_id).await?;
+            Ok(
+                crate::services::playback_promotion::PromotionOutcome::AlreadyLibrary {
+                    track_id: *track_id,
+                    counted: stats.counted,
+                },
+            )
         }
-        None => {
-            // Inalcanzable salvo carrera exótica (ON CONFLICT sin fila
-            // visible): fallar de forma explícita sin persistir nada.
-            tx.rollback()
+        StreamTarget::Provider(item) => {
+            let entry =
+                crate::commands::playback_queue::perform_get_queue_entry(db, &item.entry_id)
+                    .await?;
+            if entry.track_id > 0 {
+                let frozen: Option<String> = sqlx::query_scalar(
+                    "SELECT listen_session_id FROM player_queue_entries WHERE entry_id = ?",
+                )
+                .bind(&item.entry_id)
+                .fetch_optional(db)
                 .await
-                .map_err(|e| format!("rollback tras conflicto sin fila: {e}"))?;
-            Err(format!(
-                "Conflicto de sesión de escucha {session_id} sin fila registrada"
-            ))
+                .map_err(|e| e.to_string())?;
+                if frozen.as_deref() == Some(credit.listen_session_id.as_str()) {
+                    promote_queue_entry(
+                        db,
+                        &item.entry_id,
+                        &credit.listen_session_id,
+                        Err("la entrada ya fue promocionada".into()),
+                    )
+                    .await
+                } else {
+                    let stats =
+                        perform_record_local_play(db, entry.track_id, &credit.listen_session_id)
+                            .await?;
+                    Ok(
+                        crate::services::playback_promotion::PromotionOutcome::AlreadyLibrary {
+                            track_id: entry.track_id,
+                            counted: stats.counted,
+                        },
+                    )
+                }
+            } else {
+                // El umbral ya ocurrió: congelar precede a la resolución de red
+                // para que una promoción concurrente no elija otra sesión.
+                freeze_queue_listen_session(db, &item.entry_id, &credit.listen_session_id).await?;
+                let resolved =
+                    resolve_provider_identity(db, item.service_id, &item.service_track_id).await;
+                promote_queue_entry(db, &item.entry_id, &credit.listen_session_id, resolved).await
+            }
         }
     }
 }

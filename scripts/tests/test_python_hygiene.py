@@ -267,17 +267,5 @@ class TestPythonModuleHygiene(unittest.TestCase):
             f"Unresolved markers left in bundled production Python: {offenders}",
         )
 
-    def test_download_bridge_handlers(self):
-        """Verify download_bridge.py registers expected production streaming services."""
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("download_bridge", self.scripts_dir / "download_bridge.py")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        self.assertIn("qobuz", mod.HANDLERS)
-        self.assertIn("tidal", mod.HANDLERS)
-        self.assertIn("deezer", mod.HANDLERS)
-        self.assertIn("soundcloud", mod.HANDLERS)
-
-
 if __name__ == "__main__":
     unittest.main()
