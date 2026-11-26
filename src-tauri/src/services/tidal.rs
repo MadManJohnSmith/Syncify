@@ -153,6 +153,8 @@ pub struct TidalTrack {
     pub track_number: Option<i32>,
     #[serde(rename = "volumeNumber")]
     pub disc_number: Option<i32>,
+    #[serde(default)]
+    pub explicit: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1063,6 +1065,28 @@ impl TidalClient {
             let body = response.text().await.unwrap_or_default();
             Err(Self::handle_api_error(status, &body, &url))
         }
+    }
+
+    /// Metadatos de un ítem concreto, sin materializarlo en biblioteca.
+    pub async fn get_track(&self, track_id: i64) -> Result<TidalTrack, String> {
+        let url = format!("{}/tracks/{}", self.base_url, track_id);
+        let response = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.access_token)
+            .query(&[("countryCode", self.country_code.as_str())])
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::handle_api_error(status, &body, &url));
+        }
+        response
+            .json::<TidalTrack>()
+            .await
+            .map_err(|e| format!("Failed to parse track: {}", e))
     }
 
     /// Get tracks in an album (paginated)

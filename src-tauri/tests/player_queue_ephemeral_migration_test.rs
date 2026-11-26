@@ -185,6 +185,11 @@ async fn upgrade_0119_acepta_efimeras_y_rechaza_identidades_incompletas() {
         .fetch_one(&pool)
         .await
         .expect("Qobuz sembrado por migraciones");
+    let xor_track: i64 =
+        sqlx::query_scalar("INSERT INTO tracks (title) VALUES ('Track para XOR') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .expect("track válido para probar el XOR");
 
     sqlx::query(
         "INSERT INTO player_queue_entries \
@@ -195,14 +200,21 @@ async fn upgrade_0119_acepta_efimeras_y_rechaza_identidades_incompletas() {
     .execute(&pool)
     .await
     .expect("entrada efímera válida");
+    sqlx::query(
+        "INSERT INTO player_queue_entries (entry_id, track_id, kind, position) \
+         VALUES ('biblioteca-valida', ?, 'pending', 0)",
+    )
+    .bind(xor_track)
+    .execute(&pool)
+    .await
+    .expect("una entrada de biblioteca sigue siendo válida sin proveedor");
 
     let invalid_rows = [
         ("sin-identidad", None, None, None),
-        ("solo-track", Some(999_999), None, None),
         ("solo-servicio", None, Some(service_id), None),
         (
             "servicio-y-track",
-            Some(999_999),
+            Some(xor_track),
             Some(service_id),
             Some("x"),
         ),

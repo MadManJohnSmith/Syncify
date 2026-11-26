@@ -27,8 +27,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::playback_queue::{
-    perform_get_playback_queue, perform_rebuild_cycle, perform_set_current, perform_set_position,
-    PlaybackQueueEntryDto, PlaybackQueueSnapshot,
+    perform_get_playback_queue, perform_rebuild_cycle, perform_set_current_entry,
+    perform_set_position, PlaybackQueueEntryDto, PlaybackQueueSnapshot,
 };
 use crate::services::playback_session::{lock_core, PlayerState};
 use crate::services::stream_cache::StreamCacheState;
@@ -39,7 +39,10 @@ use crate::services::stream_cache::StreamCacheState;
 #[derive(Debug, Clone, Serialize)]
 pub struct PlayerAdvancedPayload {
     pub seq: u64,
+    /// `0` mientras la entrada actual sigue siendo efímera.
     pub track_id: i64,
+    pub service_id: Option<i64>,
+    pub service_track_id: Option<String>,
     pub entry_id: String,
     /// Presente sólo cuando el avance lo pidió `previous`: la pista que sonaba
     /// vuelve al FRENTE de los pendientes (no al historial) y la entrada
@@ -159,7 +162,21 @@ pub fn decide_manual_next(snapshot: &PlaybackQueueSnapshot) -> AdvanceDecision {
 struct DecidedAdvance {
     entry_id: String,
     track_id: i64,
+    service_id: Option<i64>,
+    service_track_id: Option<String>,
     previous_entry_id: Option<String>,
+}
+
+impl DecidedAdvance {
+    fn from_entry(entry: PlaybackQueueEntryDto, previous_entry_id: Option<String>) -> Self {
+        Self {
+            entry_id: entry.entry_id,
+            track_id: entry.track_id,
+            service_id: entry.service_id,
+            service_track_id: entry.service_track_id,
+            previous_entry_id,
+        }
+    }
 }
 
 /// Aplica una decisión al agregado con los `perform_*` reales. `previous` sólo
@@ -172,34 +189,24 @@ async fn apply_decision(
 ) -> Result<Option<DecidedAdvance>, String> {
     match decision {
         AdvanceDecision::Stop => Ok(None),
-        AdvanceDecision::PlayHead { entry_id, track_id } => {
-            perform_set_current(db, &entry_id, track_id).await?;
-            Ok(Some(DecidedAdvance {
-                entry_id,
-                track_id,
-                previous_entry_id,
-            }))
+        AdvanceDecision::PlayHead { entry_id, .. } => {
+            let entry = perform_set_current_entry(db, &entry_id).await?;
+            Ok(Some(DecidedAdvance::from_entry(entry, previous_entry_id)))
         }
-        AdvanceDecision::ReplayCurrent { entry_id, track_id } => {
+        AdvanceDecision::ReplayCurrent { entry_id, .. } => {
             perform_set_position(db, 0.0).await?;
-            Ok(Some(DecidedAdvance {
-                entry_id,
-                track_id,
-                previous_entry_id,
-            }))
+            let entry =
+                crate::commands::playback_queue::perform_get_queue_entry(db, &entry_id).await?;
+            Ok(Some(DecidedAdvance::from_entry(entry, previous_entry_id)))
         }
         AdvanceDecision::RebuildCycle {
             order,
             head_entry_id,
-            head_track_id,
+            ..
         } => {
             perform_rebuild_cycle(db, &order).await?;
-            perform_set_current(db, &head_entry_id, head_track_id).await?;
-            Ok(Some(DecidedAdvance {
-                entry_id: head_entry_id,
-                track_id: head_track_id,
-                previous_entry_id,
-            }))
+            let entry = perform_set_current_entry(db, &head_entry_id).await?;
+            Ok(Some(DecidedAdvance::from_entry(entry, previous_entry_id)))
         }
     }
 }
@@ -215,12 +222,38 @@ async fn open_decided<R: tauri::Runtime>(
     let state = app.state::<PlayerState>();
     let volume = if snapshot.muted { 0.0 } else { snapshot.volume };
     let cache = app.state::<StreamCacheState>();
-    let result = state
-        .open(app, &cache, &db, decided.track_id, true, volume)
-        .await?;
+    let result = if decided.track_id > 0 {
+        state
+            .open(app, &cache, &db, decided.track_id, true, volume)
+            .await?
+    } else {
+        let service_id = decided
+            .service_id
+            .ok_or_else(|| "la entrada efímera no tiene service_id".to_string())?;
+        let service_track_id = decided
+            .service_track_id
+            .clone()
+            .ok_or_else(|| "la entrada efímera no tiene service_track_id".to_string())?;
+        state
+            .open_provider_item(
+                app,
+                &cache,
+                &db,
+                crate::services::streaming::ProviderStreamItem {
+                    entry_id: decided.entry_id.clone(),
+                    service_id,
+                    service_track_id,
+                },
+                true,
+                volume,
+            )
+            .await?
+    };
     Ok(PlayerAdvancedPayload {
         seq: result.seq,
         track_id: decided.track_id,
+        service_id: decided.service_id,
+        service_track_id: decided.service_track_id,
         entry_id: decided.entry_id,
         previous_entry_id: decided.previous_entry_id,
     })
@@ -295,15 +328,17 @@ pub async fn run_manual_previous<R: tauri::Runtime>(
         perform_set_position(&db, 0.0).await?;
         return Ok(None);
     };
-    crate::commands::playback_queue::perform_return_to_pending_and_set_current(
-        &db,
-        &previous.entry_id,
-        previous.track_id,
-    )
-    .await?;
+    let previous =
+        crate::commands::playback_queue::perform_return_to_pending_and_set_current_entry(
+            &db,
+            &previous.entry_id,
+        )
+        .await?;
     let decided = DecidedAdvance {
         entry_id: previous.entry_id,
         track_id: previous.track_id,
+        service_id: previous.service_id,
+        service_track_id: previous.service_track_id,
         previous_entry_id: Some(current.entry_id),
     };
     open_decided(app, &snapshot, decided).await.map(Some)

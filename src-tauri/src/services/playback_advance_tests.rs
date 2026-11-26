@@ -26,14 +26,17 @@ use tauri::{Listener, Manager};
 use super::run_auto_advance;
 use crate::commands::playback::perform_record_local_play;
 use crate::commands::playback_queue::{
-    perform_enqueue, perform_get_playback_queue, perform_set_current, perform_set_modes,
-    perform_set_volume,
+    perform_enqueue, perform_enqueue_provider_item, perform_get_playback_queue,
+    perform_set_current, perform_set_modes, perform_set_volume,
 };
 use crate::commands::player::{
     player_load_track, player_pause, player_resume, player_seek, player_set_rate,
 };
-use crate::services::playback_session::{lock_core, PlayerState, LISTEN_THRESHOLD_SEC};
+use crate::services::playback_session::{
+    begin_listen_session, lock_core, ListenCredit, PlayerState, LISTEN_THRESHOLD_SEC,
+};
 use crate::services::stream_cache::StreamCacheState;
+use crate::services::streaming::{ProviderStreamItem, StreamTarget};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -156,6 +159,13 @@ fn tick_step(
 ) -> crate::services::playback_session::TickOutput {
     clock.advance(Duration::from_secs_f64(step));
     state.tick(None)
+}
+
+fn credit_track_id(credit: &ListenCredit) -> i64 {
+    match &credit.target {
+        StreamTarget::Library(track_id) => *track_id,
+        StreamTarget::Provider(_) => panic!("este test esperaba una pista de biblioteca"),
+    }
 }
 
 /// Reproduce `seconds` en pasos de 0,25 s y devuelve el crédito si cruzó.
@@ -456,19 +466,20 @@ async fn treinta_segundos_reales_acreditan_una_unica_vez_por_sesion() {
     // El paso que cruza 30,0 s: exactamente un crédito.
     let out = tick_step(&state, &clock, 0.25);
     let credit = out.listen_credit.expect("30,0 s acreditan");
-    assert_eq!(credit.track_id, a);
+    assert_eq!(credit_track_id(&credit), a);
     // Y no vuelve a acreditar en el resto de la pista.
     assert!(!play_seconds(&state, &clock, 5.0), "una vez por sesión");
 
     // El crédito real llega a play_count UNA vez (idempotente por sesión).
-    let stats = perform_record_local_play(&db, credit.track_id, &credit.listen_session_id)
+    let stats = perform_record_local_play(&db, credit_track_id(&credit), &credit.listen_session_id)
         .await
         .expect("crédito aplicado");
     assert!(stats.counted);
     assert_eq!(stats.play_count, 1);
-    let replay = perform_record_local_play(&db, credit.track_id, &credit.listen_session_id)
-        .await
-        .expect("reintento idempotente");
+    let replay =
+        perform_record_local_play(&db, credit_track_id(&credit), &credit.listen_session_id)
+            .await
+            .expect("reintento idempotente");
     assert!(!replay.counted, "la misma sesión nunca cuenta dos veces");
     assert_eq!(replay.play_count, 1);
 }
@@ -578,7 +589,7 @@ async fn cada_pista_avanzada_abre_sesion_de_escucha_nueva() {
     let credit_a = tick_step(&state, &clock, 0.25)
         .listen_credit
         .expect("crédito A");
-    assert_eq!(credit_a.track_id, a);
+    assert_eq!(credit_track_id(&credit_a), a);
 
     // A termina y el backend avanza a B; nueva sesión de escucha.
     let ended = tick_step(&state, &clock, 11.0).ended.expect("fin de A");
@@ -596,18 +607,19 @@ async fn cada_pista_avanzada_abre_sesion_de_escucha_nueva() {
     let credit_b = tick_step(&state, &clock, 0.25)
         .listen_credit
         .expect("crédito B");
-    assert_eq!(credit_b.track_id, b);
+    assert_eq!(credit_track_id(&credit_b), b);
     assert_ne!(
         credit_b.listen_session_id, credit_a.listen_session_id,
         "cada pista abre sesión nueva"
     );
 
-    perform_record_local_play(&db, credit_a.track_id, &credit_a.listen_session_id)
+    perform_record_local_play(&db, credit_track_id(&credit_a), &credit_a.listen_session_id)
         .await
         .expect("A contada");
-    let stats_b = perform_record_local_play(&db, credit_b.track_id, &credit_b.listen_session_id)
-        .await
-        .expect("B contada");
+    let stats_b =
+        perform_record_local_play(&db, credit_track_id(&credit_b), &credit_b.listen_session_id)
+            .await
+            .expect("B contada");
     assert!(stats_b.counted);
     assert_eq!(stats_b.play_count, 1);
 }
@@ -615,4 +627,54 @@ async fn cada_pista_avanzada_abre_sesion_de_escucha_nueva() {
 #[tokio::test]
 async fn el_umbral_es_treinta_segundos_exactos() {
     assert_eq!(LISTEN_THRESHOLD_SEC, 30.0);
+}
+
+#[tokio::test]
+async fn una_efimera_cruza_el_umbral_con_su_identidad_de_entrada() {
+    let db = memory_pool().await;
+    let dir = tempfile::tempdir().expect("tmp");
+    let track_id = seed_track_with_file(&db, dir.path(), "Motor sintético", 40.0).await;
+    let clock = VirtualClock::new();
+    let app = mock_advance_app(db.clone(), &clock).await;
+    load_playing(&app, track_id).await;
+    let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'qobuz'")
+        .fetch_one(&db)
+        .await
+        .expect("Qobuz");
+    let entry_id = perform_enqueue_provider_item(&db, service_id, "qobuz-preview-2", false)
+        .await
+        .expect("encolar efímera");
+    {
+        let state = app.state::<PlayerState>();
+        let mut core = lock_core(&state).expect("core");
+        begin_listen_session(
+            &mut core,
+            StreamTarget::Provider(ProviderStreamItem {
+                entry_id: entry_id.clone(),
+                service_id,
+                service_track_id: "qobuz-preview-2".into(),
+            }),
+        );
+    }
+
+    clock.advance(Duration::from_secs_f64(29.75));
+    assert!(app
+        .state::<PlayerState>()
+        .tick(None)
+        .listen_credit
+        .is_none());
+    clock.advance(Duration::from_secs_f64(0.25));
+    let credit = app
+        .state::<PlayerState>()
+        .tick(None)
+        .listen_credit
+        .expect("30 s reales");
+    assert_eq!(
+        credit.target,
+        StreamTarget::Provider(ProviderStreamItem {
+            entry_id,
+            service_id,
+            service_track_id: "qobuz-preview-2".into(),
+        })
+    );
 }

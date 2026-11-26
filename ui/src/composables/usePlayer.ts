@@ -25,10 +25,10 @@
  * it syncs its projection from the backend event.
  *
  * Phase rules:
- * - Restoring after a restart ALWAYS resolves again with
- *   `player_load_track`: the persisted state never stores `file_path`, the
- *   full track DTO, or engine state. The engine loads the track paused at
- *   the saved position.
+ * - Restoring after a restart ALWAYS resolves again: library entries use
+ *   `playerLoadTrack` and provider entries use `playerLoadQueueEntry`. The
+ *   persisted state never stores `file_path`, the full track DTO, or engine
+ *   state. The engine loads paused at the saved position.
  * - Importing this module fires no playback: restoration
  *   is lazy (`restoreFromPersistence`) and the status bar player invokes it on mount.
  * - Engine events carry the load `seq`: everything from an already replaced
@@ -40,8 +40,10 @@ import {
     onPlayerAdvanced,
     onPlayerEnded,
     onPlayerModesChanged,
+    onPlayerQueueEntryChanged,
     onPlayerStreamState,
     onPlayerTick,
+    playerLoadQueueEntry,
     playerLoadTrack,
     playerPause,
     playerResume,
@@ -61,10 +63,12 @@ import {
     playbackQueueRemove,
     playbackQueueReorder,
     playbackQueueSetCurrent,
+    playbackQueueSetCurrentEntry,
     playbackStateReset,
     playbackStateSetModes,
     playbackStateSetPosition,
     playbackStateSetVolume,
+    type PlaybackQueueEntryDto,
 } from '../api/playbackQueue'
 
 /**
@@ -90,7 +94,11 @@ export type RepeatMode = 'off' | 'all' | 'one'
  */
 export interface PlaybackQueueEntry {
     entryId: string;
+    /** `0` mientras la entrada sigue siendo un ítem de proveedor. */
     trackId: number;
+    serviceId?: number | null;
+    serviceTrackId?: string | null;
+    promotionError?: string | null;
     track?: PlayerTrack;
 }
 
@@ -156,6 +164,32 @@ export function projectMetadata(meta: TrackMetadataWithSources): PlayerTrack {
         album: meta.album_name ?? null,
         coverUrl: meta.cover_art_url ?? null,
     };
+}
+
+function isProviderEntry(entry: PlaybackQueueEntry): boolean {
+    return entry.trackId === 0;
+}
+
+/** Proyección honesta: una efímera no tiene todavía metadatos de biblioteca. */
+function providerProjection(entry: PlaybackQueueEntry): PlayerTrack {
+    return entry.track ?? {
+        id: 0,
+        title: entry.serviceTrackId ? `Provider item ${entry.serviceTrackId}` : 'Provider item',
+        artist: '',
+        album: null,
+        coverUrl: null,
+    };
+}
+
+function mapQueueEntry(dto: PlaybackQueueEntryDto): PlaybackQueueEntry {
+    const entry: PlaybackQueueEntry = {
+        entryId: dto.entry_id,
+        trackId: dto.track_id,
+        serviceId: dto.service_id ?? null,
+        serviceTrackId: dto.service_track_id ?? null,
+        promotionError: dto.promotion_error ?? null,
+    };
+    return isProviderEntry(entry) ? { ...entry, track: providerProjection(entry) } : entry;
 }
 
 function shuffled<T>(arr: T[]): T[] {
@@ -275,21 +309,20 @@ function reportEngineFailure(err: unknown): void {
 }
 
 const upNext = computed<PlayerTrack[]>(() =>
-    queue.value.map(e => e.track ?? {
-        id: e.trackId,
-        title: `Track #${e.trackId}`,
-        artist: '',
-        album: null,
-        coverUrl: null,
-    }),
+    queue.value.map(entry => isProviderEntry(entry)
+        ? providerProjection(entry)
+        : entry.track ?? {
+            id: entry.trackId,
+            title: `Track #${entry.trackId}`,
+            artist: '',
+            album: null,
+            coverUrl: null,
+        }),
 );
 
 // ---------------------------------------------------------------------------
 // Persistence (backend, SQLite — api/playbackQueue.ts; #131)
 // ---------------------------------------------------------------------------
-
-/** Referencia mínima de una entrada para las llamadas de persistencia. */
-interface QueueEntryRef { entryId: string; trackId: number }
 
 function isValidRepeat(v: string): v is RepeatMode {
     return v === 'off' || v === 'all' || v === 'one';
@@ -302,7 +335,7 @@ function isValidRepeat(v: string): v is RepeatMode {
  * reproducción: se registra y el estado en memoria sigue mandando hasta la
  * siguiente mutación que lo reconcilie.
  */
-function persistQueueWrite(what: string, op: () => Promise<void>): void {
+function persistQueueWrite(what: string, op: () => Promise<unknown>): void {
     try {
         // Promise.resolve: nunca debe romper la reproducción, ni siquiera si
         // la capa IPC devolviera algo que no es promesa.
@@ -312,10 +345,6 @@ function persistQueueWrite(what: string, op: () => Promise<void>): void {
     } catch (err) {
         console.warn(`[player] persisting queue failed (${what}): ${messageOf(err)}`);
     }
-}
-
-function stripEntry(e: PlaybackQueueEntry): QueueEntryRef {
-    return { entryId: e.entryId, trackId: e.trackId };
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +529,9 @@ function bindEngineEvents(): void {
     }).catch((err: unknown) => {
         console.warn(`[player] could not subscribe to player:advanced: ${messageOf(err)}`);
     });
+    void onPlayerQueueEntryChanged(syncQueueEntryChanged).catch((err: unknown) => {
+        console.warn(`[player] could not subscribe to player:queue-entry-changed: ${messageOf(err)}`);
+    });
     void onPlayerModesChanged(modes => {
         // P02 (#133): las acciones de MPRIS las ejecuta el backend. La UI sólo
         // proyecta el modo persistido; si shuffle reordenó los pendientes, el
@@ -527,7 +559,7 @@ function bindEngineEvents(): void {
 // ---------------------------------------------------------------------------
 
 function pushHistory(entry: PlaybackQueueEntry): void {
-    history.value = [...history.value, stripEntry(entry)].slice(-HISTORY_LIMIT);
+    history.value = [...history.value, { ...entry }].slice(-HISTORY_LIMIT);
 }
 
 function removePending(entryId: string): void {
@@ -552,7 +584,9 @@ async function syncFromBackendAdvance(advanced: PlayerAdvanced): Promise<void> {
     if (advanced.seq <= engineSeq) return;
     const previous = currentEntry.value;
     engineSeq = advanced.seq;
-    loadedPath = `backend:${advanced.trackId}`;
+    loadedPath = advanced.trackId > 0
+        ? `backend:${advanced.trackId}`
+        : `backend-entry:${advanced.entryId}`;
     engineState = 'playing';
     isPlaying.value = true;
     setMediaSessionPlaybackState('playing');
@@ -574,7 +608,19 @@ async function syncFromBackendAdvance(advanced: PlayerAdvanced): Promise<void> {
         pushHistory(previous);
         removePending(advanced.entryId);
     }
-    currentEntry.value = { entryId: advanced.entryId, trackId: advanced.trackId };
+    const nextEntry: PlaybackQueueEntry = {
+        entryId: advanced.entryId,
+        trackId: advanced.trackId,
+        serviceId: advanced.serviceId ?? null,
+        serviceTrackId: advanced.serviceTrackId ?? null,
+    };
+    if (isProviderEntry(nextEntry)) {
+        const track = providerProjection(nextEntry);
+        currentEntry.value = { ...nextEntry, track };
+        updateMediaSessionMetadata(track);
+        return;
+    }
+    currentEntry.value = nextEntry;
     try {
         const meta = await getTrackMetadata(advanced.trackId);
         if (advanced.seq !== engineSeq) return;
@@ -588,6 +634,53 @@ async function syncFromBackendAdvance(advanced: PlayerAdvanced): Promise<void> {
     }
 }
 
+function preserveProjection(
+    previous: PlaybackQueueEntry | undefined,
+    updated: PlaybackQueueEntry,
+): PlaybackQueueEntry {
+    return previous?.trackId === updated.trackId && previous.track
+        ? { ...updated, track: previous.track }
+        : updated;
+}
+
+/** Reconcilia el delta de promoción sin reordenar ni recargar el motor. */
+function syncQueueEntryChanged(dto: PlaybackQueueEntryDto): void {
+    const updated = mapQueueEntry(dto);
+    queue.value = queue.value.map(entry => entry.entryId === updated.entryId
+        ? preserveProjection(entry, updated)
+        : entry);
+    history.value = history.value.map(entry => entry.entryId === updated.entryId
+        ? preserveProjection(entry, updated)
+        : entry);
+    const previous = currentEntry.value;
+    if (!previous || previous.entryId !== updated.entryId) return;
+    const promoted = previous.trackId === 0 && updated.trackId > 0;
+    currentEntry.value = promoted
+        ? {
+            ...updated,
+            track: previous.track && previous.track.id > 0 ? previous.track : {
+                id: updated.trackId,
+                title: `Track #${updated.trackId}`,
+                artist: '',
+                album: null,
+                coverUrl: null,
+            },
+        }
+        : preserveProjection(previous, updated);
+    if (!promoted) return;
+    void getTrackMetadata(updated.trackId).then(meta => {
+        const currentEntryNow = currentEntry.value;
+        if (currentEntryNow?.entryId !== updated.entryId || currentEntryNow.trackId !== updated.trackId) {
+            return;
+        }
+        const track = projectMetadata(meta);
+        currentEntry.value = { ...currentEntryNow, track };
+        updateMediaSessionMetadata(track);
+    }).catch((err: unknown) => {
+        console.warn(`[player] metadata of promoted track ${updated.trackId}: ${messageOf(err)}`);
+    });
+}
+
 /**
  * Result of `ensureProjection` for a pending entry without a projection:
  * the validated track, 'dead' (ID gone → discard on the fly) or 'error'
@@ -597,6 +690,10 @@ type ProjectionResult = PlayerTrack | 'dead' | 'error';
 
 async function ensureProjection(entry: PlaybackQueueEntry): Promise<ProjectionResult> {
     if (entry.track) return entry.track;
+    if (isProviderEntry(entry)) {
+        entry.track = providerProjection(entry);
+        return entry.track;
+    }
     try {
         const meta = await getTrackMetadata(entry.trackId);
         entry.track = projectMetadata(meta);
@@ -616,16 +713,26 @@ async function ensureProjection(entry: PlaybackQueueEntry): Promise<ProjectionRe
  * - 'aborted' → the continuation became stale (stop()/new transition); it
  *               touches no state, reports no error.
  */
-async function resolveAndPlay(track: PlayerTrack, transition: Transition): Promise<'played' | 'failed' | 'aborted'> {
+async function resolveAndPlay(entry: PlaybackQueueEntry, transition: Transition): Promise<'played' | 'failed' | 'aborted'> {
+    const provider = isProviderEntry(entry);
+    const track = provider ? providerProjection(entry) : entry.track;
+    if (!track) {
+        reportEngineFailure(new Error('La entrada no tiene metadatos para reproducir'));
+        return 'failed';
+    }
     isLoadingSource.value = true;
     streamQuality.value = null;
     streamError.value = null;
     isBuffering.value = false;
     try {
-        const result = await playerLoadTrack(track.id, true, effectiveEngineVolume());
+        const result = provider
+            ? await playerLoadQueueEntry(entry.entryId, true, effectiveEngineVolume())
+            : await playerLoadTrack(entry.trackId, true, effectiveEngineVolume());
         if (transition.aborted) return 'aborted';
         engineSeq = result.seq;
-        loadedPath = result.stream ? `stream:${track.id}` : `track:${track.id}`;
+        loadedPath = provider
+            ? (result.stream ? `provider-stream:${entry.entryId}` : `provider:${entry.entryId}`)
+            : (result.stream ? `stream:${entry.trackId}` : `track:${entry.trackId}`);
         streamQuality.value = result.stream
             ? {
                 serviceName: result.stream.serviceName,
@@ -677,7 +784,7 @@ async function advanceFromHead(transition: Transition): Promise<AdvanceResult> {
             return 'stopped';
         }
         error.value = null;
-        const outcome = await resolveAndPlay(proj, transition);
+        const outcome = await resolveAndPlay(entry, transition);
         if (transition.aborted) return 'stopped';
         if (outcome !== 'played') return 'stopped';
         removePending(entry.entryId);
@@ -685,7 +792,7 @@ async function advanceFromHead(transition: Transition): Promise<AdvanceResult> {
         currentEntry.value = { ...entry, track: proj };
         // El agregado del backend hace la transición completa de una vez:
         // cabeza consumida, current anterior → historial y posición a 0.
-        persistQueueWrite('set-current', () => playbackQueueSetCurrent(entry.entryId, entry.trackId));
+        persistQueueWrite('set-current', () => playbackQueueSetCurrentEntry(entry.entryId));
         return 'played';
     }
     return 'empty';
@@ -734,14 +841,14 @@ async function playTrack(track: PlayerTrack): Promise<void> {
     const transition = beginTransition();
     bindEngineEvents();
     error.value = null;
-    const outcome = await resolveAndPlay(track, transition);
+    const entry: PlaybackQueueEntry = { entryId: uuidV4(), trackId: track.id, track };
+    const outcome = await resolveAndPlay(entry, transition);
     if (transition.aborted) return;
     if (outcome === 'failed') {
         throw new Error(error.value ?? 'Could not play the track');
     }
     if (outcome === 'played') {
         if (currentEntry.value) pushHistory(currentEntry.value);
-        const entry: PlaybackQueueEntry = { entryId: uuidV4(), trackId: track.id, track };
         currentEntry.value = entry;
         persistQueueWrite('set-current', () => playbackQueueSetCurrent(entry.entryId, track.id));
     }
@@ -776,9 +883,9 @@ async function playIdle(): Promise<void> {
         }
         // Stopped with a loaded track: it reached the end; play restarts it
         // (the HTML5 element did the same: play() after 'ended' seeks to 0).
-        if (current.value) {
+        if (currentEntry.value) {
             const transition = beginTransition();
-            await resolveAndPlay(current.value, transition);
+            await resolveAndPlay(currentEntry.value, transition);
         }
         return;
     }
@@ -852,7 +959,12 @@ async function replaceQueueAndPlay(tracks: PlayerTrack[]): Promise<void> {
     const transition = beginTransition();
     bindEngineEvents();
     error.value = null;
-    const outcome = await resolveAndPlay(tracks[0], transition);
+    const firstEntry: PlaybackQueueEntry = {
+        entryId: uuidV4(),
+        trackId: tracks[0].id,
+        track: tracks[0],
+    };
+    const outcome = await resolveAndPlay(firstEntry, transition);
     if (transition.aborted) return;
     if (outcome === 'failed') {
         throw new Error(error.value ?? 'Could not play the track');
@@ -865,7 +977,7 @@ async function replaceQueueAndPlay(tracks: PlayerTrack[]): Promise<void> {
     // historial y se encola el resto. Un fallo de persistencia degrada a
     // identidades locales (la cola suena igual; solo se pierde la copia en
     // SQLite de esta reconstrucción).
-    const currentEntryId = uuidV4();
+    const currentEntryId = firstEntry.entryId;
     let ids: string[] | null = null;
     try {
         await playbackQueueSetCurrent(currentEntryId, tracks[0].id);
@@ -928,7 +1040,7 @@ function next(): void {
 
 async function previous(): Promise<void> {
     bindEngineEvents();
-    if (current.value && positionSec.value > 3) {
+    if (currentEntry.value && positionSec.value > 3) {
         seek(0);
         return;
     }
@@ -944,7 +1056,7 @@ async function previous(): Promise<void> {
             return;
         }
         error.value = null;
-        const outcome = await resolveAndPlay(proj, transition);
+        const outcome = await resolveAndPlay(entry, transition);
         if (transition.aborted) return;
         if (outcome !== 'played') return;
         // The track left behind returns to the front of the pending entries.
@@ -954,7 +1066,7 @@ async function previous(): Promise<void> {
             baseOrder = [back.entryId, ...baseOrder.filter(id => id !== back.entryId)];
         }
         currentEntry.value = { ...entry, track: proj };
-        persistQueueWrite('set-current', () => playbackQueueSetCurrent(entry.entryId, entry.trackId));
+        persistQueueWrite('set-current', () => playbackQueueSetCurrentEntry(entry.entryId));
         return;
     }
     // No history: seek(0).
@@ -1094,8 +1206,8 @@ let restoreStarted = false;
  * invoked explicitly (the status bar player on mount); importing the module
  * fires no invokes and no playback. As part of the migration the old
  * localStorage key `syncify.playerState.v1` is discarded without migration.
- * Resolves the source again with `player_load_track` (never reuses paths or
- * stream URLs) and loads it into the engine PAUSED at the saved position:
+ * Resolves the source again by entry identity (never reuses paths or stream
+ * URLs) and loads it into the engine PAUSED at the saved position:
  * reading the saved state plays nothing and the restored position does not
  * credit previous listening time.
  */
@@ -1124,24 +1236,32 @@ async function restoreFromPersistence(): Promise<void> {
     repeat.value = isValidRepeat(snap.repeat) ? snap.repeat : 'off';
     volume.value = clampVolume(snap.volume);
     muted.value = !!snap.muted;
-    queue.value = pending.map(e => ({ entryId: e.entry_id, trackId: e.track_id }));
+    queue.value = pending.map(mapQueueEntry);
     baseOrder = pending.map(e => e.entry_id);
-    history.value = historyRows.map(e => ({ entryId: e.entry_id, trackId: e.track_id }));
+    history.value = historyRows.map(mapQueueEntry);
 
     if (!snap.current) return;
 
-    // Lazy N×1 validation: only the current track is resolved on restore;
+    // Lazy N×1 validation: only a library current track is resolved on restore;
     // pending entries are validated just before playing.
     const transition = beginTransition();
     isLoadingSource.value = true;
     try {
-        const meta = await getTrackMetadata(snap.current.track_id);
-        if (transition.aborted) return;
-        const track = projectMetadata(meta);
-        const result = await playerLoadTrack(snap.current.track_id, false, effectiveEngineVolume());
+        const restoredEntry = mapQueueEntry(snap.current);
+        const provider = isProviderEntry(restoredEntry);
+        if (!provider) {
+            const meta = await getTrackMetadata(restoredEntry.trackId);
+            if (transition.aborted) return;
+            restoredEntry.track = projectMetadata(meta);
+        }
+        const result = provider
+            ? await playerLoadQueueEntry(restoredEntry.entryId, false, effectiveEngineVolume())
+            : await playerLoadTrack(restoredEntry.trackId, false, effectiveEngineVolume());
         if (transition.aborted) return;
         engineSeq = result.seq;
-        loadedPath = result.stream ? `stream:${track.id}` : `track:${track.id}`;
+        loadedPath = provider
+            ? (result.stream ? `provider-stream:${restoredEntry.entryId}` : `provider:${restoredEntry.entryId}`)
+            : (result.stream ? `stream:${restoredEntry.trackId}` : `track:${restoredEntry.trackId}`);
         streamQuality.value = result.stream
             ? {
                 serviceName: result.stream.serviceName,
@@ -1163,7 +1283,7 @@ async function restoreFromPersistence(): Promise<void> {
         positionSec.value = pos;
         durationSec.value = result.durationSec ?? 0;
         // Se conserva la identidad persistida de la pista actual.
-        currentEntry.value = { entryId: snap.current.entry_id, trackId: track.id, track };
+        currentEntry.value = restoredEntry;
     } catch {
         if (transition.aborted) return;
         // Track gone or without a local file: start with no current; the

@@ -28,7 +28,7 @@ use tauri::test::MockRuntime;
 use tauri::{Listener, Manager};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-use super::{player_load_track, player_resume, player_seek};
+use super::{player_load_queue_entry, player_load_track, player_resume, player_seek};
 use crate::services::playback_session::{
     guard_stream_frontier, load_path_into_core, load_stream_into_engine, lock_core,
     spawn_stall_refill, spawn_stream_download, FrontierOutcome, PlayerCore, PlayerLoadResult,
@@ -37,7 +37,9 @@ use crate::services::playback_session::{
     STREAM_MIN_PRIME_BYTES, STREAM_PENDING_SEEK_TIMEOUT, STREAM_PRIME_TIMEOUT,
 };
 use crate::services::stream_cache::{self, StreamCacheState, StreamSession};
-use crate::services::streaming::{DashManifest, ResolvedStream, StreamSourceInfo};
+use crate::services::streaming::{
+    DashManifest, ProviderStreamItem, ResolvedStream, StreamSourceInfo, StreamTarget,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -647,6 +649,134 @@ async fn local_downloaded_file_loads_offline_without_stream_and_bumps_seq() {
     assert_eq!(volume, 0.8);
     // Sin sesión de streaming activa.
     assert!(app.state::<StreamCacheState>().current().is_none());
+}
+
+#[tokio::test]
+async fn provider_queue_entry_streams_without_creating_a_track() {
+    let clock = VirtualClock::new();
+    let db = test_db().await;
+    let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'qobuz'")
+        .fetch_one(&db)
+        .await
+        .expect("Qobuz sembrado");
+    sqlx::query(
+        "INSERT INTO accounts (service_id, display_name, is_active, state, streaming_entitled) \
+         VALUES (?, 'Cuenta de prueba', 1, 'enabled', 1)",
+    )
+    .bind(service_id)
+    .execute(&db)
+    .await
+    .expect("cuenta habilitada");
+    let entry_id = crate::commands::playback_queue::perform_enqueue_provider_item(
+        &db,
+        service_id,
+        "qobuz-preview-1",
+        false,
+    )
+    .await
+    .expect("encolar efímera");
+
+    let total = 1024 * 1024;
+    let body = wav_prefix(WAV_SAMPLE_RATE, total, total);
+    let server = spawn_fake_stream_server(
+        Some(total),
+        body,
+        vec![vec![ServerStep::Send(total as usize), ServerStep::Finish]],
+    )
+    .await;
+    let (resolver, resolve_calls) = fake_resolver(server.url.clone());
+    let app = mock_player_app_with_resolver(db.clone(), &clock, Some(resolver));
+    let cache_dir = tempfile::tempdir().unwrap();
+    app.state::<StreamCacheState>()
+        .set_cache_dir_override(cache_dir.path().to_path_buf());
+
+    let loaded: PlayerLoadResult = player_load_queue_entry(
+        app.handle().clone(),
+        app.state::<PlayerState>(),
+        app.state::<StreamCacheState>(),
+        app.state::<crate::AppState>(),
+        entry_id.clone(),
+        false,
+        1.0,
+    )
+    .await
+    .expect("stream de proveedor");
+
+    assert_eq!(loaded.seq, 1);
+    assert_eq!(resolve_calls.load(Ordering::SeqCst), 1);
+    let session = app
+        .state::<StreamCacheState>()
+        .current()
+        .expect("sesión de streaming");
+    assert_eq!(session.track_id, 0);
+    assert_eq!(
+        session.target,
+        StreamTarget::Provider(ProviderStreamItem {
+            entry_id: entry_id.clone(),
+            service_id,
+            service_track_id: "qobuz-preview-1".into(),
+        })
+    );
+    assert!(session.started.load(Ordering::SeqCst));
+    let stream_state = crate::services::stream_cache::state_payload(&session, None);
+    assert_eq!(stream_state.track_id, 0);
+    assert_eq!(stream_state.entry_id.as_deref(), Some(entry_id.as_str()));
+    let tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
+        .fetch_one(&db)
+        .await
+        .expect("tracks");
+    assert_eq!(tracks, 0, "reproducir una efímera no crea Track");
+}
+
+#[tokio::test]
+async fn provider_queue_entry_revalida_la_cuenta_antes_de_resolver() {
+    let clock = VirtualClock::new();
+    let db = test_db().await;
+    let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'qobuz'")
+        .fetch_one(&db)
+        .await
+        .expect("Qobuz sembrado");
+    sqlx::query(
+        "INSERT INTO accounts \
+         (service_id, display_name, is_active, state, streaming_entitled, invalid_reason) \
+         VALUES (?, 'Cuenta desconectada', 1, 'disabled', 1, 'logged_out')",
+    )
+    .bind(service_id)
+    .execute(&db)
+    .await
+    .expect("cuenta desconectada");
+    let entry_id = crate::commands::playback_queue::perform_enqueue_provider_item(
+        &db,
+        service_id,
+        "qobuz-disabled",
+        false,
+    )
+    .await
+    .expect("encolar efímera");
+    let (resolver, resolve_calls) = fake_resolver("http://127.0.0.1:1".into());
+    let app = mock_player_app_with_resolver(db.clone(), &clock, Some(resolver));
+
+    let error = player_load_queue_entry(
+        app.handle().clone(),
+        app.state::<PlayerState>(),
+        app.state::<StreamCacheState>(),
+        app.state::<crate::AppState>(),
+        entry_id.clone(),
+        true,
+        1.0,
+    )
+    .await
+    .expect_err("preflight de cuenta");
+
+    assert!(error.starts_with("reconnect:"));
+    assert_eq!(resolve_calls.load(Ordering::SeqCst), 0);
+    let entry = crate::commands::playback_queue::perform_get_queue_entry(&db, &entry_id)
+        .await
+        .expect("entrada");
+    assert!(entry
+        .promotion_error
+        .as_deref()
+        .is_some_and(|reason| reason.starts_with("reconnect:")));
 }
 
 #[tokio::test]

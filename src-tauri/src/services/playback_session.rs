@@ -39,7 +39,9 @@ use tokio::io::AsyncWriteExt;
 
 use super::mpris::PlaybackStatus;
 use super::stream_cache::{self, StallCheck, StreamCacheState, StreamSession, StreamStatePayload};
-use super::streaming::{self, DashManifest, ResolvedStream, StreamSourceInfo};
+use super::streaming::{
+    self, DashManifest, ProviderStreamItem, ResolvedStream, StreamSourceInfo, StreamTarget,
+};
 
 /// Buffer mínimo antes de abrir el motor para una pista en streaming.
 pub(crate) const STREAM_MIN_PRIME_BYTES: u64 = 256 * 1024;
@@ -132,7 +134,7 @@ pub const LISTEN_THRESHOLD_SEC: f64 = 30.0;
 /// a `record_local_play` (idempotente por PK de sesión).
 #[derive(Debug, Clone)]
 pub struct ListenCredit {
-    pub track_id: i64,
+    pub target: StreamTarget,
     pub listen_session_id: String,
 }
 
@@ -159,7 +161,7 @@ pub(crate) struct PlayerCore {
     pub(crate) ended_reported: bool,
     /// Sesión de escucha en curso (P01): comienza con cada carga exitosa del
     /// motor y acredita UNA vez por sesión al cruzar `LISTEN_THRESHOLD_SEC`.
-    pub(crate) listen_track_id: Option<i64>,
+    pub(crate) listen_target: Option<StreamTarget>,
     pub(crate) listen_session_id: Option<String>,
     /// Segundos de escucha real acumulados en esta sesión.
     pub(crate) listen_accum_sec: f64,
@@ -176,11 +178,11 @@ pub(crate) struct PlayerCore {
 /// instalar un doble que resuelva sin red.
 type ResolveFuture = Pin<Box<dyn Future<Output = Result<ResolvedStream, String>> + Send>>;
 pub(crate) type StreamResolver =
-    Arc<dyn Fn(SqlitePool, reqwest::Client, i64) -> ResolveFuture + Send + Sync>;
+    Arc<dyn Fn(SqlitePool, reqwest::Client, StreamTarget) -> ResolveFuture + Send + Sync>;
 
 fn production_resolver() -> StreamResolver {
-    Arc::new(|db, http, track_id| {
-        Box::pin(async move { streaming::resolve_stream_for_track(&db, &http, track_id).await })
+    Arc::new(|db, http, target| {
+        Box::pin(async move { streaming::resolve_stream_for_target(&db, &http, &target).await })
     })
 }
 
@@ -284,8 +286,8 @@ pub(crate) fn load_path_into_core(
 /// exitosa del motor; el acumulador parte de cero (la posición restaurada no
 /// acredita tiempo anterior). Sólo se llama tras una carga que SÍ entró en el
 /// motor: si `open` falla, el motor sigue con la pista anterior y su sesión.
-pub(crate) fn begin_listen_session(core: &mut PlayerCore, track_id: i64) {
-    core.listen_track_id = Some(track_id);
+pub(crate) fn begin_listen_session(core: &mut PlayerCore, target: StreamTarget) {
+    core.listen_target = Some(target);
     core.listen_session_id = Some(uuid::Uuid::new_v4().hyphenated().to_string());
     core.listen_accum_sec = 0.0;
     core.listen_credited = false;
@@ -366,8 +368,12 @@ impl PlayerState {
     pub fn current_track_id(&self) -> Option<i64> {
         self.core
             .lock()
-            .map(|core| core.listen_track_id)
-            .unwrap_or(None)
+            .ok()
+            .and_then(|core| core.listen_target.clone())
+            .and_then(|target| match target {
+                StreamTarget::Library(track_id) => Some(track_id),
+                StreamTarget::Provider(_) => None,
+            })
     }
 
     /// Posición actual del motor, si hay algo cargado.
@@ -392,37 +398,103 @@ impl PlayerState {
         autoplay: bool,
         volume: f64,
     ) -> Result<PlayerLoadResult, String> {
-        // 1) Archivo local descargado.
-        let local: Option<String> =
-            sqlx::query_scalar("SELECT file_path FROM downloads WHERE track_id = ? LIMIT 1")
-                .bind(track_id)
-                .fetch_optional(db)
-                .await
-                .map_err(|e| e.to_string())?;
-        if let Some(path) = local {
-            if Path::new(&path).is_file() {
-                cache.cancel_current();
-                let mut core = lock_core(self)?;
-                let duration = load_path_into_core(&mut core, Path::new(&path), autoplay, volume)?;
-                core.seq += 1;
-                begin_listen_session(&mut core, track_id);
-                return Ok(PlayerLoadResult {
-                    seq: core.seq,
-                    duration_sec: duration.map(|d| d.as_secs_f64()),
-                    stream: None,
-                });
+        self.open_target(
+            app,
+            cache,
+            db,
+            StreamTarget::Library(track_id),
+            autoplay,
+            volume,
+        )
+        .await
+    }
+
+    /// Abre una entrada efímera sin crear Track: sólo resuelve su stream.
+    pub async fn open_provider_item<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        cache: &StreamCacheState,
+        db: &SqlitePool,
+        item: ProviderStreamItem,
+        autoplay: bool,
+        volume: f64,
+    ) -> Result<PlayerLoadResult, String> {
+        self.open_target(
+            app,
+            cache,
+            db,
+            StreamTarget::Provider(item),
+            autoplay,
+            volume,
+        )
+        .await
+    }
+
+    async fn open_target<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        cache: &StreamCacheState,
+        db: &SqlitePool,
+        target: StreamTarget,
+        autoplay: bool,
+        volume: f64,
+    ) -> Result<PlayerLoadResult, String> {
+        let track_id = target.track_id();
+        if let StreamTarget::Provider(item) = &target {
+            if let Err(reason) =
+                streaming::ensure_provider_streaming_account(db, item.service_id).await
+            {
+                if let Err(error) =
+                    crate::commands::playback_queue::perform_set_provider_promotion_error(
+                        db,
+                        &item.entry_id,
+                        &reason,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        entry_id = %item.entry_id,
+                        "no se pudo persistir el preflight de streaming: {error}"
+                    );
+                }
+                return Err(reason);
+            }
+        }
+        // 1) Archivo local descargado (sólo biblioteca).
+        if let StreamTarget::Library(library_id) = &target {
+            let local: Option<String> =
+                sqlx::query_scalar("SELECT file_path FROM downloads WHERE track_id = ? LIMIT 1")
+                    .bind(library_id)
+                    .fetch_optional(db)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            if let Some(path) = local {
+                if Path::new(&path).is_file() {
+                    cache.cancel_current();
+                    let mut core = lock_core(self)?;
+                    let duration =
+                        load_path_into_core(&mut core, Path::new(&path), autoplay, volume)?;
+                    core.seq += 1;
+                    begin_listen_session(&mut core, target.clone());
+                    return Ok(PlayerLoadResult {
+                        seq: core.seq,
+                        duration_sec: duration.map(|d| d.as_secs_f64()),
+                        stream: None,
+                    });
+                }
             }
         }
 
         // 2) Streaming: resolver la mejor fuente disponible.
         let http = stream_http_client();
-        let mut resolved = (self.resolver)(db.clone(), http.clone(), track_id).await?;
+        let mut resolved = (self.resolver)(db.clone(), http.clone(), target.clone()).await?;
 
         // Parcial reanudable (Fase C): la ruta de caché no depende del GET,
         // así que el parcial se valida ANTES de abrir el stream. Uno con
         // cabecera válida reanuda (Range en el progresivo, segmento siguiente
         // en DASH); uno inválido se descarta y se baja desde cero.
-        let mut cache_path = stream_cache::cache_file_path(app, track_id, &resolved.info)?;
+        let mut cache_path =
+            stream_cache::cache_file_path_for_target(app, &target, &resolved.info)?;
         stream_cache::cleanup_cache(app, Some(&cache_path));
         let mut partial = stream_cache::read_resumable_partial(
             &cache_path,
@@ -475,14 +547,16 @@ impl PlayerState {
                             status = resp.status().as_u16(),
                             "streaming: re-resolución única tras fallo de catálogo en el GET inicial"
                         );
-                        resolved = (self.resolver)(db.clone(), http.clone(), track_id).await?;
+                        resolved =
+                            (self.resolver)(db.clone(), http.clone(), target.clone()).await?;
                         if resolved.dash.is_some() {
                             // La fuente re-resuelta es DASH: sin GET progresivo.
                             break;
                         }
                         // La fuente re-resuelta puede ser otra calidad: otra
                         // ruta de caché y otro parcial.
-                        cache_path = stream_cache::cache_file_path(app, track_id, &resolved.info)?;
+                        cache_path =
+                            stream_cache::cache_file_path_for_target(app, &target, &resolved.info)?;
                         partial = stream_cache::read_resumable_partial(
                             &cache_path,
                             &resolved.info,
@@ -514,7 +588,8 @@ impl PlayerState {
 
         // 2a) Caché completa de una reproducción anterior: sin red.
         if let Some(info) = stream_cache::read_complete_cache(&cache_path) {
-            let session = StreamSession::new(seq, track_id, info.clone(), cache_path.clone());
+            let session =
+                StreamSession::for_target(seq, target.clone(), info.clone(), cache_path.clone());
             let total = std::fs::metadata(&cache_path).map(|m| m.len()).unwrap_or(0);
             session.total_bytes.store(total, Ordering::SeqCst);
             session.downloaded_bytes.store(total, Ordering::SeqCst);
@@ -525,7 +600,7 @@ impl PlayerState {
                 return Err("carga reemplazada por otra pista".to_string());
             }
             let duration = load_path_into_core(&mut core, &cache_path, autoplay, volume)?;
-            begin_listen_session(&mut core, track_id);
+            begin_listen_session(&mut core, target.clone());
             session.started.store(true, Ordering::SeqCst);
             stream_cache::emit_state(app, &session, None);
             return Ok(PlayerLoadResult {
@@ -540,7 +615,8 @@ impl PlayerState {
         // estanca y el relleno la sustituye (Q4), el prime tardío sigue
         // respondiendo a esta carga. Con parcial reanudado, la sesión arranca
         // con la frontera del parcial (bytes y, en DASH, segmentos y audio).
-        let session = StreamSession::new(seq, track_id, resolved.info.clone(), cache_path);
+        let session =
+            StreamSession::for_target(seq, target.clone(), resolved.info.clone(), cache_path);
         session.set_transport_intent(autoplay, volume);
         if let Some(resume) = partial {
             session
@@ -754,7 +830,7 @@ impl PlayerState {
             seq,
             dirty,
             ended_reported,
-            listen_track_id,
+            listen_target,
             listen_session_id,
             listen_accum_sec,
             listen_credited,
@@ -788,7 +864,10 @@ impl PlayerState {
                 EngineState::Stopped => PlaybackStatus::Stopped,
             },
             position: engine.position(),
-            track_id: *listen_track_id,
+            track_id: listen_target.as_ref().and_then(|target| match target {
+                StreamTarget::Library(track_id) => Some(*track_id),
+                StreamTarget::Provider(_) => None,
+            }),
             duration: engine.duration(),
         });
         let playing = matches!(engine_state, EngineState::Playing);
@@ -796,8 +875,8 @@ impl PlayerState {
         // (pausa/buffer suspenden sin borrar; el re-anclaje tras un parón o un
         // seek hace que el tramo saltado no acredite).
         let listen_credit = if playing {
-            if let (Some(track_id), Some(session_id)) =
-                (*listen_track_id, listen_session_id.clone())
+            if let (Some(target), Some(session_id)) =
+                (listen_target.clone(), listen_session_id.clone())
             {
                 let position = engine.position().as_secs_f64();
                 let rate = engine.rate() as f64;
@@ -810,7 +889,7 @@ impl PlayerState {
                 );
                 if crossed {
                     Some(ListenCredit {
-                        track_id,
+                        target,
                         listen_session_id: session_id,
                     })
                 } else {
@@ -878,7 +957,7 @@ pub(crate) fn load_stream_into_engine<R: tauri::Runtime>(
         return Err("carga reemplazada por otra pista".to_string());
     }
     let duration = load_path_into_core(&mut core, &session.path, autoplay, volume)?;
-    begin_listen_session(&mut core, session.track_id);
+    begin_listen_session(&mut core, session.target.clone());
     session.started.store(true, Ordering::SeqCst);
     Ok(duration.map(|d| d.as_secs_f64()))
 }
@@ -1254,7 +1333,7 @@ fn spawn_dash_stream_download<R: tauri::Runtime + 'static>(
                     if !can_retry {
                         break Err(fail);
                     }
-                    match resolver(db.clone(), http.clone(), session.track_id).await {
+                    match resolver(db.clone(), http.clone(), session.target.clone()).await {
                         Ok(new)
                             if new.dash.is_some()
                                 && compatible_source(&session.info, &new.info) =>
@@ -1346,7 +1425,7 @@ async fn run_stall_refill<R: tauri::Runtime>(app: &AppHandle<R>, session: Arc<St
     let http = stream_http_client();
     let state = app.state::<PlayerState>();
     let resolver = state.resolver();
-    let resolved = match resolver(db.clone(), http.clone(), session.track_id).await {
+    let resolved = match resolver(db.clone(), http.clone(), session.target.clone()).await {
         Ok(resolved) => resolved,
         Err(e) => return finish_stall(app, &session, StreamFillError::ReResolve(e)),
     };

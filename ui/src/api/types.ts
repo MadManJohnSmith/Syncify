@@ -10,3 +10,4 @@ export * from './types/metadata';
 export * from './types/settings';
 export * from './types/migration';
 export * from './types/quality';
+export * from './types/playbackQueue';

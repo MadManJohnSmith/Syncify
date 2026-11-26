@@ -21,6 +21,7 @@ vi.mock('../../api/tauri', () => ({
 
 vi.mock('../../api/player', () => ({
     playerLoadTrack: vi.fn(),
+    playerLoadQueueEntry: vi.fn(),
     playerPause: vi.fn(),
     playerResume: vi.fn(),
     playerStop: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock('../../api/player', () => ({
     onPlayerStreamState: vi.fn(),
     onPlayerEnded: vi.fn(),
     onPlayerAdvanced: vi.fn(),
+    onPlayerQueueEntryChanged: vi.fn(),
     onPlayerModesChanged: vi.fn(() => Promise.resolve()),
     playerMprisUpdate: vi.fn(() => Promise.resolve()),
     onMprisAction: vi.fn(() => Promise.resolve()),
@@ -49,10 +51,13 @@ let seq = 0;
 let tickCb: ((tick: PlayerTick) => void) | null = null;
 let endedCb: ((seq: number) => void) | null = null;
 let advancedCb: ((advanced: import('../../api/player').PlayerAdvanced) => void) | null = null;
+let queueEntryCb: ((entry: import('../../api/types').PlaybackQueueEntryDto) => void) | null = null;
 
 function configureEngineMocks(): void {
     seq = 0;
     engine.playerLoadTrack.mockReset().mockImplementation(() =>
+        Promise.resolve({ seq: ++seq, durationSec: 200, stream: null }));
+    engine.playerLoadQueueEntry.mockReset().mockImplementation(() =>
         Promise.resolve({ seq: ++seq, durationSec: 200, stream: null }));
     engine.playerPause.mockReset().mockResolvedValue(undefined);
     engine.playerResume.mockReset().mockResolvedValue(undefined);
@@ -71,6 +76,10 @@ function configureEngineMocks(): void {
     });
     engine.onPlayerAdvanced.mockReset().mockImplementation((cb) => {
         advancedCb = cb;
+        return Promise.resolve(() => {});
+    });
+    engine.onPlayerQueueEntryChanged.mockReset().mockImplementation((cb) => {
+        queueEntryCb = cb;
         return Promise.resolve(() => {});
     });
 }
@@ -154,6 +163,57 @@ describe('usePlayer playback queue (FE-9)', () => {
         expect(player.isPlaying.value).toBe(true);
         expect(player.queue.value).toHaveLength(0);
         expect(player.history.value[player.history.value.length - 1]?.trackId).toBe(1);
+    });
+
+    it('proyecta player:advanced de proveedor sin pedir metadatos de biblioteca', async () => {
+        const player = usePlayer();
+        await player.play({ id: 1, title: 'One', artist: 'X' });
+        mockInvoke.mockClear();
+        engine.playerLoadTrack.mockClear();
+        engine.playerLoadQueueEntry.mockClear();
+
+        advancedCb?.({
+            seq: ++seq,
+            trackId: 0,
+            entryId: 'provider-1',
+            serviceId: 2,
+            serviceTrackId: 'qobuz-9',
+        });
+        await flushPromises();
+
+        expect(player.current.value?.id).toBe(0);
+        expect(player.current.value?.title).toBe('Provider item qobuz-9');
+        expect(player.history.value.map(entry => entry.entryId)).toHaveLength(1);
+        expect(mockInvoke.mock.calls.some(([cmd]) => cmd === 'get_track_metadata')).toBe(false);
+
+        mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+            if (cmd === 'get_track_metadata') {
+                return Promise.resolve({
+                    track_id: args?.trackId,
+                    title: 'Promoted song',
+                    artist_name: 'Artist',
+                    album_name: null,
+                    cover_art_url: null,
+                    sources: [],
+                });
+            }
+            return Promise.resolve(undefined);
+        });
+        queueEntryCb?.({
+            entry_id: 'provider-1',
+            track_id: 42,
+            service_id: null,
+            service_track_id: null,
+            kind: 'current',
+            position: 0,
+            promotion_error: null,
+        });
+        await flushPromises();
+
+        expect(player.current.value?.id).toBe(42);
+        expect(player.current.value?.title).toBe('Promoted song');
+        expect(engine.playerLoadTrack).not.toHaveBeenCalled();
+        expect(engine.playerLoadQueueEntry).not.toHaveBeenCalled();
     });
 
     it('stop clears the up-next queue', async () => {

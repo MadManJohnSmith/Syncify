@@ -23,11 +23,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 
-use super::streaming::{DashManifest, StreamSourceInfo};
+use super::streaming::{DashManifest, StreamSourceInfo, StreamTarget};
 
 /// Presupuesto máximo de la caché de streaming (se limpia la más antigua).
 const CACHE_BUDGET_BYTES: u64 = 3 * 1024 * 1024 * 1024; // 3 GiB
@@ -39,7 +40,10 @@ const PARTIAL_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 #[serde(rename_all = "camelCase")]
 pub struct StreamStatePayload {
     pub seq: u64,
+    /// `0` para una entrada efímera de proveedor.
     pub track_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<String>,
     pub buffering: bool,
     pub downloaded_bytes: u64,
     pub total_bytes: Option<u64>,
@@ -77,7 +81,9 @@ pub(crate) enum StallCheck {
 pub struct StreamSession {
     /// `seq` del motor al que pertenece esta sesión.
     pub seq: u64,
+    /// `0` para una entrada efímera de proveedor.
     pub track_id: i64,
+    pub target: StreamTarget,
     pub info: StreamSourceInfo,
     pub path: PathBuf,
     /// `0` = desconocido (servidor sin Content-Length).
@@ -127,9 +133,20 @@ impl StreamSession {
         info: StreamSourceInfo,
         path: PathBuf,
     ) -> Arc<StreamSession> {
+        Self::for_target(seq, StreamTarget::Library(track_id), info, path)
+    }
+
+    pub fn for_target(
+        seq: u64,
+        target: StreamTarget,
+        info: StreamSourceInfo,
+        path: PathBuf,
+    ) -> Arc<StreamSession> {
+        let track_id = target.track_id();
         Arc::new(StreamSession {
             seq,
             track_id,
+            target,
             info,
             path,
             total_bytes: AtomicU64::new(0),
@@ -378,6 +395,10 @@ pub fn state_payload(session: &StreamSession, error: Option<String>) -> StreamSt
     StreamStatePayload {
         seq: session.seq,
         track_id: session.track_id,
+        entry_id: match &session.target {
+            StreamTarget::Provider(item) => Some(item.entry_id.clone()),
+            StreamTarget::Library(_) => None,
+        },
         buffering: session.paused_for_buffer.load(Ordering::SeqCst),
         downloaded_bytes: session.downloaded_bytes.load(Ordering::SeqCst),
         total_bytes: (total > 0).then_some(total),
@@ -432,9 +453,23 @@ pub fn cache_file_path<R: tauri::Runtime>(
     track_id: i64,
     info: &StreamSourceInfo,
 ) -> Result<PathBuf, String> {
+    cache_file_path_for_target(app, &StreamTarget::Library(track_id), info)
+}
+
+pub fn cache_file_path_for_target<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    target: &StreamTarget,
+    info: &StreamSourceInfo,
+) -> Result<PathBuf, String> {
+    let identity = match target {
+        StreamTarget::Library(track_id) => format!("track-{track_id}"),
+        StreamTarget::Provider(item) => {
+            let digest = sha2::Sha256::digest(item.service_track_id.as_bytes());
+            format!("provider-{}-{:x}", item.service_id, digest)
+        }
+    };
     let name = format!(
-        "track-{}-{}-{}bit-{}hz.{}",
-        track_id,
+        "{identity}-{}-{}bit-{}hz.{}",
         info.service_name,
         info.bit_depth.unwrap_or(0),
         info.sample_rate.unwrap_or(0),

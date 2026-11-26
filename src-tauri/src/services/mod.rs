@@ -27,6 +27,7 @@ pub mod musicbrainz;
 pub mod notification;
 pub mod operation_recovery;
 pub mod playback_advance;
+pub mod playback_promotion;
 pub mod playback_session;
 pub mod playlist_canonical;
 // El unico consumidor es MPRIS, que solo existe en Linux: fuera de Linux sus
