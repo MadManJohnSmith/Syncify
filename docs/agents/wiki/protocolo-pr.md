@@ -8,13 +8,13 @@ quedan los hechos fechados que lo complementan. Relacionada:
 
 ## Flujo verificado el 2026-11-13
 
-- PR con base `dev`; squash-merge; el merge **no** autocierra issues: el
-  cierre es manual citando el SHA del squash (así se cerró el trabajo de
-  PRs #283/#284). Unwatch de PRs ya fusionados. Fuente:
+- PR con base `wave/ola-N-batch-M` desde el 2026-11-21 (hasta entonces iba a
+  `dev`); squash-merge; el merge **no** autocierra issues: el cierre es
+  manual citando el SHA del squash (así se cerró el trabajo de PRs
+  #283/#284). Unwatch de PRs ya fusionados. Fuente:
   `docs/historico/HANDOFF-2026-11-13.md` §Restricciones operativas
-  §Protocolo. *(Superado para el código el 2026-11-21/22: el PR de carril
-  va contra la rama del lote, no contra `dev`; ver §«Flujo por lotes». La
-  regla de cierre de issues está abierta: ver allí.)*
+  §Protocolo. *(La base del PR cambió con el flujo por lotes; la regla de
+  cierre de issues está abierta: ver §«Flujo por lotes».)*
 - `batch_50_audit_test` siempre con `--test-threads=1`; suite Python con
   `.venv/bin/python`. Misma fuente.
 
@@ -122,6 +122,11 @@ comando. Detalle y criterios en el issue #368.
   `docs/historico/`, y desde el 2026-11-13 esta wiki.
 - **Vía PR**: portada (`README.md` / `README.es.md`), código, cambios de
   puertas (precedente: PRs #26/#27 para el README; #283/#284 para código).
+- **Colas que cierran** (`docs/COLA_*.md`): su estado global es la línea
+  `**Estado:**`; cuando diga cerrada o completada, el fichero se mueve a
+  `docs/historico/` con su fecha. Una cola cerrada bajo `docs/` es un
+  documento vivo mentiroso y falla la puerta
+  `scripts/tests/test_docs_consistency.py` (#366).
 
 ## Revisión independiente con artefacto
 

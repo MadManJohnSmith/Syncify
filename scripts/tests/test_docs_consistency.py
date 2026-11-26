@@ -22,6 +22,9 @@ Covered:
 * #393 — the Rust job's commands are read from its parsed `run:` steps, so a
   `--skip` inside a `|`/`>` block and a Windows prebuild without `--workspace`
   both fail the gate.
+* #366 — `docs/HANDOFF.md` is a stable pointer, not a frozen relay; the two
+  wiki pages that rule on pull requests name the same batch branch; and a
+  `docs/COLA_*.md` whose state is closed lives in `docs/historico/`.
 """
 
 import re
@@ -707,6 +710,189 @@ class ConditionedScopeDeclarationTests(unittest.TestCase):
             self.matrix,
             "the matrix must point at the register entry that holds the condition",
         )
+
+
+#: El relevo vivo del repositorio. Desde 2026-11-22 el relevo fechado vive en
+#: `docs/historico/`; lo que queda aquí solo puede ser un puntero estable.
+LIVE_HANDOFF = "docs/HANDOFF.md"
+
+#: Marcadores de un relevo congelado: issues del tracker y listas de trabajo.
+FROZEN_HANDOFF_ISSUE = re.compile(r"#\d+")
+FROZEN_HANDOFF_PHRASES = ("Pendiente", "Siguiente paso")
+
+
+def _frozen_handoff_markers(text: str) -> list[str]:
+    """Lo que un puntero estable no puede contener: estado que envejece solo.
+
+    Las referencias `#NN` y las secciones «Pendiente»/«Siguiente paso» son
+    ciertas un día y falsas al siguiente; por eso viven en un registro fechado
+    de `docs/historico/`, no en el fichero que se lee como relevo vivo.
+    """
+    return FROZEN_HANDOFF_ISSUE.findall(text) + [
+        phrase for phrase in FROZEN_HANDOFF_PHRASES if phrase in text
+    ]
+
+
+class LiveHandoffGateTests(unittest.TestCase):
+    """#366: el relevo vivo es un puntero, no un relevo congelado."""
+
+    def test_live_handoff_is_a_pointer_and_not_a_frozen_relay(self):
+        markers = _frozen_handoff_markers(_doc_text(LIVE_HANDOFF))
+        self.assertEqual(
+            markers,
+            [],
+            f"{LIVE_HANDOFF} volvió a guardar estado (issues o pendientes): el "
+            "relevo fechado va a docs/historico/ y aquí solo queda el puntero",
+        )
+
+    def test_gate_catches_the_frozen_2026_11_09_relay(self):
+        """El fixture es el relevo real congelado, no una copia inventada."""
+        frozen = _doc_text("docs/historico/HANDOFF-2026-11-09.md")
+        self.assertIn("## Pendiente", frozen)
+        self.assertIn("## Siguiente paso concreto", frozen)
+        self.assertTrue(
+            FROZEN_HANDOFF_ISSUE.search(frozen),
+            "el relevo congelado perdió sus referencias #NN: el fixture dejó de probar la puerta",
+        )
+        self.assertGreaterEqual(len(_frozen_handoff_markers(frozen)), 3)
+
+
+#: Las dos páginas que fijan cómo viaja un PR de carril.
+LANE_PR_PAGES = (
+    "docs/agents/wiki/protocolo-pr.md",
+    "docs/agents/wiki/modo-ejecucion.md",
+)
+#: La base que cada página declara para un PR, en cualquier mención.
+PR_BASE_CLAIM = re.compile(r"PRs? con base `([^`]+)`")
+#: Una rama de lote, escrita con números o con marcador de posición.
+BATCH_BRANCH = re.compile(r"^wave/ola-(?:\d+|[Nn])-batch-(?:\d+|<[nNmM]>|[NnMm])$")
+#: Toda rama de lote es la misma familia: el número de ola y de lote cambia.
+BATCH_BRANCH_FAMILY = "wave/ola-N-batch-N"
+LANE_PAGE_MENTION = re.compile(r"carril", re.IGNORECASE)
+
+
+def _pr_base_targets(text: str) -> list[str]:
+    """Las ramas que la página declara como base de un PR."""
+    return [target.strip() for target in PR_BASE_CLAIM.findall(text)]
+
+
+def _batch_branch_families(text: str) -> set[str]:
+    """Las ramas de lote que la página nombra en las reglas de carril.
+
+    Se leen solo las líneas que hablan de carriles y solo los tokens con forma
+    de rama de lote: una cita histórica de `main` o de `dev` en otra frase no
+    cuenta como la rama de integración de los carriles.
+    """
+    families = set()
+    for line in text.splitlines():
+        if not LANE_PAGE_MENTION.search(line):
+            continue
+        families.update(
+            BATCH_BRANCH_FAMILY
+            for token in BACKTICKED.findall(line)
+            if BATCH_BRANCH.match(token.strip())
+        )
+    return families
+
+
+def _lane_integration_violations(pages: dict[str, str]) -> list[str]:
+    """Lo que hace que las páginas no digan lo mismo sobre la base del PR.
+
+    Dos reglas: ninguna puede seguir mandando un PR de carril a `dev` (el flujo
+    por lotes lo retiró) y ambas deben nombrar la misma familia de rama de lote.
+    """
+    problems = []
+    families = {}
+    for page, text in pages.items():
+        for target in _pr_base_targets(text):
+            if target == "dev":
+                problems.append(f"{page}: declara «PR con base `dev`», retirada por el flujo por lotes")
+        families[page] = _batch_branch_families(text)
+        if not families[page]:
+            problems.append(f"{page}: no nombra la rama del lote para los PRs de carril")
+    if len({frozenset(branches) for branches in families.values()}) > 1:
+        problems.append(f"las páginas no nombran la misma rama de integración: {families}")
+    return problems
+
+
+class LaneIntegrationBranchTests(unittest.TestCase):
+    """#366: las dos páginas mandan los PRs de carril a la misma rama."""
+
+    def _pages(self) -> dict[str, str]:
+        return {page: _doc_text(page) for page in LANE_PR_PAGES}
+
+    def test_both_pages_name_the_same_batch_branch(self):
+        self.assertEqual(
+            _lane_integration_violations(self._pages()),
+            [],
+            "protocolo-pr.md y modo-ejecucion.md deben mandar los PRs de carril "
+            "a la misma rama de lote, y no a `dev`",
+        )
+
+    def test_gate_catches_the_dev_base_claim(self):
+        problems = _lane_integration_violations(
+            {
+                "a": "PR de carril → rama del lote `wave/ola-0-batch-1`",
+                "b": "- PR con base `dev`; squash-merge",
+            }
+        )
+        self.assertTrue(
+            any("`dev`" in problem for problem in problems),
+            f"la puerta debe ver la base `dev`: {problems}",
+        )
+
+    def test_gate_catches_a_page_that_stops_naming_the_batch_branch(self):
+        problems = _lane_integration_violations(
+            {
+                "a": "PR de carril → rama del lote `wave/ola-0-batch-1`",
+                "b": "Los PRs de carril van contra la rama que toque",
+            }
+        )
+        self.assertTrue(
+            any("no nombra la rama del lote" in problem for problem in problems),
+            f"la puerta debe ver la página sin rama de lote: {problems}",
+        )
+
+
+#: El estado de una cola es su primera línea `**Estado:**`.
+COLA_STATE_LINE = re.compile(r"^\*\*Estado:\*\*(.*)$", re.MULTILINE)
+CLOSED_COLA_STATE = re.compile(r"\b(?:cerrad|completad)[ao]s?\b", re.IGNORECASE)
+
+
+def _declares_closed_state(text: str) -> bool:
+    """Una cola cerrada solo se declara en su línea de estado.
+
+    Buscar la palabra en todo el documento marcaría una cola abierta que cita
+    un ítem suyo ya cerrado; el estado global es la primera línea `**Estado:**`.
+    """
+    match = COLA_STATE_LINE.search(text)
+    return match is not None and CLOSED_COLA_STATE.search(match.group(1)) is not None
+
+
+class ClosedQueueLocationTests(unittest.TestCase):
+    """#366: una cola cerrada se archiva en `docs/historico/`, no se queda viva."""
+
+    def test_no_closed_queue_stays_under_docs(self):
+        live = sorted((REPO_ROOT / "docs").glob("COLA_*.md"))
+        self.assertTrue(live, "no hay colas vivas bajo docs/: la puerta quedaría inerte")
+        offenders = [
+            path.name
+            for path in live
+            if _declares_closed_state(path.read_text(encoding="utf-8"))
+        ]
+        self.assertEqual(
+            offenders,
+            [],
+            "estas colas se declaran cerradas bajo docs/: muévelas a docs/historico/",
+        )
+
+    def test_gate_reads_the_state_line_and_not_a_closed_item(self):
+        open_queue = (
+            "# Cola\n\n**Estado:** DLX-02 sigue abierto; DLX-04 se cerró el 2026-11-21.\n"
+        )
+        closed_queue = "# Cola\n\n**Estado:** cerrada el 2026-11-20; sin trabajo pendiente.\n"
+        self.assertFalse(_declares_closed_state(open_queue))
+        self.assertTrue(_declares_closed_state(closed_queue))
 
 
 if __name__ == "__main__":
