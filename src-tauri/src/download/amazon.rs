@@ -1,10 +1,18 @@
-// Amazon Music downloader - via DoubleDouble service
+//! Amazon Music downloader via the DoubleDouble service.
+//!
+//! The public status payload observed in 2026-11 does not include audio
+//! quality. The service may still declare it under `format`, `bitDepth` and
+//! `sampleRate`; when it does, that is evidence. When it does not, the
+//! delivered file is the only source of truth. If neither the payload nor the
+//! file can declare format/bit depth/sample rate, the delivery fails: the
+//! adapter never assumes 24-bit/48 kHz.
 
+use crate::download::audio_inspector::{inspect_physical_audio_file, PhysicalAudioMetadata};
 use crate::download::http_client::{create_http_client, get_user_agent, AMAZON_LIMITER};
 use crate::download::progress::{
     DownloadProgress, DownloadRequest, DownloadResult, PROGRESS_TRACKER,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use reqwest::Client;
 use serde::Deserialize;
 use std::path::Path;
@@ -21,15 +29,84 @@ struct SubmitResponse {
     id: Option<String>,
 }
 
+/// Quality declared by the service for this delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AmazonDeclaredQuality {
+    pub format: String,
+    pub bit_depth: i32,
+    pub sample_rate: i32,
+}
+
+impl std::fmt::Display for AmazonDeclaredQuality {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {}-bit / {:.1}kHz",
+            self.format,
+            self.bit_depth,
+            self.sample_rate as f64 / 1000.0
+        )
+    }
+}
+
+/// Normalized status payload from DoubleDouble.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AmazonStatus {
+    pub status: String,
+    pub friendly_status: Option<String>,
+    pub message: Option<String>,
+    pub url: Option<String>,
+    pub declared_quality: Option<AmazonDeclaredQuality>,
+}
+
+/// A completed DoubleDouble job and the quality it declared, if any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AmazonCompletion {
+    pub url: String,
+    pub declared_quality: Option<AmazonDeclaredQuality>,
+}
+
+impl AmazonStatus {
+    /// Extracts the download URL from a terminal `complete`/`done` status.
+    pub fn into_completion(self) -> Result<AmazonCompletion> {
+        match self.status.as_str() {
+            "complete" | "done" => {
+                let url = self
+                    .url
+                    .ok_or_else(|| anyhow!("DoubleDouble completed without a download URL"))?;
+                Ok(AmazonCompletion {
+                    url,
+                    declared_quality: self.declared_quality,
+                })
+            }
+            other => bail!("DoubleDouble status '{other}' is not a completed download"),
+        }
+    }
+}
+
+/// Quality fields that the service may attach at the top level or under
+/// `current`. All three are required together: a partial declaration is an
+/// invalid payload, not a quality to guess.
+#[derive(Debug, Default, Deserialize)]
+struct QualityFields {
+    #[serde(rename = "bitDepth", alias = "bit_depth", default)]
+    bit_depth: Option<i32>,
+    #[serde(rename = "sampleRate", alias = "sample_rate", default)]
+    sample_rate: Option<i32>,
+    #[serde(default)]
+    format: Option<String>,
+}
+
 /// DoubleDouble status response
 #[derive(Debug, Deserialize)]
 struct StatusResponse {
     status: String,
     #[serde(rename = "friendlyStatus")]
     friendly_status: Option<String>,
+    message: Option<String>,
     url: Option<String>,
-    #[allow(dead_code)]
-    // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
+    #[serde(flatten)]
+    quality: QualityFields,
     current: Option<CurrentTrack>,
 }
 
@@ -41,6 +118,138 @@ struct CurrentTrack {
     #[allow(dead_code)]
     // Campo del contrato de datos (serde/sqlx FromRow): lo puebla la deserialización de la respuesta, no el código Rust.
     artist: Option<String>,
+    #[serde(flatten)]
+    quality: QualityFields,
+}
+
+impl StatusResponse {
+    fn declared_quality(&self) -> Result<Option<AmazonDeclaredQuality>> {
+        let mut format = None;
+        let mut bit_depth = None;
+        let mut sample_rate = None;
+
+        // The same three fields can arrive top-level or inside `current`.
+        // Merge them without inventing: every field must come from the payload.
+        for source in [
+            Some(&self.quality),
+            self.current.as_ref().map(|c| &c.quality),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            format = format.or_else(|| source.format.clone());
+            bit_depth = bit_depth.or(source.bit_depth);
+            sample_rate = sample_rate.or(source.sample_rate);
+        }
+
+        if format.is_none() && bit_depth.is_none() && sample_rate.is_none() {
+            return Ok(None);
+        }
+
+        let (format, bit_depth, sample_rate) = match (format, bit_depth, sample_rate) {
+            (Some(format), Some(bit_depth), Some(sample_rate)) => (format, bit_depth, sample_rate),
+            (format, bit_depth, sample_rate) => {
+                let missing = [
+                    format.is_none().then_some("format"),
+                    bit_depth.is_none().then_some("bitDepth"),
+                    sample_rate.is_none().then_some("sampleRate"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", ");
+                bail!(
+                    "DoubleDouble status payload declares incomplete audio quality; missing {missing}"
+                );
+            }
+        };
+
+        validate_quality(format, bit_depth, sample_rate)
+            .map(Some)
+            .map_err(|err| anyhow!("DoubleDouble status payload declares invalid quality: {err}"))
+    }
+}
+
+/// Parses a DoubleDouble status payload and normalizes its quality declaration.
+pub fn parse_status_payload(payload: &str) -> Result<AmazonStatus> {
+    let raw: StatusResponse = serde_json::from_str(payload)
+        .map_err(|err| anyhow!("DoubleDouble status payload is invalid: {err}"))?;
+    let declared_quality = raw.declared_quality()?;
+    Ok(AmazonStatus {
+        status: raw.status,
+        friendly_status: raw.friendly_status,
+        message: raw.message,
+        url: raw.url,
+        declared_quality,
+    })
+}
+
+fn validate_quality(
+    format: String,
+    bit_depth: i32,
+    sample_rate: i32,
+) -> Result<AmazonDeclaredQuality> {
+    let format = format.trim().to_ascii_uppercase();
+    if !matches!(
+        format.as_str(),
+        "FLAC" | "ALAC" | "WAV" | "AIFF" | "MP3" | "AAC" | "M4A" | "OGG" | "OPUS"
+    ) {
+        bail!("unsupported audio format '{format}'");
+    }
+    if !matches!(bit_depth, 16 | 24 | 32) {
+        bail!("invalid bit depth {bit_depth}");
+    }
+    if !(8_000..=768_000).contains(&sample_rate) {
+        bail!("invalid sample rate {sample_rate}");
+    }
+    Ok(AmazonDeclaredQuality {
+        format,
+        bit_depth,
+        sample_rate,
+    })
+}
+
+/// Resolves the quality effectively delivered by this Amazon download.
+///
+/// The delivered file wins over the payload: it is the physical evidence the
+/// worker persists in the row and the ledger. A payload declaration is used
+/// only when the file cannot be inspected. With neither source there is no
+/// quality to declare, and the delivery fails instead of assuming 24/48.
+pub fn effective_quality(
+    declared: Option<&AmazonDeclaredQuality>,
+    physical: Option<&PhysicalAudioMetadata>,
+) -> Result<AmazonDeclaredQuality> {
+    if let Some(physical) = physical {
+        let quality = validate_quality(
+            physical.format.clone(),
+            physical.bit_depth,
+            physical.sample_rate,
+        )
+        .map_err(|err| anyhow!("delivered file does not expose a valid quality: {err}"))?;
+        if let Some(declared) = declared {
+            if declared != &quality {
+                warn!(
+                    declared = %declared,
+                    effective = %quality,
+                    "[Amazon] Declared quality differs from the delivered file; physical evidence wins"
+                );
+            }
+        }
+        return Ok(quality);
+    }
+
+    if let Some(declared) = declared {
+        warn!(
+            quality = %declared,
+            "[Amazon] Delivered file could not be inspected; using the quality declared by the service"
+        );
+        return Ok(declared.clone());
+    }
+
+    bail!(
+        "Amazon delivery quality is not declared: the DoubleDouble status payload has no \
+         format/bitDepth/sampleRate and the delivered file could not be inspected"
+    );
 }
 
 /// Amazon downloader using DoubleDouble service
@@ -101,7 +310,7 @@ impl AmazonDownloader {
         job_id: &str,
         max_attempts: u32,
         cancel_token: Option<&CancellationToken>,
-    ) -> Result<String> {
+    ) -> Result<AmazonCompletion> {
         let api_base = Self::get_api_base();
         let url = format!("{}/status/{}", api_base, job_id);
 
@@ -132,23 +341,24 @@ impl AmazonDownloader {
                 continue;
             }
 
-            let status: StatusResponse = response.json().await?;
+            let body = response.text().await?;
+            let status = parse_status_payload(&body)?;
 
             match status.status.as_str() {
                 "complete" | "done" => {
-                    if let Some(download_url) = status.url {
-                        info!("[Amazon] Job complete, got download URL");
-                        return Ok(download_url);
-                    }
-                    return Err(anyhow!("Job complete but no URL"));
+                    let completion = status.into_completion()?;
+                    info!("[Amazon] Job complete, got download URL");
+                    return Ok(completion);
                 }
                 "failed" | "error" => {
                     let msg = status
-                        .friendly_status
+                        .message
+                        .or(status.friendly_status)
                         .unwrap_or_else(|| "Unknown error".to_string());
-                    return Err(anyhow!("Download failed: {}", msg));
+                    return Err(anyhow!("DoubleDouble download failed: {msg}"));
                 }
-                "processing" | "pending" | "queued" => {
+                "processing" | "pending" | "queued" | "downloading" | "uploading"
+                | "initialising" => {
                     debug!("[Amazon] Status: {}", status.status);
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
@@ -228,18 +438,19 @@ impl AmazonDownloader {
         output_path: &Path,
         item_id: &str,
         cancel_token: Option<&CancellationToken>,
-    ) -> Result<()> {
+    ) -> Result<AmazonCompletion> {
         PROGRESS_TRACKER.update(DownloadProgress::searching(item_id, "Amazon Music"));
 
         // Submit job
         let job_id = self.submit(amazon_url).await?;
 
         // Poll for completion
-        let download_url = self.poll_status(&job_id, 60, cancel_token).await?;
+        let completion = self.poll_status(&job_id, 60, cancel_token).await?;
 
         // Download
-        self.download_file(&download_url, output_path, item_id, cancel_token)
-            .await
+        self.download_file(&completion.url, output_path, item_id, cancel_token)
+            .await?;
+        Ok(completion)
     }
 
     /// Full download flow (requires Amazon URL from SongLink)
@@ -258,14 +469,26 @@ impl AmazonDownloader {
         );
         let output_path = Path::new(&request.output_dir).join(&filename);
 
-        self.download_from_url(amazon_url, &output_path, item_id, cancel_token)
+        let completion = self
+            .download_from_url(amazon_url, &output_path, item_id, cancel_token)
             .await?;
 
-        // Amazon provides up to 24-bit/48kHz
+        let physical = inspect_physical_audio_file(&output_path);
+        let effective =
+            match effective_quality(completion.declared_quality.as_ref(), physical.as_ref()) {
+                Ok(quality) => quality,
+                Err(err) => {
+                    let _ = tokio::fs::remove_file(&output_path).await;
+                    return Err(err);
+                }
+            };
+        info!("[Amazon] Effective delivery quality: {effective}");
+
         Ok(DownloadResult {
             file_path: output_path.to_string_lossy().to_string(),
-            bit_depth: 24,
-            sample_rate: 48000,
+            bit_depth: effective.bit_depth,
+            sample_rate: effective.sample_rate,
+            physical_audio: physical,
             title: request.track_name.clone(),
             artist: request.artist_name.clone(),
             album: request.album_name.clone(),

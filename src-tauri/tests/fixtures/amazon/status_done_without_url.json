@@ -1,0 +1,9 @@
+{
+  "status": "done",
+  "friendlyStatus": "Finished",
+  "percent": 100,
+  "current": {
+    "name": "Track",
+    "artist": "Artist"
+  }
+}

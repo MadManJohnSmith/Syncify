@@ -106,11 +106,24 @@ fn normalize_title(raw: &str) -> String {
     normalize_identity_text(raw)
 }
 
+/// Forma canónica de un ISRC: sin guiones ni espacios y en mayúsculas.
+///
+/// Es la misma identidad que la 0064 aplica a `tracks.isrc`
+/// (`UPPER(REPLACE(TRIM(isrc), '-', ''))`), ampliada con los espacios
+/// internos que algunos proveedores intercalan. No valida la forma: eso lo
+/// decide `is_valid_isrc`. La comparte el matcher de descargas para que no
+/// existan dos definiciones de «mismo ISRC».
+pub fn normalize_isrc(raw: &str) -> String {
+    raw.chars()
+        .filter(|character| *character != '-' && !character.is_whitespace())
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
 fn isrc_evidence(item_isrc: Option<&str>) -> Option<String> {
     item_isrc
-        .map(str::trim)
+        .map(normalize_isrc)
         .filter(|value| !value.is_empty())
-        .map(str::to_lowercase)
 }
 
 /// Resuelve la identidad del ítem contra los Tracks canónicos.
@@ -124,12 +137,28 @@ pub async fn resolve_identity(
     if let Some(isrc) = isrc_evidence(request.isrc) {
         // Mismo NOCASE que el índice único de 0064:186; comparar en BINARY
         // trataba `USCGH…` y `uscgh…` como grabaciones distintas.
-        let matches: Vec<(i64,)> =
+        let mut matches: Vec<(i64,)> =
             sqlx::query_as("SELECT id FROM tracks WHERE isrc = ? COLLATE NOCASE ORDER BY id")
                 .bind(&isrc)
                 .fetch_all(&mut *conn)
                 .await
                 .map_err(|e| format!("identity ISRC lookup failed: {e}"))?;
+        if matches.is_empty() {
+            // La 0064 compactó lo que existía al aplicarse, pero varias rutas
+            // de proveedor siguen insertando el ISRC tal cual (con guiones o
+            // espacios) durante la sesión. Sin este fallback el ítem compacto
+            // no enlazaría con esa fila.
+            matches = sqlx::query_as(
+                "SELECT id FROM tracks
+                 WHERE isrc IS NOT NULL
+                   AND UPPER(REPLACE(REPLACE(TRIM(isrc), '-', ''), ' ', '')) = ?
+                 ORDER BY id",
+            )
+            .bind(&isrc)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| format!("identity ISRC fallback lookup failed: {e}"))?;
+        }
         match matches.as_slice() {
             [] => {}
             [(track_id,)] => {
@@ -235,8 +264,11 @@ async fn fingerprint_candidates(
             continue;
         }
         // Dos ISRC distintos son dos grabaciones: la huella no puede pisarlos.
+        // Se comparan en forma canónica para que los guiones o las mayúsculas
+        // del proveedor no conviertan el mismo código en una contradicción.
         if let (Some(item_isrc), Some(cand_isrc)) = (item_isrc.as_deref(), cand_isrc.as_deref()) {
-            if !cand_isrc.trim().is_empty() && !cand_isrc.trim().eq_ignore_ascii_case(item_isrc) {
+            let cand_isrc = normalize_isrc(cand_isrc);
+            if !cand_isrc.is_empty() && cand_isrc != item_isrc {
                 continue;
             }
         }

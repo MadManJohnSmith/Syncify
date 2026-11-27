@@ -212,6 +212,23 @@ pub async fn upsert_playlist_and_source(
 
     let playlist_id = match existing_playlist_id {
         Some(id) => {
+            // #403: el nombre que se escribe depende del modo de conflicto.
+            // `observe_provider_playlist_name` lee la huella anterior, decide
+            // (aplicar, conservar local o dejar revisión) y devuelve el valor
+            // efectivo. Un id remoto vacío es una playlist manual: no participa.
+            let effective_name = if trimmed_sp_id.is_empty() {
+                name.to_string()
+            } else {
+                crate::services::playlist_canonical::observe_provider_playlist_name(
+                    db,
+                    id,
+                    account_id,
+                    trimmed_sp_id,
+                    name,
+                )
+                .await
+                .map_err(sqlx::Error::Protocol)?
+            };
             // Reuse existing playlist, updating metadata/track_count
             // PL01: el guard `deleted_at IS NULL` cierra la carrera con un
             // borrado concurrente: si tombstoneó entre el lookup y aquí, no se
@@ -232,7 +249,7 @@ pub async fn upsert_playlist_and_source(
                 WHERE id = ? AND deleted_at IS NULL
                 "#,
             )
-            .bind(name)
+            .bind(&effective_name)
             .bind(description)
             .bind(owner_name)
             .bind(is_public)
@@ -310,6 +327,20 @@ pub async fn upsert_playlist_and_source(
         .bind(trimmed_sp_id)
         .execute(db)
         .await?;
+
+        // La huella se escribe también en la primera importación para que la
+        // siguiente corrida pueda distinguir una edición local de un cambio
+        // del proveedor. En las existentes `observe_...` ya la dejó; repetirla
+        // es idempotente y cubre la ruta que encontró la fila sin `playlist_sources`.
+        crate::services::playlist_canonical::remember_provider_playlist_name(
+            db,
+            playlist_id,
+            account_id,
+            trimmed_sp_id,
+            name,
+        )
+        .await
+        .map_err(sqlx::Error::Protocol)?;
     }
 
     Ok(Some(playlist_id))
@@ -1040,6 +1071,15 @@ pub async fn import_spotify_playlists(
             let mut track_offset = 0;
             let track_limit = 100;
             let mut expansion_failed = false;
+            // #403: pertenencia local antes del recorrido y huella ordenada
+            // del proveedor para el modo de conflicto.
+            let local_tracks_before_sync =
+                crate::services::playlist_canonical::read_playlist_track_ids(
+                    &state.db,
+                    playlist_db_id.0,
+                )
+                .await?;
+            let mut provider_track_ids: Vec<i64> = Vec::new();
 
             loop {
                 tracing::debug!(
@@ -1151,6 +1191,7 @@ pub async fn import_spotify_playlists(
                             .bind(track_offset + position as i32 + 1)
                             .bind(item.added_at.as_deref())
                             .execute(&state.db)).await;
+                        provider_track_ids.push(track_id);
 
                         tracks_imported += 1;
                     }
@@ -1168,12 +1209,16 @@ pub async fn import_spotify_playlists(
                 playlist_db_id.0,
             )
             .await;
-            // #398: mismo cierre que el brazo del sync, para que una importación
-            // manual de playlists también alimente las canónicas.
-            crate::services::playlist_canonical::finish_playlist_expansion(
+            // #398/#403: mismo cierre que el brazo del sync, para que una
+            // importación manual también aplique el modo y alimente las canónicas.
+            crate::services::playlist_canonical::finish_playlist_import(
                 &state.db,
                 playlist_db_id.0,
                 expansion_failed,
+                account_id,
+                &playlist.id,
+                &provider_track_ids,
+                &local_tracks_before_sync,
             )
             .await;
 
@@ -2094,10 +2139,15 @@ where
                 }
             };
             totals.playlists_synced += 1;
+            let local_tracks_before_sync =
+                crate::services::playlist_canonical::read_playlist_track_ids(db, playlist_db_id)
+                    .await?;
 
             // Pistas de la playlist, en el orden en que las guarda el usuario.
             let mut track_next_url: Option<String> = None;
             let mut processed_in_playlist: u64 = 0;
+            // #403: huella ordenada del proveedor para aplicar el modo de conflicto.
+            let mut provider_track_ids: Vec<i64> = Vec::new();
             loop {
                 let t_tracks_api = std::time::Instant::now();
                 let tracks_page = match client
@@ -2187,6 +2237,7 @@ where
                             .bind(res.track_id)
                             .bind((processed_in_playlist + 1) as i32)
                             .execute(db)).await;
+                            provider_track_ids.push(res.track_id);
                             // L00 (#97): pertenencia de la colección
                             // playlist con su id local y el ítem del
                             // proveedor (SoundCloud no trae added_at por
@@ -2236,12 +2287,16 @@ where
             // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
             let _ =
                 crate::commands::playlists::recompact_playlist_positions(db, playlist_db_id).await;
-            // #398: el recorrido terminó; certifica el total declarado y
-            // recalcula la canónica del grupo.
-            crate::services::playlist_canonical::finish_playlist_expansion(
+            // #398/#403: el recorrido terminó; aplica el modo de conflicto,
+            // certifica el total declarado y recalcula la canónica del grupo.
+            crate::services::playlist_canonical::finish_playlist_import(
                 db,
                 playlist_db_id,
                 false,
+                account_id,
+                &playlist.id.to_string(),
+                &provider_track_ids,
+                &local_tracks_before_sync,
             )
             .await;
         }
@@ -4474,6 +4529,12 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                     let declared_total: i64 = pl.nb_tracks.unwrap_or(0).max(0) as i64;
                     let mut track_offset: i32 = 0;
                     let mut expansion_failed = false;
+                    // #403: pertenencia local antes del recorrido y huella
+                    // ordenada del proveedor para el modo de conflicto.
+                    let local_tracks_before_sync =
+                        crate::services::playlist_canonical::read_playlist_track_ids(db, p_id)
+                            .await?;
+                    let mut provider_track_ids: Vec<i64> = Vec::new();
                     loop {
                         let t_exp = std::time::Instant::now();
                         let (tracks, page_total) = match client
@@ -4540,6 +4601,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                                 .bind(res.track_id)
                                 .bind(pos as i32 + 1)
                                 .execute(db)).await;
+                                provider_track_ids.push(res.track_id);
                                 arm.persistence_ms += t_pl_track.elapsed().as_millis() as u64;
                                 arm.enrichment_ms += t_enrich.elapsed().as_millis() as u64;
                                 // L00 (#97): pertenencia de la colección
@@ -4597,12 +4659,17 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                     // TASK-79: Recompact positions sequentially 1..N and reconcile track_count
                     let _ =
                         crate::commands::playlists::recompact_playlist_positions(db, p_id).await;
-                    // #398: certifica la expansión y recalcula el grupo canónico
-                    // al que pertenece la copia (solo si el recorrido terminó).
-                    crate::services::playlist_canonical::finish_playlist_expansion(
+                    // #398/#403: aplica el modo de conflicto (solo si el
+                    // recorrido terminó), certifica la expansión y recalcula el
+                    // grupo canónico al que pertenece la copia.
+                    crate::services::playlist_canonical::finish_playlist_import(
                         db,
                         p_id,
                         expansion_failed,
+                        account_id,
+                        &pl.id,
+                        &provider_track_ids,
+                        &local_tracks_before_sync,
                     )
                     .await;
                 }
@@ -5072,6 +5139,14 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                 .as_ref()
                                 .map(|t| t.total.max(0) as i64)
                                 .unwrap_or(0);
+                            // #403: pertenencia local antes del recorrido y
+                            // huella ordenada del proveedor para el modo de conflicto.
+                            let local_tracks_before_sync =
+                                crate::services::playlist_canonical::read_playlist_track_ids(
+                                    db, p_id,
+                                )
+                                .await?;
+                            let mut provider_track_ids: Vec<i64> = Vec::new();
                             loop {
                                 let t_exp = std::time::Instant::now();
                                 let tracks_page = match client
@@ -5185,6 +5260,7 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                                             .bind(res.track_id)
                                             .bind(pos as i32 + 1)
                                             .execute(db)).await;
+                                            provider_track_ids.push(res.track_id);
                                             arm.persistence_ms +=
                                                 t_pl_track.elapsed().as_millis() as u64;
                                             // L00 (#97): pertenencia de la
@@ -5248,11 +5324,16 @@ async fn sync_spotify_arm<E: SyncProgressEmitter>(
                             let _ =
                                 crate::commands::playlists::recompact_playlist_positions(db, p_id)
                                     .await;
-                            // #398: cierra la expansión y repara la canónica del grupo.
-                            crate::services::playlist_canonical::finish_playlist_expansion(
+                            // #398/#403: aplica el modo de conflicto, cierra la
+                            // expansión y repara la canónica del grupo.
+                            crate::services::playlist_canonical::finish_playlist_import(
                                 db,
                                 p_id,
                                 expansion_failed,
+                                account_id,
+                                &pl.id,
+                                &provider_track_ids,
+                                &local_tracks_before_sync,
                             )
                             .await;
                         }
@@ -6272,6 +6353,14 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                         let mut playlist_fetch_error: Option<String> = None;
 
                         if let Some((p_id,)) = playlist_db_id {
+                            // #403: pertenencia local antes del recorrido y
+                            // huella ordenada del proveedor para el modo de conflicto.
+                            let local_tracks_before_sync =
+                                crate::services::playlist_canonical::read_playlist_track_ids(
+                                    db, p_id,
+                                )
+                                .await?;
+                            let mut provider_track_ids: Vec<i64> = Vec::new();
                             loop {
                                 let t_exp = std::time::Instant::now();
                                 match client
@@ -6369,6 +6458,7 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                                                     .bind(res.track_id)
                                                     .bind(track_offset + pos as i32 + 1)
                                                     .execute(db)).await;
+                                                    provider_track_ids.push(res.track_id);
                                                     arm.persistence_ms +=
                                                         t_pl_track.elapsed().as_millis() as u64;
                                                     // L00 (#97): pertenencia de
@@ -6447,13 +6537,17 @@ async fn sync_tidal_arm<E: SyncProgressEmitter>(
                             let _ =
                                 crate::commands::playlists::recompact_playlist_positions(db, p_id)
                                     .await;
-                            // #398: un fallo de página deja la fuente incompleta;
-                            // si el recorrido terminó, se certifica y se
-                            // recalcula el grupo canónico.
-                            crate::services::playlist_canonical::finish_playlist_expansion(
+                            // #398/#403: un fallo de página deja la fuente
+                            // incompleta; el modo solo decide con observación
+                            // completa, certifica y recalcula el grupo canónico.
+                            crate::services::playlist_canonical::finish_playlist_import(
                                 db,
                                 p_id,
                                 playlist_fetch_error.is_some(),
+                                account_id,
+                                &pl.uuid,
+                                &provider_track_ids,
+                                &local_tracks_before_sync,
                             )
                             .await;
                         }
@@ -7648,6 +7742,14 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                             // Declared fallback when a page omits its total.
                             let mut playlist_provider_total: i64 =
                                 pl.tracks_count.map(|c| c.max(0) as i64).unwrap_or(0);
+                            // #403: pertenencia local antes del recorrido y
+                            // huella ordenada del proveedor para el modo de conflicto.
+                            let local_tracks_before_sync =
+                                crate::services::playlist_canonical::read_playlist_track_ids(
+                                    db, p_id,
+                                )
+                                .await?;
+                            let mut provider_track_ids: Vec<i64> = Vec::new();
                             loop {
                                 let t_exp = std::time::Instant::now();
                                 let detail = match qobuz_sync_with_retry(|| {
@@ -7820,6 +7922,7 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                                         .bind(res.track_id)
                                         .bind(pos as i32 + 1)
                                         .execute(db)).await;
+                                        provider_track_ids.push(res.track_id);
                                         arm.persistence_ms +=
                                             t_pl_track.elapsed().as_millis() as u64;
                                         // L00 (#97): pertenencia de la
@@ -7888,11 +7991,16 @@ async fn sync_qobuz_arm<E: SyncProgressEmitter>(
                             let _ =
                                 crate::commands::playlists::recompact_playlist_positions(db, p_id)
                                     .await;
-                            // #398: cierra la expansión de Qobuz y repara la canónica.
-                            crate::services::playlist_canonical::finish_playlist_expansion(
+                            // #398/#403: aplica el modo de conflicto, cierra la
+                            // expansión de Qobuz y repara la canónica.
+                            crate::services::playlist_canonical::finish_playlist_import(
                                 db,
                                 p_id,
                                 expansion_failed,
+                                account_id,
+                                &pl_id_str,
+                                &provider_track_ids,
+                                &local_tracks_before_sync,
                             )
                             .await;
                         }
@@ -9122,7 +9230,8 @@ mod service_tests {
                 owner_id TEXT,
                 is_collaborative INTEGER DEFAULT 0,
                 image_url TEXT,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                conflict_mode TEXT NOT NULL DEFAULT 'gana_proveedor'
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_unique
             ON playlists(account_id, service_playlist_id);
@@ -9135,6 +9244,9 @@ mod service_tests {
                 service_playlist_id TEXT NOT NULL,
                 synced_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 snapshot_id TEXT,
+                provider_name TEXT,
+                provider_track_ids TEXT,
+                provider_snapshot_at TEXT,
                 UNIQUE(account_id, service_playlist_id)
             );
             "#,
