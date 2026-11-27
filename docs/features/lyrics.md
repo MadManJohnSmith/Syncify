@@ -86,8 +86,10 @@ términos que este documento usa con precisión:
   motivo y caducidad. No es una Marca de borrado.
 - **Sonda**: comprobación puntual de que una Fuente responde, sin resolver una
   letra.
-- **Versión de letra / Pin de versión**: vocabulario del modelo objetivo
-  (ADR-0018); hoy no existe almacén de versiones ni pin (§9).
+- **Versión de letra / Pin de versión**: vocabulario del modelo de ADR-0018.
+  La migración 0121 (#404) crea `lyrics_versions`, con varias versiones por
+  (pista, Fuente, idioma, formato) y un Pin por pista; la lectura en unión, la
+  regla de versión activa y los consumidores son #411 (§9).
 
 ## 2. Motor y resolución
 
@@ -209,12 +211,23 @@ Una fila por `(track_id, format)`; las escrituras nuevas usan `lrc`, `plain` o
 `get_all_lyrics` alimenta el historial de la UI; las vistas de biblioteca
 derivan su tipo de letra directamente en SQL (§3.3).
 
+**Almacén nuevo (`lyrics_versions`), sin consumidores todavía.** La migración
+0121 (#404, ADR-0018 decisiones 1-3) crea el almacén de versiones. Una fila se
+identifica por (pista, Fuente canónica, idioma, formato) más la huella SHA-256
+de su contenido: dentro de ese hueco conviven varias versiones. `provider_id`
+es el id del catálogo (`lyrics_provider_settings.provider_id`), `language` usa
+`und` cuando no hay evidencia, y `pinned_at` marca como mucho una versión por
+pista mediante un índice parcial. La migración **no** mueve ni reescribe filas
+de `lyrics`: el almacén antiguo sigue intacto y es el único que hoy leen y
+escriben los consumidores. La lectura en unión, la regla de Versión activa y
+las escrituras nuevas son #411.
+
 ### 3.2 Lo que la UI llama «Saved Versions»
 
 `LyricsView.vue` titula «Saved Versions» a las filas de `lyrics` de la pista
 (una por formato), ordenadas por fecha. «Use this version» vuelve a guardar esa
 fila por la vía explícita. **No** son versiones por Fuente+idioma del modelo de
-ADR-0018: son formatos coexistentes. Esta diferencia es la que #187/#189
+ADR-0018: son formatos coexistentes. Esta diferencia es la que #411/#189
 deberán cerrar (§9).
 
 El editor permite editar contenido, ajustar timestamps, importar `.lrc`/`.txt`
@@ -391,16 +404,17 @@ confirme el endpoint. La competición no cambia la resolución real hoy.
 
 ADR-0017 (motor v2) está implementado en lo esencial: crate, fachada,
 selección con mejora, caché negativa, marcas de borrado, karaoke y candidato
-nativo caracterizado. ADR-0018 (modelo de versiones con pin) **no** está
-implementado: es diseño registrado y pendiente de implementación, no estado del
-árbol. Para que nadie lea las ADRs como comportamiento actual:
+nativo caracterizado. ADR-0018 (modelo de versiones con pin) está implementado
+solo en el esquema: la migración 0121 (#404) crea `lyrics_versions`, pero la
+lectura en unión, la regla de Versión activa y los consumidores siguen
+pendientes (#411/#189). Para que nadie lea las ADRs como comportamiento actual:
 
 | Ticket | Qué falta hoy en el árbol |
 | :--- | :--- |
 | #182 (LY13) | Spike del endpoint nativo de Tidal; está en `ready-for-human` porque exige credenciales reales. |
 | #185 (LY04) | Credenciales por Fuente en ajustes (sp_dc, usertoken Musixmatch) y sondas Rust por Fuente; hoy solo hay variable de entorno y puente Python. |
 | #186 (LY06) | Cancelación del lote: la base vive en el lote con progreso; las rutas batch restantes, la carrera antes de arranque y el estado terminal se cierran en #378. |
-| #187 (LY08) | Almacén de versiones por (pista, Fuente, idioma, formato), lectura en unión y regla de versión activa. Hoy: una fila por formato. |
+| #187 (LY08) | Almacén de versiones por (pista, Fuente, idioma, formato), lectura en unión y regla de versión activa. El almacén existe desde 0121 (#404); la unión, la regla y los consumidores son #411; hoy la lectura sigue en la fila por formato. |
 | #188 (LY05) | Retirada del puente Python de letras (`scripts/lyrics_bridge.py`, `scripts/services/lyrics_service.py`) y sus tests. |
 | #189 (LY09) | Pin de versión activa y UI de versiones por Fuente+idioma; «Saved Versions» sigue mostrando formatos. |
 | #190 (LY11) | Auto-fetch de letras al importar pistas; el ajuste existe pero no tiene consumidor. |
@@ -408,9 +422,10 @@ implementado: es diseño registrado y pendiente de implementación, no estado de
 | #193 (LY15) | Copy sin Genius en el reproductor y `lyrics_type` real en la ruta de `metadata.rs`. |
 | #378 | Follow-up de cancelación: `cancelled` en `BatchLyricsResult` y rutas batch fuera del guard. |
 
-Consecuencia para el modelo de datos: el almacén de versiones necesitará una
-migración nueva (la siguiente a 0119 está reservada como `0120_`); no se
-migran ni se reescriben filas existentes (ADR-0018).
+Consecuencia para el modelo de datos: el almacén de versiones existe desde la
+migración 0121 (#404), pero todavía no tiene consumidores; no se migran ni se
+reescriben filas existentes (ADR-0018). La lectura en unión y la regla de
+versión activa llegan con #411.
 
 ## 10. Invariantes que no se relajan
 

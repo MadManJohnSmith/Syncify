@@ -51,15 +51,14 @@ faltantes, pipeline Tidal y re-fetch karaoke.
 ## Aceptación y trazabilidad
 
 - **Spec:** #176 (LETRAS). **Tickets:** #178–#194; cierre LY16/#194.
-- **Estado al cierre: no implementado.** Hoy sigue vigente una fila por formato
-  en la tabla `lyrics` (`UNIQUE(track_id, format)`) y la prioridad fija
-  `lrc > plain > ttml`; «Saved Versions» de la UI son esas filas de formato.
-  Las cuatro rutas de LY-12b ya respetan las Marcas de borrado (#180), pero el
-  almacén de versiones, la lectura en unión, la regla de versión activa y el pin
-  son #187/#189. La migración del almacén nuevo no existe (la siguiente a 0119
-  está reservada como `0120_`).
+- **Estado a 2026-11-27:** la migración `0121_lyrics_versions.sql` (#404) crea
+  el almacén nuevo (`lyrics_versions`), con varias versiones por (pista, Fuente,
+  idioma, formato) y el Pin en la propia fila (índice parcial, uno por pista).
+  No mueve filas: `lyrics` sigue vigente para lectura y escritura. La lectura
+  en unión, la regla de versión activa y los consumidores siguen pendientes
+  (#411/#189). «Saved Versions» de la UI sigue mostrando las filas de formato.
 - **Comportamiento real, con lo pendiente declarado:** `docs/features/lyrics.md`
-  §3 y §9. Este ADR registra la decisión de destino, no el estado actual.
+  §3 y §9. Este ADR registra la decisión de destino y el avance del esquema.
 
 ## Alternativas descartadas
 

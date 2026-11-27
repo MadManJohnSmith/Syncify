@@ -270,9 +270,9 @@ catálogo de fuentes configurables sigue teniendo 12 entradas. La competición p
 ya existe y está probada con gateway falso
 (`LyricsPipelineService::resolve_lyrics_and_sidecar_competing` y `compete_with_native`): solo gana un
 candidato nativo estrictamente más fino, y un empate conserva la fuente genérica. Falta cablearla
-cuando el spike confirme el endpoint y cuando el almacén de versiones de LY08/#187 exista (hoy no
-hay tabla `lyrics_versions`: el ganador se guardaría en la fila única por formato que ya escribe el
-pipeline).
+cuando el spike confirme el endpoint y cuando #411 conecte el almacén de versiones de LY08 (#404 ya
+creó la tabla `lyrics_versions`; ningún pipeline escribe en ella todavía y el ganador se guarda en la
+fila única por formato que ya escribe el pipeline).
 
 ## 5. Preservación de Enhanced LRC (sección corregida)
 
