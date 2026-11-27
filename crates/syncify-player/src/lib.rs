@@ -366,4 +366,5 @@ impl std::fmt::Debug for PlayerEngine {
     }
 }
 
+pub mod eq;
 pub mod gain;

@@ -19,6 +19,7 @@ pub mod lastfm;
 pub mod library_membership;
 pub mod logging;
 pub mod lyrics_negative_cache;
+pub mod lyrics_versions;
 pub mod manifest_writer;
 pub mod mb_dump_import;
 pub mod mp4_writer;
@@ -30,6 +31,7 @@ pub mod playback_advance;
 pub mod playback_promotion;
 pub mod playback_session;
 pub mod playlist_canonical;
+pub mod playlist_migration;
 // El unico consumidor es MPRIS, que solo existe en Linux: fuera de Linux sus
 // funciones quedarian sin uso y `-D warnings` rompe el binario.
 #[cfg(target_os = "linux")]

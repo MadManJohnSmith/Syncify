@@ -11,6 +11,7 @@
 //!   hasta sus tickets.
 
 pub mod collection;
+pub mod deezer_source;
 pub mod events;
 pub mod fake;
 pub mod job;

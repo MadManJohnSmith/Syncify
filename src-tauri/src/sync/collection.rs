@@ -25,7 +25,11 @@ pub struct CollectedCollection {
     pub pages: usize,
 }
 
-fn assign_total(slot: &mut Option<i64>, page_total: Option<i64>) {
+/// Asigna el total de una colección **una sola vez**: el primero positivo que
+/// publique el proveedor manda y las páginas siguientes no lo pisan (ADR-0006,
+/// decisión 11). Los brazos que conservan su bucle por página usan esta misma
+/// regla en vez de reasignar el total en cada iteración (#405).
+pub fn assign_total(slot: &mut Option<i64>, page_total: Option<i64>) {
     if slot.unwrap_or(0) > 0 {
         return;
     }

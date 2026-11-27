@@ -1,0 +1,164 @@
+{
+  "favorites": [
+    {
+      "data": [
+        {
+          "id": 1001,
+          "title": "Fixture Track 1",
+          "duration": 201,
+          "isrc": "DZ4050000001",
+          "artist": { "name": "Fixture Artist 1" },
+          "album": { "title": "Fixture Album 1" }
+        },
+        {
+          "id": 1002,
+          "title": "Fixture Track 2",
+          "duration": 202,
+          "isrc": "DZ4050000002",
+          "artist": { "name": "Fixture Artist 2" },
+          "album": { "title": "Fixture Album 2" }
+        }
+      ],
+      "total": 3
+    },
+    {
+      "data": [
+        {
+          "id": 1003,
+          "title": "Fixture Track 3",
+          "duration": 203,
+          "isrc": "DZ4050000003",
+          "artist": { "name": "Fixture Artist 3" },
+          "album": { "title": "Fixture Album 3" }
+        }
+      ],
+      "total": 3
+    }
+  ],
+  "favorites_without_total": [
+    {
+      "data": [
+        {
+          "id": 2001,
+          "title": "Fixture Sin Total",
+          "duration": 200,
+          "artist": { "name": "Fixture Artist" }
+        }
+      ]
+    }
+  ],
+  "albums": [
+    {
+      "data": [
+        {
+          "id": 3001,
+          "title": "Fixture Album A",
+          "nb_tracks": 11,
+          "cover_medium": "https://example.invalid/cover-a.jpg",
+          "artist": { "id": 41, "name": "Fixture Artist A" }
+        },
+        {
+          "id": 3002,
+          "title": "Fixture Album B",
+          "nb_tracks": 12,
+          "cover_medium": "https://example.invalid/cover-b.jpg",
+          "artist": { "id": 42, "name": "Fixture Artist B" }
+        }
+      ],
+      "total": 3
+    },
+    {
+      "data": [
+        {
+          "id": 3003,
+          "title": "Fixture Album C",
+          "nb_tracks": 13,
+          "artist": { "id": 43, "name": "Fixture Artist C" }
+        }
+      ],
+      "total": 3
+    }
+  ],
+  "artists": [
+    {
+      "data": [
+        { "id": 41, "name": "Fixture Artist A" },
+        { "id": 42, "name": "Fixture Artist B" }
+      ],
+      "total": 3
+    },
+    {
+      "data": [{ "id": 43, "name": "Fixture Artist C" }],
+      "total": 3
+    }
+  ],
+  "playlists": [
+    {
+      "data": [
+        {
+          "id": 4001,
+          "title": "Fixture Playlist A",
+          "nb_tracks": 11,
+          "public": true,
+          "collaborative": false,
+          "description": "Fixture",
+          "picture_medium": "https://example.invalid/pl-a.jpg"
+        },
+        {
+          "id": 4002,
+          "title": "Fixture Playlist B",
+          "nb_tracks": 22,
+          "public": false,
+          "collaborative": true
+        }
+      ],
+      "total": 3
+    },
+    {
+      "data": [
+        {
+          "id": 4003,
+          "title": "Fixture Playlist C",
+          "nb_tracks": 33,
+          "public": true,
+          "collaborative": false
+        }
+      ],
+      "total": 3
+    }
+  ],
+  "playlist_tracks": [
+    {
+      "data": [
+        {
+          "id": 5001,
+          "title": "Playlist Track 1",
+          "duration": 180,
+          "isrc": "DZ4050005001",
+          "artist": { "name": "Fixture Artist P1" },
+          "album": { "title": "Fixture Album P1" }
+        },
+        {
+          "id": 5002,
+          "title": "Playlist Track 2",
+          "duration": 181,
+          "artist": { "name": "Fixture Artist P2" }
+        }
+      ],
+      "total": 3
+    },
+    {
+      "data": [
+        {
+          "id": 5003,
+          "title": "Playlist Track 3",
+          "duration": 182,
+          "isrc": "DZ4050005003",
+          "artist": { "name": "Fixture Artist P3" },
+          "album": { "title": "Fixture Album P3" }
+        }
+      ],
+      "total": 3
+    }
+  ]
+}

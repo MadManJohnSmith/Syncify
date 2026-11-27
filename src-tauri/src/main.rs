@@ -1130,6 +1130,10 @@ fn main() {
             commands::import_qobuz_purchases,
             commands::import_qobuz_playlists,
             commands::enrich_qobuz_album_metadata,
+            // Catalog search (P10b, #409): gateway de #402, fichas y acciones.
+            commands::catalog_search,
+            commands::catalog_album_tracks,
+            commands::catalog_artist_albums,
             // Tidal
             commands::import_tidal_library,
             // Deezer
@@ -1248,6 +1252,11 @@ fn main() {
             commands::fetch_remote_playlist_tracks,
             commands::export_playlist,
             commands::match_playlist_to_service,
+            // #410: modo de conflicto y revisión de conflictos de playlist
+            commands::get_playlist_conflict_state,
+            commands::set_playlist_conflict_mode,
+            commands::list_playlist_conflict_reviews,
+            commands::resolve_playlist_conflict_review,
             // Dependency Management
             commands::check_dependencies,
             commands::install_dependency,

@@ -55,6 +55,7 @@ pub const TRACK_REFERENCE_TABLES: &[(&str, &str)] = &[
     ("lyrics_deletion_marks", "track_id"),
     ("lyrics_resolution_failures", "track_id"),
     ("lyrics_restored_formats", "track_id"),
+    ("lyrics_versions", "track_id"),
     ("playback_listens", "track_id"),
     ("player_queue_entries", "track_id"),
     ("playlist_tracks", "track_id"),
@@ -1177,6 +1178,67 @@ async fn merge_supporting_rows(
         "track_id, provider_id, reason, detail, recorded_at, expires_at",
     )
     .await?;
+    merge_lyrics_versions(tx, source_track_id, target_track_id).await?;
+
+    Ok(())
+}
+
+/// El almacén de versiones tiene una clave única por contenido y como mucho un
+/// Pin por pista. Las filas del Track importado se insertan sin `pinned_at`
+/// para que el índice parcial no descarte una versión distinta solo porque
+/// ambas pistas tenían Pin; si el Track elegido no tenía Pin, el del importado
+/// se conserva sobre la versión equivalente.
+async fn merge_lyrics_versions(
+    tx: &mut Transaction<'_, Sqlite>,
+    source_track_id: i64,
+    target_track_id: i64,
+) -> Result<(), String> {
+    let source_pin: Option<(String, String, String, String, String)> = sqlx::query_as(
+        "SELECT provider_id, language, format, content_hash, pinned_at
+         FROM lyrics_versions
+         WHERE track_id = ? AND pinned_at IS NOT NULL",
+    )
+    .bind(source_track_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| format!("identity review lyrics version pin lookup failed: {e}"))?;
+
+    let target_has_pin: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM lyrics_versions WHERE track_id = ? AND pinned_at IS NOT NULL)",
+    )
+    .bind(target_track_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| format!("identity review lyrics version pin lookup failed: {e}"))?;
+
+    merge_unique_rows(
+        tx,
+        source_track_id,
+        target_track_id,
+        "lyrics_versions",
+        "track_id, provider_id, language, format, sync_level, content, content_hash,
+         embedded_in_file, obtained_at",
+    )
+    .await?;
+
+    if let Some((provider_id, language, format, content_hash, pinned_at)) = source_pin {
+        if !target_has_pin {
+            sqlx::query(
+                "UPDATE lyrics_versions SET pinned_at = ?
+                 WHERE track_id = ? AND provider_id = ? AND language = ?
+                   AND format = ? AND content_hash = ?",
+            )
+            .bind(&pinned_at)
+            .bind(target_track_id)
+            .bind(&provider_id)
+            .bind(&language)
+            .bind(&format)
+            .bind(&content_hash)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| format!("identity review lyrics version pin move failed: {e}"))?;
+        }
+    }
 
     Ok(())
 }
@@ -1241,6 +1303,9 @@ async fn ensure_no_references_left(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::lyrics_versions::{
+        list_versions, pin_version, pinned_version, record_version, NewLyricsVersion,
+    };
     use crate::services::track_identity::REASON_FINGERPRINT_MULTIPLE_CANDIDATES;
     use sqlx::sqlite::SqlitePoolOptions;
     use sqlx::SqlitePool;
@@ -2138,6 +2203,109 @@ mod tests {
         assert_eq!(
             edition_links_to_target, 0,
             "el enlace de edición creado antes del fallo también se revierte"
+        );
+    }
+
+    fn lyrics_version(track_id: i64, content: &str) -> NewLyricsVersion {
+        NewLyricsVersion {
+            track_id,
+            provider_id: "lrclib_synced".to_string(),
+            language: Some("en".to_string()),
+            format: "lrc".to_string(),
+            sync_level: Some("line".to_string()),
+            content: content.to_string(),
+            embedded_in_file: false,
+        }
+    }
+
+    /// El merge no pierde una versión distinta y conserva el Pin del importado
+    /// cuando el elegido no tenía uno.
+    #[tokio::test]
+    async fn el_merge_de_versiones_conserva_contenido_y_pin_del_importado() {
+        let pool = pool().await;
+        let imported = track(&pool, "Artist", "Imported", 200_000, None).await;
+        let target = track(&pool, "Artist", "Target", 200_000, None).await;
+
+        let target_shared = record_version(&pool, &lyrics_version(target, "shared line"))
+            .await
+            .unwrap();
+        let imported_shared = record_version(&pool, &lyrics_version(imported, "shared line"))
+            .await
+            .unwrap();
+        let imported_unique = record_version(&pool, &lyrics_version(imported, "imported only"))
+            .await
+            .unwrap();
+        pin_version(&pool, imported, imported_unique.id)
+            .await
+            .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        merge_supporting_rows(&mut tx, imported, target)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let versions = list_versions(&pool, target).await.unwrap();
+        assert_eq!(versions.len(), 2, "la copia idéntica se pliega");
+        assert!(
+            versions.iter().any(|v| v.id == target_shared.id),
+            "la versión del elegido conserva su identidad"
+        );
+        assert!(
+            !versions.iter().any(|v| v.id == imported_shared.id),
+            "la copia idéntica de la importada no se duplica"
+        );
+        assert_eq!(
+            pinned_version(&pool, target)
+                .await
+                .unwrap()
+                .expect("el Pin del importado se conserva")
+                .content,
+            "imported only"
+        );
+        assert!(list_versions(&pool, imported).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn el_merge_de_versiones_respeta_el_pin_del_elegido_sin_perder_la_importada() {
+        let pool = pool().await;
+        let imported = track(&pool, "Artist", "Imported", 200_000, None).await;
+        let target = track(&pool, "Artist", "Target", 200_000, None).await;
+
+        let target_version = record_version(&pool, &lyrics_version(target, "target only"))
+            .await
+            .unwrap();
+        pin_version(&pool, target, target_version.id).await.unwrap();
+        let imported_version = record_version(&pool, &lyrics_version(imported, "imported only"))
+            .await
+            .unwrap();
+        pin_version(&pool, imported, imported_version.id)
+            .await
+            .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        merge_supporting_rows(&mut tx, imported, target)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let versions = list_versions(&pool, target).await.unwrap();
+        assert_eq!(versions.len(), 2, "ninguna versión distinta se pierde");
+        assert_eq!(
+            pinned_version(&pool, target)
+                .await
+                .unwrap()
+                .expect("el Pin del elegido manda")
+                .id,
+            target_version.id
+        );
+        let imported_moved = versions
+            .iter()
+            .find(|v| v.content == "imported only")
+            .expect("la versión del importado sigue en el almacén");
+        assert!(
+            imported_moved.pinned_at.is_none(),
+            "el Pin perdedor se retira, no se duplica"
         );
     }
 }

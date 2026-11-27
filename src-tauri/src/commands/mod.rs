@@ -101,11 +101,21 @@ pub use player::*;
 pub mod playlists;
 pub use playlists::*;
 
+/// #410: modo de conflicto por playlist (ficha, primera edición) y cola de
+/// revisión `needs_review`. El núcleo de decisión vive en
+/// `services::playlist_canonical` (#403).
+pub mod playlist_conflicts;
+pub use playlist_conflicts::*;
+
 pub mod queue;
 pub use queue::*;
 
 pub mod search;
 pub use search::*;
+
+/// P10b (#409): comandos de la búsqueda de catálogo sobre el gateway de #402.
+pub mod catalog_search_commands;
+pub use catalog_search_commands::*;
 
 pub mod service;
 pub use service::*;
