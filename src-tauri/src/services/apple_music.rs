@@ -1206,6 +1206,15 @@ impl AppleMusicClient {
                     .await;
                 }
 
+                // #398: la relación de la playlist ya se recorrió entera; se
+                // certifica su total declarado y se recalcula su canónica.
+                crate::services::playlist_canonical::finish_playlist_expansion(
+                    db,
+                    playlist_db_id,
+                    false,
+                )
+                .await;
+
                 on_progress(AppleMusicEntityProgress {
                     entities_seen: entities.max(0) as u64,
                     tracks_imported: imported.max(0) as u64,

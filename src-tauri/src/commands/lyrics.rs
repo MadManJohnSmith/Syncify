@@ -84,6 +84,10 @@ pub struct BatchLyricsResult {
     pub fetched: i64,
     pub failed: i64,
     pub skipped: i64,
+    /// Terminal state of the run: `true` when it stopped early because the user
+    /// asked to cancel it (`KaraokeRefetchResult` carries the same field). The
+    /// UI reads this instead of inferring cancellation from a progress event.
+    pub cancelled: bool,
 }
 
 /// Search result from online sources
@@ -729,7 +733,7 @@ pub(crate) enum BatchTrackOutcome {
 
 /// Core of one mass-fetch track: skips tracks that already hold any lyric row,
 /// short-circuits total-marked tracks before any provider call, and lets the
-/// per-format gate stop the save. The two IPC batch commands map this outcome
+/// per-format gate stop the save. The batch queue maps this outcome
 /// to counters and progress events.
 pub(crate) async fn batch_fetch_track(
     db: &crate::DbPool,
@@ -1345,34 +1349,9 @@ pub async fn batch_fetch_lyrics(
 ) -> Result<BatchLyricsResult, String> {
     tracing::info!("batch_fetch_lyrics: {} tracks", track_ids.len());
 
-    let mut fetched = 0i64;
-    let mut failed = 0i64;
-    let mut skipped = 0i64;
-
-    for track_id in track_ids {
-        // Per-track failures stay per-track: a mass fetch must not abort on
-        // one missing row or one failing provider path.
-        let outcome = batch_fetch_track(&state.db, track_id).await;
-        match outcome {
-            Ok(BatchTrackOutcome::Saved) => fetched += 1,
-            Ok(BatchTrackOutcome::BlockedByMark) | Ok(BatchTrackOutcome::AlreadyPresent) => {
-                skipped += 1
-            }
-            Ok(BatchTrackOutcome::NotFound) | Err(_) => failed += 1,
-        }
-
-        // Rate limiting - be kind to upstream APIs. The presence skip
-        // provably spent no provider call, so it needs no delay.
-        if !matches!(outcome, Ok(BatchTrackOutcome::AlreadyPresent)) {
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        }
-    }
-
-    Ok(BatchLyricsResult {
-        fetched,
-        failed,
-        skipped,
-    })
+    // No dialog of its own: it shares the single-run slot with the progress
+    // route (neither can run beside the other) but nobody can cancel it.
+    run_lyrics_batch(&track_ids, state.db.clone(), 0, |_, _, _, _| {}).await
 }
 
 /// Fetch all missing lyrics
@@ -1390,7 +1369,7 @@ pub async fn fetch_missing_lyrics(
 
     tracing::info!("Found {} tracks missing lyrics", total);
 
-    batch_fetch_lyrics(state, track_ids).await
+    run_lyrics_batch(&track_ids, state.db.clone(), 0, |_, _, _, _| {}).await
 }
 
 /// One track as the batch queue sees it: the label shown in progress plus the
@@ -1400,61 +1379,115 @@ pub(crate) struct BatchTrackStep {
     pub outcome: Result<BatchTrackOutcome, String>,
 }
 
-/// Cancellation and single-run state for `batch_fetch_lyrics_with_progress`.
-/// The loop reads the cancel flag between tracks, so a cancellation requested
-/// while a provider call is in flight lands after that track finishes and
-/// before the next one starts.
-static LYRICS_BATCH_CANCEL: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-static LYRICS_BATCH_RUNNING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Clears the previous run's cancel flag and marks a new run as active.
-/// Split out with explicit atomics so the reset semantics are testable without
-/// the global state: a finished (or cancelled) run must never leak its flag
-/// into the next one, and a rejected second start must not clear the flag the
-/// active run is about to observe.
-fn start_batch_run<'a>(
-    running: &'a std::sync::atomic::AtomicBool,
-    cancel: &std::sync::atomic::AtomicBool,
-) -> Result<BatchRunGuard<'a>, String> {
-    if running
-        .compare_exchange(
-            false,
-            true,
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
-        )
-        .is_err()
-    {
-        return Err("Ya hay una descarga masiva de letras en curso".to_string());
-    }
-    cancel.store(false, std::sync::atomic::Ordering::SeqCst);
-    Ok(BatchRunGuard(running))
+/// Single-run and cancellation state for the batch lyrics queue.
+///
+/// A cancellation names the run it wants to stop instead of flipping a bare
+/// flag. That closes the window between the progress dialog appearing and the
+/// run reaching the backend: a request for a run that has not started yet is
+/// stored and honoured when that same run starts. It also makes a late request
+/// from a previous run harmless, because run ids never repeat, so no other run
+/// can match it.
+pub(crate) struct BatchRunState {
+    running: std::sync::atomic::AtomicBool,
+    cancel_request: std::sync::atomic::AtomicU64,
 }
 
-/// Releases the single-run flag even if the command returns early or panics.
-struct BatchRunGuard<'a>(&'a std::sync::atomic::AtomicBool);
+impl BatchRunState {
+    pub(crate) const fn new() -> Self {
+        Self {
+            running: std::sync::atomic::AtomicBool::new(false),
+            cancel_request: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Claims the single run slot. `run_id` comes from the caller (the UI picks
+    /// it, which is what lets it cancel before its command arg arrives); `0`
+    /// marks a run nobody can cancel, used by the routes without a progress
+    /// dialog of their own.
+    pub(crate) fn try_start(&self, run_id: u64) -> Result<BatchRunGuard<'_>, String> {
+        if self
+            .running
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return Err("Ya hay una descarga masiva de letras en curso".to_string());
+        }
+        Ok(BatchRunGuard {
+            state: self,
+            run_id,
+        })
+    }
+
+    /// Records that `run_id` should stop. The request is kept even when that
+    /// run has not started: that is the pre-start window this design closes.
+    fn request_cancel(&self, run_id: u64) {
+        self.cancel_request
+            .store(run_id, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// The single batch slot all dictionary routes share, plus the last cancel
+/// request. One instance is enough: it keeps the dialog batch, the bulk fetch
+/// and the missing-lyrics sweep from running beside each other.
+static LYRICS_BATCH_RUN: BatchRunState = BatchRunState::new();
+
+/// Releases the single-run slot even if the command returns early or panics,
+/// and remembers the id the run started with for the cancel check.
+pub(crate) struct BatchRunGuard<'a> {
+    state: &'a BatchRunState,
+    run_id: u64,
+}
+
+impl BatchRunGuard<'_> {
+    pub(crate) fn run_id(&self) -> u64 {
+        self.run_id
+    }
+}
 
 impl Drop for BatchRunGuard<'_> {
     fn drop(&mut self) {
-        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.state
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// The cancel check the queue loop reads between tracks: requested only while
+/// the recorded request names this very run. A run started with id `0` (no
+/// dialog of its own) is never cancellable.
+pub(crate) struct BatchCancel<'a> {
+    request: &'a std::sync::atomic::AtomicU64,
+    run_id: u64,
+}
+
+impl BatchCancel<'_> {
+    fn is_requested(&self) -> bool {
+        self.run_id != 0 && self.request.load(std::sync::atomic::Ordering::SeqCst) == self.run_id
     }
 }
 
 /// Runs the batch fetch loop. Extracted from the IPC command so the queue
 /// semantics (per-track progress, counters, rate limiting and cancellation)
 /// are testable without providers, a window or a real database.
+///
+/// `fetch_track` may also fail for the whole run (today: the title lookup's DB
+/// error): that error stops the queue and reaches the caller instead of being
+/// counted as one more track failure.
 pub(crate) async fn run_batch_fetch_queue<F, Fut, E>(
     track_ids: &[i64],
     pause: std::time::Duration,
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: &BatchCancel<'_>,
     mut fetch_track: F,
     mut emit: E,
-) -> BatchLyricsResult
+) -> Result<BatchLyricsResult, String>
 where
     F: FnMut(i64) -> Fut,
-    Fut: std::future::Future<Output = BatchTrackStep>,
+    Fut: std::future::Future<Output = Result<BatchTrackStep, String>>,
     E: FnMut(&str, u64, u64, &str),
 {
     let total = track_ids.len() as u64;
@@ -1468,13 +1501,13 @@ where
 
     for &track_id in track_ids {
         // A cancel requested before this track starts keeps it out of the run.
-        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+        if cancel.is_requested() {
             cancelled = true;
             break;
         }
         current += 1;
 
-        let step = fetch_track(track_id).await;
+        let step = fetch_track(track_id).await?;
         let presence_skip = matches!(step.outcome, Ok(BatchTrackOutcome::AlreadyPresent));
         match step.outcome {
             Ok(BatchTrackOutcome::Saved) => {
@@ -1511,7 +1544,7 @@ where
 
         // A cancel that arrived while this track was in flight stops the run
         // here, before the pacing delay and before the next provider call.
-        if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+        if cancel.is_requested() {
             cancelled = true;
             break;
         }
@@ -1533,11 +1566,12 @@ where
                 current, total, fetched, failed, skipped
             ),
         );
-        return BatchLyricsResult {
+        return Ok(BatchLyricsResult {
             fetched,
             failed,
             skipped,
-        };
+            cancelled: true,
+        });
     }
 
     emit(
@@ -1550,114 +1584,165 @@ where
         ),
     );
 
-    BatchLyricsResult {
+    Ok(BatchLyricsResult {
         fetched,
         failed,
         skipped,
-    }
+        cancelled: false,
+    })
 }
 
-/// Batch fetch lyrics with real-time progress events
+/// Builds one queue step for `track_id`. A failed title lookup is fatal for the
+/// whole run, on purpose: before the queue extraction the lookup propagated the
+/// DB error with `?`, and that abort is restored here so a broken database is
+/// not masked as N per-track failures behind numeric labels (#378 H3).
+async fn batch_track_step(db: &crate::DbPool, track_id: i64) -> Result<BatchTrackStep, String> {
+    let track_name: Option<(String,)> = sqlx::query_as("SELECT title FROM tracks WHERE id = ?")
+        .bind(track_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let label = track_name
+        .map(|t| t.0)
+        .unwrap_or_else(|| format!("Track {}", track_id));
+
+    // Per-track failures stay per-track: a mass fetch must not abort on one
+    // missing row or one failing provider path.
+    Ok(BatchTrackStep {
+        label,
+        outcome: batch_fetch_track(db, track_id).await,
+    })
+}
+
+/// Runs a batch over the shared single-run slot and the cancelable queue. Every
+/// dictionary route goes through here, so ADR-0017 decision 7 ("barridos sobre
+/// cola cancelable") covers the bulk and missing-lyrics sweeps too and no two
+/// of them can run beside each other.
+async fn run_lyrics_batch<E>(
+    track_ids: &[i64],
+    db: crate::DbPool,
+    run_id: u64,
+    emit: E,
+) -> Result<BatchLyricsResult, String>
+where
+    E: FnMut(&str, u64, u64, &str),
+{
+    let run = LYRICS_BATCH_RUN.try_start(run_id)?;
+    let cancel = BatchCancel {
+        request: &LYRICS_BATCH_RUN.cancel_request,
+        run_id: run.run_id(),
+    };
+    run_batch_fetch_queue(
+        track_ids,
+        std::time::Duration::from_millis(500),
+        &cancel,
+        move |track_id| {
+            let db = db.clone();
+            async move { batch_track_step(&db, track_id).await }
+        },
+        emit,
+    )
+    .await
+}
+
+/// Batch fetch lyrics with real-time progress events.
+///
+/// `run_id` is chosen by the caller (the UI) so that a cancellation clicked
+/// while the progress dialog is up but before this command reaches the backend
+/// still names this run; `0` would mark a run nobody can cancel.
 #[tauri::command]
 pub async fn batch_fetch_lyrics_with_progress(
     window: tauri::Window,
     state: State<'_, AppState>,
     track_ids: Vec<i64>,
+    run_id: u64,
 ) -> Result<BatchLyricsResult, String> {
-    // One run at a time, and a new run starts uncancelled: a cancel from a
-    // previous run must never abort this one.
-    let _run_guard = start_batch_run(&LYRICS_BATCH_RUNNING, &LYRICS_BATCH_CANCEL)?;
-
     tracing::info!(
-        "batch_fetch_lyrics_with_progress: {} tracks",
-        track_ids.len()
+        "batch_fetch_lyrics_with_progress: {} tracks (run {})",
+        track_ids.len(),
+        run_id
     );
 
-    let db = state.db.clone();
-    Ok(run_batch_fetch_queue(
+    run_lyrics_batch(
         &track_ids,
-        std::time::Duration::from_millis(500),
-        &LYRICS_BATCH_CANCEL,
-        move |track_id| {
-            let db = db.clone();
-            async move {
-                // A failed title lookup degrades to the numeric label instead
-                // of aborting the whole batch.
-                let track_name: Option<(String,)> =
-                    sqlx::query_as("SELECT title FROM tracks WHERE id = ?")
-                        .bind(track_id)
-                        .fetch_optional(&db)
-                        .await
-                        .ok()
-                        .flatten();
-                let label = track_name
-                    .map(|t| t.0)
-                    .unwrap_or_else(|| format!("Track {}", track_id));
-
-                // Per-track failures stay per-track: a mass fetch must not
-                // abort on one missing row or one failing provider path.
-                BatchTrackStep {
-                    label,
-                    outcome: batch_fetch_track(&db, track_id).await,
-                }
-            }
-        },
+        state.db.clone(),
+        run_id,
         |status, current, total, label| {
             emit_lyrics_progress(&window, status, current, total, label)
         },
     )
-    .await)
+    .await
 }
 
-/// Ask the running batch lyrics fetch to stop after the track in progress.
+/// Ask the run identified by `run_id` to stop after the track in progress.
+/// A request for a run that has not started yet is kept and honoured when it
+/// starts; a request naming another run is inert, so it can never abort the
+/// next batch.
 #[tauri::command]
-pub async fn cancel_batch_fetch_lyrics() -> Result<bool, String> {
-    LYRICS_BATCH_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+pub async fn cancel_batch_fetch_lyrics(run_id: u64) -> Result<bool, String> {
+    LYRICS_BATCH_RUN.request_cancel(run_id);
     Ok(true)
 }
 
 #[cfg(test)]
 mod batch_queue_tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     type ProgressEvent = (String, u64, u64, String);
+
+    /// A step that succeeds without touching a provider or the database.
+    fn saved_step(track_id: i64) -> Result<BatchTrackStep, String> {
+        Ok(BatchTrackStep {
+            label: format!("Track {}", track_id),
+            outcome: Ok(BatchTrackOutcome::Saved),
+        })
+    }
+
+    fn collector() -> std::sync::Mutex<Vec<ProgressEvent>> {
+        std::sync::Mutex::new(Vec::new())
+    }
+
+    fn record(
+        events: &std::sync::Mutex<Vec<ProgressEvent>>,
+    ) -> impl FnMut(&str, u64, u64, &str) + '_ {
+        move |status, current, total, label| {
+            events
+                .lock()
+                .unwrap()
+                .push((status.to_string(), current, total, label.to_string()));
+        }
+    }
 
     /// Without a cancellation request every track is visited in order and the
     /// run ends in `completed`.
     #[tokio::test]
     async fn batch_queue_visits_every_track_and_ends_completed() {
         let visited = std::sync::Mutex::new(Vec::new());
-        let events = std::sync::Mutex::new(Vec::<ProgressEvent>::new());
-        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let events = collector();
+        let request = AtomicU64::new(0);
 
         let result = run_batch_fetch_queue(
             &[1, 2, 3],
             std::time::Duration::ZERO,
-            &cancel,
+            &BatchCancel {
+                request: &request,
+                run_id: 7,
+            },
             |track_id| {
                 visited.lock().unwrap().push(track_id);
-                async move {
-                    BatchTrackStep {
-                        label: format!("Track {}", track_id),
-                        outcome: Ok(BatchTrackOutcome::Saved),
-                    }
-                }
+                async move { saved_step(track_id) }
             },
-            |status, current, total, label| {
-                events.lock().unwrap().push((
-                    status.to_string(),
-                    current,
-                    total,
-                    label.to_string(),
-                ));
-            },
+            record(&events),
         )
-        .await;
+        .await
+        .expect("a run without a fatal error returns its counters");
 
         assert_eq!(*visited.lock().unwrap(), vec![1, 2, 3]);
         assert_eq!(result.fetched, 3);
         assert_eq!(result.failed, 0);
         assert_eq!(result.skipped, 0);
+        assert!(!result.cancelled);
 
         let events = events.lock().unwrap();
         assert_eq!(events.first().unwrap().0, "started");
@@ -1670,8 +1755,8 @@ mod batch_queue_tests {
     /// error on one track does not abort the queue.
     #[tokio::test]
     async fn batch_queue_maps_every_outcome_to_its_progress_status() {
-        let events = std::sync::Mutex::new(Vec::<ProgressEvent>::new());
-        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let events = collector();
+        let request = AtomicU64::new(0);
         let outcomes = vec![
             Ok(BatchTrackOutcome::Saved),
             Ok(BatchTrackOutcome::BlockedByMark),
@@ -1682,30 +1767,28 @@ mod batch_queue_tests {
         let result = run_batch_fetch_queue(
             &[1, 2, 3, 4, 5],
             std::time::Duration::ZERO,
-            &cancel,
+            &BatchCancel {
+                request: &request,
+                run_id: 7,
+            },
             |track_id| {
                 let outcome = outcomes[(track_id - 1) as usize].clone();
                 async move {
-                    BatchTrackStep {
+                    Ok(BatchTrackStep {
                         label: format!("Track {}", track_id),
                         outcome,
-                    }
+                    })
                 }
             },
-            |status, current, total, label| {
-                events.lock().unwrap().push((
-                    status.to_string(),
-                    current,
-                    total,
-                    label.to_string(),
-                ));
-            },
+            record(&events),
         )
-        .await;
+        .await
+        .expect("per-track errors keep the queue going");
 
         assert_eq!(result.fetched, 1);
         assert_eq!(result.failed, 2);
         assert_eq!(result.skipped, 2);
+        assert!(!result.cancelled);
 
         let events = events.lock().unwrap();
         let statuses: Vec<&str> = events.iter().map(|e| e.0.as_str()).collect();
@@ -1726,44 +1809,73 @@ mod batch_queue_tests {
         assert_eq!(events[5].3, "Track 5: boom");
     }
 
+    /// A fatal step error (the title lookup's DB failure) stops the run and
+    /// reaches the caller instead of being counted as one more track failure.
+    /// This is the pre-extraction `map_err(..)?` semantics restored (#378 H3).
+    #[tokio::test]
+    async fn batch_queue_aborts_on_a_fatal_step_error() {
+        let visited = std::sync::Mutex::new(Vec::new());
+        let events = collector();
+        let request = AtomicU64::new(0);
+
+        let err = run_batch_fetch_queue(
+            &[1, 2, 3],
+            std::time::Duration::ZERO,
+            &BatchCancel {
+                request: &request,
+                run_id: 7,
+            },
+            |track_id| {
+                visited.lock().unwrap().push(track_id);
+                async move {
+                    if track_id == 2 {
+                        Err("database is locked".to_string())
+                    } else {
+                        saved_step(track_id)
+                    }
+                }
+            },
+            record(&events),
+        )
+        .await
+        .expect_err("a fatal error must abort the run");
+
+        assert_eq!(err, "database is locked");
+        assert_eq!(*visited.lock().unwrap(), vec![1, 2]);
+        assert!(!events.lock().unwrap().iter().any(|e| e.0 == "completed"));
+    }
+
     /// A cancel requested while a track is in flight lets that track finish,
     /// then stops the loop: the remaining tracks never reach the fetcher and
     /// the run reports `cancelled`, not `completed`.
     #[tokio::test]
     async fn batch_queue_stops_after_the_track_in_progress_when_cancelled() {
         let visited = std::sync::Mutex::new(Vec::new());
-        let events = std::sync::Mutex::new(Vec::<ProgressEvent>::new());
-        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let events = collector();
+        let request = AtomicU64::new(0);
 
         let result = run_batch_fetch_queue(
             &[1, 2, 3, 4],
             std::time::Duration::ZERO,
-            &cancel,
+            &BatchCancel {
+                request: &request,
+                run_id: 7,
+            },
             |track_id| {
                 visited.lock().unwrap().push(track_id);
                 if track_id == 2 {
-                    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                    request.store(7, Ordering::SeqCst);
                 }
-                async move {
-                    BatchTrackStep {
-                        label: format!("Track {}", track_id),
-                        outcome: Ok(BatchTrackOutcome::Saved),
-                    }
-                }
+                async move { saved_step(track_id) }
             },
-            |status, current, total, label| {
-                events.lock().unwrap().push((
-                    status.to_string(),
-                    current,
-                    total,
-                    label.to_string(),
-                ));
-            },
+            record(&events),
         )
-        .await;
+        .await
+        .expect("a cancelled run still returns its counters");
 
         assert_eq!(*visited.lock().unwrap(), vec![1, 2]);
         assert_eq!(result.fetched, 2);
+        assert!(result.cancelled);
         let events = events.lock().unwrap();
         let last = events.last().unwrap();
         assert_eq!(last.0, "cancelled");
@@ -1771,105 +1883,180 @@ mod batch_queue_tests {
         assert!(!events.iter().any(|e| e.0 == "completed"));
     }
 
-    /// A cancel that lands before the first track leaves no track visited.
+    /// A cancel that names this run before its first track leaves no track
+    /// visited. This is the window between the dialog and the command arriving.
     #[tokio::test]
     async fn batch_queue_cancelled_before_start_fetches_nothing() {
         let visited = std::sync::Mutex::new(Vec::new());
-        let events = std::sync::Mutex::new(Vec::<ProgressEvent>::new());
-        let cancel = std::sync::atomic::AtomicBool::new(true);
+        let events = collector();
+        let request = AtomicU64::new(7);
 
         let result = run_batch_fetch_queue(
             &[1, 2],
             std::time::Duration::ZERO,
-            &cancel,
+            &BatchCancel {
+                request: &request,
+                run_id: 7,
+            },
             |track_id| {
                 visited.lock().unwrap().push(track_id);
-                async move {
-                    BatchTrackStep {
-                        label: format!("Track {}", track_id),
-                        outcome: Ok(BatchTrackOutcome::Saved),
-                    }
-                }
+                async move { saved_step(track_id) }
             },
-            |status, current, total, _label| {
-                events
-                    .lock()
-                    .unwrap()
-                    .push((status.to_string(), current, total, String::new()));
-            },
+            record(&events),
         )
-        .await;
+        .await
+        .expect("a pre-cancelled run returns empty counters");
 
         assert!(visited.lock().unwrap().is_empty());
         assert_eq!(result.fetched, 0);
+        assert!(result.cancelled);
         let events = events.lock().unwrap();
         let statuses: Vec<&str> = events.iter().map(|e| e.0.as_str()).collect();
         assert_eq!(statuses, vec!["started", "cancelled"]);
         assert_eq!((events[1].1, events[1].2), (0, 2));
     }
 
-    /// The next run starts with a clean cancel flag after a cancelled one, and
-    /// the single-run guard is released when a run ends.
+    /// A request that names another run is inert: the loop keeps going.
     #[tokio::test]
-    async fn a_second_run_does_not_inherit_a_previous_cancellation() {
-        let running = std::sync::atomic::AtomicBool::new(false);
-        let cancel = std::sync::atomic::AtomicBool::new(false);
-
-        {
-            let _guard = start_batch_run(&running, &cancel).expect("first run starts");
-            cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-        assert!(!running.load(std::sync::atomic::Ordering::SeqCst));
-
-        let _guard = start_batch_run(&running, &cancel).expect("second run starts");
-        assert!(!cancel.load(std::sync::atomic::Ordering::SeqCst));
-        assert!(running.load(std::sync::atomic::Ordering::SeqCst));
-
+    async fn a_cancel_request_for_another_run_is_ignored() {
         let visited = std::sync::Mutex::new(Vec::new());
-        let events = std::sync::Mutex::new(Vec::<ProgressEvent>::new());
+        let events = collector();
+        let request = AtomicU64::new(41);
+
         let result = run_batch_fetch_queue(
-            &[1, 2, 3],
+            &[1, 2],
             std::time::Duration::ZERO,
-            &cancel,
+            &BatchCancel {
+                request: &request,
+                run_id: 42,
+            },
             |track_id| {
                 visited.lock().unwrap().push(track_id);
-                async move {
-                    BatchTrackStep {
-                        label: format!("Track {}", track_id),
-                        outcome: Ok(BatchTrackOutcome::Saved),
-                    }
-                }
+                async move { saved_step(track_id) }
             },
-            |status, current, total, _label| {
-                events
-                    .lock()
-                    .unwrap()
-                    .push((status.to_string(), current, total, String::new()));
-            },
+            record(&events),
         )
-        .await;
+        .await
+        .expect("a foreign request cannot abort this run");
 
-        assert_eq!(*visited.lock().unwrap(), vec![1, 2, 3]);
-        assert_eq!(result.fetched, 3);
+        assert_eq!(*visited.lock().unwrap(), vec![1, 2]);
+        assert_eq!(result.fetched, 2);
+        assert!(!result.cancelled);
         assert_eq!(events.lock().unwrap().last().unwrap().0, "completed");
     }
 
-    /// A second start while one run is active is rejected and does not clear
-    /// the cancel flag the active run is about to read.
+    /// The routes without their own dialog start with id `0`; anything the
+    /// user requested elsewhere must never cancel them.
     #[tokio::test]
-    async fn a_concurrent_second_run_is_rejected_without_clearing_cancel() {
-        let running = std::sync::atomic::AtomicBool::new(false);
-        let cancel = std::sync::atomic::AtomicBool::new(false);
-        let _guard = start_batch_run(&running, &cancel).expect("first run starts");
-        cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    async fn a_run_without_its_own_dialog_is_never_cancelled() {
+        let request = AtomicU64::new(0);
+        let events = collector();
 
-        let err = match start_batch_run(&running, &cancel) {
+        let result = run_batch_fetch_queue(
+            &[1],
+            std::time::Duration::ZERO,
+            &BatchCancel {
+                request: &request,
+                run_id: 0,
+            },
+            |track_id| async move { saved_step(track_id) },
+            record(&events),
+        )
+        .await
+        .expect("an uncancellable run completes");
+
+        assert_eq!(result.fetched, 1);
+        assert!(!result.cancelled);
+    }
+
+    /// A request clicked before the command reached the backend (the dialog is
+    /// up, `try_start` has not run yet) is honoured by the run it names.
+    #[tokio::test]
+    async fn a_cancel_requested_before_start_is_honoured_by_that_run() {
+        let state = BatchRunState::new();
+        state.request_cancel(7);
+
+        let run = state.try_start(7).expect("the run starts");
+        let visited = std::sync::Mutex::new(Vec::new());
+        let result = run_batch_fetch_queue(
+            &[1, 2],
+            std::time::Duration::ZERO,
+            &BatchCancel {
+                request: &state.cancel_request,
+                run_id: run.run_id(),
+            },
+            |track_id| {
+                visited.lock().unwrap().push(track_id);
+                async move { saved_step(track_id) }
+            },
+            |_, _, _, _| {},
+        )
+        .await
+        .expect("the pre-cancelled run returns empty counters");
+
+        assert!(visited.lock().unwrap().is_empty());
+        assert!(result.cancelled);
+    }
+
+    /// The single-run guard is released when a run ends, and a request from the
+    /// previous run cannot abort the next one.
+    #[tokio::test]
+    async fn a_second_run_does_not_inherit_a_previous_cancellation() {
+        let state = BatchRunState::new();
+
+        let first_id = {
+            let run = state.try_start(41).expect("first run starts");
+            state.request_cancel(run.run_id());
+            run.run_id()
+        };
+        assert!(!state.running.load(Ordering::SeqCst));
+
+        let run = state.try_start(42).expect("second run starts");
+        assert_ne!(run.run_id(), first_id);
+
+        let visited = std::sync::Mutex::new(Vec::new());
+        let events = collector();
+        let result = run_batch_fetch_queue(
+            &[1, 2, 3],
+            std::time::Duration::ZERO,
+            &BatchCancel {
+                request: &state.cancel_request,
+                run_id: run.run_id(),
+            },
+            |track_id| {
+                visited.lock().unwrap().push(track_id);
+                async move { saved_step(track_id) }
+            },
+            record(&events),
+        )
+        .await
+        .expect("the second run completes");
+
+        assert_eq!(*visited.lock().unwrap(), vec![1, 2, 3]);
+        assert_eq!(result.fetched, 3);
+        assert!(!result.cancelled);
+        assert_eq!(events.lock().unwrap().last().unwrap().0, "completed");
+    }
+
+    /// A second start while one run is active is rejected and leaves the active
+    /// run's cancel request untouched.
+    #[tokio::test]
+    async fn a_concurrent_second_run_is_rejected_without_touching_cancel() {
+        let state = BatchRunState::new();
+        let run = state.try_start(41).expect("first run starts");
+        state.request_cancel(run.run_id());
+
+        let err = match state.try_start(42) {
             Ok(_) => panic!("a second concurrent run must be rejected"),
             Err(err) => err,
         };
 
         assert!(err.contains("en curso"));
-        assert!(cancel.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(BatchCancel {
+            request: &state.cancel_request,
+            run_id: run.run_id(),
+        }
+        .is_requested());
     }
 }
 
@@ -2023,6 +2210,8 @@ pub async fn batch_embed_lyrics(
         fetched: embedded, // Reusing field for "embedded" count
         failed,
         skipped,
+        // Embedding has no cancellation flow: it always runs to the end.
+        cancelled: false,
     })
 }
 

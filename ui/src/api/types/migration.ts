@@ -111,6 +111,14 @@ export interface MigrationProgress {
     current_action: string;
     /** Collection kind of the item being processed (0113); absent outside per-item events. */
     current_kind?: string;
+    /** Batch that produced this event (M06); absent outside per-batch events. */
+    batch_index?: number;
+    batch_total?: number;
+    /** Outcomes of this batch alone: created now, already present, failed, skipped. */
+    batch_created?: number;
+    batch_preexisting?: number;
+    batch_failed?: number;
+    batch_skipped?: number;
 }
 
 export interface DestinationTrackMatch {

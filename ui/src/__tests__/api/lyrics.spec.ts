@@ -3,7 +3,7 @@
  * Regression tests: batch counters default to 0 when the backend omits them.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { batchFetchLyrics, batchEmbedLyrics, fetchMissingLyrics, getLyricsStats, getAllLyrics } from '@/api/lyrics';
+import { batchFetchLyrics, batchFetchLyricsWithProgress, batchEmbedLyrics, fetchMissingLyrics, getLyricsStats, getAllLyrics } from '@/api/lyrics';
 import { mockInvoke, resetMocks } from '../setup';
 
 describe('lyrics_handles_missing_fields_test', () => {
@@ -12,17 +12,30 @@ describe('lyrics_handles_missing_fields_test', () => {
         vi.clearAllMocks();
     });
 
-    it('defaults fetched/failed/skipped to 0 when missing or null', async () => {
+    it('defaults fetched/failed/skipped to 0 and cancelled to false when missing or null', async () => {
         mockInvoke((cmd) => (cmd === 'batch_fetch_lyrics' ? { fetched: 5 } : null));
 
         const res = await batchFetchLyrics([1, 2]);
         expect(res.fetched).toBe(5);
         expect(res.failed).toBe(0);
         expect(res.skipped).toBe(0);
+        expect(res.cancelled).toBe(false);
 
         mockInvoke(() => null);
         const missing = await fetchMissingLyrics();
-        expect(missing).toEqual({ fetched: 0, failed: 0, skipped: 0 });
+        expect(missing).toEqual({ fetched: 0, failed: 0, skipped: 0, cancelled: false });
+    });
+
+    it('carries the terminal cancelled flag from the backend result', async () => {
+        mockInvoke((cmd) =>
+            cmd === 'batch_fetch_lyrics_with_progress'
+                ? { fetched: 1, failed: 0, skipped: 0, cancelled: true }
+                : null,
+        );
+
+        const res = await batchFetchLyricsWithProgress([1, 2], 42);
+        expect(res.cancelled).toBe(true);
+        expect(res.fetched).toBe(1);
     });
 
     it('defaults embedded/failed/skipped for batch_embed_lyrics', async () => {

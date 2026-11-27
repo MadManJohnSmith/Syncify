@@ -395,6 +395,23 @@ pub struct MigrationProgress {
     /// (start, playlist mirror, close).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_kind: Option<String>,
+    /// Batch that produced this event (M06): the progress stream is per batch,
+    /// never per item, so a 30k-item job emits `batch_total` events instead of
+    /// 30k. Absent in events that are not per-batch (start, close).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_index: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_total: Option<i64>,
+    /// Outcomes of this batch alone: created (written now), preexisting
+    /// (already in the destination), failed and skipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_created: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_preexisting: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_failed: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_skipped: Option<i64>,
 }
 
 /// Migration schema audit report
