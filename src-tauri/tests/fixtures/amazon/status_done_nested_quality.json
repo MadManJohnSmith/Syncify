@@ -1,0 +1,14 @@
+{
+  "status": "done",
+  "friendlyStatus": "Finished",
+  "percent": 100,
+  "current": {
+    "name": "Track",
+    "artist": "Artist",
+    "cover": "https://cover.example.test/art.jpg",
+    "format": "flac",
+    "bit_depth": 16,
+    "sample_rate": 44100
+  },
+  "url": "https://files.example.test/amazon/track.flac"
+}

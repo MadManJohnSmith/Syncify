@@ -1,0 +1,13 @@
+{
+  "status": "done",
+  "friendlyStatus": "Finished",
+  "percent": 100,
+  "format": "FLAC",
+  "bitDepth": 20,
+  "sampleRate": 96000,
+  "current": {
+    "name": "Track",
+    "artist": "Artist"
+  },
+  "url": "https://files.example.test/amazon/track.flac"
+}
