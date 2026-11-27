@@ -44,6 +44,17 @@
             Smart
           </button>
         </div>
+
+        <!-- #410: conflictos de playlist pendientes de revisión -->
+        <button
+          v-if="pendingConflictReviews.length"
+          data-testid="playlist-conflicts-button"
+          @click="showConflictReviewsDialog = true"
+          class="w-full mt-3 py-1.5 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 hover:bg-amber-100 dark:hover:bg-amber-500/20 rounded-lg flex items-center justify-center gap-1 font-medium"
+        >
+          <span class="material-symbols-outlined text-sm">report</span>
+          Playlist conflicts ({{ pendingConflictReviews.length }})
+        </button>
       </div>
       
       <!-- Playlist Categories -->
@@ -310,6 +321,22 @@
                 {{ selectedPlaylist.last_synced }}
               </span>
             </div>
+
+            <!-- #410: modo de conflicto persistido de una playlist remota -->
+            <div v-if="selectedConflictState?.is_remote" class="flex items-center gap-2 text-xs text-gray-500 mb-4" data-testid="playlist-conflict-mode">
+              <span class="material-symbols-outlined text-sm">sync_problem</span>
+              <span>Conflict mode</span>
+              <select
+                data-testid="playlist-conflict-mode-select"
+                :value="selectedConflictState.conflict_mode"
+                class="px-2 py-1 rounded-lg border border-gray-300 dark:border-border-dark bg-transparent text-gray-700 dark:text-gray-300"
+                @change="onConflictModeSelected"
+              >
+                <option value="gana_proveedor">Provider wins</option>
+                <option value="editable">Editable (review conflicts)</option>
+                <option value="gana_local">Local wins</option>
+              </select>
+            </div>
             
             <!-- Actions -->
             <div class="flex items-center gap-3">
@@ -326,6 +353,25 @@
               </button>
               <button v-if="canDeleteSelectedPlaylist" @click="deleteSelectedPlaylist" class="p-2 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-full text-red-500" aria-label="Delete playlist" title="Delete playlist">
                 <span class="material-symbols-outlined">delete</span>
+              </button>
+            </div>
+
+            <!-- #410: conflictos pendientes de esta playlist; nada se pisó -->
+            <div
+              v-if="selectedConflictReviews.length"
+              data-testid="playlist-conflict-banner"
+              class="mt-3 p-3 rounded-lg border border-amber-200 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 text-sm flex items-center justify-between gap-3"
+            >
+              <span class="text-amber-800 dark:text-amber-300">
+                {{ selectedConflictReviews.length }} conflict{{ selectedConflictReviews.length === 1 ? '' : 's' }} need review.
+                Your local values were preserved.
+              </span>
+              <button
+                type="button"
+                class="px-3 py-1.5 text-xs rounded-lg bg-amber-500 text-white hover:bg-amber-600 shrink-0"
+                @click="showConflictReviewsDialog = true"
+              >
+                Review conflicts
               </button>
             </div>
 
@@ -765,6 +811,25 @@
         </button>
       </div>
     </Teleport>
+
+    <!-- #410: primera edición local de una playlist remota -->
+    <PlaylistConflictModeDialog
+      :open="showConflictModeDialog"
+      :playlist-name="selectedPlaylist?.name ?? ''"
+      :service-name="selectedConflictState?.service_name ?? null"
+      :busy="isSavingConflictMode"
+      @choose="onConflictModeChosen"
+      @cancel="onConflictModeCancelled"
+    />
+
+    <!-- #410: revisión de conflictos en needs_review -->
+    <PlaylistConflictReviewsDialog
+      :open="showConflictReviewsDialog"
+      :reviews="pendingConflictReviews"
+      :busy="isResolvingConflict"
+      @resolve="onResolveConflict"
+      @close="showConflictReviewsDialog = false"
+    />
   </div>
 </template>
 
@@ -775,7 +840,15 @@ import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { libraryApi } from '@/api/library'
 import { playlistsApi, exportPlaylistM3u, importPlaylists, type MissingPlaylistFile } from '@/api/playlists'
 import { addToQueue, addBatchToQueue } from '@/api/queue'
-import type { Playlist, LibraryTrack, LibraryPage } from '@/api/types'
+import type {
+  Playlist,
+  LibraryTrack,
+  LibraryPage,
+  PlaylistConflictMode,
+  PlaylistConflictResolution,
+  PlaylistConflictReview,
+  PlaylistConflictState,
+} from '@/api/types'
 // R13: unified `confirm`/`prompt` (in-app dialog) instead of
 // `window.confirm`/`window.prompt`, which open outside the window.
 import { useToast, confirm, prompt } from '@/composables/useToast'
@@ -783,6 +856,8 @@ import { usePlayer } from '@/composables/usePlayer'
 import { useVirtualWindow } from '@/composables/useVirtualWindow'
 import TrackCover from '@/components/TrackCover.vue'
 import PlaylistCover from '@/components/PlaylistCover.vue'
+import PlaylistConflictModeDialog from '@/components/PlaylistConflictModeDialog.vue'
+import PlaylistConflictReviewsDialog from '@/components/PlaylistConflictReviewsDialog.vue'
 import {
     aggregatePlaylists,
     formatPlaylistServiceName,
@@ -810,6 +885,15 @@ const selectedTracks = ref<number[]>([])
 const showCreateModal = ref(false)
 const showSmartModal = ref(false)
 const showImportModal = ref(false)
+
+// #410: modo de conflicto y revisión de conflictos de playlists.
+const conflictState = ref<PlaylistConflictState | null>(null)
+const pendingConflictReviews = ref<PlaylistConflictReview[]>([])
+const showConflictReviewsDialog = ref(false)
+const showConflictModeDialog = ref(false)
+const isResolvingConflict = ref(false)
+const isSavingConflictMode = ref(false)
+let conflictModeResolver: ((allowed: boolean) => void) | null = null
 
 // S201: "Download Playlist" — two modes
 const showDownloadModal = ref(false)
@@ -946,6 +1030,14 @@ const canDeleteSelectedPlaylist = computed(() => {
   const playlist = selectedPlaylist.value
   return Boolean(playlist && typeof playlist.id === 'number' && playlist.id > 0)
 })
+
+const selectedConflictState = computed(() => {
+  const state = conflictState.value
+  const playlist = selectedPlaylist.value
+  return state && playlist && state.playlist_id === playlist.id ? state : null
+})
+
+const selectedConflictReviews = computed(() => selectedConflictState.value?.pending_reviews ?? [])
 
 // Map LibraryTrack to UI Track
 function mapToTrack(item: LibraryTrack, index: number) {
@@ -1091,6 +1183,8 @@ async function selectPlaylist(playlist: any) {
   isLoading.value = true
   isLoadingMore.value = false
   resetPlaylistVirtualScroll()
+  await loadPlaylistConflictState(playlist.id)
+  void loadPendingConflictReviews()
 
   try {
     const page = await fetchPlaylistPage(playlist.id, 0, PLAYLIST_PAGE_SIZE)
@@ -1210,6 +1304,7 @@ async function triggerSyncPlaylists() {
       toast.info(res.message || 'No linked service playlists found.')
     }
     await loadPlaylists()
+    await loadPendingConflictReviews()
   } catch (e: any) {
     toast.error(`Sync failed: ${e}`)
   } finally {
@@ -1219,6 +1314,7 @@ async function triggerSyncPlaylists() {
 
 onMounted(() => {
   loadPlaylists()
+  void loadPendingConflictReviews()
   void consumeCreateQuery()
   document.addEventListener('click', closePlaylistMenu)
   document.addEventListener('keydown', onMenuKeydown)
@@ -1242,6 +1338,125 @@ function onMenuKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && playlistMenu.value) closePlaylistMenu()
 }
 
+async function loadPendingConflictReviews() {
+  try {
+    pendingConflictReviews.value = await playlistsApi.listPlaylistConflictReviews()
+  } catch (error) {
+    console.error('Failed to load playlist conflict reviews', error)
+  }
+}
+
+async function loadPlaylistConflictState(playlistId: number) {
+  if (!Number.isSafeInteger(playlistId) || playlistId <= 0) {
+    conflictState.value = null
+    return
+  }
+  try {
+    conflictState.value = await playlistsApi.getPlaylistConflictState(playlistId)
+  } catch (error) {
+    conflictState.value = null
+    console.error('Failed to load playlist conflict state', error)
+  }
+}
+
+/**
+ * #410: la primera edición local de una playlist remota en el modo de fábrica
+ * «gana el proveedor» pregunta si pasa a editable o a local. Cancelar aborta la
+ * edición: nunca se guarda un cambio que el sync pueda pisar en silencio.
+ */
+async function ensureConflictModeBeforeEdit(): Promise<boolean> {
+  const playlist = selectedPlaylist.value
+  if (!playlist || typeof playlist.id !== 'number' || playlist.id <= 0) return true
+
+  let state = conflictState.value
+  if (!state || state.playlist_id !== playlist.id) {
+    try {
+      state = await playlistsApi.getPlaylistConflictState(playlist.id)
+      conflictState.value = state
+    } catch (error) {
+      toast.error('Failed to load conflict mode', String(error))
+      return false
+    }
+  }
+  if (!state.requires_mode_choice) return true
+
+  showConflictModeDialog.value = true
+  return new Promise(resolve => {
+    conflictModeResolver = resolve
+  })
+}
+
+async function onConflictModeChosen(mode: 'editable' | 'gana_local') {
+  const playlist = selectedPlaylist.value
+  if (!playlist) return
+  isSavingConflictMode.value = true
+  try {
+    conflictState.value = await playlistsApi.setPlaylistConflictMode(playlist.id, mode)
+    toast.success(
+      mode === 'editable'
+        ? 'Playlist is now editable; conflicts will go to review'
+        : 'Local changes now win for this playlist'
+    )
+    conflictModeResolver?.(true)
+  } catch (error) {
+    toast.error('Failed to save conflict mode', String(error))
+    conflictModeResolver?.(false)
+  } finally {
+    isSavingConflictMode.value = false
+    showConflictModeDialog.value = false
+    conflictModeResolver = null
+  }
+}
+
+function onConflictModeCancelled() {
+  showConflictModeDialog.value = false
+  conflictModeResolver?.(false)
+  conflictModeResolver = null
+}
+
+async function onConflictModeSelected(event: Event) {
+  const playlist = selectedPlaylist.value
+  if (!playlist) return
+  const select = event.target as HTMLSelectElement
+  const mode = select.value as PlaylistConflictMode
+  try {
+    conflictState.value = await playlistsApi.setPlaylistConflictMode(playlist.id, mode)
+    toast.success('Conflict mode updated')
+  } catch (error) {
+    select.value = conflictState.value?.conflict_mode ?? 'gana_proveedor'
+    toast.error('Failed to update conflict mode', String(error))
+  }
+}
+
+async function onResolveConflict(reviewId: number, resolution: PlaylistConflictResolution) {
+  if (isResolvingConflict.value) return
+  isResolvingConflict.value = true
+  try {
+    const entry = await playlistsApi.resolvePlaylistConflictReview(reviewId, resolution)
+    pendingConflictReviews.value = pendingConflictReviews.value.filter(review => review.id !== reviewId)
+    if (selectedPlaylist.value?.id === entry.playlist_id) {
+      if (resolution === 'provider' && entry.conflict_kind === 'name' && entry.provider_value) {
+        const name = entry.provider_value
+        selectedPlaylist.value = { ...selectedPlaylist.value, name }
+        const index = playlists.value.findIndex(playlist => playlist.id === entry.playlist_id)
+        if (index >= 0) playlists.value[index] = { ...playlists.value[index], name }
+      }
+      await loadPlaylistConflictState(entry.playlist_id)
+      if (resolution === 'provider' && entry.conflict_kind === 'membership') {
+        await selectPlaylist(selectedPlaylist.value)
+      }
+    }
+    toast.success(
+      resolution === 'provider' ? 'Provider value applied' : 'Local value kept'
+    )
+    if (!pendingConflictReviews.value.length) showConflictReviewsDialog.value = false
+  } catch (error) {
+    toast.error('Failed to resolve playlist conflict', String(error))
+  } finally {
+    isResolvingConflict.value = false
+  }
+}
+
 function startEditName() {
   if (selectedPlaylist.value?.id === FAVORITES_PLAYLIST_ID || selectedPlaylist.value?.smart) return
   editingName.value = selectedPlaylist.value.name
@@ -1256,6 +1471,10 @@ async function saveName() {
   }
   const name = editingName.value.trim()
   if (!name || name === selectedPlaylist.value.name) {
+    isEditingName.value = false
+    return
+  }
+  if (!(await ensureConflictModeBeforeEdit())) {
     isEditingName.value = false
     return
   }
@@ -1288,6 +1507,10 @@ async function saveDescription() {
   }
   const description = editingDescription.value.trim()
   if (description === (selectedPlaylist.value.description || '')) {
+    isEditingDescription.value = false
+    return
+  }
+  if (!(await ensureConflictModeBeforeEdit())) {
     isEditingDescription.value = false
     return
   }
@@ -1355,6 +1578,7 @@ async function addTracksById() {
     toast.error('Enter at least one valid track ID')
     return
   }
+  if (!(await ensureConflictModeBeforeEdit())) return
   try {
     await playlistsApi.addTracksToPlaylist(selectedPlaylist.value.id, trackIds)
     await selectPlaylist(selectedPlaylist.value)
@@ -1367,6 +1591,7 @@ async function addTracksById() {
 
 async function removeTrack(track: any) {
   if (!canMutateSelectedPlaylist.value) return
+  if (!(await ensureConflictModeBeforeEdit())) return
   try {
     // PL02 (#155): el backend quita UNA ocurrencia de esa pista, no todas.
     // Recargar en vez de filtrar por id mantiene las demás repeticiones y el
@@ -1817,6 +2042,7 @@ function onTrackDragStart(event: DragEvent, track: any, index: number) {
 async function onTrackDrop(event: DragEvent, newIndex: number) {
   const data = event.dataTransfer?.getData('track')
   if (!data || !canMutateSelectedPlaylist.value) return
+  if (!(await ensureConflictModeBeforeEdit())) return
   const { track, index: oldIndex } = JSON.parse(data)
   const previous = [...playlistTracks.value]
   const tracks = [...previous]

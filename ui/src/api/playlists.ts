@@ -7,7 +7,16 @@
 import { invokeCommand } from './tauri';
 import { invalidateLibraryPages } from '@/composables/libraryCacheInvalidation';
 import { asArray, asNumber, asRecord, asString } from './normalize';
-import type { Playlist, PlaylistTrack, ImportResult } from './types';
+import type {
+    Playlist,
+    PlaylistTrack,
+    ImportResult,
+    PlaylistConflictMode,
+    PlaylistConflictReview,
+    PlaylistConflictReviewStatus,
+    PlaylistConflictState,
+    PlaylistConflictResolution,
+} from './types';
 
 /**
  * Normalize an ImportResult so counts default to 0 and errors is always an array.
@@ -23,6 +32,101 @@ function normalizeImportResult(raw: unknown): ImportResult {
 
 function normalizePlaylistList(raw: unknown): Playlist[] {
     return asArray<Playlist>(raw);
+}
+
+// ==============================================
+// PLAYLIST CONFLICT MODES / REVIEWS (#410)
+// ==============================================
+
+function normalizeConflictMode(raw: unknown): PlaylistConflictMode {
+    const value = asString(raw, 'gana_proveedor');
+    return value === 'editable' || value === 'gana_local' ? value : 'gana_proveedor';
+}
+
+function normalizeConflictTrackIds(raw: unknown): number[] | null {
+    if (!Array.isArray(raw)) return null;
+    return raw.filter((id): id is number => typeof id === 'number' && Number.isSafeInteger(id));
+}
+
+function normalizeConflictReview(raw: unknown): PlaylistConflictReview {
+    const rec = asRecord(raw);
+    return {
+        id: asNumber(rec?.id),
+        playlist_id: asNumber(rec?.playlist_id),
+        playlist_name: asString(rec?.playlist_name),
+        service_name: typeof rec?.service_name === 'string' ? rec.service_name : null,
+        conflict_kind: asString(rec?.conflict_kind) === 'membership' ? 'membership' : 'name',
+        local_value: typeof rec?.local_value === 'string' ? rec.local_value : null,
+        provider_value: typeof rec?.provider_value === 'string' ? rec.provider_value : null,
+        status: normalizeConflictStatus(rec?.status),
+        created_at: asString(rec?.created_at),
+        updated_at: asString(rec?.updated_at),
+        resolved_at: typeof rec?.resolved_at === 'string' ? rec.resolved_at : null,
+        local_track_ids: normalizeConflictTrackIds(rec?.local_track_ids),
+        provider_track_ids: normalizeConflictTrackIds(rec?.provider_track_ids),
+    };
+}
+
+function normalizeConflictStatus(raw: unknown): PlaylistConflictReviewStatus {
+    const value = asString(raw, 'needs_review');
+    return value === 'resolved_local' || value === 'resolved_provider' || value === 'dismissed'
+        ? value
+        : 'needs_review';
+}
+
+function normalizeConflictState(raw: unknown, playlistId: number): PlaylistConflictState {
+    const rec = asRecord(raw);
+    return {
+        playlist_id: asNumber(rec?.playlist_id, playlistId),
+        conflict_mode: normalizeConflictMode(rec?.conflict_mode),
+        service_name: typeof rec?.service_name === 'string' ? rec.service_name : null,
+        is_remote: rec?.is_remote === true,
+        requires_mode_choice: rec?.requires_mode_choice === true,
+        pending_reviews: asArray(rec?.pending_reviews).map(normalizeConflictReview),
+    };
+}
+
+/** Estado de conflicto de una playlist: modo, si es remota y revisiones pendientes. */
+export async function getPlaylistConflictState(playlistId: number): Promise<PlaylistConflictState> {
+    const raw = await invokeCommand<unknown>('get_playlist_conflict_state', { playlistId });
+    return normalizeConflictState(raw, playlistId);
+}
+
+/** Persiste el modo elegido (`editable`, `gana_proveedor` o `gana_local`). */
+export async function setPlaylistConflictMode(
+    playlistId: number,
+    mode: PlaylistConflictMode
+): Promise<PlaylistConflictState> {
+    const raw = await invokeCommand<unknown>('set_playlist_conflict_mode', { playlistId, mode });
+    return normalizeConflictState(raw, playlistId);
+}
+
+/** Revisiones de conflicto; sin filtros devuelve solo las pendientes. */
+export async function listPlaylistConflictReviews(params: {
+    playlistId?: number | null;
+    status?: PlaylistConflictReviewStatus | null;
+} = {}): Promise<PlaylistConflictReview[]> {
+    const raw = await invokeCommand<unknown>('list_playlist_conflict_reviews', {
+        playlistId: params.playlistId ?? null,
+        status: params.status ?? null,
+    });
+    return asArray(raw).map(normalizeConflictReview);
+}
+
+/**
+ * Resuelve una revisión con una acción explícita. Solo `provider` aplica el
+ * valor remoto; `local` y `dismiss` conservan lo que ya tiene la playlist.
+ */
+export async function resolvePlaylistConflictReview(
+    reviewId: number,
+    resolution: PlaylistConflictResolution
+): Promise<PlaylistConflictReview> {
+    const raw = await invokeCommand<unknown>('resolve_playlist_conflict_review', {
+        reviewId,
+        resolution,
+    });
+    if (resolution === 'provider') invalidateLibraryPages('playlist');
+    return normalizeConflictReview(raw);
 }
 
 // ==============================================
@@ -510,5 +614,9 @@ export const playlistsApi = {
     matchPlaylistToService,
     sanitizePlaylists,
     importPlaylistFromFile,
+    getPlaylistConflictState,
+    setPlaylistConflictMode,
+    listPlaylistConflictReviews,
+    resolvePlaylistConflictReview,
 };
 
