@@ -68,3 +68,5 @@ pub use tidal::TidalClient;
 
 #[cfg(test)]
 mod migration_tests;
+
+pub mod catalog_search;
