@@ -25,8 +25,12 @@ fn base_from_env(var: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
-/// Deezer track from API
-#[derive(Debug, Clone, Deserialize)]
+/// Deezer track from API.
+///
+/// `Serialize` existe para el adaptador de sincronización: los ítems viajan
+/// crudos entre páginas (`serde_json::Value`) y el importador los decodifica
+/// con este mismo tipo, igual que en los demás proveedores.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DeezerTrack {
     #[serde(rename = "SNG_ID")]
     pub id: String,
@@ -77,7 +81,10 @@ pub struct DeezerUser {
 }
 
 /// S189-Fase-1: album summary from the public API user-albums listing.
-#[derive(Debug, Clone)]
+///
+/// `Deserialize` cierra el viaje del adaptador (#405): la página se serializa
+/// a `serde_json::Value` y el importador la decodifica con este tipo.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DeezerAlbumSummary {
     pub id: String,
     pub title: String,
@@ -91,7 +98,10 @@ pub struct DeezerAlbumSummary {
 }
 
 /// S189-Fase-1: playlist summary from the public API user-playlists listing.
-#[derive(Debug, Clone)]
+///
+/// `Deserialize` cierra el viaje del adaptador (#405), como en
+/// [`DeezerAlbumSummary`].
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DeezerPlaylistSummary {
     pub id: String,
     pub title: String,
@@ -302,6 +312,81 @@ impl DeezerClient {
         Ok(())
     }
 
+    /// GET contra la API pública con el perfil de ritmo de Deezer y el
+    /// contrato de 429 de T02 (ADR-0006, decisión 14):
+    ///
+    /// - cada intento pasa por el limitador compartido (`deezer`, 50
+    ///   peticiones/5 s), así que todas las cuentas del servicio comparten cupo;
+    /// - un 429 suspende el servicio lo que pida `Retry-After` (con el techo de
+    ///   `rate_limiter::MAX_429_PENALTY`) y, si queda presupuesto, se reintenta;
+    /// - dentro del presupuesto, un 5xx o un corte de red conservan su mensaje
+    ///   y los clasifica el adaptador (`Retryable`).
+    async fn public_get_text(
+        &self,
+        flow: &str,
+        url: &str,
+        index: i32,
+        limit: i32,
+    ) -> Result<String, String> {
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut attempt = 0u32;
+        loop {
+            crate::services::rate_limiter::GLOBAL_RATE_LIMITER
+                .acquire("deezer")
+                .await;
+
+            let response = self
+                .client
+                .get(url)
+                .header("Cookie", format!("arl={}", self.arl))
+                .query(&[("index", index.to_string()), ("limit", limit.to_string())])
+                .send()
+                .await
+                .map_err(|e| format!("Request failed: {}", e))?;
+
+            let status = response.status();
+            let rate_limited = crate::services::rate_limiter::penalize_on_rate_limit(
+                "deezer",
+                status,
+                response.headers(),
+            )
+            .await
+            .is_some();
+            if rate_limited && attempt + 1 < MAX_ATTEMPTS {
+                attempt += 1;
+                // No se duerme aquí: la penalización ya quedó registrada en el
+                // limitador compartido y el siguiente `acquire` la espera, de
+                // modo que las demás cuentas del servicio también frenan.
+                tracing::warn!(
+                    "[#405][deezer] {} rate limited (attempt {}/{}), waiting out Retry-After",
+                    flow,
+                    attempt,
+                    MAX_ATTEMPTS
+                );
+                continue;
+            }
+
+            let text = response
+                .text()
+                .await
+                .map_err(|e| format!("Failed to read: {}", e))?;
+            tracing::debug!(
+                "Deezer public API response {} ({}): {}",
+                flow,
+                status,
+                &text[..text.len().min(500)]
+            );
+            if !status.is_success() {
+                return Err(format!(
+                    "Deezer API error ({}): {}",
+                    status,
+                    &text[..text.len().min(200)]
+                ));
+            }
+            return Ok(text);
+        }
+    }
+
     /// Get user's favorite tracks via public API (more reliable)
     pub async fn get_favorites_public(
         &self,
@@ -319,40 +404,9 @@ impl DeezerClient {
             limit
         );
 
-        crate::services::rate_limiter::GLOBAL_RATE_LIMITER
-            .acquire("deezer")
-            .await;
-
-        let response = self
-            .client
-            .get(&url)
-            .header("Cookie", format!("arl={}", self.arl))
-            .query(&[("index", offset.to_string()), ("limit", limit.to_string())])
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        let status = response.status();
-        crate::services::rate_limiter::penalize_on_rate_limit("deezer", status, response.headers())
-            .await;
-        let text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read: {}", e))?;
-
-        tracing::debug!(
-            "Deezer public API response ({}): {}",
-            status,
-            &text[..text.len().min(500)]
-        );
-
-        if !status.is_success() {
-            return Err(format!(
-                "Deezer API error ({}): {}",
-                status,
-                &text[..text.len().min(200)]
-            ));
-        }
+        let text = self
+            .public_get_text("favorite tracks", &url, offset, limit)
+            .await?;
 
         // Parse public API response format
         #[derive(Deserialize)]
@@ -427,33 +481,10 @@ impl DeezerClient {
         index: i32,
         limit: i32,
     ) -> Result<serde_json::Value, String> {
-        crate::services::rate_limiter::GLOBAL_RATE_LIMITER
-            .acquire("deezer")
-            .await;
-
         let url = format!("{}{}", self.public_api_base, path);
-        let response = self
-            .client
-            .get(&url)
-            .header("Cookie", format!("arl={}", self.arl))
-            .query(&[("index", index.to_string()), ("limit", limit.to_string())])
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read: {}", e))?;
-
-        if !status.is_success() {
-            return Err(format!(
-                "Deezer API error ({}): {}",
-                status,
-                &text[..text.len().min(200)]
-            ));
-        }
+        let text = self
+            .public_get_text("collection page", &url, index, limit)
+            .await?;
 
         let json: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| format!("Deezer parse error: {}", e))?;

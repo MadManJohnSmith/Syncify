@@ -73,6 +73,43 @@ pub fn get_global_concurrency_manager() -> Arc<ConcurrencyManager> {
     Arc::clone(&GLOBAL_CONCURRENCY_MANAGER)
 }
 
+/// Registro de puertas de sincronización por servicio.
+///
+/// Fuera de `ConcurrencyManager`: `LockScope` vive en `syncify-core-domain` y
+/// no tiene una variante por servicio; añadirla sería un cambio de contrato
+/// del crate para una necesidad de orquestación.
+fn service_sync_gates() -> &'static std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> {
+    static GATES: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>> =
+        std::sync::OnceLock::new();
+    GATES.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Puerta de serialización por servicio (ADR-0006, decisiones 14 y 31).
+///
+/// Las cuentas del mismo servicio comparten la cuota de aplicación del
+/// proveedor, así que sus corridas de sincronización se encolan: la segunda
+/// espera su turno y nunca cancela a la primera. Servicios distintos usan
+/// puertas distintas y siguen corriendo en paralelo. Un `429` o un `401` de
+/// una cuenta no puede, por tanto, cruzarse con el barrido de otra cuenta del
+/// mismo servicio.
+///
+/// Es un mutex justo (FIFO) en proceso. Entre procesos, `db::SyncWriterLock`
+/// ya impide que dos instancias escriban la misma cuenta a la vez; la puerta
+/// no sustituye ese `flock`, lo complementa.
+pub async fn acquire_service_sync_gate(service: &str) -> OwnedMutexGuard<()> {
+    let gate = {
+        let mut gates = service_sync_gates()
+            .lock()
+            .expect("service sync gate registry poisoned");
+        Arc::clone(
+            gates
+                .entry(service.to_lowercase())
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        )
+    };
+    gate.lock_owned().await
+}
+
 /// Centralized Concurrency Manager
 pub struct ConcurrencyManager {
     /// Mutex registry keyed by normalized string representation
@@ -344,6 +381,47 @@ impl MultiConcurrencyGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Nombres únicos por test: el registro de puertas es global al proceso y
+    /// una puerta compartida entre tests se convertiría en contención falsa.
+    #[tokio::test]
+    async fn test_service_sync_gate_serializa_cuentas_del_mismo_servicio() {
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let first = acquire_service_sync_gate("gate-test-deezer").await;
+
+        let second_order = order.clone();
+        let second = tokio::spawn(async move {
+            let _guard = acquire_service_sync_gate("gate-test-deezer").await;
+            second_order.lock().unwrap().push("segunda");
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            order.lock().unwrap().is_empty(),
+            "la segunda cuenta no puede entrar mientras la primera sostiene la puerta"
+        );
+
+        order.lock().unwrap().push("primera");
+        drop(first);
+        second.await.expect("segunda corrida");
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["primera".to_string(), "segunda".to_string()],
+            "la puerta encola: la primera termina antes de que arranque la segunda"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_service_sync_gate_no_bloquea_otro_servicio() {
+        let _deezer = acquire_service_sync_gate("gate-test-deezer-2").await;
+        let started = Instant::now();
+        let _soundcloud = acquire_service_sync_gate("gate-test-soundcloud-2").await;
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "servicios distintos no comparten puerta, esperó {:?}",
+            started.elapsed()
+        );
+    }
 
     #[tokio::test]
     async fn test_concurrency_manager_mutual_exclusion_same_key() {

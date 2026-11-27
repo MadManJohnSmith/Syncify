@@ -3684,6 +3684,15 @@ pub async fn perform_sync_service_with_emitter<E: SyncProgressEmitter>(
     use syncify_core_domain::OperationType;
 
     let service_normalized = service_name.to_lowercase();
+
+    // #405 (ADR-0006, decisiones 14 y 31): las cuentas del mismo servicio
+    // comparten la cuota de aplicación del proveedor, así que sus corridas se
+    // serializan aquí, antes de abrir el journal y de tomar el lock de cuenta.
+    // Una petición que encuentra el servicio ocupado espera su turno; nunca
+    // cancela la corrida en curso. Servicios distintos no comparten puerta.
+    let _service_sync_guard =
+        crate::services::concurrency_manager::acquire_service_sync_gate(&service_normalized).await;
+
     let journal: Option<JournaledOperation> =
         begin_service_sync_operation(db, service_name, account_id_opt).await;
 
@@ -4141,8 +4150,9 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
     };
     let deezer_service_id: i64 = client.get_service_id(db, "deezer").await?;
 
-    // Unified page size for every phase (Fase-1 item 4).
-    const DEEZER_PAGE: i32 = 100;
+    // Unified page size for every phase (Fase-1 item 4), shared with the
+    // synchronization adapter so the two can never drift.
+    const DEEZER_PAGE: i32 = crate::sync::deezer_source::DEEZER_PAGE_SIZE as i32;
 
     let persist_deezer_track = |engine_track: crate::services::enrichment::SyncTrackInput| {
         enrich_persist_with_locked_retry(&enrichment_engine, db, engine_track)
@@ -4161,6 +4171,9 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
             arm.favorite_tracks_total,
         ));
         let mut track_offset: i32 = 0;
+        // #405: el total se toma una vez del proveedor y no se reasigna por
+        // página; es el valor que alimenta la cobertura de la cuenta.
+        let mut reported_favorites: Option<i64> = None;
         loop {
             let t_api = std::time::Instant::now();
             let (tracks, total) = match client
@@ -4178,6 +4191,10 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                 }
             };
             arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+            crate::sync::collection::assign_total(
+                &mut reported_favorites,
+                (total > 0).then_some(total as i64),
+            );
             if tracks.is_empty() {
                 break;
             }
@@ -4251,12 +4268,13 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                 track_offset,
                 tracks.len() as i32,
                 DEEZER_PAGE,
-                (total > 0).then_some(total as i64),
+                reported_favorites,
             ) {
                 Some(next) => track_offset = next,
                 None => break,
             }
         }
+        arm.reported_favorites = reported_favorites;
     }
 
     // Phase 2: Favorite Albums (catalog expansion + favorite marking)
@@ -4272,6 +4290,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
             arm.favorite_tracks_total,
         ));
         let mut album_offset: i32 = 0;
+        let mut reported_albums: Option<i64> = None;
         loop {
             let t_api = std::time::Instant::now();
             let (albums, total) = match client
@@ -4289,6 +4308,10 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                 }
             };
             arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+            crate::sync::collection::assign_total(
+                &mut reported_albums,
+                (total > 0).then_some(total),
+            );
             if albums.is_empty() {
                 break;
             }
@@ -4382,12 +4405,13 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                 album_offset,
                 albums.len() as i32,
                 DEEZER_PAGE,
-                (total > 0).then_some(total),
+                reported_albums,
             ) {
                 Some(next) => album_offset = next,
                 None => break,
             }
         }
+        arm.reported_albums = reported_albums;
     }
 
     // Phase 3: Favorite Artists
@@ -4403,6 +4427,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
             arm.favorite_tracks_total,
         ));
         let mut artist_offset: i32 = 0;
+        let mut reported_artists: Option<i64> = None;
         loop {
             let t_api = std::time::Instant::now();
             let (artists, total) = match client
@@ -4420,6 +4445,10 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                 }
             };
             arm.api_fetch_ms += t_api.elapsed().as_millis() as u64;
+            crate::sync::collection::assign_total(
+                &mut reported_artists,
+                (total > 0).then_some(total),
+            );
             if artists.is_empty() {
                 break;
             }
@@ -4447,7 +4476,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                 artist_offset,
                 artists.len() as i32,
                 DEEZER_PAGE,
-                (total > 0).then_some(total),
+                reported_artists,
             ) {
                 Some(next) => artist_offset = next,
                 None => break,
@@ -4468,6 +4497,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
             arm.favorite_tracks_total,
         ));
         let mut playlist_offset: i32 = 0;
+        let mut reported_playlists: Option<i64> = None;
         loop {
             let (playlists, total) = match client
                 .get_user_playlists_public(&user_id, playlist_offset, DEEZER_PAGE)
@@ -4482,6 +4512,10 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                     break;
                 }
             };
+            crate::sync::collection::assign_total(
+                &mut reported_playlists,
+                (total > 0).then_some(total),
+            );
             if playlists.is_empty() {
                 break;
             }
@@ -4527,6 +4561,12 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
 
                 if let Some((p_id,)) = playlist_db_id {
                     let declared_total: i64 = pl.nb_tracks.unwrap_or(0).max(0) as i64;
+                    // #405: el total de la playlist se fija una vez y nunca
+                    // decrece. El conteo de la lista manda como primera
+                    // estimación; una página posterior solo puede ampliarlo
+                    // (nunca pisarlo con un valor menor o desconocido).
+                    let mut playlist_total: Option<i64> =
+                        (declared_total > 0).then_some(declared_total);
                     let mut track_offset: i32 = 0;
                     let mut expansion_failed = false;
                     // #403: pertenencia local antes del recorrido y huella
@@ -4555,7 +4595,11 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                         if tracks.is_empty() {
                             break;
                         }
-                        let provider_total = declared_total.max(page_total);
+                        if page_total > 0 {
+                            playlist_total = Some(
+                                playlist_total.map_or(page_total, |known| known.max(page_total)),
+                            );
+                        }
                         for (idx, track) in tracks.iter().enumerate() {
                             let pos = track_offset as usize + idx;
                             arm.tracks_expanded += 1;
@@ -4650,7 +4694,7 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                             track_offset,
                             tracks.len() as i32,
                             DEEZER_PAGE,
-                            (provider_total > 0).then_some(provider_total),
+                            playlist_total,
                         ) {
                             Some(next) => track_offset = next,
                             None => break,
@@ -4678,12 +4722,13 @@ async fn sync_deezer_arm<E: SyncProgressEmitter>(
                 playlist_offset,
                 playlists.len() as i32,
                 DEEZER_PAGE,
-                (total > 0).then_some(total),
+                reported_playlists,
             ) {
                 Some(next) => playlist_offset = next,
                 None => break,
             }
         }
+        arm.reported_playlists = reported_playlists;
     }
 
     // Phase 5: Library history — Deezer's public API exposes no listen
@@ -9689,6 +9734,135 @@ mod sync_arm_contracts {
             include_appearances: false,
             force_retry_unavailable: false,
         }
+    }
+
+    /// #405: el total del proveedor se reporta una vez y no se reasigna por
+    /// página. El mock repite `total: 3` en las dos páginas; si el brazo lo
+    /// sumara o lo pisara con la longitud de página, el reporte de cobertura
+    /// quedaría mal.
+    #[tokio::test]
+    async fn deezer_reporta_el_total_del_proveedor_una_vez_y_no_lo_pisa_por_pagina() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        /// `SYNCIFY_DEEZER_*` es global al proceso; serializa los tests que
+        /// redirigen el cliente.
+        static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _env_guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock");
+        let addr = listener.local_addr().unwrap();
+        let pages = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let pages_for_server = pages.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let pages = pages_for_server.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 32768];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let request_line = raw.lines().next().unwrap_or("");
+                    let mut parts = request_line.split_whitespace();
+                    let method = parts.next().unwrap_or("");
+                    let target = parts.next().unwrap_or("");
+                    let body = if method == "POST" {
+                        r#"{"results":{"checkForm":"tok","USER":{"USER_ID":4242}}}"#.to_string()
+                    } else {
+                        assert!(target.starts_with("/user/4242/tracks"), "{target}");
+                        pages.lock().unwrap().push(target.to_string());
+                        if target.contains("index=0") {
+                            r#"{"total":3,"data":[
+                                {"id":1,"title":"T1","duration":200,"artist":{"name":"A1"}},
+                                {"id":2,"title":"T2","duration":201,"artist":{"name":"A2"}}
+                            ]}"#
+                            .to_string()
+                        } else {
+                            r#"{"total":3,"data":[
+                                {"id":3,"title":"T3","duration":202,"artist":{"name":"A3"}}
+                            ]}"#
+                            .to_string()
+                        }
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.flush().await;
+                });
+            }
+        });
+
+        let base = format!("http://{}", addr);
+        let old_api = std::env::var(crate::services::deezer::DEEZER_API_BASE_ENV).ok();
+        let old_public = std::env::var(crate::services::deezer::DEEZER_PUBLIC_API_BASE_ENV).ok();
+        std::env::set_var(crate::services::deezer::DEEZER_API_BASE_ENV, &base);
+        std::env::set_var(crate::services::deezer::DEEZER_PUBLIC_API_BASE_ENV, &base);
+
+        let pool = fixture_pool().await;
+        let service_id: i64 = sqlx::query_scalar("SELECT id FROM services WHERE name = 'deezer'")
+            .fetch_one(&pool)
+            .await
+            .expect("servicio deezer");
+        let account_id: i64 = sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, display_name, is_active, credentials_json)
+             VALUES (?, 'deezer-405', 1, '{}') RETURNING id",
+        )
+        .bind(service_id)
+        .fetch_one(&pool)
+        .await
+        .expect("cuenta deezer");
+
+        let emitter = ArmEmitter::default();
+        let engine = crate::services::enrichment::EnrichmentEngine::with_db(pool.clone());
+        let mut prefs = prefs_sin_fases();
+        prefs.service_name = "deezer".to_string();
+        prefs.favorite_tracks = true;
+        let creds = json!({"arl": "arl-405"});
+
+        let mut arm = SyncOutcome::default();
+        let result = sync_deezer_arm(
+            &pool,
+            "deezer",
+            account_id,
+            &creds,
+            &prefs,
+            Some(&emitter),
+            &engine,
+            &mut arm,
+        )
+        .await;
+
+        if let Some(value) = old_api {
+            std::env::set_var(crate::services::deezer::DEEZER_API_BASE_ENV, value);
+        } else {
+            std::env::remove_var(crate::services::deezer::DEEZER_API_BASE_ENV);
+        }
+        if let Some(value) = old_public {
+            std::env::set_var(crate::services::deezer::DEEZER_PUBLIC_API_BASE_ENV, value);
+        } else {
+            std::env::remove_var(crate::services::deezer::DEEZER_PUBLIC_API_BASE_ENV);
+        }
+
+        result.expect("brazo Deezer contra el mock");
+        assert_eq!(
+            arm.reported_favorites,
+            Some(3),
+            "el total del proveedor se reporta una vez, no por página"
+        );
+        assert_eq!(arm.favorite_tracks_total, 3);
+        assert!(
+            arm.errors.is_empty(),
+            "sin huecos en el recorrido: {:?}",
+            arm.errors
+        );
+        assert_eq!(
+            pages.lock().unwrap().len(),
+            2,
+            "dos páginas: index=0 e index=2"
+        );
     }
 
     #[tokio::test]
