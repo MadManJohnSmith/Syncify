@@ -30,6 +30,7 @@ pub mod playback_advance;
 pub mod playback_promotion;
 pub mod playback_session;
 pub mod playlist_canonical;
+pub mod playlist_migration;
 // El unico consumidor es MPRIS, que solo existe en Linux: fuera de Linux sus
 // funciones quedarian sin uso y `-D warnings` rompe el binario.
 #[cfg(target_os = "linux")]
