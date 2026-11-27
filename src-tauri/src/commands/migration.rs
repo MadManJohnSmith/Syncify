@@ -17,6 +17,14 @@ use crate::models::{
     DestinationTrackMatch, MigrationItem, MigrationJob, MigrationOptions, MigrationPreviewResult,
     MigrationProgress, MigrationReport, MigrationTemplate, PlaylistPreview,
 };
+use crate::services::playlist_migration::{
+    mirror_playlist, ExistingPlaylist, PlaylistMirrorOptions, PlaylistMirrorRequest,
+    PlaylistMirrorStatus, DEFAULT_PLAYLIST_MIRROR_CHUNK,
+};
+use crate::sync::playlist_write::{
+    PlaylistWriteCapabilities, PlaylistWriteError, PlaylistWriteGateway, PlaylistWriteOperation,
+    PlaylistWriteProvider,
+};
 
 const REQUIRED_AUDIT_TABLES: [&str; 5] = [
     "services",
@@ -1689,18 +1697,30 @@ impl DestinationClients {
     /// `create_playlists` option only has effect for these services; for the
     /// rest the transfer stays favorites-only.
     fn supports_playlist_creation(&self) -> bool {
-        self.qobuz.is_some() || self.tidal.is_some()
+        self.playlist_provider_name().is_some()
+    }
+
+    /// Nombre estático del proveedor para el gateway de PL06. Solo Qobuz y
+    /// Tidal tienen la superficie de escritura de playlists en este árbol.
+    fn playlist_provider_name(&self) -> Option<&'static str> {
+        if self.qobuz.is_some() {
+            Some("qobuz")
+        } else if self.tidal.is_some() {
+            Some("tidal")
+        } else {
+            None
+        }
     }
 
     /// Create a playlist owned by the destination account and return its
     /// remote id (the ids the migration recorded for matched tracks are what
     /// goes inside it, so both stay in the service's own id space).
-    async fn create_playlist(&self, name: &str) -> Result<String, String> {
+    async fn create_playlist(&self, name: &str, description: &str) -> Result<String, String> {
         if let Some(ref client) = self.qobuz {
-            let id = client.create_playlist(name, "").await?;
+            let id = client.create_playlist(name, description).await?;
             Ok(id.to_string())
         } else if let Some(ref client) = self.tidal {
-            client.create_playlist(name, "").await
+            client.create_playlist(name, description).await
         } else {
             Err(
                 "Destination service client unavailable; remote playlists cannot be created"
@@ -1717,15 +1737,16 @@ impl DestinationClients {
     ) -> Result<(), String> {
         if let Some(ref client) = self.qobuz {
             // Qobuz ids are numeric; the migration records them as strings.
-            let mut parsed: Vec<i64> = Vec::with_capacity(track_ids.len());
-            for id in track_ids {
-                match id.parse::<i64>() {
-                    Ok(n) => parsed.push(n),
-                    Err(_) => {
-                        tracing::warn!("Skipping non-numeric Qobuz track id '{}' for playlist", id);
-                    }
-                }
-            }
+            // Un id inválido falla la escritura en vez de omitirse en silencio:
+            // el informe no puede contar como añadida una ocurrencia que nunca
+            // se envió.
+            let parsed = track_ids
+                .iter()
+                .map(|id| {
+                    id.parse::<i64>()
+                        .map_err(|e| format!("Invalid Qobuz track id '{id}' for playlist: {e}"))
+                })
+                .collect::<Result<Vec<i64>, String>>()?;
             client
                 .add_playlist_tracks(
                     playlist_id.parse::<i64>().map_err(|e| e.to_string())?,
@@ -1740,6 +1761,111 @@ impl DestinationClients {
                     .to_string(),
             )
         }
+    }
+
+    /// Playlists que ya existen en el destino, para la fusión por nombre de
+    /// M08. Es una lectura de cada cliente ya autenticado; los tests no pasan
+    /// por aquí porque el servicio recibe el directorio como dato.
+    async fn playlist_directory(&self) -> Result<Vec<ExistingPlaylist>, String> {
+        let mut directory = Vec::new();
+        if let Some(ref client) = self.qobuz {
+            let mut offset = 0i32;
+            loop {
+                let page = client.get_playlists(offset, 50).await?;
+                let fetched = page.playlists.items.len();
+                directory.extend(page.playlists.items.into_iter().map(|playlist| {
+                    ExistingPlaylist {
+                        playlist_id: playlist.id.to_string(),
+                        name: playlist.name,
+                    }
+                }));
+                if fetched == 0 {
+                    break;
+                }
+                offset += fetched as i32;
+            }
+        } else if let Some(ref client) = self.tidal {
+            let mut offset = 0i32;
+            loop {
+                let page = client.get_playlists_with_retry(offset, 50).await?;
+                let fetched = page.items.len();
+                directory.extend(page.items.into_iter().map(|playlist| ExistingPlaylist {
+                    playlist_id: playlist.uuid,
+                    name: playlist.title,
+                }));
+                if fetched == 0 {
+                    break;
+                }
+                offset += fetched as i32;
+            }
+        } else {
+            return Err(
+                "Destination service client unavailable; playlists cannot be listed".to_string(),
+            );
+        }
+        Ok(directory)
+    }
+}
+
+/// Adaptador del gateway de escritura de PL06 (#159) sobre los clientes ya
+/// resueltos de la migración. El gateway es el único camino de escritura de
+/// M08; esta estructura solo traduce nombres y errores.
+struct DestinationPlaylistProvider<'a> {
+    clients: &'a DestinationClients,
+    service: &'static str,
+}
+
+impl<'a> DestinationPlaylistProvider<'a> {
+    fn new(clients: &'a DestinationClients, service: &'static str) -> Self {
+        Self { clients, service }
+    }
+}
+
+impl PlaylistWriteProvider for DestinationPlaylistProvider<'_> {
+    fn service_name(&self) -> &'static str {
+        self.service
+    }
+
+    fn capabilities(&self) -> PlaylistWriteCapabilities {
+        if self.clients.supports_playlist_creation() {
+            PlaylistWriteCapabilities::CREATE_ADD
+        } else {
+            PlaylistWriteCapabilities::NONE
+        }
+    }
+
+    async fn create_playlist(
+        &self,
+        name: String,
+        description: String,
+    ) -> Result<String, PlaylistWriteError> {
+        self.clients
+            .create_playlist(&name, &description)
+            .await
+            .map_err(|message| {
+                PlaylistWriteError::from_provider_message(
+                    self.service,
+                    PlaylistWriteOperation::Create,
+                    &message,
+                )
+            })
+    }
+
+    async fn add_tracks(
+        &self,
+        playlist_id: String,
+        track_ids: Vec<String>,
+    ) -> Result<(), PlaylistWriteError> {
+        self.clients
+            .add_playlist_tracks(&playlist_id, &track_ids)
+            .await
+            .map_err(|message| {
+                PlaylistWriteError::from_provider_message(
+                    self.service,
+                    PlaylistWriteOperation::AddTracks,
+                    &message,
+                )
+            })
     }
 }
 
@@ -3499,14 +3625,13 @@ pub async fn run_artist_collection_with_policy<G: ArtistTransferGateway, R: taur
     Ok(cancelled)
 }
 
-/// Upper bound for one `addTracks` call against a destination playlist: keeps
-/// request URLs and forms small no matter how long the source playlist is.
-const PLAYLIST_ADD_TRACKS_CHUNK: usize = 100;
-
 /// Destination playlists a finished job should mirror, in playlist order:
 /// `(playlist name, destination track ids)` — one entry per source playlist
-/// that contributed at least one transferred track, ids deduplicated keeping
-/// their first occurrence.
+/// that contributed at least one transferred track. The ids keep the source
+/// order and every occurrence: a track repeated in the source playlist appears
+/// repeated here, and M08 decides best-effort whether the destination can keep
+/// it. The transfer phase deduplicates its own items; this join reads the
+/// source `playlist_tracks` occurrences, so the reconstruction stays faithful.
 ///
 /// The join follows the same shape `fetch_migration_source_tracks` reads: the
 /// job's source service links `migration_items.source_track_id` (external id)
@@ -3552,9 +3677,7 @@ async fn fetch_job_destination_playlists(
             ordered_names.push(name.clone());
             Vec::new()
         });
-        if !entry.iter().any(|existing| existing == &dest_id) {
-            entry.push(dest_id);
-        }
+        entry.push(dest_id);
     }
 
     Ok(ordered_names
@@ -4009,71 +4132,142 @@ pub async fn start_migration<R: tauri::Runtime>(
                 destination_service
             );
         } else {
-            match fetch_job_destination_playlists(&state.db, &job_id).await {
-                Ok(playlists) => {
-                    for (playlist_name, dest_ids) in playlists {
-                        if dest_ids.is_empty() {
-                            continue;
-                        }
-                        let _ = app.emit(
-                            "migration-progress",
-                            build_migration_progress(
-                                started_at.elapsed().as_secs_f64(),
-                                &job_id,
-                                processed,
-                                total_items,
-                                format!("{} - {}", destination_service, playlist_name),
-                                format!("Creating playlist '{}'...", playlist_name),
-                                "running",
-                                counters.completed,
-                                counters.failed,
-                                counters.skipped,
-                            ),
+            // Fusionar por nombre exige conocer las playlists que ya existen en
+            // el destino. Si esa lectura falla no se crea nada para ese job:
+            // crear a ciegas duplicaría listas justo cuando el usuario pidió
+            // fusionarlas. Los favoritos ya transferidos no se pierden.
+            let directory = if options.merge_existing {
+                match clients.playlist_directory().await {
+                    Ok(directory) => Some(directory),
+                    Err(error) => {
+                        tracing::warn!(
+                            "Migration {}: could not list destination playlists for merge; no playlist was created to avoid duplicates: {}",
+                            job_id,
+                            error
                         );
+                        None
+                    }
+                }
+            } else {
+                Some(Vec::new())
+            };
 
-                        match clients.create_playlist(&playlist_name).await {
-                            Ok(remote_id) => {
-                                let mut added = 0usize;
-                                for chunk in dest_ids.chunks(PLAYLIST_ADD_TRACKS_CHUNK) {
-                                    match clients.add_playlist_tracks(&remote_id, chunk).await {
-                                        Ok(()) => added += chunk.len(),
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Migration {}: failed to add tracks to playlist '{}': {}",
-                                                job_id,
-                                                playlist_name,
-                                                e
-                                            );
-                                            break;
-                                        }
+            if let Some(mut directory) = directory {
+                match fetch_job_destination_playlists(&state.db, &job_id).await {
+                    Ok(playlists) => {
+                        if let Some(service_name) = clients.playlist_provider_name() {
+                            let provider = DestinationPlaylistProvider::new(&clients, service_name);
+                            let gateway = PlaylistWriteGateway::new(&provider);
+                            for (playlist_name, dest_ids) in playlists {
+                                if dest_ids.is_empty() {
+                                    continue;
+                                }
+                                let action = if options.merge_existing {
+                                    "Merging"
+                                } else {
+                                    "Creating"
+                                };
+                                let _ = app.emit(
+                                    "migration-progress",
+                                    build_migration_progress(
+                                        started_at.elapsed().as_secs_f64(),
+                                        &job_id,
+                                        processed,
+                                        total_items,
+                                        format!("{} - {}", destination_service, playlist_name),
+                                        format!("{} playlist '{}'...", action, playlist_name),
+                                        "running",
+                                        counters.completed,
+                                        counters.failed,
+                                        counters.skipped,
+                                    ),
+                                );
+
+                                let request = PlaylistMirrorRequest {
+                                    name: playlist_name.clone(),
+                                    description: String::new(),
+                                    track_ids: dest_ids,
+                                };
+                                let report = mirror_playlist(
+                                    &gateway,
+                                    &request,
+                                    &directory,
+                                    PlaylistMirrorOptions {
+                                        merge_by_name: options.merge_existing,
+                                        chunk_size: DEFAULT_PLAYLIST_MIRROR_CHUNK,
+                                    },
+                                )
+                                .await;
+
+                                for warning in &report.warnings {
+                                    tracing::warn!(
+                                        "Migration {}: playlist '{}': {}",
+                                        job_id,
+                                        playlist_name,
+                                        warning
+                                    );
+                                }
+
+                                // La lista creada en esta pasada entra en el
+                                // directorio para que otra playlist del mismo
+                                // job con el nombre equivalente se fusione con
+                                // ella en vez de crear un duplicado.
+                                if let Some(playlist_id) = &report.playlist_id {
+                                    if !directory
+                                        .iter()
+                                        .any(|existing| &existing.playlist_id == playlist_id)
+                                    {
+                                        directory.push(ExistingPlaylist {
+                                            playlist_id: playlist_id.clone(),
+                                            name: playlist_name.clone(),
+                                        });
                                     }
                                 }
-                                tracing::info!(
-                                    "Migration {}: created destination playlist '{}' ({}) with {} of {} tracks",
-                                    job_id,
-                                    playlist_name,
-                                    remote_id,
-                                    added,
-                                    dest_ids.len()
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Migration {}: failed to create destination playlist '{}': {}",
-                                    job_id,
-                                    playlist_name,
-                                    e
-                                );
+
+                                let remote_id = report.playlist_id.as_deref().unwrap_or("?");
+                                match report.status {
+                                    PlaylistMirrorStatus::Created => tracing::info!(
+                                        "Migration {}: created destination playlist '{}' ({}) with {} of {} tracks",
+                                        job_id,
+                                        playlist_name,
+                                        remote_id,
+                                        report.added_tracks,
+                                        report.requested_tracks
+                                    ),
+                                    PlaylistMirrorStatus::Merged => tracing::info!(
+                                        "Migration {}: merged into destination playlist '{}' ({}) with {} of {} tracks",
+                                        job_id,
+                                        playlist_name,
+                                        remote_id,
+                                        report.added_tracks,
+                                        report.requested_tracks
+                                    ),
+                                    PlaylistMirrorStatus::Failed => match &report.error {
+                                        Some(error) => tracing::warn!(
+                                            "Migration {}: failed to mirror playlist '{}' after {} of {} tracks: {}",
+                                            job_id,
+                                            playlist_name,
+                                            report.added_tracks,
+                                            report.requested_tracks,
+                                            error
+                                        ),
+                                        None => tracing::warn!(
+                                            "Migration {}: failed to mirror playlist '{}' without a typed error",
+                                            job_id,
+                                            playlist_name
+                                        ),
+                                    },
+                                }
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Migration {}: could not collect source playlists for the destination mirror: {}",
-                        job_id,
-                        e
-                    );
+                    Err(e) => {
+                        tracing::warn!(
+                            "Migration {}: could not collect source playlists for the destination mirror: {}",
+                            job_id,
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -5087,6 +5281,102 @@ mod migration_tests {
         assert_eq!(
             selected,
             vec![("First playlist".into(), vec!["qb-song".into()])]
+        );
+    }
+
+    #[tokio::test]
+    async fn playlist_reconstruction_preserves_source_occurrences_in_order() {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        sqlx::query("INSERT OR IGNORE INTO services (id, name) VALUES (1, 'spotify')")
+            .execute(&db)
+            .await
+            .unwrap();
+        let account: i64 = sqlx::query_scalar(
+            "INSERT INTO accounts (service_id, email, is_active) VALUES (1, 'repeat@test.dev', 1) RETURNING id",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let album: i64 =
+            sqlx::query_scalar("INSERT INTO albums (title) VALUES ('Album') RETURNING id")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let artist: i64 =
+            sqlx::query_scalar("INSERT INTO artists (name) VALUES ('Artist') RETURNING id")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let track: i64 = sqlx::query_scalar(
+            "INSERT INTO tracks (title, album_id) VALUES ('Song', ?) RETURNING id",
+        )
+        .bind(album)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_artists (track_id, artist_id, role) VALUES (?, ?, 'primary')",
+        )
+        .bind(track)
+        .bind(artist)
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO track_sources (track_id, service_id, service_track_id) VALUES (?, 1, 'sp-song')",
+        )
+        .bind(track)
+        .execute(&db)
+        .await
+        .unwrap();
+        let playlist: i64 = sqlx::query_scalar(
+            "INSERT INTO playlists (account_id, name, source_service) VALUES (?, 'Repeated', 'spotify') RETURNING id",
+        )
+        .bind(account)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        for position in 1..=2 {
+            sqlx::query(
+                "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
+            )
+            .bind(playlist)
+            .bind(track)
+            .bind(position)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO migration_jobs (id, source_service, destination_service, options, status, source_account_id, source_playlist_ids) VALUES ('repeat-job', 'spotify', 'qobuz', '{}', 'running', ?, ?)",
+        )
+        .bind(account)
+        .bind(serde_json::json!([playlist.to_string()]).to_string())
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO migration_items (job_id, source_track_id, source_track_title, source_track_artist, status, destination_track_id) VALUES ('repeat-job', 'sp-song', 'Song', 'Artist', 'transferred', 'qb-song')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let playlists = fetch_job_destination_playlists(&db, "repeat-job")
+            .await
+            .unwrap();
+        assert_eq!(
+            playlists,
+            vec![(
+                "Repeated".to_string(),
+                vec!["qb-song".to_string(), "qb-song".to_string()]
+            )],
+            "a repeated source track must reach the mirror twice, in place"
         );
     }
 
