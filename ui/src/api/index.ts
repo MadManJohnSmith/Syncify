@@ -55,4 +55,4 @@ export { notificationsApi } from './notifications';
 export { logsApi } from './logs';
 export { toolsApi } from './tools';
 export { trayApi } from './tray';
-
+export * from './catalogSearch';

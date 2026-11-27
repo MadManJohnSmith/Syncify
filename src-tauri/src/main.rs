@@ -1130,6 +1130,10 @@ fn main() {
             commands::import_qobuz_purchases,
             commands::import_qobuz_playlists,
             commands::enrich_qobuz_album_metadata,
+            // Catalog search (P10b, #409): gateway de #402, fichas y acciones.
+            commands::catalog_search,
+            commands::catalog_album_tracks,
+            commands::catalog_artist_albums,
             // Tidal
             commands::import_tidal_library,
             // Deezer
