@@ -49,7 +49,7 @@
 //! frecuencia, duración y seek, de modo que puede intercalarse en el camino de
 //! audio sin cambiar el transporte:
 //!
-//! ```
+//! ```text
 //! use std::num::NonZero;
 //!
 //! use rodio::buffer::SamplesBuffer;
@@ -67,6 +67,10 @@
 //!     .collect();
 //! assert!((output[0] - 0.25).abs() < 1e-4);
 //! ```
+//!
+//! El ejemplo no se compila como doctest: en Windows el linker de doctests no
+//! resuelve la CRT de las dependencias de audio. El comportamiento está
+//! cubierto por `tests/gain_test.rs`.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
