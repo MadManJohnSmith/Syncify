@@ -1,14 +1,780 @@
-//! Canonicalización de playlists por contenido (issue #74, ADR-0006 decisión 34).
+//! Canonicalización de playlists por contenido (issue #74, ADR-0006 decisión 34)
+//! y modo de conflicto por playlist (issue #403, decisiones 15, 23 y 27-28).
 //!
 //! Las playlists de origen conservan su identidad remota y su contenido. La
 //! canónica es una agrupación persistente de esas copias, no un borrado: así una
 //! fuente que diverge después puede separarse sin perder su propio snapshot.
+//!
+//! El modo de conflicto decide qué parte de esa observación del proveedor se
+//! aplica: `gana_proveedor` restaura, `gana_local` solo observa y `editable`
+//! aplica si el usuario no tocó lo mismo, dejando el conflicto en
+//! `playlist_conflict_reviews` cuando ambos lados cambiaron.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{SqliteConnection, SqlitePool};
+
+/// Modos de conflicto de una playlist remota (ADR-0006 decisión 23).
+pub const PLAYLIST_CONFLICT_EDITABLE: &str = "editable";
+pub const PLAYLIST_CONFLICT_PROVIDER_WINS: &str = "gana_proveedor";
+pub const PLAYLIST_CONFLICT_LOCAL_WINS: &str = "gana_local";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PlaylistConflictMode {
+    Editable,
+    #[default]
+    ProviderWins,
+    LocalWins,
+}
+
+impl PlaylistConflictMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            PLAYLIST_CONFLICT_EDITABLE => Some(Self::Editable),
+            PLAYLIST_CONFLICT_PROVIDER_WINS => Some(Self::ProviderWins),
+            PLAYLIST_CONFLICT_LOCAL_WINS => Some(Self::LocalWins),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Editable => PLAYLIST_CONFLICT_EDITABLE,
+            Self::ProviderWins => PLAYLIST_CONFLICT_PROVIDER_WINS,
+            Self::LocalWins => PLAYLIST_CONFLICT_LOCAL_WINS,
+        }
+    }
+}
+
+/// Qué hacer con el valor local cuando el proveedor vuelve a declarar el suyo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaylistConflictDecision {
+    ApplyProvider,
+    KeepLocal,
+    Review,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaylistConflictKind {
+    Name,
+    Membership,
+}
+
+impl PlaylistConflictKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Membership => "membership",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaylistConflictOutcome {
+    /// El valor local ya coincidía con el del proveedor.
+    Unchanged,
+    /// Se aplicó el valor del proveedor.
+    Applied,
+    /// Se conservó el valor local (modo local o edición local en editable).
+    LocalKept,
+    /// Se dejó evidencia `needs_review` y no se pisó el valor local.
+    ReviewQueued,
+}
+
+/// Una fila de la cola de revisión de conflictos de playlist (#403).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaylistConflictReview {
+    pub id: i64,
+    pub playlist_id: i64,
+    pub conflict_kind: String,
+    pub local_value: Option<String>,
+    pub provider_value: Option<String>,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub resolved_at: Option<String>,
+}
+
+/// Decide si se aplica el nombre del proveedor, se conserva el local o se
+/// manda a revisión. `last_provider_name` es la última observación del
+/// proveedor, no el nombre actual de la playlist.
+pub fn decide_playlist_name_update(
+    mode: PlaylistConflictMode,
+    local_name: &str,
+    provider_name: &str,
+    last_provider_name: Option<&str>,
+) -> PlaylistConflictDecision {
+    if local_name == provider_name {
+        return PlaylistConflictDecision::ApplyProvider;
+    }
+    match mode {
+        PlaylistConflictMode::LocalWins => PlaylistConflictDecision::KeepLocal,
+        PlaylistConflictMode::ProviderWins => PlaylistConflictDecision::ApplyProvider,
+        PlaylistConflictMode::Editable => match last_provider_name {
+            // Solo el proveedor cambió: se aplica.
+            Some(last) if local_name == last => PlaylistConflictDecision::ApplyProvider,
+            // Solo el usuario cambió: se respeta.
+            Some(last) if provider_name == last => PlaylistConflictDecision::KeepLocal,
+            // Ambos cambiaron distinto, o no hay huella para decidir.
+            _ => PlaylistConflictDecision::Review,
+        },
+    }
+}
+
+/// Misma decisión para la pertenencia ordenada (incluye duplicados legales).
+pub fn decide_playlist_membership_update(
+    mode: PlaylistConflictMode,
+    local_tracks: &[i64],
+    provider_tracks: &[i64],
+    last_provider_tracks: Option<&[i64]>,
+) -> PlaylistConflictDecision {
+    if local_tracks == provider_tracks {
+        return PlaylistConflictDecision::ApplyProvider;
+    }
+    // Primera importación de una playlist sin contenido: el proveedor es la
+    // base en cualquier modo. `gana_local` protege ediciones posteriores, no
+    // impide que una playlist nueva nazca vacía.
+    if last_provider_tracks.is_none() && local_tracks.is_empty() {
+        return PlaylistConflictDecision::ApplyProvider;
+    }
+    match mode {
+        PlaylistConflictMode::LocalWins => PlaylistConflictDecision::KeepLocal,
+        PlaylistConflictMode::ProviderWins => PlaylistConflictDecision::ApplyProvider,
+        PlaylistConflictMode::Editable => match last_provider_tracks {
+            // Sin huella previa solo hay conflicto si ya había contenido
+            // local. Una playlist nueva (o vacía) adopta el del proveedor como
+            // base; no se inventa una revisión en su primera importación.
+            None if local_tracks.is_empty() => PlaylistConflictDecision::ApplyProvider,
+            None => PlaylistConflictDecision::Review,
+            Some(last) => {
+                let local_changed = local_tracks != last;
+                let provider_changed = provider_tracks != last;
+                match (local_changed, provider_changed) {
+                    // Ambos lados cambiaron: evidencia, sin pisar.
+                    (true, true) => PlaylistConflictDecision::Review,
+                    // El usuario editó y el proveedor no: se respeta.
+                    (true, false) => PlaylistConflictDecision::KeepLocal,
+                    // Sin edición local, o solo cambió el proveedor: se aplica.
+                    (false, _) => PlaylistConflictDecision::ApplyProvider,
+                }
+            }
+        },
+    }
+}
+
+pub async fn get_playlist_conflict_mode(
+    db: &SqlitePool,
+    playlist_id: i64,
+) -> Result<PlaylistConflictMode, String> {
+    let value: Option<String> =
+        sqlx::query_scalar("SELECT conflict_mode FROM playlists WHERE id = ?")
+            .bind(playlist_id)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| format!("Failed to read playlist conflict mode: {e}"))?;
+    Ok(value
+        .as_deref()
+        .and_then(PlaylistConflictMode::parse)
+        .unwrap_or_default())
+}
+
+/// Persiste la elección de la ficha. Devuelve `false` si la playlist no existe.
+pub async fn set_playlist_conflict_mode(
+    db: &SqlitePool,
+    playlist_id: i64,
+    mode: PlaylistConflictMode,
+) -> Result<bool, String> {
+    let result = sqlx::query(
+        "UPDATE playlists SET conflict_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    )
+    .bind(mode.as_str())
+    .bind(playlist_id)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to persist playlist conflict mode: {e}"))?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub async fn get_service_playlist_conflict_default(
+    db: &SqlitePool,
+    service_name: &str,
+) -> Result<PlaylistConflictMode, String> {
+    let value: Option<String> = sqlx::query_scalar(
+        "SELECT playlist_conflict_mode FROM service_preferences WHERE service_name = ?",
+    )
+    .bind(service_name)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Failed to read service playlist conflict default: {e}"))?;
+    Ok(value
+        .as_deref()
+        .and_then(PlaylistConflictMode::parse)
+        .unwrap_or_default())
+}
+
+/// Fija el default de las playlists NUEVAS del servicio. Las existentes
+/// conservan su modo: la decisión del usuario no se reescribe sola.
+pub async fn set_service_playlist_conflict_default(
+    db: &SqlitePool,
+    service_name: &str,
+    mode: PlaylistConflictMode,
+) -> Result<(), String> {
+    let result = sqlx::query(
+        "UPDATE service_preferences SET playlist_conflict_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE service_name = ?",
+    )
+    .bind(mode.as_str())
+    .bind(service_name)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to persist service playlist conflict default: {e}"))?;
+    if result.rows_affected() == 0 {
+        sqlx::query(
+            "INSERT INTO service_preferences
+                (service_name, priority, auto_import_enabled, playlist_conflict_mode)
+             VALUES (?, 999, 0, ?)
+             ON CONFLICT(service_name) DO UPDATE SET
+                playlist_conflict_mode = excluded.playlist_conflict_mode,
+                updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(service_name)
+        .bind(mode.as_str())
+        .execute(db)
+        .await
+        .map_err(|e| format!("Failed to insert service playlist conflict default: {e}"))?;
+    }
+    Ok(())
+}
+
+async fn read_provider_name_snapshot(
+    db: &SqlitePool,
+    playlist_id: i64,
+    account_id: i64,
+    service_playlist_id: &str,
+) -> Result<Option<String>, String> {
+    sqlx::query_scalar(
+        "SELECT provider_name FROM playlist_sources
+         WHERE playlist_id = ? AND account_id = ? AND service_playlist_id = ?",
+    )
+    .bind(playlist_id)
+    .bind(account_id)
+    .bind(service_playlist_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Failed to read provider playlist name snapshot: {e}"))
+    .map(|value| value.flatten())
+}
+
+pub async fn remember_provider_playlist_name(
+    db: &SqlitePool,
+    playlist_id: i64,
+    account_id: i64,
+    service_playlist_id: &str,
+    provider_name: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE playlist_sources
+         SET provider_name = ?, provider_snapshot_at = CURRENT_TIMESTAMP
+         WHERE playlist_id = ? AND account_id = ? AND service_playlist_id = ?",
+    )
+    .bind(provider_name)
+    .bind(playlist_id)
+    .bind(account_id)
+    .bind(service_playlist_id)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to remember provider playlist name: {e}"))?;
+    Ok(())
+}
+
+/// Lee el nombre actual, decide con el modo y la huella del proveedor, deja la
+/// revisión si toca y devuelve el nombre que debe quedar en `playlists.name`.
+pub async fn observe_provider_playlist_name(
+    db: &SqlitePool,
+    playlist_id: i64,
+    account_id: i64,
+    service_playlist_id: &str,
+    provider_name: &str,
+) -> Result<String, String> {
+    let mode = get_playlist_conflict_mode(db, playlist_id).await?;
+    let local_name: Option<String> = sqlx::query_scalar("SELECT name FROM playlists WHERE id = ?")
+        .bind(playlist_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| format!("Failed to read playlist name: {e}"))?;
+    let Some(local_name) = local_name else {
+        return Ok(provider_name.to_string());
+    };
+    let baseline =
+        read_provider_name_snapshot(db, playlist_id, account_id, service_playlist_id).await?;
+    let decision =
+        decide_playlist_name_update(mode, &local_name, provider_name, baseline.as_deref());
+
+    let effective_name = match decision {
+        PlaylistConflictDecision::ApplyProvider => provider_name.to_string(),
+        PlaylistConflictDecision::KeepLocal | PlaylistConflictDecision::Review => local_name,
+    };
+
+    if decision == PlaylistConflictDecision::Review {
+        record_playlist_conflict_review(
+            db,
+            playlist_id,
+            PlaylistConflictKind::Name,
+            &effective_name,
+            provider_name,
+        )
+        .await?;
+    }
+
+    remember_provider_playlist_name(
+        db,
+        playlist_id,
+        account_id,
+        service_playlist_id,
+        provider_name,
+    )
+    .await?;
+    Ok(effective_name)
+}
+
+async fn read_provider_tracks_snapshot(
+    db: &SqlitePool,
+    playlist_id: i64,
+    account_id: i64,
+    service_playlist_id: &str,
+) -> Result<Option<Vec<i64>>, String> {
+    let raw: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT provider_track_ids FROM playlist_sources
+         WHERE playlist_id = ? AND account_id = ? AND service_playlist_id = ?",
+    )
+    .bind(playlist_id)
+    .bind(account_id)
+    .bind(service_playlist_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Failed to read provider playlist membership snapshot: {e}"))?;
+    Ok(raw
+        .flatten()
+        .and_then(|json| serde_json::from_str::<Vec<i64>>(&json).ok()))
+}
+
+async fn remember_provider_playlist_tracks(
+    db: &SqlitePool,
+    playlist_id: i64,
+    account_id: i64,
+    service_playlist_id: &str,
+    provider_track_ids: &[i64],
+) -> Result<(), String> {
+    let encoded = serde_json::to_string(provider_track_ids)
+        .map_err(|e| format!("Failed to encode provider playlist membership: {e}"))?;
+    sqlx::query(
+        "UPDATE playlist_sources
+         SET provider_track_ids = ?, provider_snapshot_at = CURRENT_TIMESTAMP
+         WHERE playlist_id = ? AND account_id = ? AND service_playlist_id = ?",
+    )
+    .bind(encoded)
+    .bind(playlist_id)
+    .bind(account_id)
+    .bind(service_playlist_id)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to remember provider playlist membership: {e}"))?;
+    Ok(())
+}
+
+async fn record_playlist_conflict_review(
+    db: &SqlitePool,
+    playlist_id: i64,
+    kind: PlaylistConflictKind,
+    local_value: &str,
+    provider_value: &str,
+) -> Result<(), String> {
+    let updated = sqlx::query(
+        "UPDATE playlist_conflict_reviews
+         SET local_value = ?, provider_value = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE playlist_id = ? AND conflict_kind = ? AND status = 'needs_review'",
+    )
+    .bind(local_value)
+    .bind(provider_value)
+    .bind(playlist_id)
+    .bind(kind.as_str())
+    .execute(db)
+    .await
+    .map_err(|e| format!("Failed to refresh playlist conflict review: {e}"))?;
+    if updated.rows_affected() == 0 {
+        sqlx::query(
+            "INSERT INTO playlist_conflict_reviews
+                (playlist_id, conflict_kind, local_value, provider_value, status)
+             VALUES (?, ?, ?, ?, 'needs_review')",
+        )
+        .bind(playlist_id)
+        .bind(kind.as_str())
+        .bind(local_value)
+        .bind(provider_value)
+        .execute(db)
+        .await
+        .map_err(|e| format!("Failed to queue playlist conflict review: {e}"))?;
+    }
+    Ok(())
+}
+
+pub async fn list_playlist_conflict_reviews(
+    db: &SqlitePool,
+    playlist_id: i64,
+) -> Result<Vec<PlaylistConflictReview>, String> {
+    let rows: Vec<(
+        i64,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        String,
+        String,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT id, playlist_id, conflict_kind, local_value, provider_value,
+                status, created_at, updated_at, resolved_at
+         FROM playlist_conflict_reviews
+         WHERE playlist_id = ?
+         ORDER BY id",
+    )
+    .bind(playlist_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Failed to list playlist conflict reviews: {e}"))?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                playlist_id,
+                conflict_kind,
+                local_value,
+                provider_value,
+                status,
+                created_at,
+                updated_at,
+                resolved_at,
+            )| PlaylistConflictReview {
+                id,
+                playlist_id,
+                conflict_kind,
+                local_value,
+                provider_value,
+                status,
+                created_at,
+                updated_at,
+                resolved_at,
+            },
+        )
+        .collect())
+}
+
+/// Aplica el modo de conflicto a la pertenencia que el sync acaba de observar.
+/// `provider_track_ids` es la lista ordenada de track_id locales que el
+/// proveedor devolvió en el recorrido completo; no debe llamarse con una
+/// expansión parcial.
+pub async fn apply_provider_playlist_membership(
+    db: &SqlitePool,
+    playlist_id: i64,
+    account_id: i64,
+    service_playlist_id: &str,
+    provider_track_ids: &[i64],
+) -> Result<PlaylistConflictOutcome, String> {
+    let local_tracks = read_playlist_track_ids(db, playlist_id).await?;
+    apply_provider_playlist_membership_from_local_snapshot(
+        db,
+        playlist_id,
+        account_id,
+        service_playlist_id,
+        provider_track_ids,
+        &local_tracks,
+        true,
+    )
+    .await
+}
+
+/// Variante para el sync: `local_tracks_before_sync` es la pertenencia local
+/// capturada ANTES de recorrer al proveedor. El sync inserta las pistas
+/// observadas en `playlist_tracks` mientras pagina; sin este snapshot, los
+/// modos local y editable confundirían esas altas con ediciones del usuario.
+pub async fn apply_provider_playlist_membership_from_local_snapshot(
+    db: &SqlitePool,
+    playlist_id: i64,
+    account_id: i64,
+    service_playlist_id: &str,
+    provider_track_ids: &[i64],
+    local_tracks_before_sync: &[i64],
+    observation_complete: bool,
+) -> Result<PlaylistConflictOutcome, String> {
+    let mode = get_playlist_conflict_mode(db, playlist_id).await?;
+    let current_tracks = read_playlist_track_ids(db, playlist_id).await?;
+
+    // Con una observación parcial no se decide ni se actualiza la huella: el
+    // sync ya insertó lo que alcanzó a ver. Local y editable recuperan su
+    // pertenencia previa; gana_proveedor conserva lo ya importado (sin borrar).
+    if !observation_complete {
+        if mode != PlaylistConflictMode::ProviderWins && current_tracks != local_tracks_before_sync
+        {
+            replace_playlist_tracks(db, playlist_id, local_tracks_before_sync).await?;
+        }
+        return Ok(if mode == PlaylistConflictMode::ProviderWins {
+            PlaylistConflictOutcome::Unchanged
+        } else {
+            PlaylistConflictOutcome::LocalKept
+        });
+    }
+
+    let baseline =
+        read_provider_tracks_snapshot(db, playlist_id, account_id, service_playlist_id).await?;
+    let decision = decide_playlist_membership_update(
+        mode,
+        local_tracks_before_sync,
+        provider_track_ids,
+        baseline.as_deref(),
+    );
+
+    let outcome = match decision {
+        PlaylistConflictDecision::ApplyProvider => {
+            if current_tracks == provider_track_ids {
+                PlaylistConflictOutcome::Unchanged
+            } else {
+                replace_playlist_tracks(db, playlist_id, provider_track_ids).await?;
+                PlaylistConflictOutcome::Applied
+            }
+        }
+        PlaylistConflictDecision::KeepLocal => {
+            if current_tracks != local_tracks_before_sync {
+                replace_playlist_tracks(db, playlist_id, local_tracks_before_sync).await?;
+            }
+            PlaylistConflictOutcome::LocalKept
+        }
+        PlaylistConflictDecision::Review => {
+            if current_tracks != local_tracks_before_sync {
+                replace_playlist_tracks(db, playlist_id, local_tracks_before_sync).await?;
+            }
+            let local_value = serde_json::to_string(local_tracks_before_sync)
+                .map_err(|e| format!("Failed to encode local playlist membership: {e}"))?;
+            let provider_value = serde_json::to_string(provider_track_ids)
+                .map_err(|e| format!("Failed to encode provider playlist membership: {e}"))?;
+            record_playlist_conflict_review(
+                db,
+                playlist_id,
+                PlaylistConflictKind::Membership,
+                &local_value,
+                &provider_value,
+            )
+            .await?;
+            PlaylistConflictOutcome::ReviewQueued
+        }
+    };
+
+    remember_provider_playlist_tracks(
+        db,
+        playlist_id,
+        account_id,
+        service_playlist_id,
+        provider_track_ids,
+    )
+    .await?;
+    Ok(outcome)
+}
+
+pub async fn read_playlist_track_ids(
+    db: &SqlitePool,
+    playlist_id: i64,
+) -> Result<Vec<i64>, String> {
+    sqlx::query_scalar(
+        "SELECT track_id FROM playlist_tracks
+         WHERE playlist_id = ?
+         ORDER BY position ASC, id ASC",
+    )
+    .bind(playlist_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| format!("Failed to read playlist membership: {e}"))
+}
+
+async fn replace_playlist_tracks(
+    db: &SqlitePool,
+    playlist_id: i64,
+    track_ids: &[i64],
+) -> Result<(), String> {
+    let mut tx = db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| format!("Failed to start playlist membership restore: {e}"))?;
+    let existing: Vec<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT track_id, added_at FROM playlist_tracks
+         WHERE playlist_id = ?
+         ORDER BY position ASC, id ASC",
+    )
+    .bind(playlist_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to read current playlist membership: {e}"))?;
+
+    let previous_track_ids: Vec<i64> = existing.iter().map(|(track_id, _)| *track_id).collect();
+    let mut added_at_by_track: HashMap<i64, VecDeque<Option<String>>> = HashMap::new();
+    for (track_id, added_at) in existing {
+        added_at_by_track
+            .entry(track_id)
+            .or_default()
+            .push_back(added_at);
+    }
+
+    sqlx::query("DELETE FROM playlist_tracks WHERE playlist_id = ?")
+        .bind(playlist_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to clear playlist membership: {e}"))?;
+
+    for (index, track_id) in track_ids.iter().enumerate() {
+        let added_at = added_at_by_track
+            .get_mut(track_id)
+            .and_then(VecDeque::pop_front)
+            .flatten();
+        sqlx::query(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position, added_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(playlist_id)
+        .bind(track_id)
+        .bind((index + 1) as i64)
+        .bind(added_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to restore playlist membership: {e}"))?;
+    }
+
+    sqlx::query(
+        "UPDATE playlists
+         SET track_count = (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = ?),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?",
+    )
+    .bind(playlist_id)
+    .bind(playlist_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to reconcile restored playlist track count: {e}"))?;
+
+    // La pertenencia de biblioteca (0112) es un espejo de la playlist: una
+    // pista que el modo quitó no puede seguir contando como miembro.
+    sqlx::query(
+        "DELETE FROM library_memberships
+         WHERE collection_type = 'playlist' AND collection_id = ?
+           AND track_id NOT IN (
+                SELECT track_id FROM playlist_tracks WHERE playlist_id = ?
+           )",
+    )
+    .bind(playlist_id)
+    .bind(playlist_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to reconcile playlist library memberships: {e}"))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit playlist membership restore: {e}"))?;
+
+    let restored: HashSet<i64> = track_ids.iter().copied().collect();
+    for track_id in previous_track_ids
+        .into_iter()
+        .filter(|track_id| !restored.contains(track_id))
+    {
+        if let Err(error) =
+            crate::services::library_membership::refresh_track_library_added_at(db, track_id).await
+        {
+            tracing::warn!(
+                track_id,
+                %error,
+                "removed playlist membership could not refresh library_added_at"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Cierre común de una importación de playlist: aplica el modo de conflicto
+/// (con observación parcial, restaura la pertenencia local en los modos que no
+/// son «gana el proveedor») y después certifica la expansión canónica.
+pub async fn finish_playlist_import(
+    db: &SqlitePool,
+    playlist_id: i64,
+    expansion_failed: bool,
+    account_id: i64,
+    service_playlist_id: &str,
+    provider_track_ids: &[i64],
+    local_tracks_before_sync: &[i64],
+) -> bool {
+    // Restaurar pertenencia con una lista a la que le falta una pista
+    // (enriquecimiento fallido o página caída) borraría una fila que el
+    // proveedor sí tiene. La observación solo se considera completa cuando el
+    // declarado y lo recorrido cuadran.
+    let observation_complete = if expansion_failed {
+        false
+    } else {
+        match read_reported_track_count(db, account_id, service_playlist_id).await {
+            Ok(Some(reported)) => reported == provider_track_ids.len() as i64,
+            Ok(reported) => {
+                tracing::debug!(
+                    playlist_id,
+                    reported,
+                    observed = provider_track_ids.len(),
+                    "playlist conflict mode: declared total is unknown"
+                );
+                false
+            }
+            Err(error) => {
+                tracing::warn!(
+                    playlist_id,
+                    %error,
+                    "playlist conflict mode could not be verified; local membership is kept"
+                );
+                false
+            }
+        }
+    };
+
+    if let Err(error) = apply_provider_playlist_membership_from_local_snapshot(
+        db,
+        playlist_id,
+        account_id,
+        service_playlist_id,
+        provider_track_ids,
+        local_tracks_before_sync,
+        observation_complete,
+    )
+    .await
+    {
+        tracing::warn!(
+            playlist_id,
+            %error,
+            "playlist conflict mode could not be applied; local membership is kept"
+        );
+    }
+    finish_playlist_expansion(db, playlist_id, expansion_failed).await
+}
+
+async fn read_reported_track_count(
+    db: &SqlitePool,
+    account_id: i64,
+    service_playlist_id: &str,
+) -> Result<Option<i64>, String> {
+    sqlx::query_scalar(
+        "SELECT reported_track_count FROM playlist_sources
+         WHERE account_id = ? AND service_playlist_id = ?",
+    )
+    .bind(account_id)
+    .bind(service_playlist_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Failed to read playlist declared total: {e}"))
+    .map(|value| value.flatten())
+}
 
 /// Resultado de una pasada completa o incremental. Los contadores se leen de
 /// las tablas canónicas al terminar, así que dos pasadas sobre los mismos datos
