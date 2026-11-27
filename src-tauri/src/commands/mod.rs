@@ -107,6 +107,10 @@ pub use queue::*;
 pub mod search;
 pub use search::*;
 
+/// P10b (#409): comandos de la búsqueda de catálogo sobre el gateway de #402.
+pub mod catalog_search_commands;
+pub use catalog_search_commands::*;
+
 pub mod service;
 pub use service::*;
 
