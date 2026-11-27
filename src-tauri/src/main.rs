@@ -1248,6 +1248,11 @@ fn main() {
             commands::fetch_remote_playlist_tracks,
             commands::export_playlist,
             commands::match_playlist_to_service,
+            // #410: modo de conflicto y revisión de conflictos de playlist
+            commands::get_playlist_conflict_state,
+            commands::set_playlist_conflict_mode,
+            commands::list_playlist_conflict_reviews,
+            commands::resolve_playlist_conflict_review,
             // Dependency Management
             commands::check_dependencies,
             commands::install_dependency,

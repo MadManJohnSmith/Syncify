@@ -101,6 +101,12 @@ pub use player::*;
 pub mod playlists;
 pub use playlists::*;
 
+/// #410: modo de conflicto por playlist (ficha, primera edición) y cola de
+/// revisión `needs_review`. El núcleo de decisión vive en
+/// `services::playlist_canonical` (#403).
+pub mod playlist_conflicts;
+pub use playlist_conflicts::*;
+
 pub mod queue;
 pub use queue::*;
 
