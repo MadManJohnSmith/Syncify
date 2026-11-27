@@ -1,0 +1,13 @@
+{
+  "status": "done",
+  "lastPing": 1795784551734,
+  "service": "amznmusic",
+  "friendlyStatus": "Finished",
+  "percent": 100,
+  "current": {
+    "name": "Track",
+    "artist": "Artist",
+    "cover": "https://cover.example.test/art.jpg"
+  },
+  "url": "https://files.example.test/amazon/track.flac"
+}
