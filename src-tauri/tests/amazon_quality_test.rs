@@ -9,6 +9,10 @@
 //! - the delivered file is the authoritative quality; a physical FLAC fixture
 //!   overrides a different declaration, and an uninspectable file with no
 //!   declaration fails closed.
+//!
+//! Persistence of these values is the existing D05 path: the worker writes
+//! `physical_audio` into the queue row and the `downloads` ledger (see
+//! `delivery_verification_test::verified_snapshot_is_reused_for_strict_quality_and_ledger`).
 
 use std::path::{Path, PathBuf};
 
