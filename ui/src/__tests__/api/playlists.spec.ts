@@ -15,6 +15,10 @@ import {
     importPlaylists,
     previewSmartPlaylistCount,
     createSmartPlaylist,
+    getPlaylistConflictState,
+    setPlaylistConflictMode,
+    listPlaylistConflictReviews,
+    resolvePlaylistConflictReview,
 } from '@/api/playlists';
 import { mockInvoke, resetMocks } from '../setup';
 
@@ -302,5 +306,153 @@ describe('playlists_handles_missing_fields_test', () => {
         expect(res.name).toBe('80s Rock');
         expect(res.track_count).toBe(15);
         expect(res.is_smart).toBe(true);
+    });
+});
+
+describe('playlist_conflict_api_test', () => {
+    beforeEach(() => {
+        resetMocks();
+        vi.clearAllMocks();
+    });
+
+    it('getPlaylistConflictState normalizes the mode and pending reviews', async () => {
+        let capturedArgs: any = null;
+        mockInvoke((cmd, args) => {
+            capturedArgs = args;
+            if (cmd === 'get_playlist_conflict_state') {
+                return {
+                    playlist_id: 7,
+                    conflict_mode: 'editable',
+                    service_name: 'spotify',
+                    is_remote: true,
+                    requires_mode_choice: false,
+                    pending_reviews: [
+                        {
+                            id: 3,
+                            playlist_id: 7,
+                            playlist_name: 'Road trip',
+                            service_name: 'spotify',
+                            conflict_kind: 'membership',
+                            local_value: '[1,2]',
+                            provider_value: '[1,3]',
+                            status: 'needs_review',
+                            created_at: '2026-11-27 10:00:00',
+                            updated_at: '2026-11-27 10:00:00',
+                            resolved_at: null,
+                            local_track_ids: [1, 2],
+                            provider_track_ids: [1, 3],
+                        },
+                    ],
+                };
+            }
+            return null;
+        });
+
+        const state = await getPlaylistConflictState(7);
+        expect(capturedArgs).toEqual({ playlistId: 7 });
+        expect(state.conflict_mode).toBe('editable');
+        expect(state.is_remote).toBe(true);
+        expect(state.requires_mode_choice).toBe(false);
+        expect(state.pending_reviews).toHaveLength(1);
+        expect(state.pending_reviews[0].conflict_kind).toBe('membership');
+        expect(state.pending_reviews[0].provider_track_ids).toEqual([1, 3]);
+    });
+
+    it('getPlaylistConflictState defaults a malformed payload safely', async () => {
+        mockInvoke(() => null);
+        const state = await getPlaylistConflictState(9);
+        expect(state.playlist_id).toBe(9);
+        expect(state.conflict_mode).toBe('gana_proveedor');
+        expect(state.is_remote).toBe(false);
+        expect(state.requires_mode_choice).toBe(false);
+        expect(state.pending_reviews).toEqual([]);
+    });
+
+    it('setPlaylistConflictMode invokes the command with camelCase ids', async () => {
+        let capturedArgs: any = null;
+        mockInvoke((cmd, args) => {
+            capturedArgs = args;
+            if (cmd === 'set_playlist_conflict_mode') {
+                return {
+                    playlist_id: 4,
+                    conflict_mode: (args as any).mode,
+                    service_name: 'tidal',
+                    is_remote: true,
+                    requires_mode_choice: false,
+                    pending_reviews: [],
+                };
+            }
+            return null;
+        });
+
+        const state = await setPlaylistConflictMode(4, 'gana_local');
+        expect(capturedArgs).toEqual({ playlistId: 4, mode: 'gana_local' });
+        expect(state.conflict_mode).toBe('gana_local');
+    });
+
+    it('listPlaylistConflictReviews sends explicit filters and normalizes rows', async () => {
+        let capturedArgs: any = null;
+        mockInvoke((cmd, args) => {
+            capturedArgs = args;
+            if (cmd === 'list_playlist_conflict_reviews') {
+                return [
+                    {
+                        id: 11,
+                        playlist_id: 4,
+                        playlist_name: 'Mix',
+                        service_name: null,
+                        conflict_kind: 'name',
+                        local_value: 'Mío',
+                        provider_value: 'Suyo',
+                        status: 'needs_review',
+                        created_at: 'now',
+                        updated_at: 'now',
+                        resolved_at: null,
+                        local_track_ids: null,
+                        provider_track_ids: null,
+                    },
+                ];
+            }
+            return null;
+        });
+
+        const reviews = await listPlaylistConflictReviews();
+        expect(capturedArgs).toEqual({ playlistId: null, status: null });
+        expect(reviews).toHaveLength(1);
+        expect(reviews[0].local_value).toBe('Mío');
+        expect(reviews[0].service_name).toBeNull();
+
+        await listPlaylistConflictReviews({ playlistId: 4, status: 'needs_review' });
+        expect(capturedArgs).toEqual({ playlistId: 4, status: 'needs_review' });
+    });
+
+    it('resolvePlaylistConflictReview invokes the explicit resolution', async () => {
+        let capturedArgs: any = null;
+        mockInvoke((cmd, args) => {
+            capturedArgs = args;
+            if (cmd === 'resolve_playlist_conflict_review') {
+                return {
+                    id: 11,
+                    playlist_id: 4,
+                    playlist_name: 'Mix',
+                    service_name: null,
+                    conflict_kind: 'name',
+                    local_value: 'Mío',
+                    provider_value: 'Suyo',
+                    status: 'resolved_provider',
+                    created_at: 'now',
+                    updated_at: 'now',
+                    resolved_at: 'now',
+                    local_track_ids: null,
+                    provider_track_ids: null,
+                };
+            }
+            return null;
+        });
+
+        const review = await resolvePlaylistConflictReview(11, 'provider');
+        expect(capturedArgs).toEqual({ reviewId: 11, resolution: 'provider' });
+        expect(review.status).toBe('resolved_provider');
+        expect(review.resolved_at).toBe('now');
     });
 });
