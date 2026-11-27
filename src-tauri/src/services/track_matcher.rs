@@ -4,7 +4,9 @@
 //! These utilities are designed to be used by service importers for consistent track handling.
 
 use sqlx::SqlitePool;
-use syncify_core_domain::metadata::{is_placeholder_title, ProviderTrackIdentity};
+use syncify_core_domain::metadata::{is_placeholder_title, is_valid_isrc, ProviderTrackIdentity};
+
+use crate::services::track_identity::normalize_isrc;
 
 /// Result of a track lookup or creation
 #[derive(Debug, Clone)]
@@ -49,6 +51,46 @@ pub fn is_fuzzy_track_match(
     }
 }
 
+/// ISRC canónico y sintácticamente válido de la identidad del proveedor.
+///
+/// La normalización es única (`track_identity::normalize_isrc`); aquí solo se
+/// añade la validación que exige el matcher: un ID numérico de proveedor nunca
+/// es un ISRC.
+fn canonical_isrc(identity: &ProviderTrackIdentity) -> Option<String> {
+    let normalized = normalize_isrc(identity.isrc.as_deref()?);
+    is_valid_isrc(&normalized).then_some(normalized)
+}
+
+/// Busca el Track canónico por ISRC en forma canónica.
+///
+/// Primero usa el índice (`isrc = ? COLLATE NOCASE`). Si no hay fila, compara
+/// la forma canónica del valor guardado: un proveedor pudo persistirlo con
+/// guiones o espacios después de la 0064.
+async fn find_track_by_isrc(db: &SqlitePool, isrc: &str) -> Option<(i64, Option<i32>)> {
+    let exact = sqlx::query_as::<_, (i64, Option<i32>)>(
+        "SELECT id, explicit FROM tracks WHERE isrc = ? COLLATE NOCASE LIMIT 1",
+    )
+    .bind(isrc)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    if exact.is_some() {
+        return exact;
+    }
+    sqlx::query_as::<_, (i64, Option<i32>)>(
+        "SELECT id, explicit FROM tracks
+         WHERE isrc IS NOT NULL
+           AND UPPER(REPLACE(REPLACE(TRIM(isrc), '-', ''), ' ', '')) = ?
+         LIMIT 1",
+    )
+    .bind(isrc)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Find an existing track by (service_id, service_track_id) first, then valid ISRC with explicit check,
 /// then normalized fuzzy matching within album/artist, or create a new one.
 // Cubierta por `tests/catalog_identity_and_import_prevention_test.rs`.
@@ -58,6 +100,8 @@ pub async fn find_or_create_track_with_identity(
     identity: &ProviderTrackIdentity,
     album_id: Option<i64>,
 ) -> Result<TrackMatch, String> {
+    let requested_isrc = canonical_isrc(identity);
+
     // Step 1: Check existing source mapping by (service_id, service_track_id)
     if let Ok(Some((existing_id,))) = sqlx::query_as::<_, (i64,)>(
         "SELECT track_id FROM track_sources WHERE service_id = ? AND service_track_id = ? LIMIT 1",
@@ -84,14 +128,8 @@ pub async fn find_or_create_track_with_identity(
     }
 
     // Step 2: Try to find by validated ISRC (never numeric IDs) with explicit compatibility check
-    if let Some(valid_isrc) = identity.sanitized_isrc() {
-        if let Ok(Some((existing_id, existing_explicit))) = sqlx::query_as::<_, (i64, Option<i32>)>(
-            "SELECT id, explicit FROM tracks WHERE isrc = ? LIMIT 1",
-        )
-        .bind(&valid_isrc)
-        .fetch_optional(db)
-        .await
-        {
+    if let Some(valid_isrc) = requested_isrc.as_deref() {
+        if let Some((existing_id, existing_explicit)) = find_track_by_isrc(db, valid_isrc).await {
             if is_explicit_compatible(identity.explicit, existing_explicit) {
                 if let Some(alb_id) = album_id {
                     let _ = crate::db::write_or_log(
@@ -132,16 +170,17 @@ pub async fn find_or_create_track_with_identity(
                     if !is_explicit_compatible(identity.explicit, cand_exp) {
                         continue;
                     }
-                    if let (Some(ref req_isrc), Some(ref db_isrc)) =
-                        (identity.sanitized_isrc(), cand_isrc)
+                    if let (Some(req_isrc), Some(db_isrc)) =
+                        (requested_isrc.as_deref(), cand_isrc.as_deref())
                     {
-                        if !db_isrc.trim().is_empty() && req_isrc != db_isrc {
+                        let db_isrc = normalize_isrc(db_isrc);
+                        if !db_isrc.is_empty() && db_isrc != req_isrc {
                             continue;
                         }
                     }
                     if is_fuzzy_track_match(safe_title, identity.duration_ms, &cand_title, cand_dur)
                     {
-                        if let Some(valid_isrc) = identity.sanitized_isrc() {
+                        if let Some(valid_isrc) = requested_isrc.as_deref() {
                             let _ = crate::db::write_or_log(
                                 "find_or_create_track_with_identity",
                                 sqlx::query(
@@ -192,10 +231,11 @@ pub async fn find_or_create_track_with_identity(
                         if !is_explicit_compatible(identity.explicit, cand_exp) {
                             continue;
                         }
-                        if let (Some(ref req_isrc), Some(ref db_isrc)) =
-                            (identity.sanitized_isrc(), cand_isrc)
+                        if let (Some(req_isrc), Some(db_isrc)) =
+                            (requested_isrc.as_deref(), cand_isrc.as_deref())
                         {
-                            if !db_isrc.trim().is_empty() && req_isrc != db_isrc {
+                            let db_isrc = normalize_isrc(db_isrc);
+                            if !db_isrc.is_empty() && db_isrc != req_isrc {
                                 continue;
                             }
                         }
@@ -208,7 +248,7 @@ pub async fn find_or_create_track_with_identity(
                                 cand_dur,
                             )
                         {
-                            if let Some(valid_isrc) = identity.sanitized_isrc() {
+                            if let Some(valid_isrc) = requested_isrc.as_deref() {
                                 let _ = crate::db::write_or_log(
                                     "find_or_create_track_with_identity",
                                     sqlx::query(
@@ -240,15 +280,13 @@ pub async fn find_or_create_track_with_identity(
     }
 
     // Step 3: Create new canonical track
-    let raw_isrc = identity.sanitized_isrc();
-
     let track_id: i64 = sqlx::query_scalar(
         "INSERT INTO tracks (title, album_id, duration_ms, isrc, explicit, track_number, disc_number) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(safe_title)
     .bind(album_id)
     .bind(identity.duration_ms)
-    .bind(raw_isrc)
+    .bind(requested_isrc.as_deref())
     .bind(identity.explicit.unwrap_or(false))
     .bind(identity.track_number.unwrap_or(1))
     .bind(identity.disc_number.unwrap_or(1))
