@@ -60,6 +60,7 @@ import {
     playbackHistoryClear,
     playbackQueueClear,
     playbackQueueEnqueue,
+    playbackQueueEnqueueProviderItem,
     playbackQueueRemove,
     playbackQueueReorder,
     playbackQueueSetCurrent,
@@ -948,6 +949,92 @@ async function enqueue(track: PlayerTrack): Promise<QueueOutcome> {
 }
 
 /**
+ * Ítem del catálogo que todavía no vive en la biblioteca. La cola lo guarda
+ * como entrada efímera (#134): `service_id` + `service_track_id`, sin crear
+ * `Track` ni `TrackSource`. La proyección es solo para pintar la cola antes de
+ * que la promoción resuelva metadatos.
+ */
+export interface ProviderPlayableItem {
+    serviceId: number;
+    serviceTrackId: string;
+    title: string;
+    artist?: string | null;
+    album?: string | null;
+    coverUrl?: string | null;
+}
+
+function providerEntryProjection(item: ProviderPlayableItem): PlayerTrack {
+    return {
+        id: 0,
+        title: item.title,
+        artist: item.artist ?? '',
+        album: item.album ?? null,
+        coverUrl: item.coverUrl ?? null,
+    };
+}
+
+async function enqueueProviderEntry(
+    item: ProviderPlayableItem,
+    atFront: boolean,
+): Promise<PlaybackQueueEntry> {
+    const entryId = await playbackQueueEnqueueProviderItem(
+        item.serviceId,
+        item.serviceTrackId,
+        atFront,
+    );
+    return {
+        entryId,
+        trackId: 0,
+        serviceId: item.serviceId,
+        serviceTrackId: item.serviceTrackId,
+        track: providerEntryProjection(item),
+    };
+}
+
+/** Reproduce un ítem del proveedor por su identidad efímera. */
+async function playProviderItem(item: ProviderPlayableItem): Promise<void> {
+    const transition = beginTransition();
+    bindEngineEvents();
+    error.value = null;
+    let entry: PlaybackQueueEntry;
+    try {
+        entry = await enqueueProviderEntry(item, false);
+    } catch (err) {
+        error.value = messageOf(err);
+        throw new Error(error.value);
+    }
+    const outcome = await resolveAndPlay(entry, transition);
+    if (transition.aborted) return;
+    if (outcome === 'failed') {
+        // El motor resuelve la efímera por su fila de cola: si no arrancó, la
+        // entrada pendiente no debe quedarse huérfana.
+        persistQueueWrite('remove', () => playbackQueueRemove(entry.entryId));
+        throw new Error(error.value ?? 'Could not play the provider item');
+    }
+    if (outcome === 'played') {
+        if (currentEntry.value) pushHistory(currentEntry.value);
+        currentEntry.value = entry;
+        persistQueueWrite('set-current', () => playbackQueueSetCurrentEntry(entry.entryId));
+    }
+}
+
+/**
+ * Encola un ítem del proveedor. Sin nada cargado arranca la reproducción,
+ * igual que `enqueue` con una pista de biblioteca; si ya suena algo, respeta
+ * la cola y no la interrumpe.
+ */
+async function enqueueProvider(item: ProviderPlayableItem): Promise<QueueOutcome> {
+    if (loadedPath === null) {
+        await playProviderItem(item);
+        return 'started';
+    }
+    const entry = await enqueueProviderEntry(item, false);
+    queue.value = [...queue.value, entry];
+    baseOrder = [...baseOrder, entry.entryId];
+    return 'queued';
+}
+
+/**
  * Plays the first track of the list and queues the rest **in their order**
  * (fixes the inversion that chaining playNext front-inserts caused).
  * Opens a new cycle: history and base order start clean. If the first
@@ -1313,6 +1400,8 @@ export function usePlayer() {
         queue, history, shuffle, repeat, volume, muted,
         // Previous actions
         play, playNext, toggle, stop, seek, setRate,
+        // Proveedor P10b (#409): entradas efímeras sin materializar biblioteca.
+        playProviderItem, enqueueProvider,
         // New actions (phase 1)
         enqueue, replaceQueueAndPlay, clearQueue, removeEntry, moveEntry,
         next, previous, setVolume, setMuted, toggleShuffle, cycleRepeat,
