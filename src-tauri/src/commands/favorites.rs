@@ -1470,6 +1470,12 @@ pub async fn perform_sync_favorites(
         account_id
     );
 
+    // #405: mismo contrato que el sync de biblioteca — dos cuentas del mismo
+    // servicio comparten cuota de aplicación y se serializan; servicios
+    // distintos siguen en paralelo.
+    let _service_sync_guard =
+        crate::services::concurrency_manager::acquire_service_sync_gate(&service_lower).await;
+
     let (account_id, creds) = match account_id {
         Some(aid) => load_service_credentials_for_account(db, &service_lower, aid).await?,
         None => load_service_credentials(db, &service_lower).await?,
@@ -2188,18 +2194,26 @@ pub async fn perform_sync_favorites(
                 .or_else(|| creds["user_id"].as_str().map(|s| s.to_string()))
                 .ok_or("Deezer User ID not found. Please re-login.")?;
 
-            const DEEZER_PAGE: i32 = 100;
+            const DEEZER_PAGE: i32 = crate::sync::deezer_source::DEEZER_PAGE_SIZE as i32;
+            // #405: una sola implementación del recorrido y del total por
+            // colección (el patrón que T02 adoptó en los otros servicios).
+            // Antes, álbumes y artistas sumaban el total del proveedor en cada
+            // página y el reporte crecía con la paginación.
+            let source = crate::sync::deezer_source::DeezerLibrarySource::new(&client);
 
             if type_filter == "all" || type_filter == "tracks" {
                 let mut offset: i32 = 0;
+                let mut reported_total: Option<i64> = None;
                 loop {
                     let (page, total) = client
                         .get_favorites_public(&user_id, offset, DEEZER_PAGE)
                         .await?;
-                    // Deezer repeats the library total on every page: assign it
-                    // rather than accumulating, so `total_found` stays the
-                    // count the provider reports.
-                    total_found = total as i64;
+                    // Deezer repite el total de la biblioteca en cada página:
+                    // se asigna una vez y las páginas siguientes no lo pisan.
+                    crate::sync::collection::assign_total(
+                        &mut reported_total,
+                        (total > 0).then_some(total as i64),
+                    );
                     let items_len = page.len() as i32;
 
                     for track in page {
@@ -2265,34 +2279,42 @@ pub async fn perform_sync_favorites(
                         offset,
                         items_len,
                         DEEZER_PAGE,
-                        Some(total as i64),
+                        reported_total,
                     ) {
                         Some(next) => offset = next,
                         None => break,
                     }
                 }
+                if let Some(total) = reported_total {
+                    total_found += total;
+                }
             }
 
             if type_filter == "all" || type_filter == "albums" {
-                let mut index: i32 = 0;
-                loop {
-                    let (page, total) = client
-                        .get_user_albums_public(&user_id, index, DEEZER_PAGE)
-                        .await?;
+                let collected = crate::sync::collection::collect_all_pages(
+                    crate::sync::deezer_source::DEEZER_PAGE_SIZE,
+                    |offset| source.fetch_albums_page(offset),
+                )
+                .await
+                .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
                     total_found += total;
-                    let items_len = page.len() as i32;
-                    for album in page {
-                        let album_id_str = album.id.clone();
-                        let title = album.title.clone();
-                        let artist_name = album
-                            .artist_name
-                            .clone()
-                            .filter(|a| !a.trim().is_empty())
-                            .unwrap_or_else(|| "Unknown Artist".to_string());
-                        let image_url = album.cover.clone();
-                        let favorited_at: Option<String> = None;
+                }
+                for item in collected.items {
+                    let album: crate::services::deezer::DeezerAlbumSummary =
+                        serde_json::from_value(item)
+                            .map_err(|e| format!("Deezer album decode error: {}", e))?;
+                    let album_id_str = album.id.clone();
+                    let title = album.title.clone();
+                    let artist_name = album
+                        .artist_name
+                        .clone()
+                        .filter(|a| !a.trim().is_empty())
+                        .unwrap_or_else(|| "Unknown Artist".to_string());
+                    let image_url = album.cover.clone();
+                    let favorited_at: Option<String> = None;
 
-                        let res = sqlx::query(
+                    let res = sqlx::query(
                             r#"
                             INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, album_name, image_url, favorited_at)
                             VALUES (?, ?, 'album', ?, ?, ?, ?, ?, ?)
@@ -2314,49 +2336,42 @@ pub async fn perform_sync_favorites(
                         .execute(db)
                         .await;
 
-                        if let Ok(r) = res {
-                            if r.rows_affected() > 0 {
-                                imported += 1;
-                            }
+                    if let Ok(r) = res {
+                        if r.rows_affected() > 0 {
+                            imported += 1;
                         }
-
-                        let _ = upsert_canonical_favorite_album(
-                            db,
-                            service_id,
-                            &album_id_str,
-                            &title,
-                            &artist_name,
-                            None,
-                            image_url.as_deref(),
-                        )
-                        .await;
                     }
 
-                    match crate::services::import_pagination::next_offset(
-                        index,
-                        items_len,
-                        DEEZER_PAGE,
-                        Some(total),
-                    ) {
-                        Some(next) => index = next,
-                        None => break,
-                    }
+                    let _ = upsert_canonical_favorite_album(
+                        db,
+                        service_id,
+                        &album_id_str,
+                        &title,
+                        &artist_name,
+                        None,
+                        image_url.as_deref(),
+                    )
+                    .await;
                 }
             }
 
             if type_filter == "all" || type_filter == "artists" {
-                let mut index: i32 = 0;
-                loop {
-                    let (page, total) = client
-                        .get_user_artists_public(&user_id, index, DEEZER_PAGE)
-                        .await?;
+                let collected = crate::sync::collection::collect_all_pages(
+                    crate::sync::deezer_source::DEEZER_PAGE_SIZE,
+                    |offset| source.fetch_artists_page(offset),
+                )
+                .await
+                .map_err(|error| error.message)?;
+                if let Some(total) = collected.reported_total {
                     total_found += total;
-                    let items_len = page.len() as i32;
-                    for (artist_id_str, name) in page {
-                        let image_url: Option<String> = None;
-                        let favorited_at: Option<String> = None;
+                }
+                for item in collected.items {
+                    let (artist_id_str, name): (String, String) = serde_json::from_value(item)
+                        .map_err(|e| format!("Deezer artist decode error: {}", e))?;
+                    let image_url: Option<String> = None;
+                    let favorited_at: Option<String> = None;
 
-                        let res = sqlx::query(
+                    let res = sqlx::query(
                             r#"
                             INSERT INTO favorites (account_id, service_id, item_type, service_item_id, title, artist_name, image_url, favorited_at)
                             VALUES (?, ?, 'artist', ?, ?, ?, ?, ?)
@@ -2377,26 +2392,14 @@ pub async fn perform_sync_favorites(
                         .execute(db)
                         .await;
 
-                        if let Ok(r) = res {
-                            if r.rows_affected() > 0 {
-                                imported += 1;
-                            }
+                    if let Ok(r) = res {
+                        if r.rows_affected() > 0 {
+                            imported += 1;
                         }
-
-                        let _ =
-                            upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
-                                .await;
                     }
 
-                    match crate::services::import_pagination::next_offset(
-                        index,
-                        items_len,
-                        DEEZER_PAGE,
-                        Some(total),
-                    ) {
-                        Some(next) => index = next,
-                        None => break,
-                    }
+                    let _ = upsert_canonical_favorite_artist(db, service_id, &artist_id_str, &name)
+                        .await;
                 }
             }
         }
