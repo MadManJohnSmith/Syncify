@@ -21,6 +21,7 @@ use std::time::Duration;
 use rodio::stream::{DeviceSinkBuilder, MixerDeviceSink};
 use rodio::{Decoder, Player};
 
+pub mod crossfade;
 pub mod sim;
 
 /// Errores del motor. Texto legible en inglés (la UI los sanea antes de mostrarlos).
